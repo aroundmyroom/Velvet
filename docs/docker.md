@@ -1,6 +1,6 @@
 # Running Velvet with Docker
 
-> ### ⚠️ Upgrading from v6.14.0 or earlier — action required
+> ### ⚠️ Upgrading from earlier fork versions — action required
 >
 > **Velvet now runs as the unprivileged `node` user by default.** Before restarting your container after pulling the new image you must:
 >
@@ -32,6 +32,42 @@
 > ```
 >
 > If your library and writable host folders are already owned by your target UID/GID, you can set `user:` immediately. If not, keep it unset until ownership is fixed.
+
+---
+
+## Migrating from the previous image
+
+The project was previously hosted at `github.com/aroundmyroom/mstream` (that repository no longer exists). The Docker image has moved:
+
+| Before | After |
+|---|---|
+| `ghcr.io/aroundmyroom/mstream-velvet:vX.Y.Z-velvet` | `ghcr.io/aroundmyroom/velvet:vX.Y.Z` |
+
+**Your data is fully compatible.** The volume structure (`save/`, `image-cache/`, `waveform-cache/`) is unchanged — no data migration is needed.
+
+### Steps
+
+1. Stop your current container:
+   ```shell
+   docker compose down
+   ```
+
+2. Update the `image:` line in your `compose.yaml`:
+   ```yaml
+   # Before
+   image: ghcr.io/aroundmyroom/mstream-velvet:latest
+
+   # After
+   image: ghcr.io/aroundmyroom/velvet:latest
+   ```
+
+3. Pull and restart:
+   ```shell
+   docker compose pull
+   docker compose up -d
+   ```
+
+That's it — all your music, playlists, users, and settings are preserved in the mounted volumes.
 
 ---
 
