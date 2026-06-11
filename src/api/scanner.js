@@ -284,22 +284,6 @@ export function setup(velvet) {
     if (req.body.scanStartTs) {
       try { db.clearResolvedErrors(req.body.vpath, req.body.scanStartTs); } catch (e) { console.debug('[velvet]', e?.message ?? e); }
     }
-    // Additional Recently Added guard: if this scan stamped old files as
-    // "new" (ts set at scan time while mtime is clearly older), clamp those
-    // rows back to mtime before exposing the scan result to clients.
-    try {
-      if (typeof db.clampRecentTsToModified === 'function') {
-        const corrected = db.clampRecentTsToModified(
-          req.body.vpath,
-          req.body.scanId,
-          scanStartTs,
-          scanStartTs - 86400
-        );
-        if (corrected > 0) {
-          console.warn(`[finish-scan] RECENT-ADDED GUARD: corrected ts on ${corrected} old file(s) for vpath="${req.body.vpath}" scanId="${req.body.scanId}"`);
-        }
-      }
-    } catch (e) { console.debug('[velvet]', e?.message ?? e); }
     try { db.recordCompletedScan(req.body.vpath, req.body.scanId, req.body.scanStartTs, scanFinishedAt); } catch (e) { console.debug('[velvet]', e?.message ?? e); }
 
     // Refresh the duplicate-content-hash set so the Subsonic layer keeps emitting

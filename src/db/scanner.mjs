@@ -385,10 +385,7 @@ async function insertEntries(song) {
     "art_source": song._artSource || null,
     "cover_file": song._coverFile || null,
     "vpath": loadJson.vpath,
-    // Guard against false "Recently Added" floods: for files treated as new,
-    // derive ts from file mtime instead of scan time. Existing rows still keep
-    // their original ts via _preserveTs.
-    "ts": song._preserveTs || (song._isReindex ? null : (modifiedSec || Math.floor(Date.now() / 1000))) || null,
+    "ts": song._preserveTs || (song._isReindex ? null : Math.floor(Date.now() / 1000)) || null,
     "sID": loadJson.scanId,
     "replaygainTrackDb": song.replaygain_track_gain ? song.replaygain_track_gain.dB : null,
     "genre": song.genre ? (canonicalGenreName(String(song.genre)) ?? String(song.genre)) : null,
