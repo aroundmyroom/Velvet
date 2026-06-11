@@ -1,0 +1,360 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Velvet Remote</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <script>
+    (function(){
+      var svg = '<img src="/assets/img/velvet-logo.svg" alt="Velvet" width="32" height="32" style="">'none'">
+      <div style="flex:1;min-width:0;">
+        <div id="np-title" style="font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:14px;color:var(--t1);">—</div>
+        <div id="np-artist" style="font-size:12px;color:var(--t2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;"></div>
+        <div style="height:3px;background:var(--raised);border-radius:2px;margin-top:6px;">
+          <div id="np-prog" style="height:100%;background:var(--accent);border-radius:2px;width:0%;transition:width 1s linear;"></div>
+        </div>
+      </div>
+      <div id="np-badge" style="font-size:16px;color:var(--t3);flex-shrink:0;">▶</div>
+    </div>
+    <div class="controls">
+      <div class="ctrl-row">
+        <button class="ctrl-btn ctrl-nav" title="Previous" onclick="sendCommand('previous')">
+          <svg width="26" height="26" viewBox="0 0 24 24" fill="currentColor"><path d="M6 6h2v12H6zm3.5 6 8.5 6V6z"/></svg>
+        </button>
+        <button class="ctrl-btn play-main" id="play-btn" title="Play / Pause" onclick="sendCommand('playPause')">
+          <svg id="play-icon" width="26" height="26" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
+          <svg id="pause-icon" width="26" height="26" viewBox="0 0 24 24" fill="currentColor" style="display:none"><rect x="5" y="4" width="4" height="16" rx="1.5"/><rect x="15" y="4" width="4" height="16" rx="1.5"/></svg>
+        </button>
+        <button class="ctrl-btn ctrl-nav" title="Next" onclick="sendCommand('next')">
+          <svg width="26" height="26" viewBox="0 0 24 24" fill="currentColor"><path d="M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z"/></svg>
+        </button>
+      </div>
+      <div class="ctrl-toast" id="ctrl-toast"></div>
+      <button class="queue-toggle-btn" id="queue-toggle-btn" onclick="toggleQueue()">▤ Queue</button>
+    </div>
+    <div class="queue-panel" id="queue-panel">
+      <div style="font-size:11px;color:var(--t3);padding:10px 0 6px;font-weight:600;letter-spacing:.06em;">QUEUE</div>
+      <div id="rmt-queue-list" style="display:flex;flex-direction:column;gap:2px;max-height:260px;overflow-y:auto;"></div>
+      <button onclick="refreshQueueRemote()" style="margin:6px 0 8px;width:100%;padding:5px;background:var(--raised);border:none;color:var(--t3);border-radius:6px;cursor:pointer;font-size:12px;">↻ Refresh</button>
+    </div>
+    <div class="browser-header">
+      <button class="back-btn" id="back-btn" onclick="goBack()" disabled>
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="15 18 9 12 15 6"/></svg>
+      </button>
+      <span class="breadcrumb" id="breadcrumb">/</span>
+    </div>
+    <div class="browser-list" id="browser-list">
+      <div class="browser-loading"><div class="spinner"></div></div>
+    </div>
+  </div>
+
+  <div id="toast"></div>
+
+  <script>
+    var _token = '', _code = '', _pathStack = [], _toastTimer = null, _isPlaying = false;
+    var _npTimer = null, _queueVisible = false;
+
+    function esc(s) {
+      return String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+    }
+
+    function createBrowserIcon(type) {
+      var ns = 'http://www.w3.org/2000/svg';
+      var svg = document.createElementNS(ns, 'svg');
+      svg.setAttribute('width', '18');
+      svg.setAttribute('height', '18');
+      svg.setAttribute('viewBox', '0 0 24 24');
+      svg.setAttribute('fill', 'none');
+      svg.setAttribute('stroke', 'currentColor');
+      svg.setAttribute('stroke-width', '2');
+      if (type === 'dir') {
+        var p = document.createElementNS(ns, 'path');
+        p.setAttribute('d', 'M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z');
+        svg.appendChild(p);
+      } else {
+        var p2 = document.createElementNS(ns, 'path');
+        p2.setAttribute('d', 'M9 18V5l12-2v13');
+        var c1 = document.createElementNS(ns, 'circle');
+        c1.setAttribute('cx', '6');
+        c1.setAttribute('cy', '18');
+        c1.setAttribute('r', '3');
+        var c2 = document.createElementNS(ns, 'circle');
+        c2.setAttribute('cx', '18');
+        c2.setAttribute('cy', '16');
+        c2.setAttribute('r', '3');
+        svg.appendChild(p2);
+        svg.appendChild(c1);
+        svg.appendChild(c2);
+      }
+      return svg;
+    }
+
+    function updatePlayBtn() {
+      document.getElementById('play-icon').style.display  = _isPlaying ? 'none'  : '';
+      document.getElementById('pause-icon').style.display = _isPlaying ? '' : 'none';
+    }
+
+    function applyTheme(theme) {
+      document.documentElement.classList.remove('dark', 'light');
+      if (theme === 'dark')  document.documentElement.classList.add('dark');
+      if (theme === 'light') document.documentElement.classList.add('light');
+      var labels = { velvet: 'Velvet', dark: 'Dark', light: 'Light' };
+      document.getElementById('theme-label').textContent = labels[theme] || 'Velvet';
+      var icon = document.getElementById('theme-icon');
+      if (theme === 'light') {
+        icon.innerHTML = '<circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/>';
+      } else if (theme === 'dark') {
+        icon.innerHTML = '<path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>';
+      } else {
+        icon.innerHTML = '<polygon points="12,2 15,9 22,9 16.5,14 18.5,21 12,17 5.5,21 7.5,14 2,9 9,9"/>';
+      }
+      localStorage.setItem('ms2_theme', theme);
+    }
+    function toggleTheme() {
+      var cur = localStorage.getItem('ms2_theme') || 'velvet';
+      applyTheme(cur === 'velvet' ? 'dark' : cur === 'dark' ? 'light' : 'velvet');
+    }
+    applyTheme(localStorage.getItem('ms2_theme') || 'velvet');
+
+    function toast(msg, ms) {
+      var el = document.getElementById('toast');
+      el.textContent = msg; el.classList.add('show');
+      clearTimeout(_toastTimer);
+      _toastTimer = setTimeout(function(){ el.classList.remove('show'); }, ms || 2000);
+    }
+    function ctrlToast(msg) {
+      var el = document.getElementById('ctrl-toast');
+      el.textContent = msg;
+      setTimeout(function(){ if (el.textContent === msg) el.textContent = ''; }, 1500);
+    }
+
+    function sendCommand(command, file) {
+      var body = { code: _code, command: command };
+      if (file !== undefined) body.file = file;
+      fetch('/api/v1/jukebox/push-to-client', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-access-token': _token },
+        body: JSON.stringify(body)
+      }).then(function(r) {
+        var labels = { previous: '\u23EE Prev', next: '\u23ED Next', playPause: '\u23EF Play/Pause', addSong: '\u2713 Added to queue' };
+        if (!r.ok) { if (r.status === 404) toast('Player disconnected'); }
+        else {
+          if (command === 'playPause') { _isPlaying = !_isPlaying; updatePlayBtn(); }
+          ctrlToast(labels[command] || '\u2713');
+        }
+      }).catch(function(){ toast('Connection error'); });
+    }
+
+    // ── Now Playing polling ──────────────────────────────────────────────────
+    function startPolling() {
+      pollNowPlaying(); pollPlaylist();
+      if (_npTimer) clearInterval(_npTimer);
+      _npTimer = setInterval(pollNowPlaying, 2500);
+    }
+    function stopPolling() { if (_npTimer) { clearInterval(_npTimer); _npTimer = null; } }
+
+    function pollNowPlaying() {
+      fetch('/api/v1/jukebox/get-now-playing?code=' + encodeURIComponent(_code))
+        .then(function(r){ return r.json(); })
+        .then(function(np) {
+          var strip = document.getElementById('np-strip');
+          if (!np || !np.filepath) { strip.style.display = 'none'; return; }
+          strip.style.display = 'flex';
+          document.getElementById('np-title').textContent  = np.title  || np.filepath.split('/').pop();
+          document.getElementById('np-artist').textContent = np.artist || '';
+          var art = document.getElementById('np-art');
+          if (np.albumArt) { art.src = '/album-art/' + np.albumArt; art.style.display = ''; } else { art.style.display = 'none'; }
+          document.getElementById('np-prog').style.width = (np.duration > 0 ? (np.currentTime / np.duration * 100).toFixed(1) : 0) + '%';
+          document.getElementById('np-badge').textContent = np.playing ? '\u25b6' : '\u23f8';
+          _isPlaying = !!np.playing; updatePlayBtn();
+        }).catch(function(){});
+    }
+
+    // ── Queue panel ──────────────────────────────────────────────────────────
+    function toggleQueue() {
+      _queueVisible = !_queueVisible;
+      document.getElementById('queue-panel').style.display = _queueVisible ? 'block' : 'none';
+      document.getElementById('queue-toggle-btn').textContent = _queueVisible ? '\u25a4 Hide Queue' : '\u25a4 Queue';
+      if (_queueVisible) refreshQueueRemote();
+    }
+
+    function refreshQueueRemote() {
+      sendCommand('getPlaylist');
+      setTimeout(pollPlaylist, 450);
+    }
+
+    function pollPlaylist() {
+      fetch('/api/v1/jukebox/get-playlist?code=' + encodeURIComponent(_code))
+        .then(function(r){ return r.json(); })
+        .then(function(pl) {
+          var list = document.getElementById('rmt-queue-list');
+          if (!pl || !pl.tracks || pl.tracks.length === 0) {
+            list.textContent = '';
+            var empty = document.createElement('div');
+            empty.style.color = 'var(--t3)';
+            empty.style.fontSize = '12px';
+            empty.style.padding = '8px 0';
+            empty.textContent = 'Queue is empty';
+            list.appendChild(empty);
+            return;
+          }
+          list.textContent = '';
+          pl.tracks.forEach(function(t, i) {
+            var active = (i === pl.idx);
+            var name = t.title || t.filepath.split('/').pop();
+            var sub  = t.artist || '';
+            var row = document.createElement('div');
+            row.style.display = 'flex';
+            row.style.alignItems = 'center';
+            row.style.gap = '8px';
+            row.style.padding = '6px 8px';
+            row.style.borderRadius = '6px';
+            row.style.background = active ? 'var(--raised)' : 'transparent';
+            row.style.color = active ? 'var(--accent)' : 'var(--t1)';
+            if (active) row.style.fontWeight = '600';
+
+            var info = document.createElement('div');
+            info.style.flex = '1';
+            info.style.minWidth = '0';
+            info.style.cursor = 'pointer';
+            info.onclick = function() { goToSongRemote(i); };
+
+            var title = document.createElement('div');
+            title.style.whiteSpace = 'nowrap';
+            title.style.overflow = 'hidden';
+            title.style.textOverflow = 'ellipsis';
+            title.style.fontSize = '13px';
+            title.textContent = (active ? '\u25b6 ' : '') + name;
+            info.appendChild(title);
+
+            if (sub) {
+              var subEl = document.createElement('div');
+              subEl.style.fontSize = '11px';
+              subEl.style.color = 'var(--t3)';
+              subEl.style.whiteSpace = 'nowrap';
+              subEl.style.overflow = 'hidden';
+              subEl.style.textOverflow = 'ellipsis';
+              subEl.textContent = sub;
+              info.appendChild(subEl);
+            }
+
+            var btn = document.createElement('button');
+            btn.style.flexShrink = '0';
+            btn.style.background = 'none';
+            btn.style.border = 'none';
+            btn.style.color = 'var(--t3)';
+            btn.style.cursor = 'pointer';
+            btn.style.fontSize = '18px';
+            btn.style.padding = '2px 5px';
+            btn.style.lineHeight = '1';
+            btn.textContent = '×';
+            btn.onclick = function() { removeSongRemote(i); };
+
+            row.appendChild(info);
+            row.appendChild(btn);
+            list.appendChild(row);
+          });
+        }).catch(function(){});
+    }
+
+    function goToSongRemote(idx) {
+      sendCommand('goToSong', String(idx));
+      setTimeout(function(){ sendCommand('getNowPlaying'); setTimeout(pollNowPlaying, 500); }, 300);
+      setTimeout(refreshQueueRemote, 600);
+    }
+    function removeSongRemote(idx) {
+      sendCommand('removeSong', String(idx));
+      setTimeout(refreshQueueRemote, 450);
+    }
+
+    // ── File browser ─────────────────────────────────────────────────────────
+    function loadDirectory() {
+      var list = document.getElementById('browser-list');
+      list.innerHTML = '<div class="browser-loading"><div class="spinner"></div></div>';
+      var dirStr = _pathStack.length ? _pathStack.join('/') + '/' : '';
+      document.getElementById('breadcrumb').textContent = '/' + _pathStack.join('/');
+      document.getElementById('back-btn').disabled = _pathStack.length === 0;
+      fetch('/api/v1/file-explorer', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-access-token': _token },
+        body: JSON.stringify({ directory: dirStr })
+      }).then(function(r){ if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+      .then(function(data) {
+        var items = [];
+        (data.directories || []).forEach(function(d){ items.push({ type:'dir',  name:d.name, path:null }); });
+        (data.files      || []).forEach(function(f){ items.push({ type:'file', name:f.name, path:data.path + f.name }); });
+        if (!items.length) { list.innerHTML = '<div class="browser-empty">No files here</div>'; return; }
+        list.innerHTML = '';
+        items.forEach(function(item) {
+          var row  = document.createElement('div'); row.className = 'browser-item';
+          var icon = document.createElement('span'); icon.className = 'browser-item-icon';
+          icon.appendChild(createBrowserIcon(item.type));
+          var name = document.createElement('span'); name.className = 'browser-item-name'; name.textContent = item.name;
+          row.appendChild(icon); row.appendChild(name);
+          if (item.type === 'file') {
+            var addBtn = document.createElement('button'); addBtn.className = 'browser-item-add'; addBtn.textContent = '+ Queue';
+            (function(p){
+              addBtn.onclick = function(e){ e.stopPropagation(); sendCommand('addSong', p); };
+              row.onclick    = function(){ sendCommand('addSong', p); };
+            }(item.path));
+            row.appendChild(addBtn);
+          } else {
+            (function(n){ row.onclick = function(){ _pathStack.push(n); loadDirectory(); }; }(item.name));
+          }
+          list.appendChild(row);
+        });
+      }).catch(function(){ list.innerHTML = '<div class="browser-empty">Failed to load directory</div>'; });
+    }
+
+    function goBack() { if (_pathStack.length) { _pathStack.pop(); loadDirectory(); } }
+
+    function showRemote() {
+      _isPlaying = false; updatePlayBtn();
+      document.getElementById('login-screen').style.display = 'none';
+      document.getElementById('remote-screen').style.display = 'flex';
+      loadDirectory();
+      startPolling();
+      sendCommand('getNowPlaying');
+    }
+
+    function connectWithCode() {
+      var btn = document.getElementById('connect-btn');
+      var err = document.getElementById('login-error');
+      var code = document.getElementById('code-input').value.trim();
+      if (!code) return;
+      btn.disabled = true; btn.textContent = 'Connecting\u2026'; err.textContent = '';
+      fetch('/api/v1/jukebox/does-code-exist', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ code: code })
+      }).then(function(r){ return r.json(); })
+      .then(function(data) {
+        if (data.status !== true) throw new Error('not found');
+        _code = code; _token = data.token || '';
+        showRemote();
+      }).catch(function(){
+        err.textContent = 'Code not found. Check the Jukebox screen.';
+        btn.disabled = false; btn.textContent = 'Connect';
+      });
+    }
+
+    document.getElementById('code-input').addEventListener('keydown', function(e){
+      if (e.key === 'Enter') connectWithCode();
+    });
+
+    window.addEventListener('pagehide', stopPolling);
+
+    // Auto-connect or show error when server pre-injects state via the /remote/:code route
+    if (typeof remoteProperties !== 'undefined') {
+      if (remoteProperties.error) {
+        document.getElementById('login-screen').style.display = 'none';
+        document.getElementById('error-screen').style.display = 'flex';
+      } else if (remoteProperties.code && remoteProperties.code !== 0) {
+        _code  = remoteProperties.code;
+        _token = remoteProperties.token || '';
+        showRemote();
+      }
+    }
+  </script>
+</body>
+</html>

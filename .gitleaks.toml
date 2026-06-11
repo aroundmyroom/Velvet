@@ -1,0 +1,13 @@
+title = "mStream Velvet Gitleaks Configuration"
+
+[extend]
+# Use the default gitleaks ruleset as a base
+useDefault = true
+
+[allowlist]
+description = "Documentation false positives"
+# Suppress curl-auth-header false positives in documentation files that
+# use placeholder tokens (e.g. YOUR_TOKEN) or local-only service tokens.
+paths = [
+  "docs/cerrone-version-verify.md",
+]

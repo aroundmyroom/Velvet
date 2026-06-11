@@ -1,0 +1,85 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 1000" width="100%" height="100%">
+  <defs>
+    <radialGradient id="bgGlow" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#080211" />
+      <stop offset="100%" stop-color="#000000" />
+    </radialGradient>
+
+    <linearGradient id="leftVGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#ff1293" />
+      <stop offset="50%" stop-color="#9d1ae6" />
+      <stop offset="100%" stop-color="#380bb0" />
+    </linearGradient>
+
+    <linearGradient id="rightVGradient" x1="0%" y1="100%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#380bb0" />
+      <stop offset="50%" stop-color="#195ee6" />
+      <stop offset="100%" stop-color="#00a2ff" />
+    </linearGradient>
+
+    <filter id="neonGlow" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur stdDeviation="8" result="blur1" />
+      <feGaussianBlur stdDeviation="22" result="blur2" />
+      <feMerge>
+        <feMergeNode in="blur2" />
+        <feMergeNode in="blur1" />
+        <feMergeNode in="SourceGraphic" />
+      </feMerge>
+    </filter>
+
+    <filter id="waveGlow" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur stdDeviation="4" result="blur1" />
+      <feGaussianBlur stdDeviation="12" result="blur2" />
+      <feMerge>
+        <feMergeNode in="blur2" />
+        <feMergeNode in="blur1" />
+        <feMergeNode in="SourceGraphic" />
+      </feMerge>
+    </filter>
+  </defs>
+
+
+
+  <g filter="url(#neonGlow)">
+    <path d="M 80 260 C 200 240, 420 380, 500 810 C 450 760, 250 480, 80 260 Z" fill="url(#leftVGradient)" />
+          
+    <path d="M 920 260 C 800 240, 580 380, 500 810 C 550 760, 750 480, 920 260 Z" fill="url(#rightVGradient)" />
+
+    <path d="M 82 260 C 248 370, 448 620, 500 805 C 552 620, 752 370, 918 260" fill="none" stroke="#e0b0ff" stroke-width="3" opacity="0.6" />
+  </g>
+
+  <g filter="url(#waveGlow)">
+    <path d="M 140 480 
+             L 170 480 
+             C 180 480, 185 475, 190 460
+             C 193 450, 196 510, 200 420
+             C 204 310, 208 650, 212 280
+             C 216 680, 220 230, 225 730
+             C 230 180, 235 780, 240 150
+             C 245 810, 250 200, 255 760
+             C 260 250, 265 710, 270 300
+             C 275 660, 280 350, 285 610
+             C 290 390, 294 570, 298 430
+             C 302 530, 306 450, 310 500
+             C 315 475, 325 480, 355 480
+             
+             C 400 480, 430 520, 465 590
+             C 480 620, 500 635, 510 635
+             C 520 635, 540 620, 555 590
+             C 590 520, 620 480, 665 480
+             
+             C 695 480, 701 475, 706 500
+             C 710 450, 714 530, 718 430
+             C 722 570, 726 390, 731 610
+             C 736 350, 741 660, 746 300
+             C 751 710, 756 250, 761 760
+             C 766 200, 771 810, 776 150
+             C 781 780, 786 180, 791 730
+             C 796 230, 800 680, 804 280
+             C 808 650, 812 310, 816 420
+             C 820 510, 823 450, 826 460
+             C 831 475, 836 480, 846 480
+             L 860 480" 
+          fill="none" stroke="#2bfce0" stroke-width="4.5" stroke-linecap="round" stroke-linejoin="round" />
+  </g>
+</svg>

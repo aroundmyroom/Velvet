@@ -1,0 +1,119 @@
+name: Test FFmpeg Bootstrap
+
+on:
+  workflow_dispatch: # disabled — ffmpeg bootstrap test not needed for this fork
+
+jobs:
+  test:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Linux x64
+            runner: ubuntu-latest
+          - name: Linux arm64
+            runner: ubuntu-24.04-arm
+          - name: Windows x64
+            runner: windows-latest
+          - name: macOS
+            runner: macos-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Test ffmpeg bootstrap
+        shell: node {0}
+        run: |
+          import path from 'path';
+          import fs from 'fs';
+          import { execSync } from 'child_process';
+
+          // Minimal config stub so ffmpeg-bootstrap can resolve getFfmpegDir()
+          const testDir = path.join(process.cwd(), 'test-ffmpeg-bin');
+          fs.mkdirSync(testDir, { recursive: true });
+
+          // Patch config before importing the module
+          const configModule = await import('./src/state/config.js');
+          configModule.program = {
+            transcode: { ffmpegDirectory: testDir }
+          };
+
+          // Stub winston so it doesn't crash on missing transports
+          const winston = await import('winston');
+          if (!winston.default.transports || winston.default.transports.length === 0) {
+            winston.default.add(new winston.default.transports.Console({ silent: false }));
+          }
+
+          const { ensureFfmpeg, ffmpegBin, ffprobeBin } = await import('./src/util/ffmpeg-bootstrap.js');
+
+          console.log('Platform:', process.platform, process.arch);
+          console.log('FFmpeg dir:', testDir);
+          console.log('');
+
+          // Step 1: Download
+          console.log('=== Downloading ffmpeg ===');
+          await ensureFfmpeg();
+
+          // Step 2: Verify files exist
+          const ffmpegPath = ffmpegBin();
+          const ffprobePath = ffprobeBin();
+
+          if (!fs.existsSync(ffmpegPath)) {
+            console.error('FAIL: ffmpeg binary not found at', ffmpegPath);
+            process.exit(1);
+          }
+          console.log('PASS: ffmpeg binary exists at', ffmpegPath);
+
+          if (!fs.existsSync(ffprobePath)) {
+            console.error('FAIL: ffprobe binary not found at', ffprobePath);
+            process.exit(1);
+          }
+          console.log('PASS: ffprobe binary exists at', ffprobePath);
+
+          // Step 3: Execute ffmpeg and check output
+          console.log('');
+          console.log('=== Testing ffmpeg execution ===');
+          try {
+            const version = execSync(ffmpegPath + ' -version', { encoding: 'utf8', timeout: 10000 });
+            const firstLine = version.split('\n')[0];
+            console.log(firstLine);
+
+            if (!firstLine.includes('ffmpeg version')) {
+              console.error('FAIL: unexpected version output');
+              process.exit(1);
+            }
+            console.log('PASS: ffmpeg executes correctly');
+          } catch (e) {
+            console.error('FAIL: ffmpeg execution error:', e.message);
+            process.exit(1);
+          }
+
+          // Step 4: Execute ffprobe and check output
+          console.log('');
+          console.log('=== Testing ffprobe execution ===');
+          try {
+            const version = execSync(ffprobePath + ' -version', { encoding: 'utf8', timeout: 10000 });
+            const firstLine = version.split('\n')[0];
+            console.log(firstLine);
+
+            if (!firstLine.includes('ffprobe version')) {
+              console.error('FAIL: unexpected version output');
+              process.exit(1);
+            }
+            console.log('PASS: ffprobe executes correctly');
+          } catch (e) {
+            console.error('FAIL: ffprobe execution error:', e.message);
+            process.exit(1);
+          }
+
+          console.log('');
+          console.log('All checks passed!');

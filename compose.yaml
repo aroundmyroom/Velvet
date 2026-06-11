@@ -1,0 +1,82 @@
+services:
+  velvet:
+    # Pull the pre-built image from GitHub Container Registry (recommended):
+    #   image: ghcr.io/aroundmyroom/velvet:latest
+    # Or pin to a specific release:
+    #   image: ghcr.io/aroundmyroom/velvet:v1.0.0
+    # Or use a locally built image:
+    #   image: velvet
+    image: ghcr.io/aroundmyroom/velvet:latest
+    container_name: velvet
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    # Optional: set this only when your mounted folders are already writable by that UID:GID.
+    # Keep commented for first boot/migration so the entrypoint can repair ownership.
+    # user: "1000:1000"
+    volumes:
+      # Persistent data - config, database, logs, sync state
+      - ./save:/app/save
+      # Your music library (read-write: needed for album-art embedding and tag editing)
+      - /media/music:/music
+      # Cached waveform data
+      - ./waveform-cache:/app/waveform-cache
+      # Cached album art / podcast / radio artwork
+      - ./image-cache:/app/image-cache
+    environment:
+      # ===========================================================================
+      # FIRST-RUN AUTO-CONFIG  (env vars are OPTIONAL - read the note below first)
+      # ===========================================================================
+      #
+      # NOTE: You do NOT need these environment variables to run Velvet.
+      # They only exist as a convenience for simple single-library setups.
+      # The server works perfectly without them - just edit save/conf/default.json
+      # directly (or use the admin UI after first boot) for full control.
+      #
+      # WHEN env vars are NOT sufficient and you should edit the config manually:
+      #   - Multiple mount points / multiple music volumes
+      #   - Child-vpaths (a vpath that is a sub-folder of another vpath, used for
+      #     features like Albums-Only filtering or Auto-DJ source restriction)
+      #   - albumsOnly / filepathPrefix / includeFilepathPrefixes rules
+      #   - Any advanced folder structure that does not fit the flat layout below
+      #
+      # WHEN env vars ARE convenient:
+      #   - Fresh Docker install with a single music volume mounted at /music
+      #   - You want Velvet to create the initial config on the very first start
+      #     so you do not have to touch any file before the server boots
+      #
+      # HOW IT WORKS:
+      #   Set MSTREAM_MUSIC_DIR to the path where your music volume is mounted
+      #   inside the container (must match the volume mapping above).
+      #   On the very first start - when save/conf/default.json has no folders -
+      #   Velvet writes the initial config automatically.
+      #   On every subsequent restart the env vars are ignored (config already set).
+      # ---------------------------------------------------------------------------
+      MSTREAM_MUSIC_DIR: /music
+
+      # Admin account (optional).
+      # If BOTH variables are omitted the server starts in open mode - no login
+      # screen, full library access for anyone who can reach port 3000.
+      # Set both to enable authentication from the very first boot.
+      # MSTREAM_ADMIN_USER: admin
+      # MSTREAM_ADMIN_PASS: changeme
+
+      # Extra feature folders — uncomment to enable.
+      # By default each type is applied directly to MSTREAM_MUSIC_DIR (/music).
+      # If your files live in a sub-folder, add the matching *_SUBDIR variable:
+      #   MSTREAM_ENABLE_YOUTUBE: "true"
+      #   MSTREAM_YOUTUBE_SUBDIR: YouTube        # → folder root becomes /music/YouTube
+      # You can also add, change or remove folders at any time in the Admin panel.
+      # For full control, skip env vars and edit save/conf/default.json directly.
+
+      # AudioBooks & Podcasts  (type: audio-books)
+      # MSTREAM_ENABLE_AUDIOBOOKS: "true"
+      # MSTREAM_AUDIOBOOKS_SUBDIR: Audiobooks    # optional — omit to use /music directly
+
+      # Radio Recordings  (type: recordings — also enables the radio feature)
+      # MSTREAM_ENABLE_RECORDINGS: "true"
+      # MSTREAM_RECORDINGS_SUBDIR: Recordings    # optional — omit to use /music directly
+
+      # YouTube Downloads  (type: youtube)
+      # MSTREAM_ENABLE_YOUTUBE: "true"
+      # MSTREAM_YOUTUBE_SUBDIR: YouTube          # optional — omit to use /music directly

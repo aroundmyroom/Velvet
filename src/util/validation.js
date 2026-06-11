@@ -1,0 +1,26 @@
+import Joi from 'joi';
+
+export const joiValidate = (joiSchema, validateThis, throwErr) => {
+  const { error, value } = joiSchema.validate(validateThis);
+
+  if (error && throwErr !== false) {
+    throw error;
+  }
+
+  return { error, value };
+};
+
+// Function to sanitize filenames
+export function sanitizeFilename(filename) {
+  // decode an URI params
+  const decodedParam = decodeURIComponent(filename);
+
+  const filenameSchema = Joi.string()
+    .pattern(/^[a-zA-Z0-9_-]{1,100}\.[a-zA-Z0-9]{1,7}$/)
+    .required();
+
+  // Validate the filename using the schema
+  const { value } = joiValidate(filenameSchema, decodedParam);
+
+  return value;
+};

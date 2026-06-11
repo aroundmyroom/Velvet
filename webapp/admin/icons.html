@@ -1,0 +1,321 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Icon Preview — Velvet</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body { background: #0d0a1a; color: #e0d8ff; font-family: system-ui, -apple-system, sans-serif; padding: 32px 24px 64px; }
+    h1 { font-size: 22px; font-weight: 300; color: #c084fc; margin-bottom: 4px; }
+    .subtitle { color: #5a4f78; font-size: 13px; margin-bottom: 36px; }
+    h2 { font-size: 11px; font-weight: 600; color: #6b5c8a; text-transform: uppercase; letter-spacing: .1em; margin: 40px 0 16px; padding-bottom: 8px; border-bottom: 1px solid #1e1635; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 14px; }
+    .card { background: #13102280; border: 1px solid #2a1f44; border-radius: 12px; padding: 18px 20px; }
+    .card-name { font-size: 11px; color: #7058a0; font-family: monospace; margin-bottom: 14px; }
+    .compare { display: flex; align-items: center; gap: 12px; }
+    .slot { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 8px; }
+    .icon-box { width: 72px; height: 72px; border-radius: 10px; display: flex; align-items: center; justify-content: center; }
+    .icon-box.dark  { background: #060412; border: 1px solid #1a1230; }
+    .icon-box.mid   { background: #1c162e; border: 1px solid #2e2450; }
+    .icon-box.light { background: #f0edf8; border: 1px solid #d4cce8; }
+    .icon-box svg { max-width: 40px; max-height: 40px; }
+    .slot-label { font-size: 10px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; }
+    .slot-label.old-lbl  { color: #3a3054; }
+    .slot-label.new-lbl  { color: #9333ea; }
+    .divider { color: #2a2044; font-size: 18px; flex-shrink: 0; }
+    .badge-new { display: inline-block; background: #3b0764; color: #d8b4fe; font-size: 9px; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; padding: 2px 7px; border-radius: 99px; margin-left: 8px; vertical-align: middle; }
+    .note { font-size: 11px; color: #4a3f64; margin-top: 40px; padding: 16px; background: #0a0817; border: 1px solid #1a1430; border-radius: 8px; line-height: 1.6; }
+  </style>
+</head>
+<body>
+
+<h1>Velvet — Icon Preview</h1>
+<p class="subtitle">Old icons (left) vs. proposed redesigns (right). No files have been changed yet — this is for review only.</p>
+
+<h2>Player Controls <span class="badge-new">white on dark</span></h2>
+<div class="grid">
+
+  <!-- PLAY -->
+  <div class="card">
+    <div class="card-name">play-white.svg</div>
+    <div class="compare">
+      <div class="slot">
+        <div class="icon-box dark">
+          <svg x="0" y="0" version="1.1" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 26 26" width="40" height="40" style="fill:white"><g fill="none"><g><path d="M0,26l0,-26l26,0l0,26z" fill="none"/><g fill="#ffffff"><path d="M20.208,11.857l-13.306,-6.597c-0.403,-0.203 -0.884,-0.181 -1.268,0.052c-0.386,0.232 -0.619,0.646 -0.619,1.09l0,13.198c0,0.443 0.233,0.856 0.619,1.089c0.208,0.126 0.444,0.19 0.683,0.19c0.201,0 0.401,-0.046 0.586,-0.138l13.306,-6.599c0.438,-0.218 0.716,-0.658 0.716,-1.143c0,-0.485 -0.279,-0.924 -0.717,-1.142z"/></g></g></g></svg>
+        </div>
+        <span class="slot-label old-lbl">old</span>
+      </div>
+      <div class="divider">›</div>
+      <div class="slot">
+        <div class="icon-box dark">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="40" height="40">
+            <path fill="white" d="M6.5 5.5v13L18 12z"/>
+          </svg>
+        </div>
+        <span class="slot-label new-lbl">new</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- PAUSE -->
+  <div class="card">
+    <div class="card-name">pause-white.svg</div>
+    <div class="compare">
+      <div class="slot">
+        <div class="icon-box dark">
+          <svg x="0" y="0" version="1.1" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 26 26" width="40" height="40" style="fill:white"><g fill="none"><g><path d="M0,26l0,-26l26,0l0,26z" fill="none"/><g fill="#ffffff"><path d="M7,5c-0.551,0 -1,0.449 -1,1l0,14c0,0.551 0.449,1 1,1l3,0c0.551,0 1,-0.449 1,-1l0,-14c0,-0.551 -0.449,-1 -1,-1z M16,5c-0.551,0 -1,0.449 -1,1l0,14c0,0.551 0.449,1 1,1l3,0c0.551,0 1,-0.449 1,-1l0,-14c0,-0.551 -0.449,-1 -1,-1z"/></g></g></g></svg>
+        </div>
+        <span class="slot-label old-lbl">old</span>
+      </div>
+      <div class="divider">›</div>
+      <div class="slot">
+        <div class="icon-box dark">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="40" height="40">
+            <rect fill="white" x="5" y="4.5" width="3.5" height="15" rx="1.5"/>
+            <rect fill="white" x="15.5" y="4.5" width="3.5" height="15" rx="1.5"/>
+          </svg>
+        </div>
+        <span class="slot-label new-lbl">new</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- NEXT -->
+  <div class="card">
+    <div class="card-name">next-white.svg</div>
+    <div class="compare">
+      <div class="slot">
+        <div class="icon-box dark">
+          <svg x="0" y="0" version="1.1" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 26 26" width="40" height="40" style="fill:white"><g fill="none"><g><path d="M0,26l0,-26l26,0l0,26z" fill="none"/><g fill="#ffffff"><path d="M16,5c-0.551,0 -1,0.449 -1,1l0,4.875l-7.09375,-5.625c-0.403,-0.203 -0.89725,-0.1705 -1.28125,0.0625c-0.386,0.232 -0.625,0.64975 -0.625,1.09375l0,13.1875c0,0.443 0.239,0.86075 0.625,1.09375c0.208,0.126 0.4485,0.1875 0.6875,0.1875c0.201,0 0.40875,-0.033 0.59375,-0.125l7.09375,-5.625l0,4.875c0,0.551 0.449,1 1,1l3,0c0.551,0 1,-0.449 1,-1l0,-14c0,-0.551 -0.449,-1 -1,-1z"/></g></g></g></svg>
+        </div>
+        <span class="slot-label old-lbl">old</span>
+      </div>
+      <div class="divider">›</div>
+      <div class="slot">
+        <div class="icon-box dark">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="40" height="40">
+            <path fill="white" d="M5.5 5.5v13L15 12z"/>
+            <rect fill="white" x="17" y="5.5" width="3" height="13" rx="1.2"/>
+          </svg>
+        </div>
+        <span class="slot-label new-lbl">new</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- PREVIOUS -->
+  <div class="card">
+    <div class="card-name">previous-white.svg</div>
+    <div class="compare">
+      <div class="slot">
+        <div class="icon-box dark">
+          <svg x="0" y="0" version="1.1" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 26 26" width="40" height="40" style="fill:white"><g fill="none"><g><path d="M0,26l0,-26l26,0l0,26z" fill="none"/><g fill="#ffffff"><path d="M7,5c-0.551,0 -1,0.449 -1,1l0,14c0,0.551 0.449,1 1,1l3,0c0.551,0 1,-0.449 1,-1l0,-4.875l7.09375,5.625c0.403,0.203 0.89725,0.1705 1.28125,-0.0625c0.386,-0.232 0.625,-0.64975 0.625,-1.09375l0,-13.1875c0,-0.443 -0.239,-0.86075 -0.625,-1.09375c-0.208,-0.126 -0.4485,-0.1875 -0.6875,-0.1875c-0.201,0 -0.40875,0.033 -0.59375,0.125l-7.09375,5.625l0,-4.875c0,-0.551 -0.449,-1 -1,-1z"/></g></g></g></svg>
+        </div>
+        <span class="slot-label old-lbl">old</span>
+      </div>
+      <div class="divider">›</div>
+      <div class="slot">
+        <div class="icon-box dark">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="40" height="40">
+            <rect fill="white" x="4" y="5.5" width="3" height="13" rx="1.2"/>
+            <path fill="white" d="M18.5 5.5v13L9 12z"/>
+          </svg>
+        </div>
+        <span class="slot-label new-lbl">new</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- VOLUME -->
+  <div class="card">
+    <div class="card-name">volume.svg</div>
+    <div class="compare">
+      <div class="slot">
+        <div class="icon-box dark">
+          <svg style="fill:white" version="1.1" xmlns="http://www.w3.org/2000/svg" width="40" height="40" viewBox="0 0 24 24">
+            <path d="M14,3.23V5.29C16.89,6.15 19,8.83 19,12C19,15.17 16.89,17.84 14,18.7V20.77C18,19.86 21,16.28 21,12C21,7.72 18,4.14 14,3.23M16.5,12C16.5,10.23 15.5,8.71 14,7.97V16C15.5,15.29 16.5,13.76 16.5,12M3,9V15H7L12,20V4L7,9H3Z" />
+          </svg>
+        </div>
+        <span class="slot-label old-lbl">old</span>
+      </div>
+      <div class="divider">›</div>
+      <div class="slot">
+        <div class="icon-box dark">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="40" height="40" fill="none" stroke="white" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M11 5L6 9H2v6h4l5 4V5z"/>
+            <path d="M15.54 8.46a5 5 0 0 1 0 7.07"/>
+            <path d="M19.07 4.93a10 10 0 0 1 0 14.14"/>
+          </svg>
+        </div>
+        <span class="slot-label new-lbl">new</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- VOLUME MUTE -->
+  <div class="card">
+    <div class="card-name">volume-mute.svg</div>
+    <div class="compare">
+      <div class="slot">
+        <div class="icon-box dark">
+          <svg style="fill:white" version="1.1" xmlns="http://www.w3.org/2000/svg" width="40" height="40" viewBox="0 0 24 24">
+            <path d="M12,4L9.91,6.09L12,8.18M4.27,3L3,4.27L7.73,9H3V15H7L12,20V13.27L16.25,17.53C15.58,18.04 14.83,18.46 14,18.7V20.77C15.38,20.45 16.63,19.82 17.68,18.96L19.73,21L21,19.73L12,10.73M19,12C19,12.94 18.8,13.82 18.46,14.64L19.97,16.15C20.62,14.91 21,13.5 21,12C21,7.72 18,4.14 14,3.23V5.29C16.89,6.15 19,8.83 19,12M16.5,12C16.5,10.23 15.5,8.71 14,7.97V10.18L16.45,12.63C16.5,12.43 16.5,12.21 16.5,12Z" />
+          </svg>
+        </div>
+        <span class="slot-label old-lbl">old</span>
+      </div>
+      <div class="divider">›</div>
+      <div class="slot">
+        <div class="icon-box dark">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="40" height="40" fill="none" stroke="white" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M11 5L6 9H2v6h4l5 4V5z"/>
+            <line x1="23" y1="9" x2="17" y2="15"/>
+            <line x1="17" y1="9" x2="23" y2="15"/>
+          </svg>
+        </div>
+        <span class="slot-label new-lbl">new</span>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<h2>Utility Icons <span class="badge-new">currentColor / context-aware</span></h2>
+<div class="grid">
+
+  <!-- MUSIC NOTE -->
+  <div class="card">
+    <div class="card-name">music-note.svg</div>
+    <div class="compare">
+      <div class="slot">
+        <div class="icon-box mid">
+          <svg version="1.1" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 40 40" width="40" height="40">
+            <path style="fill:#8BB7F0;" d="M9,37.5c-3.584,0-6.5-2.916-6.5-6.5s2.916-6.5,6.5-6.5c0.964,0,1.901,0.213,2.785,0.634l0.715,0.34V5.429l25-3.846V29c0,3.584-2.916,6.5-6.5,6.5s-6.5-2.916-6.5-6.5s2.916-6.5,6.5-6.5c0.964,0,1.901,0.213,2.785,0.634l0.715,0.34V11.023l-19,2.931V31C15.5,34.584,12.584,37.5,9,37.5z"/>
+            <path style="fill:#4E7AB5;" d="M37,2.166V29c0,3.308-2.692,6-6,6s-6-2.692-6-6s2.692-6,6-6c0.889,0,1.754,0.197,2.57,0.586l1.43,0.68v-1.583V11.607v-1.166l-1.152,0.178l-18,2.776L15,13.525v0.858V31c0,3.308-2.692,6-6,6s-6-2.692-6-6s2.692-6,6-6c0.889,0,1.754,0.197,2.57,0.586l1.43,0.68v-1.583V5.858L37,2.166 M38,1L12,5v19.683C11.09,24.25,10.075,24,9,24c-3.866,0-7,3.134-7,7c0,3.866,3.134,7,7,7s7-3.134,7-7V14.383l18-2.776v11.076C33.09,22.25,32.075,22,31,22c-3.866,0-7,3.134-7,7c0,3.866,3.134,7,7,7s7-3.134,7-7V1L38,1z"/>
+          </svg>
+        </div>
+        <span class="slot-label old-lbl">old</span>
+      </div>
+      <div class="divider">›</div>
+      <div class="slot">
+        <div class="icon-box mid">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="40" height="40" fill="none" stroke="#c084fc" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M9 18V5l12-2v13"/>
+            <circle cx="6" cy="18" r="3"/>
+            <circle cx="18" cy="16" r="3"/>
+          </svg>
+        </div>
+        <span class="slot-label new-lbl">new</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- FOLDER -->
+  <div class="card">
+    <div class="card-name">folder.svg</div>
+    <div class="compare">
+      <div class="slot">
+        <div class="icon-box mid">
+          <svg version="1.0" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" width="40" height="40">
+            <path fill="#FFA000" d="M38,12H22l-4-4H8c-2.2,0-4,1.8-4,4v24c0,2.2,1.8,4,4,4h31c1.7,0,3-1.3,3-3V16C42,13.8,40.2,12,38,12z"/>
+            <path fill="#FFCA28" d="M42.2,18H15.3c-1.9,0-3.6,1.4-3.9,3.3L8,40h31.7c1.9,0,3.6-1.4,3.9-3.3l2.5-14C46.6,20.3,44.7,18,42.2,18z"/>
+          </svg>
+        </div>
+        <span class="slot-label old-lbl">old</span>
+      </div>
+      <div class="divider">›</div>
+      <div class="slot">
+        <div class="icon-box mid">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="40" height="40" fill="none" stroke="#c084fc" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M3 8a2 2 0 0 1 2-2h3.17a2 2 0 0 1 1.42.59L10.83 8H19a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8z"/>
+          </svg>
+        </div>
+        <span class="slot-label new-lbl">new</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- DRAG HANDLE -->
+  <div class="card">
+    <div class="card-name">drag-handle.svg</div>
+    <div class="compare">
+      <div class="slot">
+        <div class="icon-box mid">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="40" height="40">
+            <path style="fill:#9090a0" d="M 4 7 L 4 9 L 28 9 L 28 7 Z M 4 15 L 4 17 L 28 17 L 28 15 Z M 4 23 L 4 25 L 28 25 L 28 23 Z "/>
+          </svg>
+        </div>
+        <span class="slot-label old-lbl">old</span>
+      </div>
+      <div class="divider">›</div>
+      <div class="slot">
+        <div class="icon-box mid">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="40" height="40" fill="none" stroke="#7c6ea0" stroke-width="1.75" stroke-linecap="round">
+            <line x1="4" y1="8" x2="20" y2="8"/>
+            <line x1="4" y1="12" x2="20" y2="12"/>
+            <line x1="4" y1="16" x2="20" y2="16"/>
+          </svg>
+        </div>
+        <span class="slot-label new-lbl">new</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- STAR -->
+  <div class="card">
+    <div class="card-name">star.svg</div>
+    <div class="compare">
+      <div class="slot">
+        <div class="icon-box mid">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 53.867 53.867" width="40" height="40">
+            <path style="fill:#efce4a" d="M26.934 1.318l8.322 16.864 18.611 2.705L40.4 34.013l3.179 18.536-16.645-8.751-16.646 8.751 3.179-18.536L0 20.887l18.611-2.705z"/>
+          </svg>
+        </div>
+        <span class="slot-label old-lbl">old</span>
+      </div>
+      <div class="divider">›</div>
+      <div class="slot">
+        <div class="icon-box mid">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="40" height="40">
+            <path fill="#c084fc" d="M12 2l2.9 5.88 6.5.94-4.7 4.58 1.11 6.47L12 16.9l-5.81 3.07 1.11-6.47L2.6 8.82l6.5-.94L12 2z"/>
+          </svg>
+        </div>
+        <span class="slot-label new-lbl">new</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- SPINNER -->
+  <div class="card">
+    <div class="card-name">spinner.svg</div>
+    <div class="compare">
+      <div class="slot">
+        <div class="icon-box mid">
+          <svg width="40" height="40" viewBox="0 0 66 66" xmlns="http://www.w3.org/2000/svg">
+            <circle fill="none" stroke="#7c6ea0" stroke-width="6" stroke-linecap="round" cx="33" cy="33" r="30" stroke-dasharray="100 90"/>
+          </svg>
+        </div>
+        <span class="slot-label old-lbl">old</span>
+      </div>
+      <div class="divider">›</div>
+      <div class="slot">
+        <div class="icon-box mid">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="40" height="40" fill="none">
+            <circle cx="12" cy="12" r="10" stroke="#3b2f58" stroke-width="2"/>
+            <path d="M12 2a10 10 0 0 1 10 10" stroke="#c084fc" stroke-width="2.5" stroke-linecap="round"/>
+          </svg>
+        </div>
+        <span class="slot-label new-lbl">new</span>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<p class="note">
+  <strong style="color:#9370cc">velvet-icon.svg</strong> and <strong style="color:#9370cc">velvet-logo.svg</strong> have already been deleted — they were identical to <code style="color:#7c6ea0">velvet-logo.svg</code>.<br><br>
+  When you're happy with the proposed designs above, let me know and I'll apply them to the actual files in <code style="color:#7c6ea0">webapp/assets/img/</code>.
+</p>
+
+</body>
+</html>

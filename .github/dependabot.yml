@@ -1,0 +1,20 @@
+version: 2
+updates:
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    target-branch: "master"
+    open-pull-requests-limit: 10
+    labels:
+      - "dependencies"
+    ignore:
+      # Major version bumps need manual review — these touch file parsing and DB
+      - dependency-name: "music-metadata"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "better-sqlite3"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "jimp"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "express"
+        update-types: ["version-update:semver-major"]

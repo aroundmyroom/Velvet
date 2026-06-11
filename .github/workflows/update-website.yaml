@@ -1,0 +1,11 @@
+
+name: Update Website
+
+on:
+  workflow_dispatch: # disabled — not used
+
+jobs:
+  update-website:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "Not configured"

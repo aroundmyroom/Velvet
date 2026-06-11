@@ -1,0 +1,286 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Velvet Admin</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+
+  <link rel="apple-touch-icon" sizes="180x180" href="/assets/fav/apple-touch-icon.png">
+  <link rel="icon" type="image/png" sizes="32x32" href="/assets/fav/favicon-32x32.png">
+  <link rel="icon" type="image/png" sizes="16x16" href="/assets/fav/favicon-16x16.png">
+  <link rel="shortcut icon" href="/assets/fav/favicon.ico">
+
+  <script src="../assets/js/lib/vue2.js"></script>
+  <script src="../assets/js/lib/axios.js"></script>
+  <script src="../assets/js/lib/clipboard.js"></script>
+  <script src="../assets/js/lib/jwt-decode.js"></script>
+  <script src="../assets/js/lib/cookie.min.js"></script>
+
+  <script defer src="../assets/js/lib/izi-toast.js"></script>
+  <link rel="stylesheet" href="../assets/css/izi-toast.css">
+  <link rel="stylesheet" href="../assets/css/spinner.css">
+  <link rel="stylesheet" href="index.css?v=0.0.2">
+
+  <script src="../assets/js/i18n.js"></script>
+  <script src="../assets/js/api.js"></script>
+
+  <script src="admin-init-head.js?v=0.0.2"></script>
+</head>
+
+<body>
+  <div id="sidenav">
+    <div class="side-nav-brand">
+      <img src="/assets/img/velvet-logo.svg" alt="Velvet" width="26" height="26">
+      <div>
+        <div style="font-size:15px;font-weight:700;letter-spacing:-.2px;color:var(--t1);">Velvet</div>
+        <div class="side-nav-brand-label" data-i18n="admin.nav.brandLabel">Admin Panel</div>
+      </div>
+    </div>
+
+    <div id="theme-seg" class="theme-seg">
+      <button class="theme-seg-btn" data-theme="velvet">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+        Velvet
+      </button>
+      <button class="theme-seg-btn" data-theme="dark">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="5"/><line x1="12" y1="2" x2="12" y2="4"/><line x1="12" y1="20" x2="12" y2="22"/><line x1="2" y1="12" x2="4" y2="12"/><line x1="20" y1="12" x2="22" y2="12"/></svg>
+        Dark
+      </button>
+      <button class="theme-seg-btn" data-theme="light">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>
+        Light
+      </button>
+    </div>
+
+    <div class="side-nav-section-label" data-i18n="admin.nav.sectionConfig">Config</div>
+
+    <div class="side-nav-item select" data-admin-view="folders-view">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M38 12H22l-4-4H8c-2.2 0-4 1.8-4 4v24c0 2.2 1.8 4 4 4h31c1.7 0 3-1.3 3-3V16c0-2.2-1.8-4-4-4z"/><path d="M42.2 18H15.3c-1.9 0-3.6 1.4-3.9 3.3L8 40h31.7c1.9 0 3.6-1.4 3.9-3.3l2.5-14c.5-2.4-1.4-4.7-3.9-4.7z"/></svg>
+      <span data-i18n="admin.nav.directories">Directories</span>
+    </div>
+    <div class="side-nav-item" data-admin-view="users-view">
+      <svg xmlns="http://www.w3.org/2000/svg" height="20" viewBox="200 200 800 800"><path fill="currentColor" d="M671.027 410.286c31.749 19.852 54.013 53.574 58.044 92.642 12.928 6.092 27.325 9.578 42.596 9.578 55.593 0 100.645-45.073 100.645-100.73 0-55.591-45.052-100.706-100.645-100.706-55.152.087-99.807 44.283-100.64 99.216m-65.998 206.146c55.611 0 100.749-45.093 100.749-100.705 0-55.568-45.138-100.665-100.749-100.665-55.569 0-100.662 45.097-100.662 100.665 0 55.612 45.092 100.705 100.662 100.705m42.706 6.883H562.3c-71.084 0-128.886 57.823-128.886 128.886v104.541l.218 1.623 7.232 2.255c67.816 21.213 126.781 28.225 175.295 28.225 94.746 0 149.683-26.955 153.076-28.728l6.707-3.375h.723V752.201c0-71.063-57.827-128.886-128.93-128.886M814.33 519.32h-84.754c-.965 33.965-15.406 64.487-38.305 86.465 63.217 18.8 109.431 77.392 109.431 146.613v32.211c83.705-3.089 131.951-26.823 135.152-28.442l6.707-3.42h.744V648.273c0-71.106-57.826-128.953-128.975-128.953m-385.958-6.814c19.655 0 37.997-5.742 53.556-15.537 4.907-32.188 22.172-60.344 46.827-79.498.108-1.882.283-3.726.283-5.611 0-55.631-45.094-100.704-100.666-100.704-55.633 0-100.751 45.073-100.751 100.704.001 55.573 45.118 100.646 100.751 100.646m90.433 93.279c-22.766-21.846-37.249-52.261-38.279-85.942-3.159-.216-6.248-.523-9.468-.523h-85.455c-71.083 0-128.929 57.847-128.929 128.953v104.474l.26 1.644 7.188 2.301c54.474 17.026 103.075 24.829 145.234 27.238v-31.532c-.001-69.221 46.233-127.77 109.449-146.613"/></svg>
+      <span data-i18n="admin.nav.users">Users</span>
+    </div>
+    <div class="side-nav-item" data-admin-view="artist-albums-diag-view">
+      <svg xmlns="http://www.w3.org/2000/svg" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/><line x1="11" y1="8" x2="11" y2="14"/><line x1="8" y1="11" x2="14" y2="11"/></svg>
+      <span>Artist Albums</span>
+    </div>
+    <div class="side-nav-item" data-admin-view="genre-groups-view">
+      <svg xmlns="http://www.w3.org/2000/svg" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>
+      <span data-i18n="admin.nav.genreGroups">Groups &amp; Genres</span>
+    </div>
+    <div class="side-nav-item" data-admin-view="transcode-view">
+      <svg xmlns="http://www.w3.org/2000/svg" height="20" viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-width="5" stroke-linecap="round" stroke-linejoin="round" stroke-miterlimit="10"><path d="M8.5 8.5h9l-9 9v11l20-20h11l-31 31h11l20-20v11l-9 9h9"/></svg>
+      <span data-i18n="admin.nav.transcoding">Transcoding</span>
+    </div>
+    <div class="side-nav-item" data-admin-view="server-audio-view">
+      <svg xmlns="http://www.w3.org/2000/svg" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/></svg>
+      <span data-i18n="admin.nav.serverAudio">Server Audio</span>
+    </div>
+    <div class="side-nav-item" data-admin-view="sonos-view">
+      <svg xmlns="http://www.w3.org/2000/svg" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="3"/><path d="M5 12a7 7 0 0 1 7-7"/><path d="M5 12a7 7 0 0 0 7 7"/><path d="M19 12a7 7 0 0 1-7 7"/><path d="M19 12a7 7 0 0 0-7-7"/></svg>
+      <span data-i18n="admin.nav.sonos">Sonos</span>
+    </div>
+    <div class="side-nav-item" data-admin-view="dlna-view">
+      <svg xmlns="http://www.w3.org/2000/svg" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/><path d="M7 8l3 3-3 3"/><line x1="13" y1="11" x2="17" y2="11"/></svg>
+      <span data-i18n="admin.nav.dlna">DLNA / UPnP</span>
+    </div>
+    <div class="side-nav-item" data-admin-view="federation-view">
+      <svg xmlns="http://www.w3.org/2000/svg" height="20" viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M44.4 17.3C44.3 15.9 43.3 14.8 41.9 14.6 38.4 14 30.3 13 24.2 13 18.1 13 9.6 13.9 6 14.5 4.7 14.7 3.7 15.8 3.5 17.2L3 25c-.1 1.6 1.1 2.8 2.7 3.2 2.9.8 10 .8 18.5.8 8.5 0 15.3-.1 18.1-.7 1.6-.3 2.8-1.6 2.7-3.2z"/><path d="M23.7 3c-.2 0-.2 0-.3.2C19 8.4 15.7 14.8 13.4 22.9c-1.6 6-.9 13.2-1.4 21.8 0 .2.2.3.3.3l.2-.001c.2 0 .2 0 .3-.2C17.2 38.2 20.5 33.1 26 29.8c1-.5 1.5-.8 2-.8.2 0 .5.2 1 .8 2.6 3.6 5.4 7.1 8.2 12 .001 0 .3 0 .5 0 .2 0 .3-.2.3-.3-.7-7.2-1.8-13.8-4.1-20.3C31.6 14.7 28.3 8.5 24.1 3.2c0-.2-.2-.2-.4-.2z"/></svg>
+      <span data-i18n="admin.nav.federation">Federation</span>
+    </div>
+    <div class="side-nav-item" data-admin-view="db-view">
+      <svg xmlns="http://www.w3.org/2000/svg" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg>
+      <span data-i18n="admin.nav.database">Database</span>
+    </div>
+    <div class="side-nav-item" id="scan-errors-nav" data-admin-view="scan-errors-view">
+      <svg xmlns="http://www.w3.org/2000/svg" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+      <span data-i18n="admin.nav.scanErrors">Scan Errors</span>
+      <span id="scan-errors-badge" class="se-nav-badge" style="display:none"></span>
+    </div>
+    <div class="side-nav-item" data-admin-view="logs-view">
+      <svg xmlns="http://www.w3.org/2000/svg" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>
+      <span data-i18n="admin.nav.logs">Logs</span>
+    </div>
+    <div class="side-nav-item" data-admin-view="lock-view">
+      <svg xmlns="http://www.w3.org/2000/svg" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+      <span data-i18n="admin.nav.lockAdmin">Lock Admin API</span>
+    </div>
+
+    <div class="side-nav-item" data-admin-view="advanced-view">
+      <svg xmlns="http://www.w3.org/2000/svg" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+      <span data-i18n="admin.nav.settings">Settings</span>
+    </div>
+
+    <div class="side-nav-section-label" data-i18n="admin.nav.sectionTools">Tools</div>
+
+    <div class="side-nav-item" data-admin-view="acoustid-view">
+      <svg xmlns="http://www.w3.org/2000/svg" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M8 12h8M12 8v8"/><circle cx="12" cy="12" r="4" opacity="0.4"/></svg>
+      <span data-i18n="admin.nav.acoustid">AcoustID</span>
+    </div>
+
+    <div class="side-nav-item" data-admin-view="tagworkshop-view">
+      <svg xmlns="http://www.w3.org/2000/svg" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
+      <span data-i18n="admin.nav.tagworkshop">Tag Workshop</span>
+    </div>
+
+    <div class="side-nav-item" data-admin-view="artists-admin-view">
+      <svg xmlns="http://www.w3.org/2000/svg" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+      <span data-i18n="admin.nav.artists">Artist Workshop</span>
+    </div>
+
+    <div class="side-nav-item" data-admin-view="rg-workshop-view">
+      <svg xmlns="http://www.w3.org/2000/svg" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12h3m4-7v3m4-3v7m4-4v4m4-7v7M2 12h20"/></svg>
+      <span data-i18n="admin.nav.rgWorkshop">Normalisation</span>
+    </div>
+
+    <div class="side-nav-item" data-admin-view="bpm-workshop-view">
+      <svg xmlns="http://www.w3.org/2000/svg" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>
+      <span data-i18n="admin.nav.bpmWorkshop">BPM &amp; Key Analysis</span>
+    </div>
+
+    <div class="side-nav-item" data-admin-view="genre-enricher-view">
+      <svg xmlns="http://www.w3.org/2000/svg" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/><line x1="11" y1="8" x2="11" y2="14"/><line x1="8" y1="11" x2="14" y2="11"/></svg>
+      <span data-i18n="admin.nav.genreEnricher">Genre Enricher</span>
+    </div>
+
+    <div class="side-nav-item" data-admin-view="dup-workshop-view">
+      <svg xmlns="http://www.w3.org/2000/svg" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+      <span data-i18n="admin.nav.dupWorkshop">Duplicate Workshop</span>
+    </div>
+
+    <div class="side-nav-item" data-admin-view="shared-playlists-view">
+      <svg xmlns="http://www.w3.org/2000/svg" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
+      <span data-i18n="admin.nav.sharedPlaylists">Shared Playlists</span>
+    </div>
+
+    <div class="side-nav-item" data-admin-view="smart-playlist-view">
+      <svg xmlns="http://www.w3.org/2000/svg" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 5H7a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-2"/><rect x="9" y="3" width="6" height="4" rx="2"/><path d="M9 12h6M9 16h4"/></svg>
+      <span data-i18n="admin.nav.smartPlaylist">Smart Playlist</span>
+    </div>
+
+    <div class="side-nav-item" data-admin-view="wrapped-admin-view">
+      <svg xmlns="http://www.w3.org/2000/svg" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+      <span data-i18n="admin.nav.playStats">Play Stats</span>
+    </div>
+
+    <div class="side-nav-section-label" data-i18n="admin.nav.sectionExternal">External Services</div>
+
+    <div class="side-nav-item" data-admin-view="lastfm-view">
+      <svg xmlns="http://www.w3.org/2000/svg" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M12 3c-4.97 0-9 4.03-9 9s4.03 9 9 9 9-4.03 9-9-4.03-9-9-9zm-1 13V8l6 4-6 4z"/></svg>
+      <span>Last.fm</span>
+    </div>
+    <div class="side-nav-item" data-admin-view="listenbrainz-view">
+      <svg xmlns="http://www.w3.org/2000/svg" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>
+      <span>ListenBrainz</span>
+    </div>
+    <div class="side-nav-item" data-admin-view="custom-webhooks-view">
+      <svg xmlns="http://www.w3.org/2000/svg" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
+      <span data-i18n="admin.nav.customWebhooks">Webhooks</span>
+    </div>
+    <div class="side-nav-item" data-admin-view="discogs-view">
+      <svg xmlns="http://www.w3.org/2000/svg" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 14c-2.21 0-4-1.79-4-4s1.79-4 4-4 4 1.79 4 4-1.79 4-4 4zm0-6c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2z"/></svg>
+      <span>Discogs</span>
+    </div>
+    <div class="side-nav-item" data-admin-view="lyrics-view">
+      <svg xmlns="http://www.w3.org/2000/svg" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+      <span>Lyrics</span>
+    </div>
+    <div class="side-nav-item" data-admin-view="radio-view">
+      <svg xmlns="http://www.w3.org/2000/svg" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="2"/><path d="M4.93 4.93a10 10 0 0 0 0 14.14"/><path d="M7.76 7.76a6 6 0 0 0 0 8.49"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/><path d="M16.24 7.76a6 6 0 0 1 0 8.49"/></svg>
+      <span data-i18n="admin.nav.radioStreams">Radio Streams</span>
+    </div>
+    <div class="side-nav-item" data-admin-view="languages-view">
+      <svg xmlns="http://www.w3.org/2000/svg" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
+      <span data-i18n="admin.nav.languages">Languages</span>
+    </div>
+
+    <div class="side-nav-section-label" data-i18n="admin.nav.sectionServer">Server</div>
+
+    <div class="side-nav-item" data-admin-view="backup-view">
+      <svg xmlns="http://www.w3.org/2000/svg" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="21 8 21 21 3 21 3 8"/><rect x="1" y="3" width="22" height="5"/><line x1="10" y1="12" x2="14" y2="12"/></svg>
+      <span data-i18n="admin.nav.backup">Backup</span>
+    </div>
+
+    <div class="side-nav-item" data-admin-view="migrate-view">
+      <svg xmlns="http://www.w3.org/2000/svg" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+        <polyline points="7 10 12 15 17 10"/>
+        <line x1="12" y1="15" x2="12" y2="3"/>
+      </svg>
+      <span data-i18n="admin.nav.importExport">Import - Export</span>
+    </div>
+    <div class="side-nav-item" data-admin-view="info-view">
+      <svg xmlns="http://www.w3.org/2000/svg" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M4 2c-1.093 0-2 .907-2 2v18.406l1.719-1.687L6.438 18H20c1.093 0 2-.907 2-2V4c0-1.093-.907-2-2-2H4zm0 2h16v12H5.594l-.313.281L4 17.563V4zm7 2v2h2V6h-2zm0 3v5h2V9h-2z"/></svg>
+      <span data-i18n="admin.nav.about">About</span>
+    </div>
+
+    <div id="admin-lang-picker-label" class="side-nav-section-label" data-i18n="settings.language">Language</div>
+
+    <div class="admin-lang-picker-wrap">
+      <div id="admin-lang-picker" class="lang-flag-row admin-lang-flag-row" role="group" aria-labelledby="admin-lang-picker-label"></div>
+    </div>
+
+    <div class="side-nav-section-label" data-i18n="admin.nav.sectionNavigation">Navigation</div>
+
+    <div class="side-nav-item" data-admin-action="goto-player">
+      <svg xmlns="http://www.w3.org/2000/svg" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+      <span data-i18n="admin.nav.gotoPlayer">Go to Player</span>
+    </div>
+    <div class="side-nav-item" data-admin-action="logout">
+      <svg xmlns="http://www.w3.org/2000/svg" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+      <span data-i18n="admin.nav.logout">Logout</span>
+    </div>
+  </div>
+
+  <div id="sidenav-cover"></div>
+
+  <div id="content">
+    <component :key="componentKey" v-bind:is="currentViewMain" class="content-switcher"></component>
+  </div>
+
+  <div id="admin-modal-wrapper" v-cloak>
+    <div class="modal-backdrop" v-show="modalOpen" @click.self="closeModal">
+      <div class="modal-dialog" @click.stop>
+        <component :is="currentViewModal"></component>
+      </div>
+    </div>
+  </div>
+
+  <div id="confirm-modal-wrapper" v-cloak>
+    <div class="modal-backdrop" v-show="show" @click.self="cancel">
+      <div class="modal-dialog confirm-dialog" @click.stop>
+        <div style="padding:1.5rem 1.5rem .75rem;">
+          <h5 style="margin:0 0 .6rem;font-size:1.1rem;" v-html="title"></h5>
+          <p v-if="message" style="color:var(--t2);margin:0;font-size:.92rem;" v-html="message"></p>
+        </div>
+        <div style="display:flex;justify-content:flex-end;gap:.75rem;padding:.75rem 1.5rem 1.25rem;">
+          <button class="btn-flat" @click="cancel">Go Back</button>
+          <button class="btn red" @click="confirm">{{confirmLabel}}</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="fixed-action-btn">
+    <button class="hamburger-btn" data-admin-action="toggle-sidemenu">
+      <svg id="sidenav-button" viewBox="0 0 100 100" width="32">
+        <path class="line top" fill="none" stroke="currentColor" stroke-width="8" stroke-linecap="round" d="m 30,33 h 40 c 0,0 8.5,-0.68551 8.5,10.375 0,8.292653 -6.122707,9.002293 -8.5,6.625 l -11.071429,-11.071429"/>
+        <path class="line middle" fill="none" stroke="currentColor" stroke-width="8" stroke-linecap="round" d="m 70,50 h -40"/>
+        <path class="line bottom" fill="none" stroke="currentColor" stroke-width="8" stroke-linecap="round" d="m 30,67 h 40 c 0,0 8.5,0.68551 8.5,-10.375 0,-8.292653 -6.122707,-9.002293 -8.5,-6.625 l -11.071429,11.071429"/>
+      </svg>
+    </button>
+  </div>
+
+  <script src="admin-init-body.js?v=0.0.2"></script>
+  <script defer src="index.js?v=0.0.2"></script>
+
+  <!-- Custom tooltip — same system as player -->
+  <div id="tip-box"></div>
+  <style>
+    #tip-box{position:fixed;z-index:9999;pointer-events:none;padding:5px 10px;background:var(--card);border:1px solid var(--border2);border-radius:6px;font-size:12px;font-weight:500;color:var(--t1);box-shadow:0 4px 16px rgba(0,0,0,.45);white-space:nowrap;opacity:0;transform:translateY(4px);transition:opacity .12s ease,transform .12s ease;}
+    #tip-box.tip-show{opacity:1;transform:translateY(0);}
+  </style>
+</body>
+</html>

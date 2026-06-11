@@ -1,0 +1,24 @@
+node_modules
+.git
+.gitignore
+
+# Runtime-generated folders — mounted as volumes at runtime
+save/
+image-cache/
+waveform-cache/
+
+# Dev/build artefacts
+*.log
+npm-debug.log*
+dev-app-update.yml
+build/
+
+# Electron binaries
+bin/
+
+# Docs and meta
+docs/
+releases/
+competitors.md
+todo.md
+changes-fork-velvet.md

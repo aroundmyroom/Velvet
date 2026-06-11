@@ -1,0 +1,25 @@
+{
+  "name": "Velvet",
+  "short_name": "Velvet",
+  "description": "Your personal music player",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "start_url": "/mobile/",
+  "scope": "/mobile/",
+  "background_color": "#0D0D0D",
+  "theme_color": "#0D0D0D",
+  "categories": ["music"],
+  "icons": [
+    {
+      "src": "/mobile/icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    },
+    {
+      "src": "/mobile/icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ]
+}

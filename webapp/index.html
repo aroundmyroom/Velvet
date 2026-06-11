@@ -1,0 +1,1022 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Velvet</title>
+  <link rel="apple-touch-icon" sizes="180x180" href="/assets/fav/apple-touch-icon.png">
+  <link rel="icon" type="image/png" sizes="32x32" href="/assets/fav/favicon-32x32.png">
+  <link rel="icon" type="image/png" sizes="16x16" href="/assets/fav/favicon-16x16.png">
+  <link rel="shortcut icon" href="/assets/fav/favicon.ico">
+  <link rel="manifest" href="/assets/fav/site.webmanifest">
+  <script src="/assets/js/player-shell.js"></script>
+  <script defer src="../assets/js/lib/butterchurn.min.js"></script>
+  <script defer src="../assets/js/lib/audiomotion-analyzer.js"></script>
+  <script defer src="../assets/js/lib/qr.js"></script>
+  <link rel="stylesheet" href="/style.css?v=0.0.1">
+  <script src="/assets/js/i18n.js"></script>
+</head>
+<body>
+
+<!-- ══════════════════ LOGIN ══════════════════ -->
+<div id="login-screen">
+  <div class="login-card">
+    <div class="login-brand">
+      <img src="/assets/img/velvet-logo.svg" alt="Velvet" width="140" height="140" style="display:block;margin:0 auto 8px">
+      <h1>Velvet</h1>
+      <p data-i18n="player.login.tagline">a music server — evolved with AI slop. Enter the danger zone.</p>
+      <p id="login-version" class="login-version-tag">v0.0.1</p>
+    </div>
+    <form id="login-form">
+      <label class="field-label" for="l-user" data-i18n="player.login.username">Username</label>
+      <input id="l-user" type="text" placeholder="Username" data-i18n-attr="placeholder" data-i18n="player.login.username" autocomplete="username">
+      <label class="field-label" for="l-pass" data-i18n="player.login.password">Password</label>
+      <input id="l-pass" type="password" placeholder="Password" data-i18n-attr="placeholder" data-i18n="player.login.password" autocomplete="current-password">
+      <button type="submit" id="login-btn" data-i18n="player.login.signIn">Sign In</button>
+      <p id="login-error"></p>
+    </form>
+  </div>
+</div>
+
+<!-- ══════════════════ MODALS ══════════════════ -->
+<!-- Radio recording start modal -->
+<div id="radio-rec-modal" class="modal-overlay hidden">
+  <div class="modal-box rec-modal-box">
+    <div class="rec-modal-header">
+      <h3 style="margin:0;font-size:1.05rem;">&#9679; <span data-i18n="player.modal.recTitle">Record Radio Stream</span></h3>
+      <button id="radio-rec-modal-close" class="btn-ghost" style="padding:2px 8px;font-size:1.1rem;line-height:1;">&times;</button>
+    </div>
+    <div class="rec-tabs">
+      <button class="rec-tab rec-tab-active" data-tab="now" data-i18n="player.modal.recNow">Record Now</button>
+      <button class="rec-tab" data-tab="schedule" data-i18n="player.modal.recSchedule">Schedule</button>
+    </div>
+<div class="rec-modal-sysdt"><span data-i18n="player.modal.recSystemDt">System date &amp; time:</span> <span id="rec-modal-clock"></span></div>
+
+    <!-- Record Now panel -->
+    <div id="rec-panel-now" class="rec-panel">
+      <p style="font-size:.85rem;color:var(--t2);margin:.25rem 0 .75rem;" data-i18n="player.modal.recChooseFolder">Choose a Recordings folder to save to. The recording starts immediately.</p>
+      <div class="rec-field">
+        <label data-i18n="player.modal.recSaveTo">Save to folder</label>
+        <select id="radio-rec-vpath" class="modal-select" style="width:100%;"></select>
+      </div>
+      <div class="rec-field">
+        <label><span data-i18n="player.modal.recDescription">Description</span> <span style="font-weight:400;color:var(--t3);" data-i18n="player.modal.recDescHint">(optional — appended to filename)</span></label>
+        <input type="text" id="radio-rec-desc" class="rec-desc-input" placeholder="e.g. Grandmix_1992" data-i18n="player.ctrl.recDescPlaceholder" data-i18n-attr="placeholder" maxlength="80">
+      </div>
+      <div class="modal-actions">
+        <button id="radio-rec-cancel" class="btn-ghost" data-i18n="player.modal.recCancel">Cancel</button>
+        <button id="radio-rec-start" class="btn-primary" style="background:var(--err,#f38ba8);border-color:var(--err,#f38ba8);color:#fff;" data-i18n="player.modal.recStart">Start Recording</button>
+      </div>
+    </div>
+
+    <!-- Schedule panel -->
+    <div id="rec-panel-schedule" class="rec-panel rec-panel-hidden">
+      <div class="rec-field">
+        <label data-i18n="player.modal.recSchedStartLabel">Start date &amp; time</label>
+        <input type="datetime-local" id="rec-sched-dt" class="rec-desc-input">
+      </div>
+      <div class="rec-field">
+        <label><span data-i18n="player.modal.recDescription">Description</span> <span style="font-weight:400;color:var(--t3);" data-i18n="player.modal.recDescHint">(optional — appended to filename)</span></label>
+        <input type="text" id="rec-sched-desc" class="rec-desc-input" placeholder="e.g. minimix_Ben_Liebrand" data-i18n="player.ctrl.schedDescPlaceholder" data-i18n-attr="placeholder" maxlength="80">
+      </div>
+      <div style="display:flex;gap:.6rem;">
+        <div class="rec-field" style="flex:0 0 110px;">
+          <label data-i18n="player.modal.recDuration">Duration (min)</label>
+          <input type="number" id="rec-sched-dur" value="60" min="1" max="1440" class="rec-desc-input" style="width:100%;">
+        </div>
+        <div class="rec-field" style="flex:1;min-width:0;">
+          <label data-i18n="player.modal.recSaveTo">Save to folder</label>
+          <select id="rec-sched-vpath" class="modal-select" style="width:100%;"></select>
+        </div>
+      </div>
+      <div class="rec-field">
+        <label data-i18n="player.modal.recRepeat">Repeat</label>
+        <select id="rec-sched-recur" class="modal-select" style="width:100%;">
+          <option value="once" data-i18n="player.modal.recOnce">Once</option>
+          <option value="daily" data-i18n="player.modal.recEveryDay">Every day</option>
+          <option value="weekdays" data-i18n="player.modal.recWeekdays">Weekdays (Mon&ndash;Fri)</option>
+          <option value="custom" data-i18n="player.modal.recCustomDays">Custom days&hellip;</option>
+        </select>
+      </div>
+      <div id="rec-sched-days-wrap" class="rec-field rec-panel-hidden">
+        <label data-i18n="player.modal.recDaysOfWeek">Days of week</label>
+        <div class="rec-day-btns">
+          <label class="rec-day-btn"><input type="checkbox" value="1"> <span data-i18n="player.modal.recMon">Mon</span></label>
+          <label class="rec-day-btn"><input type="checkbox" value="2"> <span data-i18n="player.modal.recTue">Tue</span></label>
+          <label class="rec-day-btn"><input type="checkbox" value="3"> <span data-i18n="player.modal.recWed">Wed</span></label>
+          <label class="rec-day-btn"><input type="checkbox" value="4"> <span data-i18n="player.modal.recThu">Thu</span></label>
+          <label class="rec-day-btn"><input type="checkbox" value="5"> <span data-i18n="player.modal.recFri">Fri</span></label>
+          <label class="rec-day-btn"><input type="checkbox" value="6"> <span data-i18n="player.modal.recSat">Sat</span></label>
+          <label class="rec-day-btn"><input type="checkbox" value="0"> <span data-i18n="player.modal.recSun">Sun</span></label>
+        </div>
+      </div>
+      <div class="modal-actions" style="margin-top:.5rem;">
+        <button id="rec-sched-cancel" class="btn-ghost" data-i18n="player.modal.recCancel">Cancel</button>
+        <button id="rec-sched-save" class="btn-primary" style="background:var(--err,#f38ba8);border-color:var(--err,#f38ba8);color:#fff;" data-i18n="player.modal.recSchedule">Schedule</button>
+      </div>
+      <div id="rec-sched-list-wrap" style="margin-top:.75rem;border-top:1px solid var(--border);padding-top:.65rem;display:none;">
+        <div style="font-size:.75rem;font-weight:700;color:var(--t3);text-transform:uppercase;letter-spacing:.5px;margin-bottom:.4rem;" data-i18n="player.modal.recScheduledRecs">Scheduled Recordings</div>
+        <div id="rec-sched-list"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Save playlist modal -->
+<div id="pl-save-modal" class="modal-overlay hidden">
+  <div class="modal-box">
+    <h3 data-i18n="player.modal.savePlTitle">Save Queue as Playlist</h3>
+    <input id="pl-save-name" type="text" placeholder="Playlist name…" data-i18n="player.modal.savePlName" data-i18n-attr="placeholder">
+    <div class="modal-actions">
+      <button id="pl-save-cancel" class="btn-ghost" data-i18n="player.modal.cancel">Cancel</button>
+      <button id="pl-save-ok" class="btn-primary" data-i18n="player.modal.save">Save</button>
+    </div>
+  </div>
+</div>
+
+<!-- Save smart playlist modal -->
+<div id="spl-save-modal" class="modal-overlay hidden">
+  <div class="modal-box">
+    <h3 id="spl-save-modal-title" data-i18n="player.modal.saveSplTitle">Save Smart Playlist</h3>
+    <input id="spl-save-name" type="text" placeholder="Smart playlist name…" data-i18n="player.modal.saveSplName" data-i18n-attr="placeholder">
+    <div class="modal-actions">
+      <button id="spl-save-cancel" class="btn-ghost" data-i18n="player.modal.cancel">Cancel</button>
+      <button id="spl-save-ok" class="btn-primary" data-i18n="player.modal.save">Save</button>
+    </div>
+  </div>
+</div>
+
+<!-- New playlist modal -->
+<div id="pl-new-modal" class="modal-overlay hidden">
+  <div class="modal-box">
+    <h3 data-i18n="player.modal.newPlTitle">New Playlist</h3>
+    <input id="pl-new-name" type="text" placeholder="Playlist name…" data-i18n="player.modal.savePlName" data-i18n-attr="placeholder">
+    <div class="modal-actions">
+      <button id="pl-new-cancel" class="btn-ghost" data-i18n="player.modal.cancel">Cancel</button>
+      <button id="pl-new-ok" class="btn-primary" data-i18n="player.modal.create">Create</button>
+    </div>
+  </div>
+</div>
+
+<!-- Generic confirm modal -->
+<div id="confirm-modal" class="modal-overlay hidden">
+  <div class="modal-box">
+    <div class="pl-del-icon">
+      <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+    </div>
+    <h3 id="confirm-modal-title"></h3>
+    <p id="confirm-modal-msg" class="pl-del-msg"></p>
+    <div class="modal-actions">
+      <button id="confirm-modal-cancel" class="btn-ghost" data-i18n="player.modal.cancel">Cancel</button>
+      <button id="confirm-modal-ok" class="btn-danger" data-i18n="player.modal.confirm">Confirm</button>
+    </div>
+  </div>
+</div>
+
+<!-- Upload files modal -->
+<div id="upload-modal" class="modal-overlay hidden">
+  <div class="modal-box upload-modal-box">
+    <div class="pl-del-icon">
+      <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="16,16 12,12 8,16"/><line x1="12" y1="12" x2="12" y2="21"/><path d="M20.39 18.39A5 5 0 0 0 18 9h-1.26A8 8 0 1 0 3 16.3"/></svg>
+    </div>
+    <h3 data-i18n="player.modal.uploadTitle">Upload Files</h3>
+    <p id="upload-modal-dest" class="pl-del-msg"></p>
+    <div id="upload-drop-zone" class="upload-drop-zone">
+      <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" style="color:var(--t3);margin-bottom:8px"><polyline points="16,16 12,12 8,16"/><line x1="12" y1="12" x2="12" y2="21"/><path d="M20.39 18.39A5 5 0 0 0 18 9h-1.26A8 8 0 1 0 3 16.3"/></svg>
+      <div><span data-i18n="player.modal.uploadDropHere">Drop files here or</span> <label for="upload-file-input" class="upload-browse-lbl" data-i18n="player.modal.uploadBrowse">browse</label></div>
+      <div style="font-size:11px;color:var(--t3);margin-top:4px" data-i18n="player.modal.uploadAudioOnly">Audio files only</div>
+      <input id="upload-file-input" type="file" multiple style="display:none">
+    </div>
+    <div id="upload-file-list" class="upload-file-list"></div>
+    <div class="modal-actions">
+      <button id="upload-cancel-btn" class="btn-ghost" data-i18n="player.modal.cancel">Cancel</button>
+      <button id="upload-start-btn" class="btn-primary" disabled data-i18n="player.modal.upload">Upload</button>
+    </div>
+  </div>
+</div>
+
+<!-- Delete playlist confirmation modal -->
+<div id="pl-del-modal" class="modal-overlay hidden">
+  <div class="modal-box">
+    <div class="pl-del-icon">
+      <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="3,6 5,6 21,6"/><path d="M19,6l-1,14a2,2,0,0,1-2,2H8a2,2,0,0,1-2-2L5,6"/><path d="M10,11v6"/><path d="M14,11v6"/><path d="M9,6V4a1,1,0,0,1,1-1h4a1,1,0,0,1,1,1v2"/></svg>
+    </div>
+    <h3 data-i18n="player.modal.delPlTitle">Delete Playlist</h3>
+    <p id="pl-del-msg" class="pl-del-msg"></p>
+    <div class="modal-actions">
+      <button id="pl-del-cancel" class="btn-ghost" data-i18n="player.modal.cancel">Cancel</button>
+      <button id="pl-del-ok" class="btn-danger" data-i18n="player.modal.delete">Delete</button>
+    </div>
+  </div>
+</div>
+
+<!-- Rename playlist modal -->
+<div id="pl-rename-modal" class="modal-overlay hidden">
+  <div class="modal-box">
+    <h3 data-i18n="player.modal.renamePlTitle">Rename Playlist</h3>
+    <input id="pl-rename-input" type="text" placeholder="New name…" data-i18n="player.modal.renameNewName" data-i18n-attr="placeholder">
+    <div class="modal-actions">
+      <button id="pl-rename-cancel" class="btn-ghost" data-i18n="player.modal.cancel">Cancel</button>
+      <button id="pl-rename-ok" class="btn-primary" data-i18n="player.modal.rename">Rename</button>
+    </div>
+  </div>
+</div>
+
+<!-- Delete shared link confirmation modal -->
+<div id="del-share-modal" class="modal-overlay hidden">
+  <div class="modal-box">
+    <div class="pl-del-icon">
+      <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/></svg>
+    </div>
+    <h3 data-i18n="player.modal.delShareTitle">Delete Shared Link</h3>
+    <p class="pl-del-msg" data-i18n="player.modal.delShareMsg">Anyone with this URL will immediately lose access. This cannot be undone.</p>
+    <div class="modal-actions">
+      <button id="del-share-cancel" class="btn-ghost" data-i18n="player.modal.cancel">Cancel</button>
+      <button id="del-share-ok" class="btn-danger" data-i18n="player.modal.delete">Delete</button>
+    </div>
+  </div>
+</div>
+
+<!-- Add to playlist modal -->
+<div id="atp-modal" class="modal-overlay hidden">
+  <div class="modal-box">
+    <h3 data-i18n="player.modal.atpTitle">Add to Playlist</h3>
+    <div id="atp-list" class="modal-list"></div>
+    <div class="modal-actions">
+      <button id="atp-cancel" class="btn-ghost" data-i18n="player.modal.cancel">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<!-- Share playlist modal -->
+<div id="share-pl-modal" class="modal-overlay hidden">
+  <div class="modal-box">
+    <h3 data-i18n="player.modal.shareTitle">Share as Public Link</h3>
+    <p class="share-pl-desc" data-i18n="player.modal.shareDesc">Creates a public link anyone can listen to — no login required.</p>
+    <div class="modal-row">
+      <label class="modal-label" for="share-pl-expires" data-i18n="player.modal.shareExpires">Expires after (days)</label>
+      <input id="share-pl-expires" class="modal-input-sm" type="number" min="1" placeholder="Never" data-i18n="player.ctrl.expireNever" data-i18n-attr="placeholder" style="width:90px;">
+    </div>
+    <div id="share-pl-result" class="share-pl-result hidden">
+      <div class="share-pl-url-row">
+        <input id="share-pl-url" class="share-pl-url-input" type="text" readonly>
+        <button id="share-pl-copy" class="btn-ghost share-pl-copy-btn" title="Copy link" data-i18n="player.ctrl.shareLink" data-i18n-attr="title">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+          <span data-i18n="player.modal.shareCopy">Copy</span>
+        </button>
+      </div>
+    </div>
+    <div class="modal-actions">
+      <button id="share-pl-cancel" class="btn-ghost" data-i18n="player.modal.close">Close</button>
+      <button id="share-pl-ok" class="btn-primary" data-i18n="player.modal.shareCreate">Create link</button>
+    </div>
+  </div>
+</div>
+
+<!-- Context menu -->
+<div id="ctx-menu" class="ctx-menu hidden">
+  <button class="ctx-item" data-action="add-queue">
+    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+    <span data-i18n="player.ctx.addToQueue">Add to Queue</span>
+  </button>
+  <button class="ctx-item" data-action="add-playlist">
+    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>
+    <span data-i18n="player.ctx.addToPlaylist">Add to Playlist</span>
+  </button>
+  <button class="ctx-item" data-action="play-next">
+    <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><polygon points="5,4 15,12 5,20"/><line x1="19" y1="5" x2="19" y2="19" stroke="currentColor" stroke-width="2.5" fill="none"/></svg>
+    <span data-i18n="player.ctx.playNext">Play Next</span>
+  </button>
+  <button class="ctx-item ctx-remove-pl hidden" data-action="remove-from-playlist">
+    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3,6 5,6 21,6"/><path d="M19,6l-1,14a2,2,0,0,1-2,2H8a2,2,0,0,1-2-2L5,6"/><path d="M10,11v6"/><path d="M14,11v6"/></svg>
+    <span data-i18n="player.ctx.removeFromPlaylist">Remove from Playlist</span>
+  </button>
+  <button class="ctx-item ctx-go-artist hidden" data-action="go-artist">
+    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+    <span data-i18n="player.ctx.goToArtist">Go to Artist</span>
+  </button>
+  <button class="ctx-item ctx-go-album hidden" data-action="go-album">
+    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="3"/></svg>
+    <span data-i18n="player.ctx.goToAlbum">Go to Album</span>
+  </button>
+  <div class="ctx-divider"></div>
+  <button class="ctx-item" data-action="download">
+    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7,10 12,15 17,10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+    <span data-i18n="player.ctx.download">Download</span>
+  </button>
+  <button class="ctx-item ctx-rate" data-action="rate">
+    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="12,2 15.09,8.26 22,9.27 17,14.14 18.18,21.02 12,17.77 5.82,21.02 7,14.14 2,9.27 8.91,8.26"/></svg>
+    <span data-i18n="player.ctx.rateSong">Rate Song</span>
+  </button>
+  <div class="ctx-divider ctx-delete-rec-divider hidden"></div>
+  <button class="ctx-item ctx-delete-rec hidden" data-action="delete-recording" style="color:var(--red,#e05);--ctx-hover-bg:rgba(220,50,50,.12);">
+    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3,6 5,6 21,6"/><path d="M19,6l-1,14a2,2,0,0,1-2,2H8a2,2,0,0,1-2-2L5,6"/><path d="M10,11v6"/><path d="M14,11v6"/><path d="M9,6V4a1,1,0,0,1,1-1h4a1,1,0,0,1,1,1v2"/></svg>
+    <span data-i18n="player.ctx.deleteRecording">Delete Recording</span>
+  </button>
+</div>
+
+<!-- Rate sub-panel -->
+<div id="rate-panel" class="rate-panel hidden">
+  <div class="rate-stars" id="rate-stars">
+    <span data-v="2">★</span><span data-v="4">★</span><span data-v="6">★</span><span data-v="8">★</span><span data-v="10">★</span>
+  </div>
+  <button id="rate-clear" data-i18n="player.rate.clearRating">Clear rating</button>
+</div>
+<!-- Now Playing modal -->
+<div id="np-modal" class="modal-overlay hidden">
+  <div class="np-modal-box" id="np-box">
+    <button id="np-close-btn" class="np-close" title="Close (Esc)" data-i18n="player.ctrl.closeNP" data-i18n-attr="title">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+    </button>
+    <!-- Left: blurred glow background + square art -->
+    <div class="np-left" id="np-left">
+      <div id="np-art-blur" class="np-art-blur"></div>
+      <div id="np-art" class="np-art"></div>
+      <div id="np-discogs-section" class="np-discogs-section hidden"></div>
+    </div>
+    <!-- Right: info + controls + metadata -->
+    <div class="np-right" id="np-right">
+      <div class="np-info">
+        <div id="np-title" class="np-title"></div>
+        <span id="np-radio-kbps" class="player-radio-kbps hidden" style="margin-top:4px;display:none"></span>
+        <div class="np-artist-row">
+          <div id="np-artist-img-wrap" class="np-artist-img-wrap hidden"></div>
+          <div id="np-artist" class="np-artist"></div>
+        </div>
+        <div id="np-album" class="np-album hidden"></div>
+        <div id="np-scrobble-status" class="np-scrobble-status"></div>
+      </div>
+      <div class="np-rate-row">
+        <div class="rate-stars" id="np-rate-stars">
+          <span data-v="2">★</span><span data-v="4">★</span><span data-v="6">★</span><span data-v="8">★</span><span data-v="10">★</span>
+        </div>
+        <button id="np-rate-clear" data-i18n="player.rate.clearRating">Clear rating</button>
+      </div>
+      <div class="np-progress">
+        <span id="np-time-cur">0:00</span>
+        <div id="np-prog-track" class="prog-track">
+          <div id="np-prog-fill" class="prog-fill"><div class="prog-thumb"></div></div>
+          <div id="np-cue-markers" class="cue-markers"></div>
+        </div>
+        <span id="np-time-total">0:00</span>
+      </div>
+      <div class="np-controls">
+        <button id="np-prev-btn" class="ctrl-btn ctrl-nav" title="Previous" data-i18n="player.ctrl.previous" data-i18n-attr="title">
+          <svg width="26" height="26" viewBox="0 0 24 24" fill="currentColor"><path d="M19 20L9 12l10-8v16z"/><rect x="4" y="5" width="2.5" height="14" rx="1.25"/></svg>
+        </button>
+        <button id="np-play-btn" class="ctrl-btn play-main np-play-main" title="Play/Pause" data-i18n="player.ctrl.play" data-i18n-attr="title">
+          <svg id="np-icon-play"  width="28" height="28" viewBox="0 0 24 24" fill="currentColor"><path d="M6 4l14 8-14 8V4z"/></svg>
+          <svg id="np-icon-pause" width="28" height="28" viewBox="0 0 24 24" fill="currentColor" class="hidden"><rect x="5" y="4" width="4" height="16" rx="1.5"/><rect x="15" y="4" width="4" height="16" rx="1.5"/></svg>
+        </button>
+        <button id="np-next-btn" class="ctrl-btn ctrl-nav" title="Next" data-i18n="player.ctrl.next" data-i18n-attr="title">
+          <svg width="26" height="26" viewBox="0 0 24 24" fill="currentColor"><path d="M5 4l10 8-10 8V4z"/><rect x="17.5" y="5" width="2.5" height="14" rx="1.25"/></svg>
+        </button>
+      </div>
+      <div id="np-meta" class="np-meta"></div>
+      <div id="np-filepath" class="np-filepath"></div>
+      <div id="np-id3-section"></div>
+      <button id="np-viz-btn" class="np-viz-btn">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+        <span data-i18n="player.np.openVisualizer">Open Visualizer</span>
+      </button>
+    </div>
+  </div>
+</div>
+<!-- ══════════════════ APP ══════════════════ -->
+<div id="app" class="hidden">
+
+  <!-- SIDEBAR -->
+  <aside class="sidebar">
+    <div class="sidebar-brand">
+      <img src="/assets/img/velvet-logo.svg" alt="Velvet" width="30" height="30">
+      <div class="brand-text">
+        <div class="brand-name">Velvet</div>
+        <div class="brand-velvet">Velvet</div>
+      </div>
+      <div id="sidebar-clock" class="sidebar-clock"></div>
+    </div>
+
+    <div id="theme-seg" class="theme-seg">
+      <button class="theme-seg-btn" data-theme="velvet">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+        Velvet
+      </button>
+      <button class="theme-seg-btn" data-theme="dark">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="4"/><line x1="12" y1="2" x2="12" y2="4"/><line x1="12" y1="20" x2="12" y2="22"/><line x1="4.93" y1="4.93" x2="6.34" y2="6.34"/><line x1="17.66" y1="17.66" x2="19.07" y2="19.07"/><line x1="2" y1="12" x2="4" y2="12"/><line x1="20" y1="12" x2="22" y2="12"/><line x1="4.93" y1="19.07" x2="6.34" y2="17.66"/><line x1="17.66" y1="6.34" x2="19.07" y2="4.93"/></svg>
+        Dark
+      </button>
+      <button class="theme-seg-btn" data-theme="light">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>
+        Light
+      </button>
+    </div>
+
+    <div class="sidebar-scroll">
+
+      <div class="nav-section" data-section="now-playing">
+      <div class="nav-label nav-toggle"><span data-i18n="player.nav.nowPlayingSection">Now Playing</span><svg class="nav-chevron" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6,9 12,15 18,9"/></svg></div>
+      <nav class="sidenav">
+        <button class="nav-btn" data-view="playing-now" id="playing-now-nav-btn">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polygon points="10,8 16,12 10,16"/></svg>
+          <span data-i18n="player.nav.playingNow">Playing Now</span>
+        </button>
+        <button class="nav-btn" data-view="autodj">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M8 14s1.5 2 4 2 4-2 4-2"/><line x1="9" y1="9" x2="9.01" y2="9"/><line x1="15" y1="9" x2="15.01" y2="9"/></svg>
+          <span data-i18n="player.nav.autoDj">Auto-DJ</span>
+        </button>
+        <button class="nav-btn" data-view="jukebox">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="5" y="2" width="14" height="20" rx="2" ry="2"/><line x1="12" y1="18" x2="12.01" y2="18"/></svg>
+          <span data-i18n="player.nav.jukebox">Jukebox</span>
+        </button>
+      </nav>
+      </div>
+
+      <div class="nav-section" data-section="browse">
+      <div class="nav-label nav-toggle"><span data-i18n="player.nav.browse">Browse</span><svg class="nav-chevron" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6,9 12,15 18,9"/></svg></div>
+      <nav class="sidenav">
+        <button class="nav-btn active" data-view="home">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9,22 9,12 15,12 15,22"/></svg>
+          <span data-i18n="player.nav.home">Home</span>
+        </button>
+        <button class="nav-btn" data-view="search">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+          <span data-i18n="player.nav.search">Search</span>
+        </button>
+        <button class="nav-btn" data-view="files">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+          <span data-i18n="player.nav.fileExplorer">File Explorer</span>
+        </button>
+        <button class="nav-btn hidden" data-view="artists_old">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+          <span data-i18n="player.nav.artists">Artists</span>
+        </button>
+        <button class="nav-btn" data-view="artists">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/><circle cx="20" cy="8" r="2" fill="currentColor"/></svg>
+          <span data-i18n="player.nav.artists">Artists</span>
+        </button>
+        <button class="nav-btn" data-view="album-library">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
+          <span data-i18n="player.nav.albums">Albums</span>
+        </button>
+        <button class="nav-btn" data-view="genres">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>
+          <span data-i18n="player.nav.genres">Genres</span>
+        </button>
+        <button class="nav-btn" data-view="decades">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
+          <span data-i18n="player.nav.decades">Decades</span>
+        </button>
+      </nav>
+      </div>
+
+      <div class="nav-section" data-section="my-library">
+      <div class="nav-label nav-toggle"><span data-i18n="player.nav.myLibrary">My Library</span><svg class="nav-chevron" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6,9 12,15 18,9"/></svg></div>
+      <nav class="sidenav">
+        <button class="nav-btn" data-view="rated">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="12,2 15.09,8.26 22,9.27 17,14.14 18.18,21.02 12,17.77 5.82,21.02 7,14.14 2,9.27 8.91,8.26"/></svg>
+          <span data-i18n="player.nav.starred">Starred</span>
+        </button>
+        <button class="nav-btn" data-view="shortcuts">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
+          <span data-i18n="player.nav.shortcuts">Shortcuts</span>
+        </button>
+      </nav>
+
+      <div class="sidenav-separator"></div>
+      <nav class="sidenav">
+        <button class="nav-btn hidden" id="ml-playlist-nav-btn" data-view="ml-playlist">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2z"/><path d="M12 8v4l3 3"/></svg>
+          <span data-i18n="player.nav.mlPlaylist">Listening Habits</span>
+        </button>
+      </nav>
+      </div>
+
+      <div class="nav-section" data-section="playlists">
+      <div class="nav-label nav-label-row nav-toggle">
+        <span data-i18n="player.nav.playlists">Playlists</span>
+        <div class="nav-label-actions">
+          <button id="new-pl-btn" class="icon-btn" title="New playlist" data-i18n="player.ctrl.newPlaylist" data-i18n-attr="title">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+          </button>
+          <button class="icon-btn nav-collapse-btn" title="Collapse/Expand">
+            <svg class="nav-chevron" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6,9 12,15 18,9"/></svg>
+          </button>
+        </div>
+      </div>
+      <nav id="playlist-nav" class="sidenav playlist-nav">
+        <!-- dynamically populated -->
+      </nav>
+      </div>
+
+      <div class="nav-section" data-section="smart-playlists">
+      <div class="nav-label nav-label-row nav-toggle">
+        <span data-i18n="player.nav.smartPlaylists">Smart Playlists</span>
+        <div class="nav-label-actions">
+          <button id="new-spl-btn" class="icon-btn" title="New smart playlist" data-i18n="player.ctrl.newSmartPlaylist" data-i18n-attr="title">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+          </button>
+          <button class="icon-btn nav-collapse-btn" title="Collapse/Expand">
+            <svg class="nav-chevron" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6,9 12,15 18,9"/></svg>
+          </button>
+        </div>
+      </div>
+      <nav id="smart-playlist-nav" class="sidenav playlist-nav">
+        <!-- dynamically populated -->
+      </nav>
+      </div>
+
+      <div class="nav-section" data-section="history-stats">
+      <div class="nav-label nav-toggle"><span data-i18n="player.nav.historyAndStats">History &amp; Stats</span><svg class="nav-chevron" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6,9 12,15 18,9"/></svg></div>
+      <nav class="sidenav">
+        <button class="nav-btn" data-view="recent">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12,6 12,12 16,14"/></svg>
+          <span data-i18n="player.nav.recentlyAdded">Recently Added</span>
+        </button>
+        <button class="nav-btn" data-view="played">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23,4 23,10 17,10"/><path d="M20.49 15a9 9 0 1 1-.18-4.9"/></svg>
+          <span data-i18n="player.nav.recentlyPlayed">Recently Played</span>
+        </button>
+        <button class="nav-btn" data-view="play-history">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 .49-4.95"/></svg>
+          <span data-i18n="player.nav.playHistory">Play History</span>
+        </button>
+        <button class="nav-btn" data-view="most-played">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22,12 18,12 15,21 9,3 6,12 2,12"/></svg>
+          <span data-i18n="player.nav.mostPlayed">Most Played</span>
+        </button>
+      </nav>
+      </div>
+
+      <div class="nav-section hidden" id="podcasts-section" data-section="podcasts">
+      <div class="nav-label nav-toggle"><span data-i18n="player.nav.streamsAndFeeds">Streams &amp; Feeds</span><svg class="nav-chevron" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6,9 12,15 18,9"/></svg></div>
+      <nav class="sidenav">
+        <button class="nav-btn" id="podcasts-nav-btn" data-view="podcasts">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 18v-6a9 9 0 0 1 18 0v6"/><path d="M21 19a2 2 0 0 1-2 2h-1a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h3z"/><path d="M3 19a2 2 0 0 0 2 2h1a2 2 0 0 0 2-2v-3a2 2 0 0 0-2-2H3z"/></svg>
+          <span data-i18n="player.nav.audioContent">Audio Content</span>
+        </button>
+        <button class="nav-btn" id="podcast-feeds-nav-btn" data-view="podcast-feeds">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 11a9 9 0 0 1 9 9"/><path d="M4 4a16 16 0 0 1 16 16"/><circle cx="5" cy="19" r="1" fill="currentColor"/></svg>
+          <span data-i18n="player.nav.podcastFeeds">Podcast Feeds</span>
+        </button>
+        <button class="nav-btn hidden" id="youtube-nav-btn" data-view="youtube">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor"><path d="M23.498 6.186a3.016 3.016 0 0 0-2.122-2.136C19.505 3.545 12 3.545 12 3.545s-7.505 0-9.377.505A3.017 3.017 0 0 0 .502 6.186C0 8.07 0 12 0 12s0 3.93.502 5.814a3.016 3.016 0 0 0 2.122 2.136c1.871.505 9.376.505 9.376.505s7.505 0 9.377-.505a3.015 3.015 0 0 0 2.122-2.136C24 15.93 24 12 24 12s0-3.93-.502-5.814zM9.545 15.568V8.432L15.818 12l-6.273 3.568z"/></svg>
+          <span data-i18n="player.nav.youtube">YouTube</span>
+        </button>
+        <button class="nav-btn hidden" id="radio-nav-btn" data-view="radio">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="2"/><path d="M4.93 4.93a10 10 0 0 0 0 14.14"/><path d="M7.76 7.76a6 6 0 0 0 0 8.49"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/><path d="M16.24 7.76a6 6 0 0 1 0 8.49"/></svg>
+          <span data-i18n="player.nav.radioStreams">Radio Streams</span>
+        </button>
+        <button class="nav-btn hidden" id="sonos-radio-nav-btn" data-view="sonos-radio">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="4" width="12" height="16" rx="2"/><path d="M9 4v16"/><path d="M15 4v16"/><circle cx="9" cy="12" r="1"/><circle cx="15" cy="12" r="1"/></svg>
+          <span data-i18n="player.nav.sonosRadio">Sonos Radio</span>
+        </button>
+      </nav>
+      </div>
+
+      <div class="nav-section" id="connectors-section" data-section="connectors">
+      <div class="nav-label nav-toggle"><span data-i18n="player.nav.connectors">Connectors</span><svg class="nav-chevron" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6,9 12,15 18,9"/></svg></div>
+      <nav class="sidenav">
+        <button class="nav-btn hidden" id="lastfm-nav-btn" data-view="lastfm">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M8 14s1.5 2 4 2 4-2 4-2"/><line x1="9" y1="9" x2="9.01" y2="9"/><line x1="15" y1="9" x2="15.01" y2="9"/></svg>
+          <span data-i18n="player.nav.lastfm">Last.fm</span>
+        </button>
+        <button class="nav-btn hidden" id="listenbrainz-nav-btn" data-view="listenbrainz">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>
+          <span data-i18n="player.nav.listenbrainz">ListenBrainz</span>
+        </button>
+        <button class="nav-btn hidden" id="discogs-nav-btn" data-view="discogs">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="3"/><line x1="12" y1="2" x2="12" y2="5"/><line x1="12" y1="19" x2="12" y2="22"/><line x1="2" y1="12" x2="5" y2="12"/><line x1="19" y1="12" x2="22" y2="12"/></svg>
+          <span data-i18n="player.nav.discogs">Discogs</span>
+        </button>
+        <button class="nav-btn" data-view="subsonic">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="4"/><line x1="21.17" y1="8" x2="12" y2="8"/><line x1="3.95" y1="6.06" x2="8.54" y2="14"/><line x1="10.88" y1="21.94" x2="15.46" y2="14"/></svg>
+          <span data-i18n="player.nav.subsonicApi">Subsonic API</span>
+        </button>
+      </nav>
+      </div>
+
+      <div class="nav-section" data-section="tools-settings">
+      <div class="nav-label nav-toggle"><span data-i18n="player.nav.toolsAndSettings">Tools &amp; Settings</span><svg class="nav-chevron" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6,9 12,15 18,9"/></svg></div>
+      <nav class="sidenav">
+        <button class="nav-btn" data-view="shared-links">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/></svg>
+          <span data-i18n="player.nav.sharedLinks">Shared Links</span>
+        </button>
+        <button class="nav-btn" data-view="transcode">
+          <svg width="15" height="15" viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"><path d="M8.5 8.5h9l-9 9v11l20-20h11l-31 31h11l20-20v11l-9 9h9"/></svg>
+          <span data-i18n="player.nav.transcode">Transcode</span>
+        </button>
+        <button class="nav-btn" data-view="playback">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+          <span data-i18n="player.nav.settings">Audio Settings</span>
+        </button>
+        <button class="nav-btn" data-view="apps">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+          <span data-i18n="player.nav.mobileApps">Mobile Apps</span>
+        </button>
+      </nav>
+      </div>
+
+    </div><!-- .sidebar-scroll -->
+
+    <div class="sidebar-footer">
+      <button id="scan-btn" class="footer-action hidden">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23,4 23,10 17,10"/><path d="M20.49 15a9 9 0 1 1-.18-4.9"/></svg>
+        <span data-i18n="player.nav.scanLibrary">Scan Library</span>
+      </button>
+      <span id="admin-panel-btn" class="footer-link hidden" style="cursor:pointer;">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><polyline points="9,12 11,14 15,10"/></svg>
+        <span data-i18n="player.nav.adminPanel">Admin Panel</span>
+      </span>
+      <button id="logout-btn" class="footer-link">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16,17 21,12 16,7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+        <span data-i18n="player.nav.logout">Logout</span>
+      </button>
+      <div class="lang-picker-wrap" style="margin-top:8px;padding:0 8px 4px;">
+        <label id="player-lang-picker-label" style="font-size:10px;color:var(--t3);text-transform:uppercase;letter-spacing:.5px;" data-i18n="player.langPicker.label">Language</label>
+        <div id="player-lang-picker" class="lang-flag-row" role="group" aria-labelledby="player-lang-picker-label"></div>
+      </div>
+    </div>
+  </aside>
+
+  <!-- MAIN CONTENT -->
+  <main class="content">
+    <div class="content-header">
+      <button id="back-btn" class="back-btn hidden">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="15,18 9,12 15,6"/></svg>
+      </button>
+      <h2 id="content-title">Recently Added</h2>
+      <div class="header-right">
+        <div id="scan-progress-wrap" class="spc-wrap"></div>
+        <button id="select-mode-btn" class="btn-sm hidden" title="Select songs for ZIP" data-i18n="player.ctrl.selectZip" data-i18n-attr="title">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><polyline points="9,12 12,15 19,8"/></svg>
+          <span data-i18n="player.header.select">Select</span>
+        </button>
+        <button id="zip-dl-btn" class="btn-sm hidden" title="Download as ZIP" data-i18n="player.ctrl.downloadZip" data-i18n-attr="title">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7,10 12,15 17,10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+          ZIP<span id="zip-count-badge"></span>
+        </button>
+        <button id="add-all-btn" class="btn-sm">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+          <span data-i18n="player.header.appendAll">Append All</span>
+        </button>
+        <button id="play-all-btn" class="btn-sm btn-primary-sm">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><polygon points="5,3 19,12 5,21"/></svg>
+          <span data-i18n="player.header.playAll">Play All</span>
+        </button>
+      </div>
+    </div>
+    <div id="content-body" class="content-body">
+      <div class="loading-state"></div>
+    </div>
+  </main>
+
+  <!-- QUEUE PANEL -->
+  <div id="queue-panel" class="queue-panel">
+
+    <!-- Reopen tab (visible only when collapsed) -->
+    <button id="qp-reopen-tab" title="Open queue" aria-label="Open queue" data-i18n="player.ctrl.openQueue" data-i18n-attr="title">
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9,18 15,12 9,6"/></svg>
+    </button>
+
+    <!-- Now Playing -->
+    <div class="qp-now-playing">
+      <div class="qp-np-label" id="qp-np-label">
+        <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor"><polygon points="5,3 19,12 5,21"/></svg>
+        <span data-i18n="player.queue.nowPlaying">Now Playing</span>
+      </div>
+      <div id="qp-np-card" class="qp-np-card">
+        <div class="qp-np-empty" data-i18n="player.queue.nothingPlaying">Nothing playing yet</div>
+      </div>
+    </div>
+
+    <!-- Up Next -->
+    <div class="qp-header">
+      <div class="qp-title">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>
+        <span data-i18n="player.queue.upNext">Up Next</span> <span id="qp-count"></span>
+      </div>
+      <div class="qp-btns">
+        <button id="qp-shuffle-btn" title="Shuffle queue" data-i18n="player.ctrl.shuffleQueue" data-i18n-attr="title">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="16,3 21,3 21,8"/><line x1="4" y1="20" x2="21" y2="3"/><polyline points="21,16 21,21 16,21"/><line x1="4" y1="4" x2="9" y2="9"/></svg>
+        </button>
+        <button id="qp-share-btn" title="Share queue as public link" data-i18n="player.ctrl.shareQueue" data-i18n-attr="title">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/></svg>
+        </button>
+        <button id="qp-save-btn" title="Save queue as playlist" data-i18n="player.ctrl.saveQueue" data-i18n-attr="title">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17,21 17,13 7,13 7,21"/><polyline points="7,3 7,8 15,8"/></svg>
+        </button>
+        <button id="qp-clear-btn" title="Clear queue" data-i18n="player.ctrl.clearQueue" data-i18n-attr="title">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3,6 5,6 21,6"/><path d="M19,6l-1,14H6L5,6"/><path d="M9,6V4h6v2"/></svg>
+        </button>
+        <button id="qp-close-btn" title="Collapse queue" data-i18n="player.ctrl.collapseQueue" data-i18n-attr="title">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="15,18 9,12 15,6"/></svg>
+        </button>
+      </div>
+    </div>
+
+    <div id="queue-list" class="queue-list"></div>
+  </div>
+
+  <!-- DJ Similar Artists Strip (slides in above player bar) -->
+  <div id="dj-similar-strip" class="dj-similar-strip">
+    <span class="dj-strip-badge" id="dj-strip-badge">DJ</span>
+    <div class="dj-strip-content" id="dj-strip-content"></div>
+    <button class="dj-strip-close" id="dj-strip-close" aria-label="Close">&#x2715;</button>
+  </div>
+
+  <!-- PLAYER BAR -->
+  <footer class="player">
+    <!-- Left: now playing info (click to expand) -->
+    <div class="player-left" id="np-open-btn" title="Expand Now Playing" data-i18n="player.ctrl.expandNP" data-i18n-attr="title">
+      <div id="player-art" class="player-thumb">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" opacity="0.25"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>
+      </div>
+      <div class="player-info">
+        <div class="player-title-row">
+          <div id="player-title" class="player-title">—</div>
+          <span id="player-radio-kbps" class="player-radio-kbps hidden"></span>
+        </div>
+        <div id="player-artist" class="player-artist"></div>
+        <div id="player-album" class="player-album hidden"></div>
+        <div id="player-radio-np" class="player-radio-np hidden"><span id="player-radio-np-text"></span><span id="player-radio-db-badge" class="player-radio-db-badge hidden" title="Found in your library — click to search" data-i18n="player.ctrl.radioBadge" data-i18n-attr="title"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg></span></div>
+        <div id="player-stars" class="player-stars-row"></div>
+      </div>
+    </div>
+
+    <!-- Center: controls + progress -->
+    <div class="player-center">
+      <div class="player-controls">
+        <div class="ctrl-transport">
+        <button id="shuffle-btn" class="ctrl-btn ctrl-sm" title="Shuffle" data-i18n="player.ctrl.shuffle" data-i18n-attr="title">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="square" stroke-linejoin="miter">
+            <polyline points="16,3 21,3 21,8"/>
+            <polyline points="16,21 21,21 21,16"/>
+            <line x1="4" y1="20" x2="21" y2="3"/>
+            <line x1="4" y1="4" x2="10" y2="10"/>
+            <line x1="14" y1="14" x2="21" y2="21"/>
+          </svg>
+        </button>
+        <button id="ab-prev-chap-btn" class="ctrl-btn ctrl-sm ab-ctrl hidden" title="Previous chapter" data-i18n="player.ctrl.prevChapter" data-i18n-attr="title">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="5" y1="5" x2="5" y2="19"/><polyline points="19,5 9,12 19,19"/></svg>
+        </button>
+        <button id="prev-btn" class="ctrl-btn ctrl-nav" title="Previous" data-i18n="player.ctrl.previous" data-i18n-attr="title">
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor"><path d="M19 20L9 12l10-8v16z"/><rect x="4" y="5" width="2.5" height="14"/></svg>
+        </button>
+        <button id="play-btn" class="ctrl-btn play-main" title="Play/Pause" data-i18n="player.ctrl.play" data-i18n-attr="title">
+          <svg id="icon-play"  width="24" height="24" viewBox="0 0 24 24" fill="currentColor"><path d="M6 4l14 8-14 8V4z"/></svg>
+          <svg id="icon-pause" width="24" height="24" viewBox="0 0 24 24" fill="currentColor" class="hidden"><rect x="5" y="4" width="4" height="16" rx="1.5"/><rect x="15" y="4" width="4" height="16" rx="1.5"/></svg>
+        </button>
+        <button id="next-btn" class="ctrl-btn ctrl-nav" title="Next" data-i18n="player.ctrl.next" data-i18n-attr="title">
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor"><path d="M5 4l10 8-10 8V4z"/><rect x="17.5" y="5" width="2.5" height="14"/></svg>
+        </button>
+        <button id="ab-next-chap-btn" class="ctrl-btn ctrl-sm ab-ctrl hidden" title="Next chapter" data-i18n="player.ctrl.nextChapter" data-i18n-attr="title">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="19" y1="5" x2="19" y2="19"/><polyline points="5,5 15,12 5,19"/></svg>
+        </button>
+        <button id="repeat-btn" class="ctrl-btn ctrl-sm" title="Repeat" data-i18n="player.ctrl.repeat" data-i18n-attr="title">
+          <svg id="repeat-icon" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="square" stroke-linejoin="miter">
+            <polyline points="17,1 21,5 17,9"/>
+            <path d="M3 11V5H21"/>
+            <polyline points="7,23 3,19 7,15"/>
+            <path d="M21 13v6H3"/>
+          </svg>
+        </button>
+        </div><!-- /.ctrl-transport -->
+        <div class="ctrl-sep"></div>
+        <!-- Utility icons: right of separator -->
+        <!-- Auto-DJ dice throw — appears on crossfade when Auto-DJ is active -->
+        <div id="dj-dice" aria-hidden="true">
+          <div class="dj-dice-cube">
+            <div class="dj-dice-face dj-face-f"><em class="dj-face-label dj-face-label-top">Auto-DJ</em><span style="grid-area:2/2"></span><em class="dj-face-label">Velvet</em></div>
+            <div class="dj-dice-face dj-face-b"><span style="grid-area:1/1"></span><span style="grid-area:1/3"></span><span style="grid-area:2/1"></span><span style="grid-area:2/3"></span><span style="grid-area:3/1"></span><span style="grid-area:3/3"></span></div>
+            <div class="dj-dice-face dj-face-r"><span style="grid-area:1/3"></span><span style="grid-area:3/1"></span></div>
+            <div class="dj-dice-face dj-face-l"><span style="grid-area:1/1"></span><span style="grid-area:1/3"></span><span style="grid-area:2/2"></span><span style="grid-area:3/1"></span><span style="grid-area:3/3"></span></div>
+            <div class="dj-dice-face dj-face-t"><span style="grid-area:1/3"></span><span style="grid-area:2/2"></span><span style="grid-area:3/1"></span></div>
+            <div class="dj-dice-face dj-face-d"><span style="grid-area:1/1"></span><span style="grid-area:1/3"></span><span style="grid-area:3/1"></span><span style="grid-area:3/3"></span></div>
+          </div>
+        </div>
+        <div class="dj-rg-wrap">
+        <button id="dj-light" class="ctrl-btn ctrl-sm dj-light dj-inactive" title="Auto-DJ — click to open settings" data-i18n="player.ctrl.autoDJ" data-i18n-attr="title">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M3 18v-6a9 9 0 0 1 18 0v6"/>
+            <path d="M21 19a2 2 0 0 1-2 2h-1a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h3z"/>
+            <path d="M3 19a2 2 0 0 0 2 2h1a2 2 0 0 0 2-2v-3a2 2 0 0 0-2-2H3z"/>
+          </svg>
+        </button>
+        <span id="player-rg-badge" class="player-rg-badge hidden"></span>
+        </div>
+        <button id="output-btn" class="ctrl-btn ctrl-sm hidden" title="Cast to…" data-i18n="player.output.castTo" data-i18n-attr="title">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="2" y="7" width="20" height="14" rx="2"/>
+            <path d="M7 7V5a5 5 0 0 1 10 0v2"/>
+            <circle cx="12" cy="14" r="2" fill="currentColor" stroke="none"/>
+          </svg>
+        </button>
+        <button id="crossfade-light" class="ctrl-btn ctrl-sm crossfade-light crossfade-inactive" title="Crossfade Duration" data-i18n="player.autodj.crossfadeLabel" data-i18n-attr="title" aria-pressed="false">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">
+            <path d="M3 7.5h4.2l4.3 4.5L7.2 16.5H3"/>
+            <path d="M21 7.5h-4.2l-4.3 4.5 4.3 4.5H21"/>
+            <path d="M9.2 7.5L14.8 16.5" opacity="0.85"/>
+            <path d="M14.8 7.5L9.2 16.5" opacity="0.65"/>
+          </svg>
+        </button>
+        <button id="gapless-light" class="ctrl-btn ctrl-sm gapless-light gapless-inactive" title="Gapless playback — click to toggle" data-i18n="player.ctrl.gaplessToggle" data-i18n-attr="title" aria-pressed="false">
+          <svg width="22" height="22" viewBox="0 0 200 200" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" focusable="false">
+            <circle class="gapless-ring" cx="100" cy="100" r="82" stroke="currentColor" stroke-width="13" stroke-dasharray="4 8"/>
+            <path d="M28 100 Q42 55 55 100 Q68 145 82 100 Q95 55 108 100 Q122 145 135 100 Q148 55 165 100" stroke="currentColor" stroke-width="20" stroke-linecap="round" fill="none"/>
+            <path d="M25 108 Q40 70 52 108 Q68 150 80 108 Q95 65 110 108 Q125 150 138 108 Q155 70 172 108" stroke="currentColor" stroke-width="10" stroke-linecap="round" fill="none" opacity="0.72"/>
+            <path d="M38 165 L50 175 L38 185" stroke="currentColor" stroke-width="7" stroke-linejoin="round" fill="none"/>
+            <path d="M150 165 L162 175 L150 185" stroke="currentColor" stroke-width="7" stroke-linejoin="round" fill="none"/>
+          </svg>
+        </button>
+        <span id="sleep-light" class="sleep-light hidden" title="Sleep timer active" data-i18n="player.ctrl.sleep" data-i18n-attr="title">💤 <span id="sleep-countdown"></span></span>
+        <button id="radio-rec-btn" class="ctrl-btn ctrl-sm radio-rec-btn hidden" title="Record this stream" data-i18n="player.ctrl.recordStream" data-i18n-attr="title"><svg class="rec-icon" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg"><circle cx="16" cy="16" r="14" fill="none" stroke="currentColor" stroke-width="2.5"/><circle cx="16" cy="16" r="8" fill="currentColor"/></svg></button>
+        <span id="radio-rec-elapsed" class="radio-rec-elapsed hidden"></span>
+        <span id="sched-rec-indicator" class="sched-rec-indicator hidden" title="Scheduled recording in progress — click to view" data-i18n="player.ctrl.schedRecording" data-i18n-attr="title"></span>
+        <button id="eq-btn" class="ctrl-btn ctrl-sm" title="Equalizer" data-i18n="player.ctrl.equalizer" data-i18n-attr="title">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+            <line x1="4" y1="4" x2="4" y2="20"/><circle cx="4" cy="10" r="2.5"/>
+            <line x1="12" y1="4" x2="12" y2="20"/><circle cx="12" cy="17" r="2.5"/>
+            <line x1="20" y1="4" x2="20" y2="20"/><circle cx="20" cy="8" r="2.5"/>
+          </svg>
+        </button>
+        <!-- Audiobook speed button (shown only for audio-book tracks) -->
+        <button id="ab-speed-btn" class="ctrl-btn ctrl-sm ab-ctrl hidden" title="Playback speed" data-i18n="player.ctrl.playbackSpeed" data-i18n-attr="title">
+          <span id="ab-speed-label" class="ab-speed-label">1×</span>
+        </button>
+        <div id="ab-speed-pop" class="ab-speed-pop hidden" role="listbox" aria-label="Playback speed"></div>
+        <button id="viz-open-btn" class="ctrl-btn ctrl-sm" title="Visualizer" data-i18n="player.ctrl.visualizer" data-i18n-attr="title">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+        </button>
+        <button id="queue-btn" class="ctrl-btn ctrl-sm" title="Queue" data-i18n="player.ctrl.queue" data-i18n-attr="title">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="square">
+            <polygon points="2,4 7,7.5 2,11" fill="currentColor" stroke="none"/>
+            <line x1="10" y1="7.5" x2="22" y2="7.5"/>
+            <line x1="4" y1="13" x2="22" y2="13"/>
+            <line x1="4" y1="18.5" x2="22" y2="18.5"/>
+          </svg>
+          <span id="queue-count" class="q-count"></span>
+        </button>
+        <div id="crossfade-pop" class="crossfade-pop hidden" role="dialog" aria-modal="false">
+          <div class="crossfade-pop-head">
+            <span data-i18n="player.autodj.crossfadeLabel">Crossfade Duration</span>
+            <button id="crossfade-pop-close" class="crossfade-pop-close" type="button" data-i18n="player.modal.close">Close</button>
+          </div>
+          <div class="crossfade-pop-row">
+            <input type="range" id="xf-slider-mini" class="xf-slider" min="0" max="12" step="1" value="0">
+            <span id="xf-val-mini" class="xf-val">Off</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Right: volume + balance -->
+    <div class="player-right">
+      <div class="pr-info">
+        <div id="wf-status" class="wf-status"></div>
+        <div id="ab-chapter-bar" class="ab-chapter-bar hidden"></div>
+      </div>
+      <div class="vol-wrap">
+        <div class="vol-group">
+          <span class="vol-group-lbl"><span data-i18n="player.player.balance">Balance</span> <button id="bal-center-btn" class="bal-center-btn" title="Reset to centre" data-i18n="player.ctrl.balanceCenter" data-i18n-attr="title">⊙</button></span>
+          <div class="bal-row">
+            <span class="bal-lbl">L</span>
+            <input type="range" id="balance" class="bal-slider" min="-100" max="100" value="0" title="Balance L/R" data-i18n="player.ctrl.balanceLR" data-i18n-attr="title">
+            <span class="bal-lbl">R</span>
+          </div>
+        </div>
+        <div class="vol-divider"></div>
+        <div class="vol-group">
+          <span class="vol-group-lbl" data-i18n="player.player.volume">Volume</span>
+          <div class="vol-row">
+            <button id="mute-btn" class="mute-btn" title="Mute / Unmute" data-i18n="player.ctrl.mute" data-i18n-attr="title">
+              <svg id="vol-icon-on" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="11,5 6,9 2,9 2,15 6,15 11,19"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/></svg>
+              <svg id="vol-icon-off" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="hidden"><polygon points="11,5 6,9 2,9 2,15 6,15 11,19"/><line x1="23" y1="9" x2="17" y2="15"/><line x1="17" y1="9" x2="23" y2="15"/></svg>
+            </button>
+            <input type="range" id="volume" class="vol-slider" min="0" max="100" value="80">
+            <span class="vol-pct" id="vol-pct">80%</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Full-width progress timeline -->
+    <div class="player-progress">
+      <span id="time-cur">0:00</span>
+      <div id="prog-track" class="prog-track">
+        <canvas id="waveform-canvas" class="waveform-canvas"></canvas>
+        <div id="prog-fill" class="prog-fill"></div>
+        <div id="prog-thumb" class="prog-thumb"></div>
+        <div id="cue-markers" class="cue-markers"></div>
+      </div>
+      <span id="time-total">0:00</span>
+    </div>
+    <!-- Full-width VU / spectrum strip -->
+    <div id="vu-spec-row" class="vu-spec-row" title="Click to switch: spectrum / VU meters / PPM / art-pulse" data-i18n="player.ctrl.vuSwitch" data-i18n-attr="title">
+      <canvas id="mini-spec" class="mini-spec"></canvas>
+      <div id="vu-needle-wrap" class="vu-needle-wrap hidden">
+        <canvas id="vu-dial-L" class="vu-dial"></canvas>
+        <div class="vu-center-logo">
+          <img src="/assets/img/velvet-logo.svg" alt="Velvet" width="22" height="22" style="pointer-events:none">
+          <canvas id="vu-ref-knob" class="vu-ref-knob" title="Drag up/down · peak ref: -13 dBFS" data-i18n="player.ctrl.vuRefKnob" data-i18n-attr="title"></canvas>
+          <div class="vu-center-name" style="pointer-events:none">
+            <span class="vu-cn-main">Velvet</span>
+          </div>
+        </div>
+        <canvas id="vu-dial-R" class="vu-dial"></canvas>
+      </div>
+      <div id="vu-ppm-wrap" class="vu-ppm-wrap hidden">
+        <canvas id="vu-ppm" class="vu-ppm"></canvas>
+      </div>
+      <div id="vu-art-wrap" class="vu-art-wrap hidden">
+        <canvas id="vu-art-canvas"></canvas>
+      </div>
+    </div>
+  </footer>
+
+  <!-- EQUALIZER PANEL -->
+  <div id="eq-panel" class="eq-panel hidden">
+    <div class="eq-header">
+      <span class="eq-title" data-i18n="player.eq.title">Equalizer</span>
+      <div class="eq-presets">
+        <button class="eq-preset-btn" data-preset="Flat">Flat</button>
+        <button class="eq-preset-btn" data-preset="Bass Boost">Bass</button>
+        <button class="eq-preset-btn" data-preset="House">House</button>
+        <button class="eq-preset-btn" data-preset="Trance">Trance</button>
+        <button class="eq-preset-btn" data-preset="Disco">Disco</button>
+        <button class="eq-preset-btn" data-preset="Pop">Pop</button>
+        <button class="eq-preset-btn" data-preset="Classical">Classical</button>
+        <button class="eq-preset-btn" data-preset="Rock">Rock</button>
+        <button class="eq-preset-btn" data-preset="Vocal">Vocal</button>
+      </div>
+      <div class="eq-bypass-wrap">
+        <span id="eq-bypass-text" class="eq-bypass-text" data-i18n="player.eq.on">On</span>
+        <div id="eq-bypass-track" class="eq-bypass-track lit"><div class="eq-bypass-thumb"></div></div>
+      </div>
+      <button id="eq-close-btn" class="eq-close-btn" title="Close" data-i18n="player.ctrl.eqClose" data-i18n-attr="title">✕</button>
+    </div>
+    <div class="eq-sliders" id="eq-sliders"></div>
+  </div>
+
+</div><!-- #app -->
+
+<!-- Butterchurn / Milkdrop Visualizer -->
+<div id="viz-overlay" class="viz-overlay hidden">
+  <canvas id="viz-canvas" class="viz-canvas"></canvas>
+  <!-- Brand text overlay — drawn on top of WebGL canvas; activated for custom preset only -->
+  <canvas id="viz-brand-canvas" class="viz-brand-canvas"></canvas>
+  <canvas id="spec-canvas" class="spec-canvas hidden"></canvas>
+  <div id="am-container" class="am-container hidden"></div>
+  <!-- Lyric mode: art left, scrolling lyrics right -->
+  <div id="viz-lyric-mode" class="viz-lyric-mode hidden">
+    <div class="vlm-art-wrap">
+      <div id="vlm-art-blur" class="vlm-art-blur"></div>
+      <div id="vlm-art" class="vlm-art"></div>
+    </div>
+    <div id="vlm-lines" class="vlm-lines"></div>
+  </div>
+  <div class="viz-bar">
+    <button class="viz-btn" id="viz-prev-btn" title="Previous preset" data-i18n="player.ctrl.vizPrev" data-i18n-attr="title">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><polygon points="19,20 9,12 19,4"/><line x1="5" y1="19" x2="5" y2="5" stroke="currentColor" stroke-width="2.5"/></svg>
+    </button>
+    <span id="viz-preset-name" class="viz-preset-name"></span>
+    <button class="viz-btn" id="viz-next-btn" title="Next preset" data-i18n="player.ctrl.vizNext" data-i18n-attr="title">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><polygon points="5,4 15,12 5,20"/><line x1="19" y1="5" x2="19" y2="19" stroke="currentColor" stroke-width="2.5"/></svg>
+    </button>
+    <button class="viz-btn viz-mode-btn" id="viz-mode-btn" title="Switch to Spectrum" data-i18n="player.ctrl.vizSwitchTo" data-i18n-attr="title" style="margin-left:8px;gap:5px">
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="2" y="14" width="3" height="8"/><rect x="7" y="9" width="3" height="13"/><rect x="12" y="5" width="3" height="17"/><rect x="17" y="11" width="3" height="11"/></svg>
+      <span id="viz-mode-label">Spectrum</span>
+    </button>
+    <button class="viz-btn" id="viz-close-btn" title="Close (Esc)" data-i18n="player.ctrl.vizClose" data-i18n-attr="title" style="margin-left:8px">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+    </button>
+  </div>
+  <div class="viz-song">
+    <div id="viz-song-title" class="viz-song-title"></div>
+    <div id="viz-song-artist" class="viz-song-artist"></div>
+  </div>
+</div>
+
+<audio id="audio" preload="auto"></audio>
+<div id="toast" class="toast hidden"></div>
+
+<!-- EASTER EGG – outside #app so position:fixed is always viewport-relative -->
+<div id="egg-pixel" style="position:fixed;left:var(--sidebar);bottom:var(--player);width:6px;height:6px;opacity:0;cursor:pointer;z-index:9999;"></div>
+<canvas id="egg-canvas" style="display:none;position:fixed;left:0;right:0;bottom:var(--player);height:180px;z-index:9999;"></canvas>
+
+<div id="boot-overlay" class="hidden">
+  <div class="boot-card">
+    <img src="/assets/img/velvet-logo.svg" alt="Velvet" width="100" height="100" class="boot-logo">
+    <div class="boot-title">Velvet</div>
+    <div id="boot-status" class="boot-status" data-i18n="player.boot.loadingLibrary">Starting up…</div>
+    <div class="boot-dots"><span></span><span></span><span></span></div>
+    <button id="boot-skip-btn" class="boot-skip hidden" data-i18n="player.boot.continueAnyway">Continue anyway</button>
+  </div>
+</div>
+
+<div id="tip-box"></div>
+<script src="/assets/js/player-locale.js"></script>
+  <script src="/app.js?v=0.0.1"></script>
+
+</body>
+</html>
