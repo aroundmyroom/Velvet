@@ -1,5 +1,5 @@
 'use strict';
-const VELVET_VERSION = '0.0.1';
+const VELVET_VERSION = '0.0.2';
 // ── SERVER IDENTITY GUARD ────────────────────────────────────────────────────
 // Detects when this browser's localStorage belongs to a different Velvet
 // instance (fresh install, IP change, reverse-proxy swap, second server).
@@ -1104,6 +1104,13 @@ async function api(method, path, body, signal) {
   if (signal) opts.signal = signal;
   const r = await fetch('/' + path, opts);
   if (!r.ok) {
+    if (r.status === 401 && S.token) {
+      // Token was sent but rejected → session expired/invalid. Clear it so the
+      // guarded background pollers (which short-circuit on empty S.token) stop
+      // hammering the server every cycle with a dead token.
+      S.token = '';
+      try { localStorage.removeItem('ms2_token'); } catch (_) {}
+    }
     let msg = 'HTTP ' + r.status;
     try { const j = await r.json(); if (j?.error) msg = j.error; } catch (_) {}
     const e = new Error(msg); e.status = r.status; throw e;
@@ -5024,6 +5031,19 @@ const VIZ = (() => {
   };
   // Brand overlay + fireworks state (active only when velvet preset is running)
   let _brandActive = false, _brandHue = 250;
+  // Velvet logo for the branded preset centrepiece. The source SVG uses
+  // width/height="100%" which renders as a 0×0 image on canvas in Firefox,
+  // so we re-size it to explicit pixels and load it as a data URL.
+  let _brandLogo = null, _brandLogoReady = false, _brandLogoSpin = 0;
+  fetch('/assets/img/velvet-logo.svg')
+    .then(r => r.text())
+    .then(svg => {
+      const sized = svg.replace('width="100%" height="100%"', 'width="512" height="512"');
+      const img = new Image();
+      img.onload = () => { _brandLogo = img; _brandLogoReady = true; };
+      img.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(sized);
+    })
+    .catch(() => {});
   // Frequency bands for beat detection and reactivity
   let _fwBassEnv = 0, _fwBassAvg = 0;
   let _fwMidEnv  = 0, _fwMidAvg  = 0;
@@ -5249,7 +5269,7 @@ const VIZ = (() => {
       }
       // Central beat pulse — a coloured ring expanding around the brand text
       _fwCenterPulses.push({
-        x: W * 0.5, y: H * 0.78,
+        x: W * 0.5, y: H * 0.5,
         r: W * 0.05,
         maxR: W * (0.20 + 0.28 * energy),
         hue: _fwBeatHue,
@@ -5258,7 +5278,7 @@ const VIZ = (() => {
       });
       if (energy > 0.50) {
         _fwCenterPulses.push({
-          x: W * 0.5, y: H * 0.78,
+          x: W * 0.5, y: H * 0.5,
           r: W * 0.02,
           maxR: W * (0.12 + 0.18 * energy),
           hue: (_fwBeatHue + 180) % 360,
@@ -5307,7 +5327,7 @@ const VIZ = (() => {
       const by = H * (0.30 + Math.random() * 0.30);
       _fwExplode({ x: bx, y: by, hue, palette, energy: energy * 0.7 }, W, H);
       _fwCenterPulses.push({
-        x: W * 0.5, y: H * 0.78,
+        x: W * 0.5, y: H * 0.5,
         r: W * 0.04,
         maxR: W * (0.12 + 0.16 * energy),
         hue,
@@ -5365,7 +5385,7 @@ const VIZ = (() => {
       // Central beat pulse — a coloured ring expanding around the brand text
       // so the big middle area always has a visible reaction to every beat.
       _fwCenterPulses.push({
-        x: W * 0.5, y: H * 0.78,
+        x: W * 0.5, y: H * 0.5,
         r: W * 0.05,
         maxR: W * (0.18 + 0.22 * energy),
         hue: _fwBeatHue,
@@ -5374,7 +5394,7 @@ const VIZ = (() => {
       });
       if (energy > 0.55) {
         _fwCenterPulses.push({
-          x: W * 0.5, y: H * 0.78,
+          x: W * 0.5, y: H * 0.5,
           r: W * 0.02,
           maxR: W * (0.10 + 0.16 * energy),
           hue: (_fwBeatHue + 180) % 360,
@@ -5546,44 +5566,74 @@ const VIZ = (() => {
       bctx.fill();
     }
 
-    // ── Text — static centre ────────────────────────────────
-    const glow   = (12 + 28 * _fwBassEnv + 10 * _fwTrebEnv + 30 * _fwTextPulse) * dpr;
-    const alpha  = Math.min(0.98, 0.52 + 0.43 * _fwBassEnv + 0.15 * _fwMidEnv + 0.20 * _fwTextPulse);
-    const pulseScale = 1 + 0.10 * _fwTextPulse;
-    const mainSz = Math.max(12 * dpr, Math.floor(H * 0.058 * pulseScale));
-    const subSz  = Math.max(8  * dpr, Math.floor(H * 0.026 * pulseScale));
-    const thxSz  = Math.max(7  * dpr, Math.floor(H * 0.022 * pulseScale));
-    const cx     = W * 0.5;
-    const cy     = H * 0.78;
-    const hue2   = (_brandHue + 55) % 360;
-    const col1   = `hsl(${_brandHue},80%,68%)`;
-    const col2   = `hsl(${hue2},80%,68%)`;
-    const grad1  = bctx.createLinearGradient(cx - W * 0.14, 0, cx + W * 0.14, 0);
-    grad1.addColorStop(0, col1); grad1.addColorStop(1, col2);
-    const grad2  = bctx.createLinearGradient(cx - W * 0.08, 0, cx + W * 0.08, 0);
-    grad2.addColorStop(0, col2); grad2.addColorStop(1, col1);
+    // ── Centre: Velvet logo with sound-reactive aura ──────────
+    const cx   = W * 0.5;
+    const cy   = H * 0.5;
+    const beat = _fwTextPulse;                          // 0–1, peaks on bass hits
+    const pulse   = 1 + 0.14 * beat + 0.06 * _fwBassEnv;
+    const logoSz  = Math.min(W, H) * 0.30 * pulse;
+    const haloR   = Math.min(W, H) * (0.24 + 0.12 * _fwBassEnv + 0.08 * beat);
+    _brandLogoSpin = (_brandLogoSpin + 0.0024 + 0.022 * _fwTrebEnv) % (Math.PI * 2);
+
+    // Halo + rotating aura rays — additive so they bloom over the visualizer
     bctx.save();
-    bctx.globalAlpha  = alpha;
+    bctx.globalCompositeOperation = 'lighter';
+    const halo = bctx.createRadialGradient(cx, cy, 0, cx, cy, haloR);
+    halo.addColorStop(0,    `hsla(${_fwCentreHue},95%,62%,${0.16 + 0.32 * _fwBassEnv + 0.22 * beat})`);
+    halo.addColorStop(0.5,  `hsla(${(_fwCentreHue + 60) % 360},90%,55%,${0.08 + 0.16 * _fwMidEnv})`);
+    halo.addColorStop(1,    'hsla(0,0%,0%,0)');
+    bctx.fillStyle = halo;
+    bctx.beginPath(); bctx.arc(cx, cy, haloR, 0, Math.PI * 2); bctx.fill();
+
+    const rays = 14;
+    const rIn  = logoSz * 0.60;
+    const rOut = logoSz * (0.74 + 0.42 * _fwTrebEnv + 0.20 * beat);
+    bctx.lineCap = 'round';
+    for (let i = 0; i < rays; i++) {
+      const a   = _brandLogoSpin + (i / rays) * Math.PI * 2;
+      const hue = (_fwBeatHue + i * (360 / rays)) % 360;
+      bctx.strokeStyle = `hsla(${hue},100%,72%,${0.08 + 0.42 * _fwTrebEnv + 0.30 * beat})`;
+      bctx.lineWidth   = Math.max(1, W * 0.0018 * (0.6 + _fwTrebEnv));
+      bctx.beginPath();
+      bctx.moveTo(cx + Math.cos(a) * rIn,  cy + Math.sin(a) * rIn);
+      bctx.lineTo(cx + Math.cos(a) * rOut, cy + Math.sin(a) * rOut);
+      bctx.stroke();
+    }
+    bctx.restore();
+
+    // The logo — soft glow, gentle bass-driven scale
+    if (_brandLogoReady) {
+      bctx.save();
+      bctx.globalAlpha = Math.min(1, 0.86 + 0.14 * _fwBassEnv);
+      bctx.shadowColor = `hsl(${_fwCentreHue},90%,65%)`;
+      bctx.shadowBlur  = (18 + 42 * _fwBassEnv + 30 * beat) * dpr;
+      bctx.drawImage(_brandLogo, cx - logoSz / 2, cy - logoSz / 2, logoSz, logoSz);
+      bctx.restore();
+    }
+
+    // Tagline below the logo
+    const tGlow  = (10 + 22 * _fwBassEnv + 8 * _fwTrebEnv + 24 * beat) * dpr;
+    const tAlpha = Math.min(0.95, 0.50 + 0.35 * _fwBassEnv + 0.18 * beat);
+    const subSz  = Math.max(8 * dpr, Math.floor(H * 0.026 * (1 + 0.08 * beat)));
+    const thxSz  = Math.max(7 * dpr, Math.floor(H * 0.020));
+    const hue2   = (_brandHue + 55) % 360;
+    const col1   = `hsl(${_brandHue},82%,72%)`;
+    const col2   = `hsl(${hue2},82%,72%)`;
+    const ty     = cy + logoSz * 0.56;
+    bctx.save();
+    bctx.globalAlpha  = tAlpha;
     bctx.textAlign    = 'center';
     bctx.textBaseline = 'middle';
-    // "Thank you for using"
+    bctx.font        = `700 ${subSz}px system-ui,sans-serif`;
+    bctx.shadowColor = col1;
+    bctx.shadowBlur  = tGlow;
+    bctx.fillStyle   = col1;
+    bctx.fillText('VELVET', cx, ty);
     bctx.font        = `${thxSz}px system-ui,sans-serif`;
     bctx.shadowColor = col2;
-    bctx.shadowBlur  = glow * 0.45;
-    bctx.fillStyle   = grad2;
-    bctx.fillText('Thank you for using', cx, cy - mainSz * 0.80 - thxSz * 0.5);
-    // "Velvet"
-    bctx.shadowColor  = col1;
-    bctx.shadowBlur   = glow;
-    bctx.font         = `bold ${mainSz}px system-ui,sans-serif`;
-    bctx.fillStyle    = grad1;
-    bctx.fillText('Velvet', cx, cy);
-    // "AroundMyRoom"
-    bctx.font         = `${subSz}px system-ui,sans-serif`;
-    bctx.shadowColor  = col2;
-    bctx.shadowBlur   = glow * 0.55;
-    bctx.fillStyle    = grad2;
-    bctx.fillText('AroundMyRoom', cx, cy + mainSz * 0.68 + subSz * 0.5);
+    bctx.shadowBlur  = tGlow * 0.5;
+    bctx.fillStyle   = col2;
+    bctx.fillText('AroundMyRoom', cx, ty + subSz * 0.95);
     bctx.restore();
   }
 
@@ -5742,10 +5792,13 @@ const VIZ = (() => {
   function _setCastMute(muted) {
     if (audioCtx && _castMuteGain) {
       _castMuteGain.gain.value = muted ? 0 : 1;
-      // Mirror element-level mute so there's no gap when AudioContext wasn't
-      // initialised yet at restore time (fallback may have set muted=true).
-      audioEl.muted = muted;
-      if (_xfadeEl) _xfadeEl.muted = muted;
+      // The gain node owns muting here — it sits AFTER the VU/spectrum analyser
+      // taps, so silencing browser output never starves the meters. audioEl must
+      // stay unmuted: muting it kills the MediaElementSource feeding the whole
+      // graph, including the analysers (VU dead while casting). Clear any stale
+      // element mute left over from the fallback path below.
+      audioEl.muted = false;
+      if (_xfadeEl) _xfadeEl.muted = false;
     } else {
       audioEl.muted = muted;
       if (_xfadeEl) _xfadeEl.muted = muted;

@@ -1,6 +1,6 @@
 {
   "name": "velvet",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "description": "Velvet — your personal music server",
   "type": "module",
   "main": "cli-boot-wrapper.js",
