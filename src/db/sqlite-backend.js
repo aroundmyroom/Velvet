@@ -2530,7 +2530,7 @@ export function getRecentlyAdded(vpaths, username, limit, ignoreVPaths, opts = {
     FROM files f
     LEFT JOIN user_metadata um ON f.hash = um.hash AND um.user = ?
     WHERE ${vIn.sql}${pf.sql}${ep.sql}${ip.sql} AND f.ts > 0
-    ORDER BY f.ts DESC, f.rowid DESC
+    ORDER BY CASE WHEN f.ts > unixepoch() THEN 0 ELSE f.ts END DESC, f.rowid DESC
     LIMIT ?
   `).all(username, ...vIn.params, ...pf.params, ...ep.params, ...ip.params, limit);
   return rows.map(mapFileRow);
