@@ -756,8 +756,9 @@ async function processFileResult(absPath, relPath, modTime, data) {
       try {
         let songInfo;
         try {
-          songInfo = (await parseFile(absPath, { skipCovers: false })).common;
+          songInfo = (await withTimeout(parseFile(absPath, { skipCovers: false }), PARSE_TIMEOUT_MS)).common;
         } catch (_e) {
+          logScannerTimeout('needs-art', absPath, _e);
           await reportError(absPath, 'art', `Failed to parse file for embedded art: ${_e.message}`, _e.stack);
           songInfo = {};
         }
@@ -783,7 +784,7 @@ async function processFileResult(absPath, relPath, modTime, data) {
       try {
         let cuepoints = '[]';
         try {
-          const parsed = await parseFile(absPath, { skipCovers: true });
+          const parsed = await withTimeout(parseFile(absPath, { skipCovers: true }), PARSE_TIMEOUT_MS);
           const cue = parsed.common?.cuesheet;
           const sampleRate = parsed.format?.sampleRate || null;
           if (cue && Array.isArray(cue.tracks) && cue.tracks.length && sampleRate) {
@@ -797,6 +798,7 @@ async function processFileResult(absPath, relPath, modTime, data) {
             if (pts.length > 1) cuepoints = JSON.stringify(pts);
           }
         } catch (_e) {
+          logScannerTimeout('needs-cue', absPath, _e);
           await reportError(absPath, 'cue', `Embedded cue sheet parse failed: ${_e.message}`, _e.stack);
         }
         if (cuepoints === '[]') {
@@ -832,10 +834,11 @@ async function processFileResult(absPath, relPath, modTime, data) {
       try {
         let duration = null;
         try {
-          const parsed = await parseFile(absPath, { skipCovers: true });
+          const parsed = await withTimeout(parseFile(absPath, { skipCovers: true }), PARSE_TIMEOUT_MS);
           const d = parsed.format?.duration;
           if (d != null && Number.isFinite(d)) { duration = Math.round(d * 1000) / 1000; }
         } catch (_e) {
+          logScannerTimeout('needs-duration', absPath, _e);
           await reportError(absPath, 'duration', `Duration parse failed: ${_e.message}`, _e.stack);
         }
         if (duration !== null) {
@@ -857,7 +860,7 @@ async function processFileResult(absPath, relPath, modTime, data) {
         let bitrate = null, sampleRate = null, channels = null, bitDepth = null;
         try {
           // Use duration:true so FLAC/WAV files return accurate bitrate and duration
-          const parsed = await parseFile(absPath, { skipCovers: true, duration: true });
+          const parsed = await withTimeout(parseFile(absPath, { skipCovers: true, duration: true }), PARSE_TIMEOUT_MS);
           const fmt = parsed.format || {};
           if (fmt.bitrate != null && Number.isFinite(fmt.bitrate) && fmt.bitrate > 0) {
             bitrate = Math.round(fmt.bitrate / 1000);
@@ -874,6 +877,7 @@ async function processFileResult(absPath, relPath, modTime, data) {
             } catch (e) { console.debug('[velvet]', e?.message ?? e); }
           }
         } catch (_e) {
+          logScannerTimeout('needs-tech-meta', absPath, _e);
           await reportError(absPath, 'bitrate', `Tech-meta parse failed: ${_e.message}`, _e.stack);
         }
         await ax({
@@ -892,7 +896,7 @@ async function processFileResult(absPath, relPath, modTime, data) {
       try {
         let albumVersion = null, albumVersionSource = null;
         try {
-          const parsed = await parseFile(absPath, { skipCovers: true });
+          const parsed = await withTimeout(parseFile(absPath, { skipCovers: true }), PARSE_TIMEOUT_MS);
           const common = parsed.common || {};
           const native = parsed.native || {};
           const fmt    = parsed.format || {};
@@ -902,6 +906,7 @@ async function processFileResult(absPath, relPath, modTime, data) {
           albumVersion       = deriveAlbumVersion(common, native, fmt, cfgFields);
           albumVersionSource = _lastAlbumVersionSource;
         } catch (_e) {
+          logScannerTimeout('needs-album-version', absPath, _e);
           await reportError(absPath, 'album-version', `Album version parse failed: ${_e.message}`, _e.stack);
         }
         await ax({
@@ -1143,12 +1148,25 @@ function withTimeout(promise, ms) {
   ]).finally(() => clearTimeout(timer));
 }
 
+function isTimeoutError(err) {
+  return err instanceof Error && /^Timed out after \d+ms$/.test(err.message);
+}
+
+function logScannerTimeout(phase, filePath, err) {
+  if (!isTimeoutError(err)) return;
+  console.error(
+    `[scanner] TIMEOUT phase=${phase} vpath="${loadJson.vpath}" scanId="${loadJson.scanId}" ` +
+    `file="${filePath}" timeoutMs=${PARSE_TIMEOUT_MS} message="${err.message}"`
+  );
+}
+
 async function _parseFileWithFallback(thisSong) {
   const empty = { songInfo: {track: { no: null, of: null }, disk: { no: null, of: null }}, fmtInfo: {}, nativeInfo: {} };
   try {
     const parsed = await withTimeout(parseFile(thisSong, { skipCovers: loadJson.skipImg }), PARSE_TIMEOUT_MS);
     return { songInfo: parsed.common, fmtInfo: parsed.format || {}, nativeInfo: parsed.native || {} };
   } catch (err) {
+    logScannerTimeout('full-parse', thisSong, err);
     if (!loadJson.skipImg) {
       try {
         const fallback = await withTimeout(parseFile(thisSong, { skipCovers: true }), PARSE_TIMEOUT_MS);
@@ -1156,6 +1174,7 @@ async function _parseFileWithFallback(thisSong) {
         await reportError(thisSong, 'parse', err.message, err.stack);
         return { songInfo: fallback.common, fmtInfo: fallback.format || {}, nativeInfo: fallback.native || {} };
       } catch (error) {
+        logScannerTimeout('full-parse-fallback', thisSong, error);
         console.error(`Warning: metadata parse error on ${thisSong}: ${error.message}`);
         await reportError(thisSong, 'parse', error.message, error.stack);
         return empty;
@@ -1197,7 +1216,7 @@ async function _extractEmbeddedCue(songInfo, fmtInfo, thisSong) {
       }
       if (cuePoints.length > 1) songInfo.cuepoints = JSON.stringify(cuePoints);
     }
-  } catch {
+  } catch (_e) {
     await reportError(thisSong, 'cue', `Embedded cue sheet parse failed: ${_e.message}`, _e.stack);
   }
 }
@@ -1206,7 +1225,7 @@ async function _extractSidecarCue(songInfo, thisSong) {
   try {
     const sidecar = parseSidecarCue(thisSong);
     if (sidecar) songInfo.cuepoints = JSON.stringify(sidecar);
-  } catch {
+  } catch (_e) {
     await reportError(thisSong, 'cue', `Sidecar .cue file parse failed: ${_e.message}`, _e.stack);
   }
 }
@@ -1215,7 +1234,7 @@ async function _extractM4bCue(songInfo, thisSong) {
   try {
     const chapters = await extractM4bChapters(thisSong, loadJson.ffprobePath);
     if (chapters) songInfo.cuepoints = JSON.stringify(chapters);
-  } catch {
+  } catch (_e) {
     await reportError(thisSong, 'cue', `M4B chapter extraction failed: ${_e.message}`, _e.stack);
   }
 }

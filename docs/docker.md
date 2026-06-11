@@ -43,6 +43,8 @@ The project was previously hosted at `github.com/aroundmyroom/mstream` (that rep
 |---|---|
 | `ghcr.io/aroundmyroom/mstream-velvet:vX.Y.Z-velvet` | `ghcr.io/aroundmyroom/velvet:vX.Y.Z` |
 
+or use `ghcr.io/aroundmyroom/velvet:latest`
+
 **Your data is fully compatible.** The volume structure (`save/`, `image-cache/`, `waveform-cache/`) is unchanged — no data migration is needed.
 
 ### Steps
