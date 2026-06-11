@@ -108,6 +108,14 @@ export async function serveIt(configFile) {
     logger.addFileLogger(config.program.storage.logsDirectory, config.program.logRetention);
   }
 
+  // Stamp the package.json version into every webapp cache-buster / version
+  // string so a release only ever edits package.json.
+  try {
+    const { syncWebappVersion } = require('../scripts/sync-webapp-version.cjs');
+    const { changed } = syncWebappVersion();
+    if (changed) winston.info(`[version] synced webapp to v${packageJson.version} (${changed} file(s))`);
+  } catch (e) { winston.warn('[version] webapp version sync skipped: ' + (e?.message || e)); }
+
   // Set server
   _createHttpServer();
 
