@@ -791,6 +791,7 @@ function _uKey(k)     { return `ms2_${k}_${S.username || ''}`; }
 // Queue persistence payload controls
 const _QUEUE_LOCAL_MAX = 600;
 const _QUEUE_LOCAL_BEFORE = 120;
+let _lastQueueDbFallback = 0;
 const _QUEUE_COMPACT_FIELDS = [
   'filepath', 'title', 'artist', 'album', 'album-artist',
   'duration', 'track', 'disk', 'year', 'genre',
@@ -851,10 +852,21 @@ function persistQueue() {
   try {
     localStorage.setItem(_queueKey(), JSON.stringify(snap));
   } catch (e) {
-    // If localStorage is unavailable/quota-limited, force an immediate DB write
-    // so refresh restores the newest queue instead of an older server snapshot.
-    console.warn('[queue] localStorage persist failed, forcing DB sync:', e?.message || e);
-    _syncQueueToDbNow();
+    // localStorage full — try a smaller slice (±25 songs around current track)
+    try {
+      const qIdx = Number.isInteger(S.idx) ? S.idx : 0;
+      const wStart = Math.max(0, qIdx - 25);
+      const mini = { ...snap, queue: _compactQueueList(S.queue.slice(wStart, qIdx + 26)), queueWindowStart: wStart };
+      localStorage.setItem(_queueKey(), JSON.stringify(mini));
+    } catch (e2) {
+      // Still over quota — sync to DB but throttle to at most once per 60 s
+      const now = Date.now();
+      if (now - _lastQueueDbFallback > 60000) {
+        _lastQueueDbFallback = now;
+        console.warn('[queue] localStorage persist failed, forcing DB sync:', e?.message || e);
+        _syncQueueToDbNow();
+      }
+    }
   }
   // DB sync is intentionally NOT called here — this runs every 5 s from the
   // timeupdate timer. Use _syncQueueToDb() for structural changes only.
@@ -5730,13 +5742,10 @@ const VIZ = (() => {
   function _setCastMute(muted) {
     if (audioCtx && _castMuteGain) {
       _castMuteGain.gain.value = muted ? 0 : 1;
-      // Always clear element-level mute here — the gain node now owns muting.
-      // audioEl.muted may have been set to true by the fallback path below
-      // (when AudioContext didn't exist yet at boot restore time) and it would
-      // never be cleared otherwise, causing permanent silence after switching
-      // back to browser output.
-      audioEl.muted = false;
-      if (_xfadeEl) _xfadeEl.muted = false;
+      // Mirror element-level mute so there's no gap when AudioContext wasn't
+      // initialised yet at restore time (fallback may have set muted=true).
+      audioEl.muted = muted;
+      if (_xfadeEl) _xfadeEl.muted = muted;
     } else {
       audioEl.muted = muted;
       if (_xfadeEl) _xfadeEl.muted = muted;
@@ -15701,7 +15710,7 @@ function _updateSonosRadioNavVisibility() {
 }
 
 async function _refreshSonosNavDetection() {
-  if (S.username && !S.token) return; // auth server but token gone
+  if (!S.token) return;
   try {
     const d = await api('GET', 'api/v1/sonos/devices');
     if (!d) {
@@ -19989,7 +19998,7 @@ function _renderScanProgress(scans) {
 }
 
 async function pollScan() {
-  if (S.username && !S.token) return; // auth server but token gone — stop; page refresh needed
+  if (!S.token) return;
   try {
     const d = await api('GET', 'api/v1/db/status');
     // Populate S.vpaths from status if checkSession() didn't do it yet
@@ -21308,7 +21317,7 @@ document.getElementById('queue-btn').addEventListener('click', toggleQueue);
   });
 
   async function _pollSched() {
-    if (S.username && !S.token) return; // auth server but token gone
+    if (!S.token) return; // not logged in yet (or token expired)
     if (!S.allowRadioRecording) { el.classList.add('hidden'); return; }
     try {
       const list = await api('GET', 'api/v1/radio/schedules/active');
