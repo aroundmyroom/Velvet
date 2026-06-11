@@ -1478,12 +1478,19 @@ function checkDirectoryForAlbumArt(songInfo) {
   let selectedImageFile = null;
   let newFileFlag = false;
 
+  // Resolve an art filename against the song directory, but validate against the
+  // library root so that ../Parent.jpg paths (multi-disc albums) are allowed.
+  const readArtFile = (imgFile) => {
+    const abs = path.resolve(directory, imgFile);
+    return fs.readFileSync(resolvePathWithinRoot(loadJson.directory, path.relative(loadJson.directory, abs)));
+  };
+
   // Search for a named file
   for (const imgFile of imageArray) {
     const imgMod = imgFile.toLowerCase();
     if (imgMod === 'folder.jpg' || imgMod === 'folder.jpeg' || imgMod === 'cover.jpg' || imgMod === 'cover.jpeg' || imgMod === 'album.jpg' || imgMod === 'album.jpeg' || imgMod === 'front.jpg' || imgMod === 'front.jpeg' || imgMod === 'folder.png' || imgMod === 'cover.png' || imgMod === 'album.png' || imgMod === 'front.png') {
       try {
-        imageBuffer = fs.readFileSync(resolvePathWithinRoot(directory, imgFile));
+        imageBuffer = readArtFile(imgFile);
         picFormat = getFileType(imgFile);
         selectedImageFile = imgFile;
       } catch (err) {
@@ -1492,11 +1499,11 @@ function checkDirectoryForAlbumArt(songInfo) {
       break;
     }
   }
-  
+
   // default to first file if none are named
   if (!imageBuffer) {
     try {
-      imageBuffer = fs.readFileSync(resolvePathWithinRoot(directory, imageArray[0]));
+      imageBuffer = readArtFile(imageArray[0]);
       picFormat = getFileType(imageArray[0]);
       selectedImageFile = imageArray[0];
     } catch (err) {
