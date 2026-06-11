@@ -78,7 +78,7 @@ That step refreshes production dependencies for new releases and security fixes.
 
 ## Switching from the old repo (one-time)
 
-Older Node installs were cloned from another location), which no longer exists. Velvet now lives at `https://github.com/aroundmyroom/Velvet.git` with a **fresh git history**, so a plain `git pull` fails with *"refusing to merge unrelated histories."*
+Older Node installs were cloned from another location, which no longer exists. Velvet now lives at `https://github.com/aroundmyroom/Velvet.git` with a **fresh git history**, so a plain `git pull` fails with *"refusing to merge unrelated histories."*
 
 Switch the existing clone over **in place** — your config and data are never touched, because they live in gitignored folders (`save/`, `image-cache/`, `waveform-cache/`, `bin/`).
 

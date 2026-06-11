@@ -22,7 +22,7 @@ function _detectRuntime() {
 
 const RUNTIME = _detectRuntime();
 
-const PING_URL   = 'https://velvet-velvet.aroundmyroom.workers.dev/ping';
+const PING_URL   = 'https://velvet.aroundmyroom.com/ping';
 const INTERVAL   = 24 * 60 * 60 * 1000; // 24 h
 const BOOT_DELAY = 60 * 1000;            // 60 s
 
