@@ -1,5 +1,5 @@
 'use strict';
-const VELVET_VERSION = '0.0.7';
+const VELVET_VERSION = '0.0.8';
 // ── SERVER IDENTITY GUARD ────────────────────────────────────────────────────
 // Detects when this browser's localStorage belongs to a different Velvet
 // instance (fresh install, IP change, reverse-proxy swap, second server).
@@ -22629,6 +22629,7 @@ let _sonosPollTimer = null;   // interval that syncs browser position from Sonos
 let _sonosConsecutiveFailures = 0; // counts consecutive unreachable transport-status responses; auto-deactivates at 3
 let _sonosCastTime = 0;       // timestamp of last successful _activateSonosCast — position sync skips corrections during grace period
 let _sonosStreamOffset = 0;   // seconds offset for transcoded streams started mid-file: Sonos reports stream-relative position, so add this to convert to original-file position
+let _sonosLastRecastAt = 0;   // throttle for the stopped-device self-heal re-cast (resume after the stream drops/idles)
 
 // Start polling Sonos position and syncing audioEl when casting is active.
 // When the user seeks in S2/CLIC, Sonos's position drifts from audioEl.currentTime.
@@ -22652,6 +22653,30 @@ function _startSonosPositionSync(ip) {
           return; // skip position drift correction when device is unreachable
         }
         _sonosConsecutiveFailures = 0; // reset on any successful response
+        // Self-heal: device is reachable but STOPPED while we should be playing
+        // (the HTTP stream dropped or the device idled). Re-cast the current track
+        // at the current position so audio resumes on its own — without the user
+        // toggling output Web↔Sonos. Skipped near the natural end of a track so the
+        // queue's own 'ended' advance pushes the next song instead.
+        const _cur = S.queue[S.idx];
+        const _dur = audioEl.duration || _cur?.duration || 0;
+        if (st.stopped && S.castingToSonos && _cur && !_cur.isRadio &&
+            !audioEl.paused && !_sonosLoadingSong &&
+            (Date.now() - _sonosCastTime) >= 8000 &&
+            (Date.now() - _sonosLastRecastAt) >= 10000 &&
+            _dur > 0 && (audioEl.currentTime || 0) < _dur - 5) {
+          _sonosLastRecastAt = Date.now();
+          _sonosCastTime = Date.now(); // restart grace so drift-sync doesn't snap the bar to 0 while Sonos re-seeks
+          _sonosLoadingSong = true;
+          setTimeout(() => { _sonosLoadingSong = false; }, 2500);
+          api('POST', 'api/v1/sonos/cast', {
+            ip, filepath: _cur.filepath,
+            title: _cur.title || '', artist: _cur.artist || '', album: _cur.album || '',
+            aaFile: _cur['album-art'] || null,
+            seekTo: Math.floor(audioEl.currentTime || 0),
+          }).then(r => _handleCastResponse(r)).catch(() => {});
+          return; // skip position-drift correction this tick
+        }
         const sonosPos = (st.position || 0) + _sonosStreamOffset; // compensate transcoded-stream offset
         const browserPos = audioEl.currentTime || 0;
         // Only sync position when Sonos is actively playing or paused — NOT when

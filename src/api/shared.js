@@ -53,9 +53,6 @@ export function setupBeforeSecurity(velvet) {
         ? 'The shared playlist link you followed is no longer valid.'
         : 'This shared playlist link does not exist or has been revoked.';
       const errorPage = sharePage.replace(
-        '<script></script>',
-        `<script>const sharedPlaylist = null</script>`
-      ).replace(
         /<title>[^<]*<\/title>/,
         `<title>Velvet – ${headline}</title>`
       ).replace(
@@ -69,9 +66,13 @@ export function setupBeforeSecurity(velvet) {
       return res.status(isExpired ? 410 : 404).send(errorPage);
     }
 
+    // Inject the playlist into a non-executable JSON data block (read by
+    // shared/app.js). Escaping '<' prevents a "</script>" breakout and keeps the
+    // page free of inline executable scripts, so it works under script-src 'self'.
+    const dataJson = JSON.stringify(sharedData).replace(/</g, '\\u003c');
     sharePage = sharePage.replace(
-      '<script></script>',
-      `<script>const sharedPlaylist = ${JSON.stringify(sharedData)}</script>`
+      '<script type="application/json" id="sh-data"></script>',
+      `<script type="application/json" id="sh-data">${dataJson}</script>`
     );
     res.send(sharePage);
   });
