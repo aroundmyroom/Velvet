@@ -628,7 +628,18 @@ async function _castWithRetry(track, ip, req, seekTo, paused) {
 let _cachedRooms  = [];
 let _lastScanTime = 0;           // 0 = never scanned
 let _scanInFlight = null;        // Promise — prevents parallel SSDP storms
+let _lastDiscoveryLog = '';      // de-dupe discovery logging: only log on state change
 const SCAN_TTL_MS = 5 * 60 * 1000; // 5 minutes
+
+// Discovery runs every ~5 min (TTL) for as long as a client is open. Logging
+// the outcome every time floods the journal when a device is simply offline.
+// Log only when the outcome changes (device found / went away / error), so a
+// persistent state produces exactly one line, not one every scan.
+function _logDiscovery(sig, level, msg) {
+  if (sig === _lastDiscoveryLog) return;
+  _lastDiscoveryLog = sig;
+  (level === 'warn' ? console.warn : console.log)(msg);
+}
 
 // Per-IP cast guard: only ONE cast can be in flight per device at a time.
 // When a new cast arrives while one is already running, the previous attempt
@@ -780,7 +791,8 @@ async function _discoverRooms(seedIp) {
   try {
     const rooms = await _ssdpDiscover(4000);
     if (rooms.length > 0) {
-      console.log(`[sonos] SSDP found ${rooms.length} device(s):`, rooms.map(r => `${r.name} @ ${r.ip}`).join(', '));
+      _logDiscovery('ssdp:' + rooms.map(r => r.ip).sort().join(','), 'info',
+        `[sonos] SSDP found ${rooms.length} device(s): ${rooms.map(r => `${r.name} @ ${r.ip}`).join(', ')}`);
       return rooms;
     }
   } catch (e) {
@@ -789,20 +801,22 @@ async function _discoverRooms(seedIp) {
 
   // Step 2: fall back to configured seed IP
   if (!seedIp) {
-    console.warn('[sonos] SSDP found nothing and no seed IP configured.');
+    _logDiscovery('no-seed', 'warn', '[sonos] SSDP found nothing and no seed IP configured.');
     return [];
   }
   try {
     assertPrivateIp(seedIp);
     const room = await _fetchDeviceDescription(seedIp);
     if (!room) {
-      console.warn(`[sonos] Device at ${seedIp} unreachable or not a Sonos device.`);
+      _logDiscovery('unreachable:' + seedIp, 'warn',
+        `[sonos] Device at ${seedIp} unreachable or not a Sonos device.`);
       return [];
     }
-    console.log(`[sonos] Seed-IP probe succeeded: ${room.name} @ ${room.ip}`);
+    _logDiscovery('seed-ok:' + room.ip, 'info',
+      `[sonos] Seed-IP probe succeeded: ${room.name} @ ${room.ip}`);
     return [room];
   } catch (e) {
-    console.warn('[sonos] Seed-IP probe error:', e.message || e);
+    _logDiscovery('seed-error:' + seedIp, 'warn', `[sonos] Seed-IP probe error: ${e.message || e}`);
     return [];
   }
 }

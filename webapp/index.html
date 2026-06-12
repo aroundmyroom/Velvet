@@ -13,7 +13,7 @@
   <script defer src="../assets/js/lib/butterchurn.min.js"></script>
   <script defer src="../assets/js/lib/audiomotion-analyzer.js"></script>
   <script defer src="../assets/js/lib/qr.js"></script>
-  <link rel="stylesheet" href="/style.css?v=0.0.9">
+  <link rel="stylesheet" href="/style.css?v=0.1.0">
   <script src="/assets/js/i18n.js"></script>
 </head>
 <body>
@@ -24,8 +24,9 @@
     <div class="login-brand">
       <img src="/assets/img/velvet-logo.svg" alt="Velvet" width="140" height="140" style="display:block;margin:0 auto 8px">
       <h1>Velvet</h1>
-      <p data-i18n="player.login.tagline">a music server — evolved with AI slop. Enter the danger zone.</p>
-      <p id="login-version" class="login-version-tag">v0.0.9</p>
+      <p data-i18n="player.login.tagline">a music server — evolved with AI slop.</p>
+      <p data-i18n="player.login.tagline2">Enter the danger zone.</p>
+      <p id="login-version" class="login-version-tag">v0.1.0</p>
     </div>
     <form id="login-form">
       <label class="field-label" for="l-user" data-i18n="player.login.username">Username</label>
@@ -44,7 +45,7 @@
   <div class="modal-box rec-modal-box">
     <div class="rec-modal-header">
       <h3 style="margin:0;font-size:1.05rem;">&#9679; <span data-i18n="player.modal.recTitle">Record Radio Stream</span></h3>
-      <button id="radio-rec-modal-close" class="btn-ghost" style="padding:2px 8px;font-size:1.1rem;line-height:1;">&times;</button>
+      <button id="radio-rec-modal-close" class="btn-ghost" style="padding:2px 8px;font-size:1.1rem;line-height:1;" data-i18n="player.modal.close" data-i18n-attr="aria-label" aria-label="Close">&times;</button>
     </div>
     <div class="rec-tabs">
       <button class="rec-tab rec-tab-active" data-tab="now" data-i18n="player.modal.recNow">Record Now</button>
@@ -354,7 +355,7 @@
       </div>
       <div class="np-progress">
         <span id="np-time-cur">0:00</span>
-        <div id="np-prog-track" class="prog-track">
+        <div id="np-prog-track" class="prog-track" role="slider" tabindex="0" data-i18n="player.ctrl.seek" data-i18n-attr="aria-label" aria-label="Seek" aria-valuemin="0" aria-valuemax="0" aria-valuenow="0">
           <div id="np-prog-fill" class="prog-fill"><div class="prog-thumb"></div></div>
           <div id="np-cue-markers" class="cue-markers"></div>
         </div>
@@ -902,7 +903,7 @@
     <!-- Full-width progress timeline -->
     <div class="player-progress">
       <span id="time-cur">0:00</span>
-      <div id="prog-track" class="prog-track">
+      <div id="prog-track" class="prog-track" role="slider" tabindex="0" data-i18n="player.ctrl.seek" data-i18n-attr="aria-label" aria-label="Seek" aria-valuemin="0" aria-valuemax="0" aria-valuenow="0">
         <canvas id="waveform-canvas" class="waveform-canvas"></canvas>
         <div id="prog-fill" class="prog-fill"></div>
         <div id="prog-thumb" class="prog-thumb"></div>
@@ -1015,7 +1016,7 @@
 
 <div id="tip-box"></div>
 <script src="/assets/js/player-locale.js"></script>
-  <script src="/app.js?v=0.0.9"></script>
+  <script src="/app.js?v=0.1.0"></script>
 
 </body>
 </html>

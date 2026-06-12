@@ -3535,6 +3535,8 @@ const backupView = Vue.component('backup-view', {
       backups: [],
       isLoading: true,
       isCreating: false,
+      params: ADMINDATA.serverParams,
+      paramsTS: ADMINDATA.serverParamsUpdated,
     };
   },
   mounted: async function() {
@@ -3578,6 +3580,34 @@ const backupView = Vue.component('backup-view', {
                 <span v-if="isCreating">{{ t('admin.backup.btnCreating') }}</span>
                 <span v-else>{{ t('admin.backup.btnCreate') }}</span>
               </button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="row">
+        <div class="col s12">
+          <div class="card">
+            <div class="card-content">
+              <span class="card-title">{{ t('admin.logs.title') }}</span>
+              <div v-if="paramsTS.ts === 0" style="text-align:center;padding:1rem 0;">
+                <svg class="spinner" width="40px" height="40px" viewBox="0 0 66 66" xmlns="http://www.w3.org/2000/svg"><circle class="spinner-path" fill="none" stroke-width="6" stroke-linecap="round" cx="33" cy="33" r="30"></circle></svg>
+              </div>
+              <table v-else>
+                <tbody>
+                  <tr>
+                    <td><b>{{ t('admin.logs.labelWriteLogs') }}</b> {{params.writeLogs === true ? t('admin.logs.writeLogsEnabled') : t('admin.logs.writeLogsDisabled')}}</td>
+                    <td><a v-on:click="toggleWriteLogs" class="btn-sm btn-sm-edit">edit</a></td>
+                  </tr>
+                  <tr>
+                    <td><b>{{ t('admin.logs.labelLogsDirectory') }}</b> {{params.storage.logsDirectory}}</td>
+                    <td style="color:var(--t2);font-size:.82rem">{{ t('admin.settings.editInConfigHint') }}</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <div class="card-action">
+              <a v-on:click="downloadLogs()" class="btn">{{ t('admin.logs.btnDownload') }}</a>
             </div>
           </div>
         </div>
@@ -3632,6 +3662,39 @@ const backupView = Vue.component('backup-view', {
     formatDate: function(ms) {
       if (!ms) return '—';
       return new Date(ms).toLocaleString();
+    },
+    downloadLogs: async function() {
+      try {
+        const response = await API.axios({
+          url: `${API.url()}/api/v1/admin/logs/download`,
+          method: 'GET',
+          responseType: 'blob',
+        });
+        const url = window.URL.createObjectURL(new Blob([response.data]));
+        const link = document.createElement('a');
+        link.href = url;
+        link.setAttribute('download', 'velvet-logs.zip');
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+      } catch (err) {
+        console.debug('[velvet]', err?.message ?? err);
+        iziToast.error({ title: this.t('admin.logs.toastDownloadFailed'), position: 'topCenter', timeout: 3500 });
+      }
+    },
+    toggleWriteLogs: function() {
+      adminConfirm(`<b>${this.params.writeLogs === true ? 'Disable' : 'Enable'} Writing Logs To Disk?</b>`, '', `${this.params.writeLogs === true ? 'Disable' : 'Enable'}`, () => {
+        API.axios({
+          method: 'POST',
+          url: `${API.url()}/api/v1/admin/config/write-logs`,
+          data: { writeLogs: !this.params.writeLogs }
+        }).then(() => {
+          Vue.set(ADMINDATA.serverParams, 'writeLogs', !this.params.writeLogs);
+          iziToast.success({ title: this.t('admin.common.updatedSuccessfully'), position: 'topCenter', timeout: 3500 });
+        }).catch(() => {
+          iziToast.error({ title: 'Failed', position: 'topCenter', timeout: 3500 });
+        });
+      });
     },
   }
 });
@@ -4016,7 +4079,7 @@ const infoView = Vue.component('info-view', {
               </div>
               <p style="color:var(--t3);font-size:.8rem;margin-bottom:0;">
                 {{t('admin.info.legalSourceRef')}}
-                <a href="https://github.com/IrosTheBeggar/Velvet" target="_blank" rel="noopener" style="color:var(--t2);">github.com/IrosTheBeggar/Velvet</a>.
+                <a href="https://github.com/IrosTheBeggar/mStream" target="_blank" rel="noopener" style="color:var(--t2);">github.com/IrosTheBeggar/mStream</a>.
               </p>
             </div>
           </div>
@@ -5185,97 +5248,6 @@ const federationView = Vue.component('federation-view', {
   }
 });
 
-const logsView = Vue.component('logs-view', {
-  data() {
-    return {
-      params: ADMINDATA.serverParams,
-      paramsTS: ADMINDATA.serverParamsUpdated
-    };
-  },
-  template: `
-    <div v-if="paramsTS.ts === 0" class="row">
-      <svg class="spinner" width="65px" height="65px" viewBox="0 0 66 66" xmlns="http://www.w3.org/2000/svg"><circle class="spinner-path" fill="none" stroke-width="6" stroke-linecap="round" cx="33" cy="33" r="30"></circle></svg>
-    </div>
-    <div v-else>
-      <div class="container">
-        <div class="row">
-          <div class="col s12">
-            <div class="card">
-              <div class="card-content">
-                <span class="card-title">{{ t('admin.logs.title') }}</span>
-                <table>
-                  <tbody>
-                    <tr>
-                      <td><b>{{ t('admin.logs.labelWriteLogs') }}</b> {{params.writeLogs === true ? t('admin.logs.writeLogsEnabled') : t('admin.logs.writeLogsDisabled')}}</td>
-                      <td>
-                        <a v-on:click="toggleWriteLogs" class="btn-sm btn-sm-edit">edit</a>
-                      </td>
-                    </tr>
-                    <tr>
-                      <td><b>{{ t('admin.logs.labelLogsDirectory') }}</b> {{params.storage.logsDirectory}}</td>
-                      <td style="color:var(--t2);font-size:.82rem">{{ t('admin.settings.editInConfigHint') }}</td>
-                    </tr>
-                  </tbody>
-                </table>
-              </div>
-              <div class="card-action">
-                <a v-on:click="downloadLogs()" class="btn">{{ t('admin.logs.btnDownload') }}</a>
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>`,
-  methods: {
-    downloadLogs: async function() {
-      try {
-        const response = await API.axios({
-          url: `${API.url()}/api/v1/admin/logs/download`, //your url
-          method: 'GET',
-          responseType: 'blob', // important
-        });
-
-        const url = window.URL.createObjectURL(new Blob([response.data]));
-        const link = document.createElement('a');
-        link.href = url;
-        link.setAttribute('download', 'velvet-logs.zip'); //or any other extension
-        document.body.appendChild(link);
-        link.click();
-      } catch (err) {
-        console.log(err)
-        iziToast.error({
-          title: this.t('admin.logs.toastDownloadFailed'),
-          position: 'topCenter',
-          timeout: 3500
-        });
-      }
-    },
-    toggleWriteLogs: function() {
-            adminConfirm(`<b>${this.params.writeLogs === true ? 'Disable' : 'Enable'} Writing Logs To Disk?</b>`, '', `${this.params.writeLogs === true ? 'Disable' : 'Enable'}`, () => {
-        API.axios({
-                      method: 'POST',
-                      url: `${API.url()}/api/v1/admin/config/write-logs`,
-                      data: { writeLogs: !this.params.writeLogs }
-                    }).then(() => {
-                      // update frontend data
-                      Vue.set(ADMINDATA.serverParams, 'writeLogs', !this.params.writeLogs);
-
-                      iziToast.success({
-                        title: this.t('admin.common.updatedSuccessfully'),
-                        position: 'topCenter',
-                        timeout: 3500
-                      });
-                    }).catch(() => {
-                      iziToast.error({
-                        title: 'Failed',
-                        position: 'topCenter',
-                        timeout: 3500
-                      });
-                    });
-      });
-    },
-  }
-});
 
 const lockView = Vue.component('lock-view', {
   data() {
@@ -10166,7 +10138,6 @@ const vm = new Vue({
     'sonos-view': sonosView,
     'dlna-view': dlnaView,
     'federation-view': federationView,
-    'logs-view': logsView,
     'rpn-view': rpnView,
     'lock-view': lockView,
     'scan-errors-view': scanErrorsView,

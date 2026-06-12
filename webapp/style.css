@@ -1033,11 +1033,13 @@ body.vu-needle-mode .eq-panel{bottom:calc(var(--player) + 8px);}
 #output-dropdown .out-battery.out-battery-low{color:#f97316;opacity:1;}
 /* Status dot — shown to the left of the room label; colour = device readiness */
 #output-dropdown .out-status-dot{width:8px;height:8px;border-radius:50%;flex-shrink:0;margin-right:8px;transition:background .3s;}
-#output-dropdown .out-status-dot.out-status-checking{background:var(--t4);animation:out-status-pulse 1.4s ease-in-out infinite;}
+#output-dropdown .out-status-dot.out-status-checking{background:#facc15;animation:out-status-pulse 1.4s ease-in-out infinite;}
 #output-dropdown .out-status-dot.out-status-warming{background:#facc15;}
 #output-dropdown .out-status-dot.out-status-ready{background:#4ade80;}
 #output-dropdown .out-status-dot.out-status-offline{background:#f87171;}
 @keyframes out-status-pulse{0%,100%{opacity:.35;}50%{opacity:1;}}
+#output-dropdown .out-row.out-row-disabled{opacity:.45;cursor:not-allowed;}
+#output-dropdown .out-row.out-row-disabled:hover{background:none;}
 #output-dropdown .out-info-btn{margin-left:6px;flex-shrink:0;background:none;border:none;padding:3px 4px;cursor:pointer;color:var(--t2);border-radius:4px;line-height:0;transition:color .15s,background .15s;}
 #output-dropdown .out-info-btn:hover{color:var(--t1);background:var(--hover);}
 #output-dropdown .out-info-btn.out-info-btn-active{color:var(--primary);}

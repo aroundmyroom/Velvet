@@ -1,5 +1,5 @@
 'use strict';
-const VELVET_VERSION = '0.0.9';
+const VELVET_VERSION = '0.1.0';
 // ── SERVER IDENTITY GUARD ────────────────────────────────────────────────────
 // Detects when this browser's localStorage belongs to a different Velvet
 // instance (fresh install, IP change, reverse-proxy swap, second server).
@@ -317,6 +317,15 @@ function fmt(sec) {
 }
 // Update both the player-bar and NP-modal time spans to reflect current
 // playback position, honouring the timeFlipped display mode.
+function _setSeekAria(now, max, text) {
+  for (const id of ['prog-track', 'np-prog-track']) {
+    const el = document.getElementById(id);
+    if (!el) continue;
+    el.setAttribute('aria-valuemax', String(Math.floor(max) || 0));
+    el.setAttribute('aria-valuenow', String(Math.floor(now) || 0));
+    el.setAttribute('aria-valuetext', text);
+  }
+}
 function _renderTimes() {
   if (S.queue[S.idx]?.isRadio) {
     const elapsed = _radioPlayStart ? Math.floor((Date.now() - _radioPlayStart) / 1000) : 0;
@@ -324,6 +333,7 @@ function _renderTimes() {
     document.getElementById('time-total').textContent    = fmt(elapsed);
     document.getElementById('np-time-cur').textContent   = '0:00';
     document.getElementById('np-time-total').textContent = fmt(elapsed);
+    _setSeekAria(0, 0, t('player.ctrl.liveStream') || 'Live stream');
     return;
   }
   if (!audioEl.duration) return;
@@ -335,6 +345,7 @@ function _renderTimes() {
   document.getElementById('time-total').textContent    = rText;
   document.getElementById('np-time-cur').textContent   = lText;
   document.getElementById('np-time-total').textContent = rText;
+  _setSeekAria(cur, total, fmt(cur) + ' / ' + fmt(total));
 }
 function _toggleTimeFlipped(e) {
   e.stopPropagation();   // prevent click bubbling to the seek bar container
@@ -17935,7 +17946,7 @@ function _openOutputPicker() {
     lbl.textContent = label;
     el.appendChild(dot);
     el.appendChild(lbl);
-    el.addEventListener('click', () => { _closeOutputDropdown(); onClick(); });
+    el.addEventListener('click', () => { if (el.dataset.disabled === '1') return; _closeOutputDropdown(); onClick(); });
     return el;
   }
 
@@ -17986,23 +17997,26 @@ function _openOutputPicker() {
       statusDot.className = 'out-status-dot out-status-checking';
       statusDot.title = t('player.output.statusChecking');
       rowEl.insertBefore(statusDot, rowEl.firstChild);
+      const _markOffline = () => {
+        statusDot.className = 'out-status-dot out-status-offline';
+        statusDot.title = t('player.output.statusOffline');
+        rowEl.dataset.disabled = '1';        // not selectable while unreachable
+        rowEl.classList.add('out-row-disabled');
+      };
+      const _markReady = () => {
+        statusDot.className = 'out-status-dot out-status-ready';
+        statusDot.title = t('player.output.statusReady');
+        rowEl.dataset.disabled = '';
+        rowEl.classList.remove('out-row-disabled');
+      };
       api('GET', 'api/v1/sonos/transport-status?ip=' + encodeURIComponent(room.ip)).then(st => {
         if (!rowEl.isConnected) return;
-        if (st?.unreachable) {
-          // SSDP found the device (it's in the rooms list) but UPnP renderer not ready yet.
-          // This typically means the device just booted and needs ~10s more to warm up.
-          statusDot.className = 'out-status-dot out-status-warming';
-          statusDot.title = t('player.output.statusWarmingUp');
-        } else {
-          statusDot.className = 'out-status-dot out-status-ready';
-          statusDot.title = t('player.output.statusReady');
-        }
-      }).catch(() => {
-        if (rowEl.isConnected) {
-          statusDot.className = 'out-status-dot out-status-offline';
-          statusDot.title = t('player.output.statusOffline');
-        }
-      });
+        // transport-status returns { unreachable:true } for an offline device
+        // (e.g. EHOSTUNREACH) — treat that as offline (red, not selectable), not
+        // a transient "warming up". The dot starts yellow (checking) and resolves
+        // to green (ready) or red (offline); on re-detection it goes red→yellow→green.
+        if (st?.unreachable) _markOffline(); else _markReady();
+      }).catch(() => { if (rowEl.isConnected) _markOffline(); });
 
       // ℹ️ info button — shows device info panel inline
       const infoBtn = document.createElement('button');
@@ -23835,8 +23849,130 @@ document.addEventListener('keydown', e => {
         _showInfoStrip('', _shuffleStripHtml(), 3000, true);
       }
       break;
+    case 'KeyR':
+      if (!e.ctrlKey && !e.metaKey) document.getElementById('repeat-btn')?.click();
+      break;
+    case 'Slash':
+      e.preventDefault();
+      if (e.shiftKey) { _toggleShortcutsHelp(); }            // "?" — keyboard help
+      else { viewSearch(); setTimeout(() => document.getElementById('search-input')?.focus(), 60); }
+      break;
   }
 });
+
+// ── Modal accessibility: dialog semantics + focus trap + Esc + focus restore ──
+// Applies to every .modal-overlay (static or dynamically added). Markup stays
+// unchanged; role/aria-modal/aria-labelledby are set here, plus Tab-trapping,
+// Escape-to-close, and focus restoration to the element that opened the modal.
+(function _initModalA11y() {
+  const FOCUSABLE = 'a[href],button:not([disabled]),input:not([disabled]),select:not([disabled]),textarea:not([disabled]),[tabindex]:not([tabindex="-1"])';
+  let _restoreTo = null;
+  const isVisible    = m => !m.classList.contains('hidden') && m.offsetParent !== null;
+  const focusablesIn = m => [...m.querySelectorAll(FOCUSABLE)].filter(el => el.offsetParent !== null);
+  const openModals   = () => [...document.querySelectorAll('.modal-overlay')].filter(isVisible);
+
+  function dress(m) {
+    if (m.getAttribute('role') === 'dialog') return;
+    m.setAttribute('role', 'dialog');
+    m.setAttribute('aria-modal', 'true');
+    const h = m.querySelector('h1,h2,h3,h4,.modal-title,.card-title');
+    if (h) {
+      if (!h.id) h.id = 'mdlh-' + Math.random().toString(36).slice(2, 9);
+      m.setAttribute('aria-labelledby', h.id);
+    }
+  }
+  function onShown(m) {
+    dress(m);
+    _restoreTo = document.activeElement;
+    const f = focusablesIn(m);
+    setTimeout(() => { try { (f[0] || m).focus(); } catch (_) { /* not focusable */ } }, 0);
+  }
+  function onHidden() {
+    if (openModals().length) return;            // another modal is still up
+    if (_restoreTo && _restoreTo.focus) { try { _restoreTo.focus(); } catch (_) { /* gone */ } }
+    _restoreTo = null;
+  }
+
+  const attrObs = new MutationObserver(muts => {
+    for (const mu of muts) {
+      const el = mu.target;
+      if (!el.classList || !el.classList.contains('modal-overlay')) continue;
+      const wasHidden = (mu.oldValue || '').split(/\s+/).includes('hidden');
+      const isHidden  = el.classList.contains('hidden');
+      if (wasHidden && !isHidden) onShown(el);
+      else if (!wasHidden && isHidden) onHidden();
+    }
+  });
+  function watch(m) { dress(m); attrObs.observe(m, { attributes: true, attributeFilter: ['class'], attributeOldValue: true }); }
+  document.querySelectorAll('.modal-overlay').forEach(watch);
+
+  // Catch dynamically added/removed modals (e.g. the shortcuts help overlay).
+  new MutationObserver(muts => {
+    for (const mu of muts) {
+      for (const n of mu.addedNodes || []) {
+        if (n.nodeType !== 1) continue;
+        if (n.classList?.contains('modal-overlay')) { watch(n); if (isVisible(n)) onShown(n); }
+        n.querySelectorAll?.('.modal-overlay').forEach(watch);
+      }
+      for (const n of mu.removedNodes || []) {
+        if (n.nodeType === 1 && n.classList?.contains('modal-overlay')) onHidden();
+      }
+    }
+  }).observe(document.body, { childList: true, subtree: true });
+
+  // Tab-trap + Esc-close for the topmost open modal.
+  document.addEventListener('keydown', e => {
+    if (e.key !== 'Tab' && e.key !== 'Escape') return;
+    const open = openModals();
+    if (!open.length) return;
+    const m = open[open.length - 1];
+    if (e.key === 'Escape') {
+      const closeBtn = m.querySelector('[id$="-cancel"],[id$="-close"],[id$="-close-btn"],[data-modal-close]');
+      if (closeBtn) { e.preventDefault(); closeBtn.click(); } else { m.classList.add('hidden'); }
+      return;
+    }
+    const f = focusablesIn(m);
+    if (!f.length) { e.preventDefault(); try { m.focus(); } catch (_) { /* noop */ } return; }
+    const first = f[0], last = f[f.length - 1];
+    if (!m.contains(document.activeElement)) { e.preventDefault(); first.focus(); }
+    else if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+    else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+  });
+})();
+
+// ── Keyboard-shortcuts help overlay (toggled with "?") ────────────────────────
+let _shortcutsHelpEl = null;
+function _toggleShortcutsHelp() {
+  if (_shortcutsHelpEl) { _shortcutsHelpEl.remove(); _shortcutsHelpEl = null; return; }
+  const kbd = s => `<kbd style="background:var(--raised,#2a2a2a);border:1px solid var(--border,#444);border-radius:4px;padding:1px 6px;font-family:monospace;font-size:.82rem">${esc(s)}</kbd>`;
+  const rows = [
+    ['Space', t('player.shortcuts.playPause')],
+    ['← / →', t('player.shortcuts.seek')],
+    ['Shift + ← / →', t('player.shortcuts.prevNext')],
+    ['↑ / ↓', t('player.shortcuts.volume')],
+    ['M', t('player.shortcuts.mute')],
+    ['S', t('player.shortcuts.shuffle')],
+    ['R', t('player.shortcuts.repeat')],
+    ['/', t('player.shortcuts.search')],
+    ['?', t('player.shortcuts.help')],
+    ['Esc', t('player.shortcuts.close')],
+  ];
+  const el = document.createElement('div');
+  el.className = 'modal-overlay';
+  el.innerHTML = `<div class="modal-box" style="background:var(--bg2,#1b1b1b);border:1px solid var(--border,#444);border-radius:10px;padding:1.1rem 1.3rem;max-width:430px;width:90%">
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:1rem;margin-bottom:.7rem">
+      <h3 class="modal-title" style="margin:0">${esc(t('player.shortcuts.title'))}</h3>
+      <button id="shortcuts-help-close" class="btn-ghost" aria-label="${esc(t('player.modal.close'))}" style="font-size:1.3rem;line-height:1;padding:2px 8px">&times;</button>
+    </div>
+    <table style="width:100%;border-collapse:collapse">
+      ${rows.map(([k, d]) => `<tr><td style="padding:5px 14px 5px 0;white-space:nowrap">${kbd(k)}</td><td style="padding:5px 0;color:var(--t2)">${esc(d)}</td></tr>`).join('')}
+    </table>
+  </div>`;
+  document.body.appendChild(el);
+  _shortcutsHelpEl = el;
+  el.addEventListener('click', ev => { if (ev.target === el) _toggleShortcutsHelp(); });
+  el.querySelector('#shortcuts-help-close').addEventListener('click', () => _toggleShortcutsHelp());
+}
 
 // ── SIDEBAR COLLAPSE ─────────────────────────────────────────
 (function initSectionCollapse() {

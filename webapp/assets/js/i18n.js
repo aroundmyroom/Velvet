@@ -277,7 +277,16 @@ const I18N = (() => {
       const translated = mod.t(key);
       if (translated === key) { return; } // no translation found — leave as-is
       if (attr) {
-        el.setAttribute(attr, translated);
+        // Support one or more space/comma-separated attributes (e.g. "title,aria-label").
+        for (const a of attr.split(/[\s,]+/).filter(Boolean)) el.setAttribute(a, translated);
+        // Icon-only controls usually carry only a title; mirror it to aria-label
+        // so screen readers announce them (skip if already labelled or has text).
+        if (/(^|[\s,])title([\s,]|$)/.test(attr) && !el.hasAttribute('aria-label')) {
+          const txt = (el.textContent || '').trim();
+          if (!txt && (el.tagName === 'BUTTON' || el.tagName === 'A' || el.getAttribute('role') === 'button')) {
+            el.setAttribute('aria-label', translated);
+          }
+        }
       } else {
         el.textContent = translated;
       }

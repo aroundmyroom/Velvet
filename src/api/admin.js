@@ -1213,14 +1213,29 @@ export function setup(velvet) {
     const archive = new ZipArchive();
     archive.on('error', err => {
       winston.error('Download Error', { stack: err });
-      res.status(500).json({ error: err.message });
+      if (!res.headersSent) res.status(500).json({ error: err.message });
     });
 
     res.attachment(`velvet-logs.zip`);
-
-    //streaming magic
     archive.pipe(res);
-    archive.directory(config.program.storage.logsDirectory, false)
+
+    // Include ONLY the app's own *.log files from the last 7 days. Keeps the
+    // shareable bundle small and excludes the winston rotate `.<hash>-audit.json`
+    // files, README.md, and any stray sub-folders that may sit in the log dir.
+    const logsDir = config.program.storage.logsDirectory;
+    const cutoff  = Date.now() - 7 * 24 * 60 * 60 * 1000;
+    try {
+      for (const name of fs.readdirSync(logsDir)) {
+        if (!name.endsWith('.log')) continue;
+        const full = path.join(logsDir, name);
+        let st;
+        try { st = fs.statSync(full); } catch { continue; }
+        if (!st.isFile() || st.mtimeMs < cutoff) continue;
+        archive.file(full, { name });
+      }
+    } catch (e) {
+      winston.warn('[logs] download: cannot read logs directory: ' + (e?.message || e));
+    }
     archive.finalize();
   });
 
