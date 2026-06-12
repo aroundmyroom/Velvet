@@ -350,6 +350,26 @@ GET /media/<vpath>/<path/to/song.mp3>?token=<jwt>
 
 ---
 
+## Album-Art Workshop *(Velvet)*
+
+Admin only. Finds albums (folders) with no cover art, fetches suggestions from Discogs/Deezer/iTunes, and writes `cover.jpg` on approval. The suggestion pass runs through the background broker (serialised, scan-aware).
+
+| Method | Endpoint | Params / Body | Description |
+|---|---|---|---|
+| `GET` | `/api/v1/admin/art/status` | — | Worker state, per-status counts, current album, and the `autoApprove` / `autoSuggestNewContent` config. |
+| `GET` | `/api/v1/admin/art/candidates` | `?offset=&limit=&status=&q=` | Paginated art-less albums with their cached suggestions. `status` filters by `pending\|suggested\|notfound\|applied\|skipped\|error`. `q` matches folder/album/artist (substring). Returns `{ total, candidates[] }`. |
+| `POST` | `/api/v1/admin/art/scan` | — | Reconcile candidates and start a suggestion pass via the bg-broker. Returns `{ status }`. |
+| `POST` | `/api/v1/admin/art/stop` | — | Request the running suggestion pass to stop after the current album. |
+| `POST` | `/api/v1/admin/art/suggest` | `{ albumKey }` | Re-fetch suggestions for one album now. Returns `{ status, suggestions }`. |
+| `POST` | `/api/v1/admin/art/apply` | `{ albumKey, releaseId? \| coverUrl?, source? }` | Download the chosen cover, write `cover.jpg` into the album folder, cache + thumbnail it, and point every track in the folder at it. Returns `{ ok, aaFile, cover }`. |
+| `POST` | `/api/v1/admin/art/skip` | `{ albumKey }` | Mark an album skipped so it stops resurfacing (kept as a cooldown record). |
+| `POST` | `/api/v1/admin/art/config` | `{ autoApprove?, autoSuggestNewContent? }` | Persist workshop settings to config. Returns `{ ok, config }`. |
+| `GET` | `/api/v1/admin/art/shelves` | — | List shelved folder prefixes, each with the count of art-less albums it currently suppresses. Returns `{ shelves[] }`. |
+| `POST` | `/api/v1/admin/art/shelve` | `{ vpath, prefix }` or `{ folders: [{ vpath, prefix }] }` | Hide one or more folders (and everything under them) from the workshop. Removes matching non-applied candidates immediately. Returns `{ ok, removed, count }`. |
+| `POST` | `/api/v1/admin/art/unshelve` | `{ vpath, prefix }` or `{ folders: [{ vpath, prefix }] }` | Un-hide one or more shelved folders; their art-less albums reappear on reconcile. Returns `{ ok, count }`. |
+
+---
+
 ## User Settings *(Velvet)*
 
 | Method | Endpoint | Body | Description |

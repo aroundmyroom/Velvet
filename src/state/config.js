@@ -77,6 +77,11 @@ const discogsOptions = Joi.object({
   deezerEnabled:  Joi.boolean().default(true),
 });
 
+const albumArtOptions = Joi.object({
+  autoApprove:           Joi.boolean().default(false),
+  autoSuggestNewContent: Joi.boolean().default(false),
+});
+
 const federationOptions = Joi.object({
   enabled: Joi.boolean().default(false),
   folder: Joi.string().optional(),
@@ -172,6 +177,7 @@ const schema = Joi.object({
   serverAudio: serverAudioOptions.default(serverAudioOptions.validate({}).value),
   acoustid: acoustidOptions.default(acoustidOptions.validate({}).value),
   dlna: dlnaOptions.default(dlnaOptions.validate({}).value),
+  albumArt: albumArtOptions.default(albumArtOptions.validate({}).value),
   sonos: sonosOptions.default(sonosOptions.validate({}).value),
   ui: Joi.string().valid('velvet', 'velvet-dark', 'velvet-light').default('velvet'),
   instanceId: Joi.string().optional(),

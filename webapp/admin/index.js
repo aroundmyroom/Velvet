@@ -6143,6 +6143,328 @@ const acoustidView = Vue.component('acoustid-view', {
   }
 });
 
+// ── Album-Art Workshop ────────────────────────────────────────────────────────
+const albumArtWorkshopView = Vue.component('album-art-workshop-view', {
+  data() {
+    return {
+      running: false, stopping: false, processed: 0, currentAlbum: null,
+      scanRunning: false, lastError: null,
+      counts: { pending: 0, suggested: 0, applied: 0, skipped: 0, notfound: 0, error: 0 },
+      cfg: { autoApprove: false, autoSuggestNewContent: false },
+      candidates: [], total: 0,
+      offset: 0, limit: 24, filterStatus: 'suggested',
+      loading: false, busyKey: null,
+      shelves: [], showShelves: false,
+      manualUrl: {},
+      search: '', selectedKeys: [], selectedMeta: {}, selectedShelves: [],
+      _timer: null, _searchTimer: null,
+    };
+  },
+  computed: {
+    statusLabel() {
+      if (this.stopping) return this.t('admin.art.statusStopping');
+      if (this.running)  return this.t('admin.art.statusRunning');
+      return this.t('admin.art.statusIdle');
+    },
+    pageCount() { return Math.max(1, Math.ceil(this.total / this.limit)); },
+    pageNum()   { return Math.floor(this.offset / this.limit) + 1; },
+    allSelected() { return this.total > 0 && this.selectedKeys.length >= this.total; },
+  },
+  mounted() { this.loadStatus(); this.loadCandidates(); this.loadShelves(); },
+  beforeUnmount() {
+    if (this._timer) { clearTimeout(this._timer); this._timer = null; }
+    if (this._searchTimer) { clearTimeout(this._searchTimer); this._searchTimer = null; }
+  },
+  methods: {
+    async loadStatus() {
+      try {
+        const d = (await API.axios({ method: 'GET', url: `${API.url()}/api/v1/admin/art/status` })).data;
+        const wasRunning = this.running;
+        this.running = d.running || false;
+        this.stopping = d.stopping || false;
+        this.processed = d.processed || 0;
+        this.currentAlbum = d.currentAlbum || null;
+        this.scanRunning = d.scanRunning || false;
+        this.lastError = d.lastError || null;
+        if (d.counts) Object.assign(this.counts, d.counts);
+        if (d.config) Object.assign(this.cfg, d.config);
+        if (wasRunning && !this.running) this.loadCandidates();
+      } catch (e) { console.debug('[velvet]', e?.message ?? e); }
+      this._timer = setTimeout(() => this.loadStatus(), this.running ? 3000 : 15000);
+    },
+    async loadCandidates() {
+      this.loading = true;
+      try {
+        const qs = `offset=${this.offset}&limit=${this.limit}`
+          + (this.filterStatus ? `&status=${this.filterStatus}` : '')
+          + (this.search ? `&q=${encodeURIComponent(this.search)}` : '');
+        const d = (await API.axios({ method: 'GET', url: `${API.url()}/api/v1/admin/art/candidates?${qs}` })).data;
+        this.candidates = d.candidates || [];
+        this.total = d.total || 0;
+      } catch (e) { console.debug('[velvet]', e?.message ?? e); }
+      this.loading = false;
+    },
+    onSearch(v) {
+      this.search = v;
+      if (this._searchTimer) clearTimeout(this._searchTimer);
+      this._searchTimer = setTimeout(() => { this.offset = 0; this.loadCandidates(); }, 300);
+    },
+    setFilter(s) { this.filterStatus = s; this.offset = 0; this.loadCandidates(); },
+    nextPage() { if (this.pageNum < this.pageCount) { this.offset += this.limit; this.loadCandidates(); } },
+    prevPage() { if (this.offset > 0) { this.offset = Math.max(0, this.offset - this.limit); this.loadCandidates(); } },
+    async startScan() {
+      try {
+        const r = (await API.axios({ method: 'POST', url: `${API.url()}/api/v1/admin/art/scan` })).data;
+        if (r.status === 'already_running') iziToast.info({ title: this.t('admin.art.msgAlreadyRunning'), position: 'topCenter' });
+        else iziToast.success({ title: this.t('admin.art.msgScanStarted'), position: 'topCenter', timeout: 3500 });
+        this.running = true;
+        this.loadStatus();
+      } catch (e) { iziToast.error({ title: e?.response?.data?.error || e.message, position: 'topCenter' }); }
+    },
+    async stopScan() {
+      try { await API.axios({ method: 'POST', url: `${API.url()}/api/v1/admin/art/stop` }); this.stopping = true; }
+      catch (e) { iziToast.error({ title: e?.response?.data?.error || e.message, position: 'topCenter' }); }
+    },
+    async applyCover(cand, choice) {
+      this.busyKey = cand.albumKey;
+      try {
+        const body = { albumKey: cand.albumKey, source: choice.source };
+        if (choice.releaseId) body.releaseId = choice.releaseId; else body.coverUrl = choice.coverUrl;
+        await API.axios({ method: 'POST', url: `${API.url()}/api/v1/admin/art/apply`, data: body });
+        iziToast.success({ title: this.t('admin.art.msgApplied'), message: `${cand.artist || ''} — ${cand.album || ''}`, position: 'topCenter', timeout: 3500 });
+        this.candidates = this.candidates.filter(c => c.albumKey !== cand.albumKey);
+        this.total = Math.max(0, this.total - 1);
+        this.counts.applied += 1;
+      } catch (e) { iziToast.error({ title: this.t('admin.art.msgApplyFailed'), message: e?.response?.data?.error || e.message, position: 'topCenter' }); }
+      this.busyKey = null;
+    },
+    async skipAlbum(cand) {
+      this.busyKey = cand.albumKey;
+      try {
+        await API.axios({ method: 'POST', url: `${API.url()}/api/v1/admin/art/skip`, data: { albumKey: cand.albumKey } });
+        this.candidates = this.candidates.filter(c => c.albumKey !== cand.albumKey);
+        this.total = Math.max(0, this.total - 1);
+        this.counts.skipped += 1;
+      } catch (e) { iziToast.error({ title: e?.response?.data?.error || e.message, position: 'topCenter' }); }
+      this.busyKey = null;
+    },
+    async refreshOne(cand) {
+      this.busyKey = cand.albumKey;
+      try {
+        const d = (await API.axios({ method: 'POST', url: `${API.url()}/api/v1/admin/art/suggest`, data: { albumKey: cand.albumKey } })).data;
+        cand.suggestions = d.suggestions || [];
+        cand.status = d.status;
+        if (!cand.suggestions.length) iziToast.info({ title: this.t('admin.art.msgNoneFound'), position: 'topCenter' });
+      } catch (e) { iziToast.error({ title: e?.response?.data?.error || e.message, position: 'topCenter' }); }
+      this.busyKey = null;
+    },
+    async toggleConfig(key) {
+      const patch = { [key]: !this.cfg[key] };
+      try {
+        await API.axios({ method: 'POST', url: `${API.url()}/api/v1/admin/art/config`, data: patch });
+        this.cfg[key] = patch[key];
+      } catch (e) { iziToast.error({ title: e?.response?.data?.error || e.message, position: 'topCenter' }); }
+    },
+    toggleSelect(cand) {
+      const i = this.selectedKeys.indexOf(cand.albumKey);
+      if (i === -1) {
+        this.selectedKeys.push(cand.albumKey);
+        this.$set(this.selectedMeta, cand.albumKey, { vpath: cand.vpath, prefix: cand.dir });
+      } else {
+        this.selectedKeys.splice(i, 1);
+      }
+    },
+    clearSelection() { this.selectedKeys = []; this.selectedMeta = {}; },
+    toggleSelectAll() {
+      if (this.allSelected) { this.clearSelection(); return; }
+      this.selectAllFound();
+    },
+    async selectAllFound() {
+      try {
+        const qs = (this.filterStatus ? `status=${this.filterStatus}` : '')
+          + (this.search ? `&q=${encodeURIComponent(this.search)}` : '') + '&keys=1';
+        const d = (await API.axios({ method: 'GET', url: `${API.url()}/api/v1/admin/art/candidates?${qs}` })).data;
+        const meta = {};
+        const keys = [];
+        for (const k of (d.keys || [])) { keys.push(k.albumKey); meta[k.albumKey] = { vpath: k.vpath, prefix: k.dir }; }
+        this.selectedKeys = keys;
+        this.selectedMeta = meta;
+      } catch (e) { iziToast.error({ title: e?.response?.data?.error || e.message, position: 'topCenter' }); }
+    },
+    toggleShelfSel(key) {
+      const i = this.selectedShelves.indexOf(key);
+      if (i === -1) this.selectedShelves.push(key); else this.selectedShelves.splice(i, 1);
+    },
+    setManual(key, val) { this.$set(this.manualUrl, key, val); },
+    applyManual(cand) {
+      const url = (this.manualUrl[cand.albumKey] || '').trim();
+      if (!url) return;
+      this.applyCover(cand, { coverUrl: url, source: 'manual' });
+    },
+    async loadShelves() {
+      try {
+        const d = (await API.axios({ method: 'GET', url: `${API.url()}/api/v1/admin/art/shelves` })).data;
+        this.shelves = d.shelves || [];
+      } catch (e) { console.debug('[velvet]', e?.message ?? e); }
+    },
+    shelveFolder(cand) { this._doShelve([{ vpath: cand.vpath, prefix: cand.dir }]); },
+    shelveSelected() {
+      const list = this.selectedKeys.map(k => this.selectedMeta[k]).filter(Boolean);
+      if (list.length) this._doShelve(list);
+    },
+    _doShelve(list) {
+      const title = list.length === 1
+        ? this.t('admin.art.shelveTitle', { folder: list[0].vpath + '/' + list[0].prefix })
+        : this.t('admin.art.shelveTitleMulti', { count: list.length });
+      adminConfirm(title, this.t('admin.art.shelveConfirm'), this.t('admin.art.btnShelveFolder'), async () => {
+        try {
+          const d = (await API.axios({ method: 'POST', url: `${API.url()}/api/v1/admin/art/shelve`, data: { folders: list } })).data;
+          this.candidates = this.candidates.filter(c => !list.some(f => c.vpath === f.vpath && (c.dir === f.prefix || c.dir.startsWith(f.prefix + '/'))));
+          this.total = Math.max(0, this.total - (d.removed || 0));
+          this.clearSelection();
+          iziToast.success({ title: this.t('admin.art.msgShelved'), message: this.t('admin.art.shelvedCountMsg', { count: list.length }), position: 'topCenter', timeout: 3000 });
+          this.loadShelves();
+        } catch (e) { iziToast.error({ title: e?.response?.data?.error || e.message, position: 'topCenter' }); }
+      });
+    },
+    unshelve(s) { this._doUnshelve([s]); },
+    unshelveSelected() {
+      this._doUnshelve(this.shelves.filter(s => this.selectedShelves.includes(s.vpath + '|' + s.prefix)));
+    },
+    async _doUnshelve(list) {
+      if (!list.length) return;
+      try {
+        const folders = list.map(s => ({ vpath: s.vpath, prefix: s.prefix }));
+        await API.axios({ method: 'POST', url: `${API.url()}/api/v1/admin/art/unshelve`, data: { folders } });
+        const keys = new Set(list.map(s => s.vpath + '|' + s.prefix));
+        this.shelves = this.shelves.filter(x => !keys.has(x.vpath + '|' + x.prefix));
+        this.selectedShelves = this.selectedShelves.filter(k => !keys.has(k));
+        iziToast.success({ title: this.t('admin.art.msgUnshelved'), message: this.t('admin.art.shelvedCountMsg', { count: list.length }), position: 'topCenter', timeout: 2500 });
+        this.loadCandidates();
+      } catch (e) { iziToast.error({ title: e?.response?.data?.error || e.message, position: 'topCenter' }); }
+    },
+  },
+  template: `
+  <div class="container" style="max-width:1100px;">
+    <div class="card-title-row" style="display:flex; align-items:center; gap:0.75rem; flex-wrap:wrap;">
+      <span class="card-title" style="font-size:1.3rem;">{{ t('admin.art.title') }}</span>
+      <span :style="'font-size:0.8rem; padding:2px 10px; border-radius:12px; ' + (running ? 'background:rgba(76,175,80,0.15); color:#66bb6a;' : 'background:rgba(255,255,255,0.08); color:#aaa;')">{{ statusLabel }}</span>
+    </div>
+    <p style="color:#aaa; font-size:0.9rem; margin-top:0.35rem;">{{ t('admin.art.desc') }}</p>
+
+    <div style="background:var(--raised2); border-radius:8px; padding:1rem; margin:1rem 0;">
+      <div style="display:flex; gap:0.6rem; flex-wrap:wrap; align-items:center;">
+        <button class="btn" @click="startScan" :disabled="running">{{ t('admin.art.btnScan') }}</button>
+        <button class="btn-flat" @click="stopScan" v-if="running">{{ t('admin.art.btnStop') }}</button>
+        <span v-if="scanRunning" style="color:#ffb74d; font-size:0.82rem;">{{ t('admin.art.libraryScanRunning') }}</span>
+        <span style="margin-left:auto; font-size:0.82rem; color:#aaa;" v-if="running && currentAlbum">{{ currentAlbum }} ({{ processed }})</span>
+      </div>
+      <div style="display:flex; gap:1.2rem; flex-wrap:wrap; margin-top:0.8rem;">
+        <label style="font-size:0.85rem; display:flex; gap:0.4rem; align-items:center; cursor:pointer;">
+          <input type="checkbox" :checked="cfg.autoApprove" @change="toggleConfig('autoApprove')" style="accent-color:var(--primary);">
+          {{ t('admin.art.cfgAutoApprove') }}
+        </label>
+        <label style="font-size:0.85rem; display:flex; gap:0.4rem; align-items:center; cursor:pointer;">
+          <input type="checkbox" :checked="cfg.autoSuggestNewContent" @change="toggleConfig('autoSuggestNewContent')" style="accent-color:var(--primary);">
+          {{ t('admin.art.cfgAutoSuggest') }}
+        </label>
+      </div>
+      <div v-if="lastError" style="color:#e57373; font-size:0.8rem; margin-top:0.5rem;">{{ lastError }}</div>
+    </div>
+
+    <div style="display:flex; gap:0.5rem; flex-wrap:wrap; margin-bottom:0.8rem;">
+      <button v-for="f in ['suggested','pending','notfound','applied','skipped','error']" :key="f"
+        @click="setFilter(f)"
+        :style="'font-size:0.78rem; padding:3px 11px; border-radius:12px; border:1px solid var(--border); cursor:pointer; ' + (filterStatus===f ? 'background:var(--primary); color:#fff;' : 'background:transparent; color:#bbb;')">
+        {{ t('admin.art.filter_' + f) }} ({{ counts[f] }})
+      </button>
+    </div>
+
+    <div style="display:flex; gap:0.5rem; flex-wrap:wrap; align-items:center; margin-bottom:0.8rem;">
+      <input type="search" :value="search" @input="onSearch($event.target.value)" :placeholder="t('admin.art.searchPlaceholder')"
+        spellcheck="false" autocomplete="off" style="flex:1; min-width:220px; font-size:0.85rem; padding:6px 10px;">
+      <button class="btn-flat btn-small" @click="toggleSelectAll" v-if="candidates.length">
+        {{ allSelected ? t('admin.art.btnDeselectAll') : t('admin.art.btnSelectAllFound', { count: total }) }}
+      </button>
+    </div>
+
+    <div v-if="selectedKeys.length" style="display:flex; gap:0.6rem; align-items:center; background:var(--raised2); border-radius:8px; padding:0.5rem 0.85rem; margin-bottom:0.8rem;">
+      <span style="font-size:0.85rem; color:#ddd;">{{ t('admin.art.selectedCount', { count: selectedKeys.length }) }}</span>
+      <button class="btn-flat btn-small" @click="clearSelection" style="margin-left:auto;">{{ t('admin.art.btnClearSel') }}</button>
+      <button class="btn btn-small" @click="shelveSelected">{{ t('admin.art.btnShelveSelected') }}</button>
+    </div>
+
+    <div style="margin-bottom:0.8rem;">
+      <button class="btn-flat btn-small" @click="showShelves=!showShelves">{{ t('admin.art.shelvedToggle', { count: shelves.length }) }}</button>
+      <div v-if="showShelves" style="margin-top:0.6rem; background:var(--raised2); border-radius:8px; padding:0.75rem;">
+        <div style="display:flex; align-items:center; gap:0.6rem; margin-bottom:0.5rem;">
+          <span style="font-size:0.78rem; color:#888; flex:1;">{{ t('admin.art.shelvedDesc') }}</span>
+          <button class="btn-flat btn-small" v-if="selectedShelves.length" @click="unshelveSelected">{{ t('admin.art.btnUnshelveSelected', { count: selectedShelves.length }) }}</button>
+        </div>
+        <div v-if="!shelves.length" style="color:#888; font-size:0.82rem;">{{ t('admin.art.shelvedEmpty') }}</div>
+        <div v-for="s in shelves" :key="s.vpath + '|' + s.prefix" style="display:flex; align-items:center; gap:0.6rem; padding:4px 0; font-size:0.82rem; border-top:1px solid var(--border);">
+          <input type="checkbox" :checked="selectedShelves.includes(s.vpath + '|' + s.prefix)" @change="toggleShelfSel(s.vpath + '|' + s.prefix)" style="accent-color:var(--primary);">
+          <span style="color:#ccc; word-break:break-all; flex:1;">📁 {{ s.vpath }}/{{ s.prefix }}</span>
+          <span style="color:#777; font-size:0.72rem; white-space:nowrap;">{{ t('admin.art.shelvedAlbums', { count: s.albums }) }}</span>
+          <button class="btn-flat btn-small" @click="unshelve(s)">{{ t('admin.art.btnUnshelve') }}</button>
+        </div>
+      </div>
+    </div>
+
+    <div v-if="loading" style="color:#aaa; padding:1rem;">{{ t('admin.art.loading') }}</div>
+    <div v-else-if="!candidates.length" style="color:#888; padding:1.5rem; text-align:center;">{{ t('admin.art.empty') }}</div>
+
+    <div v-else style="display:grid; grid-template-columns:repeat(auto-fill,minmax(400px,1fr)); gap:0.9rem;">
+      <div v-for="cand in candidates" :key="cand.albumKey"
+        :style="'border:1px solid ' + (selectedKeys.includes(cand.albumKey) ? 'var(--primary)' : 'var(--border)') + '; border-radius:8px; padding:0.75rem; background:var(--raised);'">
+        <div style="display:flex; align-items:flex-start; gap:0.5rem;">
+          <input type="checkbox" :checked="selectedKeys.includes(cand.albumKey)" @change="toggleSelect(cand)" style="accent-color:var(--primary); margin-top:3px; flex:0 0 auto;">
+          <div style="font-weight:600; word-break:break-word; flex:1;">{{ cand.album || cand.dir }}</div>
+        </div>
+        <div style="font-size:0.82rem; color:#aaa; word-break:break-word;">{{ cand.artist || '—' }}</div>
+        <div style="font-size:0.72rem; color:#777; margin:2px 0 8px; word-break:break-all;" :title="cand.vpath + '/' + cand.dir">📁 {{ cand.vpath }}/{{ cand.dir }}</div>
+
+        <div v-if="cand.suggestions && cand.suggestions.length" style="display:grid; grid-auto-flow:column; grid-template-rows:repeat(2,auto); gap:10px; overflow-x:auto; padding-bottom:8px;">
+          <div v-for="(s, i) in cand.suggestions.slice(0, 12)" :key="i" style="width:180px; text-align:center;">
+            <img :src="s.thumb" loading="lazy" :title="s.label"
+              style="width:180px; height:180px; object-fit:cover; border-radius:6px; cursor:pointer; border:2px solid transparent;"
+              @click="applyCover(cand, s)" @mouseover="$event.target.style.borderColor='var(--primary)'" @mouseout="$event.target.style.borderColor='transparent'">
+            <div style="font-size:0.68rem; color:#aaa; margin-top:4px; line-height:1.2; max-height:2.4em; overflow:hidden;">{{ s.label }}</div>
+            <div style="font-size:0.6rem; color:#888; text-transform:uppercase;">{{ s.source }}</div>
+          </div>
+        </div>
+        <div v-else style="font-size:0.8rem; color:#888; padding:0.4rem 0;">{{ t('admin.art.noSuggestions') }}</div>
+
+        <div style="margin-top:0.7rem;">
+          <div style="font-size:0.72rem; color:#888; margin-bottom:4px;">{{ t('admin.art.manualUrlLabel') }}</div>
+          <div style="display:flex; gap:0.4rem; align-items:center;">
+            <img v-if="manualUrl[cand.albumKey]" :src="manualUrl[cand.albumKey]" loading="lazy"
+              style="width:54px; height:54px; object-fit:cover; border-radius:4px; border:1px solid var(--border); flex:0 0 auto;">
+            <input :value="manualUrl[cand.albumKey] || ''" @input="setManual(cand.albumKey, $event.target.value)"
+              type="url" spellcheck="false" autocomplete="off" :placeholder="t('admin.art.manualUrlPlaceholder')"
+              style="flex:1; min-width:0; font-size:0.78rem; padding:5px 8px;">
+            <button class="btn btn-small" @click="applyManual(cand)" :disabled="!manualUrl[cand.albumKey] || busyKey===cand.albumKey">{{ t('admin.art.btnApplyUrl') }}</button>
+          </div>
+        </div>
+
+        <div style="display:flex; gap:0.4rem; margin-top:0.6rem; flex-wrap:wrap;">
+          <button class="btn-flat btn-small" @click="refreshOne(cand)" :disabled="busyKey===cand.albumKey">{{ t('admin.art.btnRefresh') }}</button>
+          <button class="btn-flat btn-small" @click="shelveFolder(cand)" :disabled="busyKey===cand.albumKey">{{ t('admin.art.btnShelveFolder') }}</button>
+          <button class="btn-flat btn-small" @click="skipAlbum(cand)" :disabled="busyKey===cand.albumKey" style="margin-left:auto;">{{ t('admin.art.btnSkip') }}</button>
+        </div>
+        <div style="font-size:0.68rem; color:#777; margin-top:4px;">{{ t('admin.art.clickToApply') }}</div>
+      </div>
+    </div>
+
+    <div v-if="total > limit" style="display:flex; gap:0.6rem; align-items:center; justify-content:center; margin-top:1rem;">
+      <button class="btn-flat btn-small" @click="prevPage" :disabled="offset===0">‹</button>
+      <span style="font-size:0.82rem; color:#aaa;">{{ pageNum }} / {{ pageCount }}</span>
+      <button class="btn-flat btn-small" @click="nextPage" :disabled="pageNum>=pageCount">›</button>
+    </div>
+  </div>
+  `,
+});
+
 // ── Normalisation Workshop ────────────────────────────────────────────────────
 const rgWorkshopView = Vue.component('rg-workshop-view', {
   data() {
@@ -9863,6 +10185,7 @@ const vm = new Vue({
     'bpm-workshop-view': bpmWorkshopView,
     'genre-enricher-view': genreEnricherView,
     'dup-workshop-view': dupWorkshopView,
+    'album-art-workshop-view': albumArtWorkshopView,
     'shared-playlists-view': sharedPlaylistsView,
     'genre-groups-view': genreGroupsView,
     'artists-admin-view': artistsAdminView,

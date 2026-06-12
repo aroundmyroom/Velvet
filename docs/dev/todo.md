@@ -313,6 +313,11 @@ The tag mode is **server-wide** (not per-user), stored in a new `server_settings
 
 ## FUTURE — Home, Analytics & Discovery
 
+### Album-Art Workshop — follow-ups
+- [ ] Add MusicBrainz / Cover Art Archive as additional cover suggestion sources (alongside Discogs/Deezer/iTunes)
+- [ ] Optional multi-art gallery model (multiple covers per album, user picks the default) — larger schema change, see upstream mStream V48
+- [ ] Wire the album-art suggestion pass into the shared media-enrichment budget limiter (see Performance section)
+
 ### Listening Analytics — Play Events
 
 ### Smart Auto-DJ — Personal Weights

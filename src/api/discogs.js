@@ -435,6 +435,97 @@ export async function getReleaseCoverBuf(releaseId) {
   return fetchImageBuf(img.uri);
 }
 
+// ── Album-Art Workshop: unified multi-service suggestion helper ────────────────
+// Standalone Deezer/iTunes query helpers (kept separate from the GET routes above
+// so those keep their existing response shapes — these return the workshop's
+// unified { source, coverUrl, thumb, label } descriptor instead).
+async function _deezerChoices(artist, album) {
+  let a = String(artist || '').trim();
+  const b = String(album || '').trim();
+  if (presentsLabel(a)) a = '';
+  const q = [a, b].filter(Boolean).join(' ');
+  if (!q) return [];
+  const url = `https://api.deezer.com/search/album?q=${encodeURIComponent(q)}&limit=10`;
+  const data = await fetchPublicJson(url, {
+    headers: { 'User-Agent': UA_BASE },
+    allowedHosts: new Set(['api.deezer.com']),
+    maxRedirects: 0,
+    maxContentLength: 5 * 1024 * 1024,
+  });
+  return (data.data || [])
+    .filter(r => r.cover_xl || r.cover_big)
+    .map(r => ({
+      source:   'deezer',
+      coverUrl: r.cover_xl || r.cover_big,
+      thumb:    r.cover_medium || r.cover_small || r.cover_big,
+      label:    `${r.title || ''}${r.artist?.name ? ' — ' + r.artist.name : ''}`,
+    }));
+}
+
+async function _itunesChoices(artist, album) {
+  let a = String(artist || '').trim();
+  const b = String(album || '').trim();
+  if (presentsLabel(a)) a = '';
+  const q = [a, b].filter(Boolean).join(' ');
+  if (!q) return [];
+  const url = `https://itunes.apple.com/search?term=${encodeURIComponent(q)}&entity=album&limit=10`;
+  const data = await fetchPublicJson(url, {
+    headers: { 'User-Agent': UA_BASE },
+    allowedHosts: new Set(['itunes.apple.com']),
+    maxRedirects: 0,
+    maxContentLength: 5 * 1024 * 1024,
+  });
+  return (data.results || [])
+    .filter(r => r.artworkUrl100)
+    .map(r => ({
+      source:   'itunes',
+      coverUrl: r.artworkUrl100.replaceAll('100x100bb', '3000x3000bb'),
+      thumb:    r.artworkUrl100.replaceAll('100x100bb', '250x250bb'),
+      label:    `${r.collectionName || ''}${r.releaseDate ? ` (${r.releaseDate.substring(0, 4)})` : ''}`,
+    }));
+}
+
+/**
+ * Query every enabled art service for cover suggestions for one album.
+ * Returns a unified list of descriptors the Album-Art Workshop can present and,
+ * on approval, apply via /api/v1/albums/set-art (releaseId for Discogs, coverUrl
+ * for Deezer/iTunes). Each service failure is isolated — one outage never blocks
+ * the others.
+ */
+export async function suggestCovers({ artist, title, album, year, filepath }) {
+  const out = [];
+  const cfg = config.program.discogs || {};
+
+  if (cfg.enabled !== false && cfg.apiKey) {
+    try {
+      let a    = String(artist || '').trim();
+      const t  = cleanFilenameNoise(String(title || '').trim());
+      let al   = cleanFilenameNoise(String(album || '').trim());
+      const albumTagIsCompilation = isCompilationAlbum(al);
+      ({ artist: a, album: al } = _enrichFromFilepath(a, al, albumTagIsCompilation, filepath || ''));
+      let catno = _extractCatnoFromPath(filepath || '');
+      if (!catno && al) catno = extractCatno(al);
+      const presLabel  = presentsLabel(a);
+      const albumPhase = (isCompilationAlbum(al) && a && t) ? 'C' : 'A';
+      const searches   = _buildSearches(a, t, al, String(year || ''), catno, presLabel, albumPhase);
+      const settled    = await Promise.allSettled(
+        searches.map(({ params }) => discogsGet(`https://api.discogs.com/database/search?${params}`))
+      );
+      const choices = await _resolveImages(_buildCandidates(settled, searches, a));
+      for (const c of choices) {
+        out.push({ source: 'discogs', releaseId: c.releaseId, thumb: c.thumbB64, label: `${c.releaseTitle}${c.year ? ` (${c.year})` : ''}` });
+      }
+    } catch (e) { console.debug('[art-suggest] discogs:', e?.message ?? e); }
+  }
+  if (cfg.deezerEnabled !== false) {
+    try { out.push(...await _deezerChoices(artist, album)); } catch (e) { console.debug('[art-suggest] deezer:', e?.message ?? e); }
+  }
+  if (cfg.itunesEnabled !== false) {
+    try { out.push(...await _itunesChoices(artist, album)); } catch (e) { console.debug('[art-suggest] itunes:', e?.message ?? e); }
+  }
+  return out;
+}
+
 // ── discogs/coverart helpers ──────────────────────────────────────────────────
 
 function _stripDiscSuffix(s) {

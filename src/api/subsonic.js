@@ -371,13 +371,14 @@ function resolveSongRows(rawIds, username) {
   return out;
 }
 
-// Build the disambiguated Subsonic id for a file row. Bare hash when the hash is
-// unique (keeps existing client/queue caches valid); "<hash>@<rowid>" when shared.
-// Requires the row to carry `id` (the rowid alias every song query selects).
+// Build a row-specific Subsonic id for a file row.
+// Always prefer "<hash>@<rowid>" when rowid is available so clients never
+// confuse two different files that happen to share a content hash.
+// Legacy bare-hash IDs remain readable via decodeSongId/resolveSongRow.
 function encodeSongId(row) {
   const h = row?.hash;
   if (!h) return h;
-  return (row.id != null && db.isDuplicatedHash(h)) ? `${h}@${row.id}` : h;
+  return row.id != null ? `${h}@${row.id}` : h;
 }
 
 // Build a virtual Subsonic song entry for one CUE-sheet track.

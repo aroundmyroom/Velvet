@@ -51,6 +51,7 @@ import * as serverPlaybackApi from './api/server-playback.js';
 import * as acoustidApi from './api/acoustid.js';
 import * as tagWorkshopApi from './api/tagworkshop.js';
 import * as rgAnalysisApi from './api/rg-analysis.js';
+import * as albumArtWorkshopApi from './api/album-art-workshop.js';
 import * as bpmAnalysisApi from './api/bpm-analysis.js';
 import * as genreEnricherApi from './api/genre-enricher.js';
 import * as dupWorkshopApi from './api/duplicate-workshop.js';
@@ -308,6 +309,7 @@ export async function serveIt(configFile) {
   acoustidApi.setup(velvet);
   tagWorkshopApi.setup(velvet);
   rgAnalysisApi.setup(velvet);
+  albumArtWorkshopApi.setup(velvet);
   bpmAnalysisApi.setup(velvet);
   genreEnricherApi.setup(velvet);
   dupWorkshopApi.setup(velvet);
@@ -602,6 +604,10 @@ function _setupExpressMiddleware(app) {
   const _cspDirectives = {
     ...helmet.contentSecurityPolicy.getDefaultDirectives(),
     'img-src': ["'self'", 'data:', 'https://flagcdn.com'],
+    // The MPV cast heartbeat runs in a Worker created from a same-origin blob:
+    // URL. Without an explicit worker-src, it falls back to script-src ('self')
+    // and the blob worker is blocked by CSP.
+    'worker-src': ["'self'", 'blob:'],
   };
   // Do not force upgrade-insecure-requests. Some deployments intentionally run
   // HTTP on custom LAN/domain ports (or terminate TLS upstream), and forcing

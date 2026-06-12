@@ -100,16 +100,31 @@ function _resolveSafeBinary(bin, fallback) {
 function _resetHeartbeat() {
   clearTimeout(_heartbeatTimer);
   _heartbeatTimer = setTimeout(() => {
-    if (isRunning()) {
+    if (!isRunning()) return;
+    getStatus().then(st => {
+      // Some browsers can still miss heartbeats while backgrounded/discarded.
+      // If MPV is actively playing, keep it alive and re-arm the timer.
+      if (st?.running && st?.playing) {
+        winston.info('[server-audio] Heartbeat grace: MPV still playing, skipping timeout stop');
+        _resetHeartbeat();
+        return;
+      }
       winston.info('[server-audio] Cast heartbeat timed out — stopping mpv');
       clearQueue().catch(() => {});
-    }
+    }).catch(() => {
+      winston.info('[server-audio] Cast heartbeat timed out — status unknown, stopping mpv');
+      clearQueue().catch(() => {});
+    });
   }, HEARTBEAT_TIMEOUT_MS);
 }
 
 function _clearHeartbeat() {
   clearTimeout(_heartbeatTimer);
   _heartbeatTimer = null;
+}
+
+function _touchHeartbeat() {
+  if (serverQueue.length > 0) _resetHeartbeat();
 }
 
 
@@ -444,6 +459,24 @@ function ipcCommand(args, timeoutMs = 5000) {
   });
 }
 
+function waitForIpcConnected(timeoutMs = 5000) {
+  return new Promise(resolve => {
+    if (ipcSock && !ipcSock.destroyed) return resolve(true);
+    const started = Date.now();
+    const iv = setInterval(() => {
+      if (ipcSock && !ipcSock.destroyed) {
+        clearInterval(iv);
+        resolve(true);
+        return;
+      }
+      if (Date.now() - started >= timeoutMs) {
+        clearInterval(iv);
+        resolve(false);
+      }
+    }, 100);
+  });
+}
+
 function handleIpcMessage(msg) {
   // Response to a pending request
   if (msg.request_id !== undefined) {
@@ -605,9 +638,18 @@ export async function addToQueue(relPath, meta = {}) {
   const seekTo = Number(meta.seekTo) || 0;
   if (seekTo > 1) _pendingSeek = Math.floor(seekTo);
 
-  if (isRunning() && ipcSock && !ipcSock.destroyed) {
-    await ipcCommand(['loadfile', abs, 'append-play']);
+  // After backend restart, the first cast request can arrive before mpv is
+  // fully running/connected. Auto-boot and wait briefly so queue/add actually
+  // loads into mpv instead of silently queueing only in memory.
+  if ((!isRunning() || !ipcSock || ipcSock.destroyed) && config.program.serverAudio?.enabled) {
+    bootMpv();
+    await waitForIpcConnected(5000);
   }
+
+  if (!isRunning() || !ipcSock || ipcSock.destroyed) {
+    throw new Error('Server Audio is not running');
+  }
+  await ipcCommand(['loadfile', abs, 'append-play']);
   return serverQueue.length - 1;
 }
 
@@ -682,7 +724,7 @@ export function setup(velvet) {
   // POST /api/v1/server-playback/heartbeat — client pings this while casting
   // (every ~8 s).  Absence of pings triggers the watchdog and stops mpv.
   velvet.post('/api/v1/server-playback/heartbeat', (req, res) => {
-    if (serverQueue.length > 0) _resetHeartbeat();
+    _touchHeartbeat();
     res.json({});
   });
 
@@ -704,7 +746,7 @@ export function setup(velvet) {
   velvet.post('/api/v1/server-playback/queue/play-index', async (req, res) => {
     const { index } = req.body;
     if (index === undefined) return res.status(400).json({ error: 'index required' });
-    try { await playAtIndex(Number(index)); res.json({}); }
+    try { await playAtIndex(Number(index)); _touchHeartbeat(); res.json({}); }
     catch (e) { res.status(400).json({ error: e.message }); }
   });
 
@@ -713,6 +755,7 @@ export function setup(velvet) {
     try {
       if (isRunning() && ipcSock && !ipcSock.destroyed)
         await ipcCommand(['playlist-next', 'force']);
+      _touchHeartbeat();
       res.json({});
     } catch (e) { res.status(500).json({ error: e.message }); }
   });
@@ -722,6 +765,7 @@ export function setup(velvet) {
     try {
       if (isRunning() && ipcSock && !ipcSock.destroyed)
         await ipcCommand(['playlist-prev', 'force']);
+      _touchHeartbeat();
       res.json({});
     } catch (e) { res.status(500).json({ error: e.message }); }
   });
@@ -731,6 +775,7 @@ export function setup(velvet) {
     try {
       if (isRunning() && ipcSock && !ipcSock.destroyed)
         await ipcCommand(['cycle', 'pause']);
+      _touchHeartbeat();
       res.json({});
     } catch (e) { res.status(500).json({ error: e.message }); }
   });
@@ -741,6 +786,7 @@ export function setup(velvet) {
     try {
       if (isRunning() && ipcSock && !ipcSock.destroyed)
         await ipcCommand(['set_property', 'pause', paused === true]);
+      _touchHeartbeat();
       res.json({});
     } catch (e) { res.status(500).json({ error: e.message }); }
   });
@@ -752,6 +798,7 @@ export function setup(velvet) {
     try {
       if (isRunning() && ipcSock && !ipcSock.destroyed)
         await ipcCommand(['seek', Number(position), 'absolute']);
+      _touchHeartbeat();
       res.json({});
     } catch (e) { res.status(500).json({ error: e.message }); }
   });
@@ -765,13 +812,14 @@ export function setup(velvet) {
       _currentVolumePct = v; // persist for re-apply on track change
       if (isRunning() && ipcSock && !ipcSock.destroyed)
         await ipcCommand(['set_property', 'volume', v]);
+      _touchHeartbeat();
       res.json({});
     } catch (e) { res.status(500).json({ error: e.message }); }
   });
 
   // POST /api/v1/server-playback/loop  (cycles: none → one → all → none)
   velvet.post('/api/v1/server-playback/loop', async (req, res) => {
-    try { res.json(await cycleLoop()); }
+    try { const out = await cycleLoop(); _touchHeartbeat(); res.json(out); }
     catch (e) { res.status(500).json({ error: e.message }); }
   });
 
@@ -793,6 +841,7 @@ export function setup(velvet) {
         await ipcCommand(['af', 'set', chain]).catch(() => {});
         await ipcCommand(['set_property', 'volume', _currentVolumePct]).catch(() => {});
       }
+      _touchHeartbeat();
       res.json({});
     } catch (e) { res.status(500).json({ error: e.message }); }
   });

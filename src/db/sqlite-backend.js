@@ -3224,8 +3224,11 @@ export function getSongsByHashes(hashes, username) {
       FROM files f
       LEFT JOIN user_metadata um ON f.hash = um.hash AND um.user = ?
       WHERE f.hash IN (${placeholders})
+      ORDER BY f.rowid
     `).all(username, ...chunk);
-    for (const row of rows) out.set(row.hash, mapFileRow(row));
+    for (const row of rows) {
+      if (!out.has(row.hash)) out.set(row.hash, mapFileRow(row));
+    }
   }
 
   return out;

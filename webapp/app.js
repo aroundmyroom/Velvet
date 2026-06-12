@@ -1,5 +1,5 @@
 'use strict';
-const VELVET_VERSION = '0.0.6';
+const VELVET_VERSION = '0.0.7';
 // ── SERVER IDENTITY GUARD ────────────────────────────────────────────────────
 // Detects when this browser's localStorage belongs to a different Velvet
 // instance (fresh install, IP change, reverse-proxy swap, second server).
@@ -831,6 +831,7 @@ function _buildLocalQueueSnapshot(playing, nowMs) {
   return {
     queue: _compactQueueList(slice),
     idx: localIdx,
+    currentFilepath: S.queue[idx]?.filepath || null,
     time: audioEl.currentTime || 0,
     playing,
     savedAt: nowMs,
@@ -876,6 +877,11 @@ function persistQueue() {
 const _QUEUE_SYNC_MAX = 2000; // max songs stored server-side per user (~800KB at ~400B/track)
 function _syncQueueToDb() {
   if (!S.token || !S.username) return;
+  // Never write to the cross-device DB queue during boot restore. A spurious
+  // play/pause fired by audioEl.src/load() would otherwise push THIS device's
+  // stale queue to the DB before it has pulled the authoritative queue saved by
+  // another device — clobbering cross-device resume.
+  if (_bootRestoring) return;
   clearTimeout(_syncQueueTimer);
   _syncQueueTimer = setTimeout(() => {
     // Cap queue to avoid PayloadTooLarge — keep current track in view
@@ -887,6 +893,7 @@ function _syncQueueToDb() {
     api('POST', 'api/v1/user/settings', { queue: {
       queue:     compactQ,
       idx,
+      currentFilepath: S.queue[S.idx]?.filepath || null,
       time:      audioEl.currentTime || 0,
       playing:   !audioEl.paused,
       savedAt:   Date.now(),
@@ -901,6 +908,9 @@ function _syncQueueToDb() {
 // correct state even if the user clears localStorage before 2 s elapse.
 function _syncQueueToDbNow(playingOverride) {
   if (!S.token || !S.username) return;
+  // See _syncQueueToDb: a spurious pause during boot restore must not clobber
+  // the cross-device DB queue before this device has pulled it.
+  if (_bootRestoring) return;
   clearTimeout(_syncQueueTimer);
   _syncQueueTimer = null;
   const playing = (playingOverride !== undefined) ? !!playingOverride : !audioEl.paused;
@@ -912,6 +922,7 @@ function _syncQueueToDbNow(playingOverride) {
   api('POST', 'api/v1/user/settings', { queue: {
     queue:     compactQ,
     idx,
+    currentFilepath: S.queue[S.idx]?.filepath || null,
     time:      audioEl.currentTime || 0,
     playing,
     savedAt:   Date.now(),
@@ -947,8 +958,27 @@ function restoreQueue(silent = false) {
 
   // Restore core state — this must always succeed
   S.queue = data.queue; _qvsVersion++;
-  S.idx   = (typeof data.idx === 'number' && data.idx >= 0 && data.idx < data.queue.length)
-            ? data.idx : 0;
+  const _rawIdx = data.idx ?? data.index ?? data.queueIdx ?? data.currentIndex;
+  const _parsedIdx = Number.parseInt(_rawIdx, 10);
+  let _restoredIdx = Number.isFinite(_parsedIdx) ? _parsedIdx : -1;
+  // Lock onto the song that was actually playing/paused by its filepath. The
+  // numeric index alone can point at the wrong track (queue windowing, or a
+  // cross-device snapshot whose index/queue were built differently), so when we
+  // know the current song's path, that path is authoritative — select THAT row.
+  const _curFp =
+    (typeof data.currentFilepath === 'string' && data.currentFilepath) ||
+    (typeof data.filepath === 'string' && data.filepath) ||
+    (typeof data.current?.filepath === 'string' && data.current.filepath) ||
+    '';
+  const _idxMatchesFp =
+    _restoredIdx >= 0 && _restoredIdx < data.queue.length &&
+    data.queue[_restoredIdx]?.filepath === _curFp;
+  if (_curFp && !_idxMatchesFp) {
+    const _found = data.queue.findIndex(q => q?.filepath === _curFp);
+    if (_found >= 0) _restoredIdx = _found;
+  }
+  if (_restoredIdx < 0 || _restoredIdx >= data.queue.length) _restoredIdx = 0;
+  S.idx = _restoredIdx;
   // Restore BPM/key tracking for the current song so chips are correct immediately.
   const _rq = S.queue[S.idx];
   if (_rq) {
@@ -1581,6 +1611,7 @@ const Player = {
       if (S.token && S.username) {
         api('POST', 'api/v1/user/settings', { queue: {
           queue: S.queue, idx: S.idx,
+          currentFilepath: S.queue[S.idx]?.filepath || null,
           time: audioEl.currentTime || 0,
           playing: false,
           savedAt: Date.now(),
@@ -15748,6 +15779,7 @@ let _sonosRadioFavorites = [];
 let _sonosRadioCurrentPath = []; // Navigation breadcrumb: [{id, title, type}]
 let _sonosRadioCurrentItems = null;
 let _sonosNavPollTimer = null;
+let _serverAudioPollTimer = null;
 let _sonosNavReachable = false;
 
 function _hasDetectedSonos() {
@@ -18286,54 +18318,95 @@ function _deactivateSonosCast(notify = true) {
   if (notify) toast(t('player.output.castStop'));
 }
 
+function _clearSonosCastClientState() {
+  _stopSonosPositionSync();
+  _stopSonosBatteryPoll();
+  S.castingToSonos = false;
+  S.sonosRoom = null;
+  _sonosNeedsRecast = false;
+  localStorage.removeItem(_uKey('casting_sonos'));
+}
+
 async function _refreshServerAudioState() {
+  let serverAudioEnabled = false;
   try {
     const d = await api('GET', 'api/v1/admin/server-audio');
-    S.serverAudioRunning = !!(d?.enabled && d.running);
+    serverAudioEnabled = d?.enabled === true;
+    S.serverAudioRunning = !!(serverAudioEnabled && d.running);
   } catch (_) {
     S.serverAudioRunning = false;
   }
   // Restore cast state after a page refresh or server restart
-  if (S.serverAudioRunning && !S.castingToMpv && localStorage.getItem(_uKey('casting_mpv')) === '1') {
+  if (serverAudioEnabled && localStorage.getItem(_uKey('casting_mpv')) === '1') {
     try {
       const st = await api('GET', 'api/v1/server-playback/status');
-      if (st?.running && st.playing) {
-        // MPV is still playing (simple browser refresh) — just re-mute the browser
+      const s = S.queue && S.idx >= 0 ? S.queue[S.idx] : null;
+      if (st?.running && (st.playing || (Number(st.queueLength) > 0))) {
+        // MPV is already active (playing or paused with queue) — re-attach cast state.
+        _clearSonosCastClientState();
         S.castingToMpv = true;
         VIZ.setCastMute(true);
         _startMpvHeartbeat();
-      } else if (st && st.running) {
-        // MPV is up but queue is empty (server restart) — reload current song
-        const s = S.queue && S.idx >= 0 ? S.queue[S.idx] : null;
-        if (s?.filepath && !s.isRadio) {
-          S.castingToMpv = true;
-          localStorage.setItem(_uKey('casting_mpv'), '1');
-          VIZ.setCastMute(true);
-          // Disable crossfade while casting
-          if (S.crossfade !== 0) {
-            _setCrossfadeRestore(S.crossfade);
-            S.crossfade = 0;
-            localStorage.setItem(_uKey('crossfade'), '0');
-            _syncCrossfadeButton();
-          }
-          // Restore from last known position (stored in queue blob)
+
+        // If MPV is running but not on the same track as the browser queue,
+        // force the exact same load path as manual "switch to MPV".
+        const cur = (st?.queue && st.currentIndex >= 0) ? st.queue[st.currentIndex] : null;
+        const mpvRelPath = cur?.relPath || null;
+        const browserRelPath = (s && !s.isRadio) ? s.filepath : null;
+        if (browserRelPath && mpvRelPath !== browserRelPath) {
           let pos = 0;
           try {
             const qRaw = localStorage.getItem(_queueKey());
             if (qRaw) { const qd = JSON.parse(qRaw); pos = qd.time > 1 ? qd.time : 0; }
           } catch(_) {}
-          await _mpvLoadSong(s.filepath, pos);
-          _startMpvHeartbeat();
-        } else {
-          localStorage.removeItem(_uKey('casting_mpv'));
+          await _mpvLoadSong(browserRelPath, pos);
         }
-      } else {
-        // MPV not running at all — clear the flag
-        localStorage.removeItem(_uKey('casting_mpv'));
+
+        // Always re-apply volume/balance/RG on restore.
+        _mpvApplyAudioState();
+
+        // Keep MPV pause state aligned with the browser playback state.
+        // Without this, MPV can remain paused after a restart while the browser
+        // timeline/VU keeps moving, yielding silence until manual output toggling.
+        const browserShouldPlay = !audioEl.paused;
+        // A hidden tab pauses its own muted <audio>, so audioEl.paused does NOT
+        // reflect user intent while backgrounded — never PAUSE MPV based on it
+        // (that caused silence on return). Resuming (unpausing) is always safe.
+        if (browserShouldPlay !== !!st.playing && (browserShouldPlay || !document.hidden)) {
+          api('POST', 'api/v1/server-playback/set-pause', { paused: !browserShouldPlay }).catch(() => {});
+        }
+      } else if (s?.filepath && !s.isRadio) {
+        // MPV process can still be booting/reconnecting right after server restart.
+        // Force-load current song; backend queue/add now auto-starts MPV if needed.
+        _clearSonosCastClientState();
+        S.castingToMpv = true;
+        localStorage.setItem(_uKey('casting_mpv'), '1');
+        VIZ.setCastMute(true);
+        // Disable crossfade while casting
+        if (S.crossfade !== 0) {
+          _setCrossfadeRestore(S.crossfade);
+          S.crossfade = 0;
+          localStorage.setItem(_uKey('crossfade'), '0');
+          _syncCrossfadeButton();
+        }
+        // Restore from last known position (stored in queue blob)
+        let pos = 0;
+        try {
+          const qRaw = localStorage.getItem(_queueKey());
+          if (qRaw) { const qd = JSON.parse(qRaw); pos = qd.time > 1 ? qd.time : 0; }
+        } catch(_) {}
+        await _mpvLoadSong(s.filepath, pos);
+        // Don't pause a freshly-reloaded MPV while hidden — audioEl.paused is the
+        // browser's background policy, not user intent. Stay playing on resume.
+        if (audioEl.paused && !document.hidden) {
+          api('POST', 'api/v1/server-playback/set-pause', { paused: true }).catch(() => {});
+        }
+        _startMpvHeartbeat();
+      } else if (st && st.running) {
+        // MPV is up but queue is empty (server restart) — reload current song
+        // no-op: handled by the generic reload branch above when a current song exists
       }
-    } catch (_) {
-      localStorage.removeItem(_uKey('casting_mpv'));
-    }
+    } catch (_) {}
   }
   _updateCastBtn();
 }
@@ -18342,6 +18415,7 @@ async function _refreshServerAudioState() {
 let _mpvLoadingSong = false;
 let _mpvHeartbeatTimer = null;
 let _mpvHeartbeatWorker = null;
+let _lastSelfHeal = 0;   // throttle for worker-driven _refreshServerAudioState()
 
 // Web Worker source for the MPV heartbeat.
 // Workers run in a separate thread and are not subject to the aggressive
@@ -18374,22 +18448,27 @@ self.onmessage = e => { if (e.data === 'start') _run(); };
 `;
 
 function _startMpvHeartbeat() {
-  _stopMpvHeartbeat();
+  if (_mpvHeartbeatWorker || _mpvHeartbeatTimer) return; // idempotent — keep the live ticker
+  // On every tick: ping the server heartbeat AND run a throttled self-heal.
+  // The worker thread is not subject to background-tab timer throttling, so the
+  // self-heal runs even when the tab is hidden — letting MPV resume after a
+  // backend restart without waiting for the tab to become active.
+  const _tick = () => {
+    api('POST', 'api/v1/server-playback/heartbeat').catch(() => {});
+    const now = Date.now();
+    if (now - _lastSelfHeal >= 12000) { _lastSelfHeal = now; _refreshServerAudioState(); }
+  };
   if (typeof Worker !== 'undefined') {
     try {
       const blob = new Blob([_MPV_HEARTBEAT_WORKER_SRC], { type: 'application/javascript' });
       _mpvHeartbeatWorker = new Worker(URL.createObjectURL(blob));
-      _mpvHeartbeatWorker.onmessage = () => {
-        api('POST', 'api/v1/server-playback/heartbeat').catch(() => {});
-      };
+      _mpvHeartbeatWorker.onmessage = _tick;
       _mpvHeartbeatWorker.postMessage('start');
       return;
     } catch (_) { /* fall through to setInterval fallback */ }
   }
   // Fallback: plain setInterval (may be throttled in background tabs)
-  _mpvHeartbeatTimer = setInterval(() => {
-    api('POST', 'api/v1/server-playback/heartbeat').catch(() => {});
-  }, 8000);
+  _mpvHeartbeatTimer = setInterval(_tick, 8000);
 }
 
 function _stopMpvHeartbeat() {
@@ -18456,6 +18535,8 @@ async function toggleMpvCast() {
     return;
   }
   try {
+    // MPV and Sonos casts are mutually exclusive.
+    if (S.castingToSonos) _clearSonosCastClientState();
     // Mute browser immediately so there's no audio overlap
     VIZ.setCastMute(true);
     // Disable browser crossfade while casting (MPV handles its own gapless playback)
@@ -20847,6 +20928,18 @@ function showApp() {
 
   // Check if Server Audio (mpv) is enabled and running — show cast button if so
   _refreshServerAudioState();
+  // Keep server-audio state fresh so MPV cast self-heals after backend restarts.
+  // Without this poll, a restart during an active cast can leave the UI in a stale
+  // state until the user manually toggles output Web → MPV.
+  if (!_serverAudioPollTimer) {
+    _serverAudioPollTimer = setInterval(() => {
+      if (!S.token) return;
+      // While casting, the MPV heartbeat worker drives a background-safe
+      // self-heal; skip here so we don't double-poll.
+      if (_mpvHeartbeatWorker || _mpvHeartbeatTimer) return;
+      _refreshServerAudioState();
+    }, 12000);
+  }
 
   // Fetch Sonos rooms + default room so the output picker can show them
   api('GET', 'api/v1/sonos/devices').then(d => {
@@ -20861,10 +20954,14 @@ function showApp() {
     // Restore Sonos cast state from previous session — but only if Sonos is still enabled.
     // If admin has disabled Sonos, clear the saved session silently so no Sonos API calls fire.
     const _savedSonosRoom = JSON.parse(localStorage.getItem(_uKey('casting_sonos')) || 'null');
+    const _preferMpvRestore = localStorage.getItem(_uKey('casting_mpv')) === '1';
+    if (_preferMpvRestore && _savedSonosRoom) {
+      _clearSonosCastClientState();
+    }
     if (!S.sonosEnabled && _savedSonosRoom) {
       localStorage.removeItem(_uKey('casting_sonos'));
     }
-    if (S.sonosEnabled && _savedSonosRoom) {
+    if (S.sonosEnabled && _savedSonosRoom && !_preferMpvRestore) {
       // Resolve the best room to restore to, in order of priority:
       //  1. Same device found in discovered rooms by UUID → use its current IP (handles DHCP changes)
       //  2. Admin default room differs from saved → snap to default (admin changed device)
