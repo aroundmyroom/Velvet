@@ -6,23 +6,23 @@ const VERSION = require(path.join(ROOT, 'package.json')).version;
 
 // Single source of truth = package.json "version". Every other version/cache-buster
 // string in the webapp is derived from it here, so a release only edits package.json.
+// Stamp every `.js`/`.css` cache-buster (`foo.js?v=…`, `bar.css?v=…`) from
+// package.json. Anchoring on the `.js`/`.css` extension covers all current and
+// future asset cache-busters in any webapp HTML while never matching an
+// unrelated query string such as a YouTube `watch?v=…` placeholder.
+const ASSET_CACHE_BUSTER = [/((?:\.js|\.css)\?v=)[^"'>\s]+/g, `$1${VERSION}`];
+
 const TARGETS = [
   ['webapp/index.html', [
-    [/((?:app\.js|style\.css)\?v=)[^"'>\s]+/g, `$1${VERSION}`],
+    ASSET_CACHE_BUSTER,
     [/(id="login-version"[^>]*>)v[^<]*/g, `$1v${VERSION}`],
   ]],
   ['webapp/app.js', [
     [/(const VELVET_VERSION = ')[^']*(')/, `$1${VERSION}$2`],
   ]],
-  ['webapp/admin/index.html', [
-    [/(\?v=)[^"'>\s]+/g, `$1${VERSION}`],
-  ]],
-  ['webapp/shared/index.html', [
-    [/(\?v=)[^"'>\s]+/g, `$1${VERSION}`],
-  ]],
-  ['webapp/mobile/index.html', [
-    [/(\bapp\.js\?v=)[^"'>\s]+/g, `$1${VERSION}`],
-  ]],
+  ['webapp/admin/index.html',  [ASSET_CACHE_BUSTER]],
+  ['webapp/shared/index.html', [ASSET_CACHE_BUSTER]],
+  ['webapp/mobile/index.html', [ASSET_CACHE_BUSTER]],
   ['webapp/package.json', [
     [/("version":\s*")[^"]+/, `$1${VERSION}`],
   ]],
