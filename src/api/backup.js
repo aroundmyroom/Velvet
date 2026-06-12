@@ -49,7 +49,13 @@ async function createBackup() {
   // Loki — three separate .db files
   for (const name of ['user-data.loki-v1.db', 'files.loki-v3.db', 'shared.loki-v1.db']) {
     const src = path.join(dbDir, name);
-    try { await fsp.access(src); filesToInclude.push({ src, name }); } catch (e) { console.debug('[velvet]', e?.message ?? e); }
+    try {
+      await fsp.access(src);
+      filesToInclude.push({ src, name });
+    } catch (e) {
+      // ENOENT is expected on SQLite-only installs where Loki files were never created.
+      if (e?.code !== 'ENOENT') console.debug('[velvet]', e?.message ?? e);
+    }
   }
 
   try {
@@ -115,7 +121,10 @@ async function _checkWeekly() {
   try {
     const txt = await fsp.readFile(flagFile, 'utf8');
     lastMs = Number.parseInt(txt) || 0;
-  } catch (e) { console.debug('[velvet]', e?.message ?? e); }
+  } catch (e) {
+    // ENOENT is expected on first run before the weekly marker exists.
+    if (e?.code !== 'ENOENT') console.debug('[velvet]', e?.message ?? e);
+  }
 
   if (Date.now() - lastMs >= WEEK_MS) {
     try {

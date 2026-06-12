@@ -216,10 +216,13 @@ async function applyImportData(extractId, options = {}) {
   // Reload config
   await config.setup(config.configFile);
   
-  // 2. Restore database — accept both velvet.sqlite (new) and velvet.sqlite (legacy backup)
+  // 2. Restore database — accept both velvet.sqlite (new) and mstream.sqlite (legacy backup)
   let dbFile = path.join(extractDir, 'velvet.sqlite');
-  try { await fsp.access(dbFile); } catch {
-    dbFile = path.join(extractDir, 'velvet.sqlite'); // legacy backup compatibility
+  try {
+    await fsp.access(dbFile);
+  } catch {
+    dbFile = path.join(extractDir, 'mstream.sqlite');
+    await fsp.access(dbFile);
   }
   const dbDir = config.program.storage.dbDirectory;
   const dbDest = path.join(dbDir, 'velvet.sqlite');

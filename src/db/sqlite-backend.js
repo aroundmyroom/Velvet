@@ -121,8 +121,8 @@ export function getDB() { return db; }
 export function init(dbDirectory) {
   mkdirSync(dbDirectory, { recursive: true });
 
-  // Migration: rename legacy velvet.sqlite → velvet.sqlite on first run after upgrade
-  const legacyPath = path.join(dbDirectory, 'velvet.sqlite');
+  // Migration: rename legacy mstream.sqlite → velvet.sqlite on first run after upgrade
+  const legacyPath = path.join(dbDirectory, 'mstream.sqlite');
   const newPath    = path.join(dbDirectory, 'velvet.sqlite');
   if (existsSync(legacyPath) && !existsSync(newPath)) {
     renameSync(legacyPath, newPath);

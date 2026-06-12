@@ -9,6 +9,8 @@ Each backup is a zip file containing:
 - `velvet.sqlite` — the main database (plus `velvet.sqlite-wal` / `velvet.sqlite-shm` if WAL files are present)
 - `default.json` — the active configuration file
 
+Legacy restore compatibility: if you are importing an older archive that still contains `mstream.sqlite`, Velvet accepts that filename too and copies it into place as `velvet.sqlite` during the restore.
+
 ## Storage location
 
 Backups are stored in `save/backups/` (sibling of `save/db/`).

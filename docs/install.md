@@ -103,7 +103,7 @@ npm install --only=prod
 systemctl restart music.service     # or: pm2 restart all
 ```
 
-Your `save/conf/default.json`, `save/db/velvet.sqlite`, logs, backups, caches, and downloaded binaries all stay in place — nothing to copy. After it boots, confirm your library and users are intact, then optionally remove `save.backup`.
+Your `save/conf/default.json`, `save/db/velvet.sqlite`, logs, backups, caches, and downloaded binaries all stay in place — nothing to copy. If your old install still has `save/db/mstream.sqlite`, Velvet renames it to `velvet.sqlite` on first boot so your library, users, ratings, and starred titles carry over. After it boots, confirm your library and users are intact, then optionally remove `save.backup`.
 
 > **Note:** step 4 discards any local edits you made to *tracked* source files. Config and data are safe (gitignored); the `save.backup` in step 2 covers the rest.
 
