@@ -4,7 +4,6 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
-    target-branch: "master"
     open-pull-requests-limit: 10
     labels:
       - "dependencies"
@@ -18,3 +17,12 @@ updates:
         update-types: ["version-update:semver-major"]
       - dependency-name: "express"
         update-types: ["version-update:semver-major"]
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 10
+    labels:
+      - "dependencies"
+      - "github-actions"
