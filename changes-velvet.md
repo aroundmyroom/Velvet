@@ -1,3 +1,16 @@
+## v0.1.4 (2026-06-13)
+
+Sonos Favourites — every service, hide controls, live now-playing.
+
+### Sonos
+- **All favourites, not just radio.** New `GET /api/v1/sonos/favorites` returns every "My Favorites" entry (FV:2) — Sonos Radio, Spotify, Apple Music, TuneIn, etc. — each tagged with its `service`. Previously only Sonos Radio stations were surfaced, so a Spotify favourite like "New Music Friday NL" was filtered out of the radio list; it now appears. `radio-favorites` still returns the radio-only subset.
+- **Play any favourite, any service.** New `POST /api/v1/sonos/play-favorite` plays a favourite by its FV:2 id by replaying the favourite's own stored `res`/`resMD` (which carries the device's service auth token), so Spotify/Apple Music playlists work — not just `x-sonosapi-radio:` stations. Container favourites (playlists) are enqueued; single streams are set directly on the transport.
+- **Favourite playback now behaves like a real output.** Starting a favourite (e.g. a Spotify playlist) puts the web player into a dedicated Sonos-Favourite mode: the browser is paused + muted, the player bar shows the device's **live now-playing** (track title/artist/cover + progress, polled every 3 s) and the output button shows the room. Pressing **Play** — or picking any local track — takes control back to the browser and stops the favourite. `GET /api/v1/sonos/transport-status` now also returns `trackTitle`/`trackArtist`/`trackAlbum`/`trackArt`/`trackUri`. *(The full-screen "Playing Now" view still reflects the library queue, not external favourites; the player bar is the live indicator.)*
+- **"Sonos Radio" view renamed to "Sonos Favourites".** It now lists every favourite (all services), so the radio-only name no longer fit.
+- **Non-playable shortcuts hidden by default.** Favourites with no playable resource (the art-less Sonos shortcut folders like "Nu trendy", "Sonos presenteert", "Sonos Radio ontdekken" that can't be started via the local API) are concealed by default instead of cluttering the list. They — and any admin-hidden favourites — are recalled via **Show hidden (N)**.
+- **Hide favourites you don't want.** Each favourite row has an admin **Hide**/**Show** toggle; hidden ones drop out of the list. Stored in config (`sonos.hiddenFavorites`, all users) keyed by a stable content id via the new `POST /api/v1/sonos/favorite-visibility`.
+- **Self-healing default-room IP (persisted).** When a cast redirects after DHCP moves the speaker, the rediscovered IP is now written back to the saved `defaultRoom` in config (matched by UUID), so favourites/cast calls stop pointing at the dead address. Complements the in-memory `_sonosTargetIp()` resolution from v0.1.2.
+
 ## v0.1.3 (2026-06-13)
 
 Sonos queue mirroring.

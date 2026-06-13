@@ -15,6 +15,10 @@
  *   POST /api/v1/sonos/sleep                — set/clear native sleep timer (ConfigureSleepTimer)
  *   GET  /api/v1/sonos/led                  — read status-LED state (GetLEDState)
  *   POST /api/v1/sonos/led                  — set status-LED On/Off (SetLEDState) — sleep cue
+ *   GET  /api/v1/sonos/favorites            — list ALL "My Favorites" (radio + Spotify + etc.), tagged by service
+ *   GET  /api/v1/sonos/radio-favorites      — Sonos Radio subset of favorites
+ *   POST /api/v1/sonos/play-favorite        — play any favorite by FV:2 id (uses its own res/resMD auth)
+ *   POST /api/v1/sonos/favorite-visibility  — hide/show a favorite (admin; persisted in config)
  *
  * Admin endpoints:
  *   POST /api/v1/admin/sonos                — update enabled + transcodeOpus + sleepEnabled + pauseSleepMinutes
@@ -633,6 +637,7 @@ async function _castWithRetry(track, ip, req, seekTo, paused) {
       // Store alias so /set-volume, /set-pause, /seek can resolve the correct IP
       // without requiring the client to update its stored room IP first.
       _ipAliases.set(ip, targetIp);
+      await _healDefaultRoomIp(newRoom);
     }
     const result = await castTrackToSonos({ track, ip: targetIp, username, req, seekTo, paused });
     _castStateByIp.set(targetIp, { ts: Date.now(), wasTranscode: !!result.isTranscodeStream });
@@ -702,6 +707,29 @@ function _resolveIp(requestedIp) {
   if (alias && _cachedRooms.some(r => r.ip === alias)) return alias;
   if (_cachedRooms.length === 1) return _cachedRooms[0].ip;
   return requestedIp;
+}
+
+/**
+ * Persist a rediscovered IP back to the saved default room when DHCP has moved
+ * the device. Matches the saved room by uuid (preferred) or by its old IP, so a
+ * stale defaultRoom.ip self-heals after the first /cast redirect instead of
+ * leaving every subsequent favorites/cast call pointed at a dead address.
+ */
+async function _healDefaultRoomIp(newRoom) {
+  const dr = config.program?.sonos?.defaultRoom;
+  if (!dr || !newRoom?.ip) return;
+  const matches = (dr.uuid && newRoom.uuid && dr.uuid === newRoom.uuid) || dr.ip === newRoom.ip;
+  if (!matches || dr.ip === newRoom.ip) return;
+  try {
+    const loadedCfg = await loadFile(config.configFile);
+    if (!loadedCfg.sonos) loadedCfg.sonos = {};
+    loadedCfg.sonos.defaultRoom = { ...dr, ip: newRoom.ip, uuid: newRoom.uuid || dr.uuid };
+    await saveFile(loadedCfg, config.configFile);
+    config.program.sonos.defaultRoom = loadedCfg.sonos.defaultRoom;
+    console.info(`[sonos] default room IP healed: ${dr.ip} → ${newRoom.ip} (${newRoom.name})`);
+  } catch (e) {
+    console.warn('[sonos] failed to persist healed default room IP:', e.message || e);
+  }
 }
 
 /**
@@ -1451,6 +1479,14 @@ export function setup(velvet) {
         return Number.parseInt(p[0]) * 3600 + Number.parseInt(p[1]) * 60 + Number.parseFloat(p[2]);
       };
       const state = tag(transportXml, 'CurrentTransportState') || 'STOPPED';
+      // Parse the current track's embedded DIDL metadata (title/artist/art) so the
+      // client can render now-playing for external content (Sonos favourites:
+      // Spotify, radio, …) that isn't in Velvet's own queue.
+      const trackUri = tag(posXml, 'TrackURI');
+      const metaRaw = (posXml.match(/<TrackMetaData[^>]*>([\s\S]*?)<\/TrackMetaData>/i) || [])[1] || '';
+      const didl = _decodeXmlEntities(metaRaw);
+      const didlTag = t => { const m = didl.match(new RegExp(`<${t}[^>]*>([^<]+)</${t}>`, 'i')); return m ? _decodeXmlEntities(m[1].trim()) : ''; };
+      const streamContent = didlTag('r:streamContent');
       res.json({
         playing:  state === 'PLAYING',
         paused:   state === 'PAUSED_PLAYBACK',
@@ -1459,6 +1495,11 @@ export function setup(velvet) {
         position: parseTime(tag(posXml, 'RelTime')),
         duration: parseTime(tag(posXml, 'TrackDuration')),
         track:    Number.parseInt(tag(posXml, 'Track'), 10) || 0,
+        trackUri,
+        trackTitle:  didlTag('dc:title') || streamContent || '',
+        trackArtist: didlTag('upnp:artist') || didlTag('dc:creator') || (didlTag('dc:title') ? streamContent : '') || '',
+        trackAlbum:  didlTag('upnp:album') || '',
+        trackArt:    didlTag('upnp:albumArtURI') || '',
       });
     } catch {
       // Any error reaching the Sonos device (timeout, ECONNREFUSED, EHOSTUNREACH,
@@ -1614,58 +1655,115 @@ export function setup(velvet) {
     }
   });
 
+  // ── GET /api/v1/sonos/favorites?ip=X ──────────────────────────────────
+  // Returns ALL Sonos "My Favorites" (FV:2) — Sonos Radio stations, Spotify /
+  // Apple Music playlists, TuneIn, etc. — each tagged with the originating
+  // service so the frontend can group them. Use /radio-favorites for the
+  // radio-only subset.
+  velvet.get('/api/v1/sonos/favorites', async (req, res) => {
+    const ip = req.query?.ip || config.program?.sonos?.defaultRoom?.ip;
+    if (!ip) return res.status(400).json({ error: 'ip query param required (or set a default room in admin)' });
+    try {
+      assertPrivateIp(ip);
+      const favorites = await _listSonosFavorites(_resolveIp(ip));
+      res.json({ ok: true, favorites, deviceIp: ip });
+    } catch (e) {
+      console.error('[sonos] /favorites error:', e);
+      res.status(500).json({ ok: false, error: String(e.message || e) });
+    }
+  });
+
   // ── GET /api/v1/sonos/radio-favorites?ip=X ────────────────────────────
-  // Returns Sonos Radio favorites (Now Trendy, Sonos Presents, Sonos Radio discovery)
-  // from a Sonos device's ContentDirectory service.
+  // Returns the Sonos Radio subset of favorites (Now Trendy, Sonos Presents,
+  // Sonos Radio discovery). Kept for the radio picker; see /favorites for all.
   velvet.get('/api/v1/sonos/radio-favorites', async (req, res) => {
     const ip = req.query?.ip || config.program?.sonos?.defaultRoom?.ip;
     if (!ip) return res.status(400).json({ error: 'ip query param required (or set a default room in admin)' });
-    
     try {
       assertPrivateIp(ip);
-      
-      // Browse the Favorites container to find FV:2 (the Sonos Radio favorites container)
-      const favorites = await _browseSonosContentDirectory(ip, 'FV:2', 'BrowseDirectChildren', 0, 100);
-      
-      // Filter for Sonos Radio favorites and extract metadata
-      const radioFavorites = [];
-      for (const item of favorites) {
-        const description = String(item.description || '').toLowerCase();
-        const isSonosRadio = description.includes('sonos radio');
-        const typeLower = String(item.type || '').toLowerCase();
-        const isInstantPlay = typeLower === 'instantplay';
-        if (!isSonosRadio || !isInstantPlay) continue;
-
-        // Most Sonos devices return favorites as shortcut/instantPlay types.
-        // Keep a metadata fallback only when resMD is missing.
-        let fullItem = item;
-        if (!fullItem.resMD) {
-          const metadata = await _browseSonosContentDirectory(ip, item.id, 'BrowseMetadata', 0, 1);
-          fullItem = metadata[0] || item;
-        }
-
-        const upnpClass = fullItem.contentClass || fullItem.upnpClass || null;
-        const isContainer = String(upnpClass || '').includes('container');
-
-        radioFavorites.push({
-          id: fullItem.id,
-          localId: String(fullItem.id || '').split('/').pop(),
-          title: fullItem.contentTitle || _decodeXmlEntities(fullItem.title || item.title || ''),
-          description: fullItem.description,
-          type: fullItem.type,
-          upnpClass,
-          cloudObjectId: fullItem.cloudObjectId || null,
-          authToken: fullItem.authToken || null,
-          artUri: fullItem.artUri || null,
-          isContainer,
-          parentId: fullItem.parentID,
-        });
-      }
-      
+      const all = await _listSonosFavorites(_resolveIp(ip));
+      const radioFavorites = all.filter(f => f.serviceKey === 'sonos-radio' && String(f.type || '').toLowerCase() === 'instantplay');
       res.json({ ok: true, favorites: radioFavorites, deviceIp: ip });
     } catch (e) {
       console.error('[sonos] /radio-favorites error:', e);
       res.status(500).json({ ok: false, error: String(e.message || e) });
+    }
+  });
+
+  // ── POST /api/v1/sonos/play-favorite ──────────────────────────────────
+  // Play any "My Favorites" item by its FV:2 id, regardless of service. Unlike
+  // /play-cloud-object (Sonos Radio only), this replays the favorite's own
+  // stored <res>/<resMD> — which carries the device's service auth token — so
+  // Spotify/Apple Music playlists work. Container favorites are enqueued; single
+  // streams are set directly on the transport.
+  // Body: { ip, favoriteId }
+  velvet.post('/api/v1/sonos/play-favorite', async (req, res) => {
+    const ip = req.body?.ip || config.program?.sonos?.defaultRoom?.ip;
+    const favoriteId = req.body?.favoriteId;
+    if (!ip) return res.status(400).json({ error: 'ip required' });
+    if (!favoriteId) return res.status(400).json({ error: 'favoriteId required' });
+    try {
+      assertPrivateIp(ip);
+      const resolvedIp = _resolveIp(ip);
+      const fav = (await _listSonosFavorites(resolvedIp)).find(f => f.id === favoriteId);
+      if (!fav) return res.status(404).json({ ok: false, error: 'favorite not found' });
+      if (!fav.res) return res.status(422).json({ ok: false, error: 'favorite has no playable resource' });
+
+      const resMD = fav.resMD ? _decodeXmlEntities(fav.resMD) : '';
+      if (fav.isContainer) {
+        await soapCall(resolvedIp, 'RemoveAllTracksFromQueue', '');
+        await soapCall(resolvedIp, 'AddURIToQueue', [
+          `<EnqueuedURI>${xmlEsc(fav.res)}</EnqueuedURI>`,
+          `<EnqueuedURIMetaData>${xmlEsc(resMD)}</EnqueuedURIMetaData>`,
+          '<DesiredFirstTrackNumberEnqueued>0</DesiredFirstTrackNumberEnqueued>',
+          '<EnqueueAsNext>0</EnqueueAsNext>',
+        ].join(''));
+        // The queue URI needs the device UUID. Use the cache, else fetch the
+        // device description directly (cache may be empty right after a restart).
+        let uuid = _cachedRooms.find(r => r.ip === resolvedIp)?.uuid;
+        if (!uuid) uuid = (await _fetchDeviceDescription(resolvedIp))?.uuid;
+        if (!uuid) return res.status(500).json({ ok: false, error: 'could not resolve device uuid' });
+        await soapCall(resolvedIp, 'SetAVTransportURI', [
+          `<CurrentURI>x-rincon-queue:${uuid}#0</CurrentURI>`,
+          '<CurrentURIMetaData></CurrentURIMetaData>',
+        ].join(''));
+        await soapCall(resolvedIp, 'Seek', '<Unit>TRACK_NR</Unit><Target>1</Target>');
+      } else {
+        await soapCall(resolvedIp, 'SetAVTransportURI', [
+          `<CurrentURI>${xmlEsc(fav.res)}</CurrentURI>`,
+          `<CurrentURIMetaData>${xmlEsc(resMD)}</CurrentURIMetaData>`,
+        ].join(''));
+      }
+      await soapCall(resolvedIp, 'Play', '<Speed>1</Speed>');
+      res.json({ ok: true, playing: fav.title, service: fav.service, via: fav.isContainer ? 'queue' : 'transport' });
+    } catch (e) {
+      console.error('[sonos] /play-favorite error:', e);
+      res.status(500).json({ ok: false, error: String(e.message || e) });
+    }
+  });
+
+  // ── POST /api/v1/sonos/favorite-visibility ────────────────────────────
+  // Hide or show a favourite in Velvet's Sonos view. Persisted in config as
+  // sonos.hiddenFavorites (a list of stable favourite keys) so the preference
+  // applies to all users and survives restarts. Admin only — shared config.
+  // Body: { key, hidden }
+  velvet.post('/api/v1/sonos/favorite-visibility', async (req, res) => {
+    if (!req.user?.admin) return res.status(403).json({ error: 'Admin only' });
+    const { key, hidden } = req.body || {};
+    if (!key || typeof hidden !== 'boolean') return res.status(400).json({ error: 'key and hidden (boolean) required' });
+    try {
+      const loadedCfg = await loadFile(config.configFile);
+      if (!loadedCfg.sonos) loadedCfg.sonos = {};
+      const set = new Set(loadedCfg.sonos.hiddenFavorites || []);
+      if (hidden) set.add(key); else set.delete(key);
+      loadedCfg.sonos.hiddenFavorites = [...set];
+      await saveFile(loadedCfg, config.configFile);
+      if (!config.program.sonos) config.program.sonos = {};
+      config.program.sonos.hiddenFavorites = loadedCfg.sonos.hiddenFavorites;
+      res.json({ ok: true, hiddenFavorites: loadedCfg.sonos.hiddenFavorites });
+    } catch (e) {
+      console.error('[sonos] /favorite-visibility error:', e);
+      res.status(500).json({ error: String(e.message || e) });
     }
   });
 
@@ -1863,6 +1961,50 @@ export function setup(velvet) {
     return uris;
   }
 
+  // Browse FV:2 and return every "My Favorites" entry, enriched with a service
+  // tag and the playable <res>/<resMD> needed by /play-favorite. resMD is filled
+  // in via a per-item BrowseMetadata only when the list browse omitted it.
+  async function _listSonosFavorites(ip) {
+    const items = await _browseSonosContentDirectory(ip, 'FV:2', 'BrowseDirectChildren', 0, 100);
+    const hiddenSet = new Set(config.program?.sonos?.hiddenFavorites || []);
+    const out = [];
+    for (const item of items) {
+      let full = item;
+      if (!full.res || !full.resMD) {
+        const meta = await _browseSonosContentDirectory(ip, item.id, 'BrowseMetadata', 0, 1);
+        full = meta[0] || item;
+      }
+      const description = full.description || item.description || '';
+      const serviceKey = String(description).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'unknown';
+      const upnpClass = full.contentClass || full.upnpClass || null;
+      const isContainer = String(upnpClass || '').includes('container') || !!full.isContainer;
+      const cloudObjectId = full.cloudObjectId || null;
+      // Stable across favourite reordering — FV:2/N ids shift when favourites
+      // are added/removed, so hide preferences key off the content id instead.
+      const key = cloudObjectId || full.res || item.res || full.contentTitle || _decodeXmlEntities(full.title || item.title || '') || (full.id || item.id);
+      out.push({
+        id: full.id || item.id,
+        localId: String(full.id || item.id || '').split('/').pop(),
+        key,
+        title: full.contentTitle || _decodeXmlEntities(full.title || item.title || ''),
+        description,
+        service: description || 'Unknown',
+        serviceKey,
+        type: full.type || item.type || null,
+        upnpClass,
+        isContainer,
+        cloudObjectId,
+        authToken: full.authToken || null,
+        artUri: full.artUri || item.artUri || null,
+        res: full.res || item.res || null,
+        resMD: full.resMD || item.resMD || null,
+        parentId: full.parentID || item.parentID || null,
+        hidden: hiddenSet.has(key),
+      });
+    }
+    return out;
+  }
+
   async function _browseSonosContentDirectory(ip, objectId, browseFlag, startingIndex, requestedCount) {
     const body = [
       '<?xml version="1.0" encoding="utf-8"?>',
@@ -1950,6 +2092,7 @@ export function setup(velvet) {
     const parentMatch = innerXml.match(/parentID="([^"]+)"/);
     const restrictedMatch = innerXml.match(/restricted="([^"]+)"/);
     const artMatch = innerXml.match(/<upnp:albumArtURI[^>]*>([^<]+)<\/upnp:albumArtURI>/i);
+    const resMatch = innerXml.match(/<res[^>]*>([^<]+)<\/res>/i);
     
     // Extract Sonos-specific fields
     const sonosTypeMatch = innerXml.match(/<r:type>([^<]+)<\/r:type>/);
@@ -1982,6 +2125,7 @@ export function setup(velvet) {
       restricted: restrictedMatch ? restrictedMatch[1] === 'true' : false,
       type: sonosTypeMatch ? sonosTypeMatch[1] : null,
       description: descriptionMatch ? _decodeXmlEntities(descriptionMatch[1]) : null,
+      res: resMatch ? _decodeXmlEntities(resMatch[1]) : null,
       resMD,
       cloudObjectId,
       authToken: tokenMatch ? _decodeXmlEntities(tokenMatch[1]) : null,

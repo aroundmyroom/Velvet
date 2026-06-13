@@ -66,13 +66,13 @@ The check runs **async** after the picker opens — the picker appears immediate
 
 ---
 
-## Sonos Radio favourite channels
+## Sonos Favourites
 
-Velvet can start Sonos Radio **favourite channels** directly on a detected Sonos device from the player sidebar view.
+Velvet can start **Sonos favourites** — from any service (Sonos Radio, Spotify, Apple Music, …) — directly on a detected Sonos device from the player sidebar view.
 
-- Sidebar entry: **Sonos Radio** (nav label)
-- View title: **Sonos Radio Favourite Channels**
-- Channel sources: Sonos favourites returned by the local Sonos ContentDirectory / MusicServices bridge
+- Sidebar entry: **Sonos Favourites** (nav label; formerly "Sonos Radio")
+- View title: **Sonos Favourites**
+- Sources: all "My Favorites" (FV:2) returned by the local Sonos ContentDirectory / MusicServices bridge
 
 ### Playback behavior
 
@@ -87,6 +87,70 @@ The Sonos Radio menu entry is now tied to live reachability:
 - Hidden when Sonos is disabled or no reachable Sonos device is detected
 - Shown automatically when a reachable Sonos device appears
 - Updated in the running UI without a page refresh
+
+### All favourites (not just radio)
+
+The Sonos Radio view only lists **Sonos Radio** stations. "My Favorites" on a
+Sonos system can also hold favourites from other services — Spotify, Apple
+Music, TuneIn, etc. — which are not Sonos Radio stations and were therefore
+filtered out (e.g. a Spotify "New Music Friday NL" favourite would never show
+in the radio list).
+
+- `GET /api/v1/sonos/favorites?ip=` returns **every** favourite (FV:2), each
+  tagged with its originating `service`/`serviceKey` and carrying the playable
+  `res`/`resMD` plus an `isContainer` flag.
+- `GET /api/v1/sonos/radio-favorites?ip=` still returns the Sonos Radio subset
+  (unchanged behaviour for the radio picker).
+- `POST /api/v1/sonos/play-favorite` with `{ ip, favoriteId }` plays any
+  favourite regardless of service. It replays the favourite's own stored
+  `res`/`resMD`, which already carries the device's service auth token, so
+  Spotify/Apple Music playlists play without Velvet needing those credentials.
+  Container favourites (playlists) are enqueued and started from track 1; single
+  streams are set directly on the transport.
+
+#### Favourite playback mode (web player behaviour)
+
+A favourite plays content that is **not** in Velvet's own queue (Spotify, radio,
+…), so it can't use the queue-mirroring cast path. Starting one puts the web
+player into a dedicated **Sonos-Favourite mode**:
+
+- The browser is paused and muted (the favourite is the audible output).
+- The player bar shows the device's **live now-playing** — track title, artist,
+  cover and progress — refreshed every 3 s from `GET /api/v1/sonos/transport-status`
+  (which now also returns `trackTitle`/`trackArtist`/`trackAlbum`/`trackArt`/`trackUri`).
+  The cover prefers the favourite's own HTTPS art (the device's per-track `/getaa`
+  proxy is HTTP and would be blocked as mixed content).
+- The output button shows the room as the active output.
+- Pressing **Play**, picking any local track, or selecting **Browser** in the
+  output picker takes control back to the browser and pauses the favourite on the
+  device.
+- If the favourite stops on the device (ends, or stopped from the Sonos app),
+  the web player leaves favourite mode automatically.
+
+> Known limitation: the full-screen **Playing Now** view is built around library
+> songs (bio, similar artists, audio pills) and still reflects the queue, not an
+> external favourite. The always-visible player bar is the live indicator.
+
+### Hiding favourites
+
+Two layers keep the list clean:
+
+- **Auto-hidden (non-playable).** Favourites with no playable `res` — the
+  art-less Sonos shortcut folders (e.g. "Nu trendy", "Sonos presenteert",
+  "Sonos Radio ontdekken") that can't be started via the local API — are
+  concealed by default.
+- **Admin hide/show.** Each favourite row shows a **Hide**/**Show** toggle for
+  curating services you don't want surfaced.
+
+Both are recalled via a **Show hidden (N)** control at the top (available to all
+users — it's a view toggle). Admin hide preferences are keyed by the favourite's
+stable content id and persisted in `sonos.hiddenFavorites` in the config, so they
+apply to all users and survive restarts (favourite reordering on the device does
+not lose the setting).
+
+> The view was previously called **Sonos Radio**; it now lists favourites from
+> every service (Sonos Radio, Spotify, Apple Music, …) and is labelled **Sonos
+> Favourites**.
 
 ---
 
@@ -145,6 +209,7 @@ Sonos devices may change IP address between sessions (DHCP lease renewal) or aft
 | **Output picker scan** | Every time the output picker is opened | `_snapSonosRoom()` compares saved room UUID/IP against fresh scan results; updates `S.sonosRoom.ip` and localStorage if changed |
 | **Cast response** | Any `/cast` API call (track change, song start) | Server returns `actualIp` — the IP the SOAP call actually succeeded on after any SSDP re-discovery redirect. Client calls `_handleCastResponse()` to update `S.sonosRoom.ip`, localStorage, and restart position-sync on the new IP |
 | **Server-side alias** | Any `/set-volume`, `/set-pause`, `/seek` call | `_resolveIp()` checks `_ipAliases` (set on redirect) and the discovered-rooms cache; uses the resolved IP even if the client sent a stale one |
+| **Persisted default-room heal** | A `/cast` redirect where the device matches the saved default room (by UUID) | `_healDefaultRoomIp()` writes the rediscovered IP back to `sonos.defaultRoom.ip` in the config file, so server-side callers that read the default room (favourites, default-room casts) stop hitting the dead address after a restart |
 
 This means a DHCP IP change is corrected **no later than the next track change** — and often before that if the output picker is opened.---
 
@@ -191,10 +256,14 @@ All endpoints require a valid JWT (`x-access-token` header or `token` query para
 | `POST` | `/api/v1/sonos/set-pause` | User + `allow-mpv-cast` | Pause or resume Sonos playback |
 | `POST` | `/api/v1/sonos/seek` | User + `allow-mpv-cast` | Seek to a position (seconds) |
 | `POST` | `/api/v1/sonos/set-volume` | User + `allow-mpv-cast` | Set volume (0–100; server caps at 50) |
-| `GET` | `/api/v1/sonos/transport-status?ip=X` | User + `allow-mpv-cast` | Poll playback state (playing/paused/stopped, position, duration, current **track** number) |
+| `GET` | `/api/v1/sonos/transport-status?ip=X` | User + `allow-mpv-cast` | Poll playback state (playing/paused/stopped, position, duration, current **track** number, plus `trackUri`/`trackTitle`/`trackArtist`/`trackAlbum`/`trackArt` for now-playing) |
 | `POST` | `/api/v1/sonos/cast-queue` | User + `allow-mpv-cast` | Mirror a window of the player queue (current + upcoming) onto the Sonos queue; plays current immediately, appends the rest in the background |
 | `POST` | `/api/v1/sonos/queue/clear` | User + `allow-mpv-cast` | Wipe the Sonos queue — only if every track belongs to Velvet (foreign queues untouched) |
 | `POST` | `/api/v1/sonos/test-play` | Admin | Play a random song on a device (admin test) |
+| `GET` | `/api/v1/sonos/favorites?ip=X` | User | List **all** "My Favorites" (FV:2) — Sonos Radio, Spotify, Apple Music, TuneIn, etc. Each entry tagged with `service`/`serviceKey`, plus `res`/`resMD`/`isContainer` |
+| `GET` | `/api/v1/sonos/radio-favorites?ip=X` | User | The Sonos Radio subset of favourites (radio picker) |
+| `POST` | `/api/v1/sonos/play-favorite` | User | Play any favourite by FV:2 id via its own `res`/`resMD` (works for Spotify/Apple Music). `{ ip, favoriteId }` |
+| `POST` | `/api/v1/sonos/favorite-visibility` | Admin | Hide/show a favourite in Velvet's view. `{ key, hidden }` — persisted in `sonos.hiddenFavorites` (all users) |
 | `GET` | `/api/v1/sonos/sleep?ip=X` | User | Read the native sleep timer — `{ active, remaining, generation }` |
 | `POST` | `/api/v1/sonos/sleep` | User | Set/clear the native sleep timer via `ConfigureSleepTimer`. `{ ip, seconds?, minutes?, play? }` — ≤ 0 clears it; `play: true` resumes on wake |
 | `GET` | `/api/v1/sonos/led?ip=X` | User | Read the status-LED state (`GetLEDState`) — `{ state: 'On'｜'Off' }` |

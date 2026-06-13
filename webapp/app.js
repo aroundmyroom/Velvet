@@ -1,5 +1,5 @@
 'use strict';
-const VELVET_VERSION = '0.1.3';
+const VELVET_VERSION = '0.1.4';
 // ── SERVER IDENTITY GUARD ────────────────────────────────────────────────────
 // Detects when this browser's localStorage belongs to a different Velvet
 // instance (fresh install, IP change, reverse-proxy swap, second server).
@@ -289,6 +289,9 @@ let _msPosThrottle = 0;    // timestamp of last setPositionState call — thrott
 let _rgGainNode  = null;   // ReplayGain gain node — inserted before _audioGain
 let _castMuteGain = null; // GainNode: 0 when casting to MPV, 1 otherwise — keeps analysers fed
 let _sonosNeedsRecast = false; // true after page refresh with Sonos state restored — Sonos queue is empty, first Play must re-cast
+let _sonosFav = null;          // { ip, title, service, key, artUri } when a Sonos Favourite (external content) is playing on the device
+let _sonosFavPollTimer = null; // now-playing poll for the active Sonos Favourite
+let _sonosFavStoppedTicks = 0; // consecutive STOPPED polls — debounces auto-exit when the favourite ends/stops externally
 let _waveformData = null;  // decoded waveform array [0..255] for current track
 let _waveformFp  = null;   // filepath matching _waveformData (avoids double-fetch)
 const _wfPrefetchPending = []; // filepaths queued for background pre-generation
@@ -1318,6 +1321,8 @@ const Player = {
   },
   playAt(idx) {
     if (idx < 0 || idx >= S.queue.length) return;
+    // Selecting a local track takes over from a playing Sonos Favourite.
+    if (_sonosFav) _exitSonosFavorite({ stopDevice: true });
     // Wrapped: if a song was interrupted (not naturally ended), count it as a skip
     if (_wrappedEventId && !_wrappedEndedNaturally) {
       const eid = _wrappedEventId;
@@ -1528,6 +1533,9 @@ const Player = {
     _syncQueueToDb();
   },
   toggle() {
+    // A Sonos Favourite is playing external content on the device — pressing Play
+    // takes control back to the browser (stops the favourite, resumes web audio).
+    if (_sonosFav) { _exitSonosFavorite({ stopDevice: true, resumeWeb: true }); return; }
     try {
       if (_BOOT_DBG) console.warn('[BOOT] Player.toggle: hasSrc=' + !!audioEl.src + ' qLen=' + S.queue.length + ' paused=' + audioEl.paused + ' readyState=' + audioEl.readyState + ' err=' + (audioEl.error ? audioEl.error.code : 'none') + ' t=' + (audioEl.currentTime||0).toFixed(2) + ' dur=' + (audioEl.duration||0).toFixed(2) + ' audioCtx=' + (typeof audioCtx !== 'undefined' && audioCtx ? audioCtx.state : 'null') + ' sinkId=' + (audioEl.sinkId || '') + ' outDev=' + (S.outputDeviceId || '') + ' muted=' + audioEl.muted + ' vol=' + audioEl.volume + ' castMute=' + (typeof _castMuteGain !== 'undefined' && _castMuteGain ? _castMuteGain.gain.value : 'n/a') + ' castSonos=' + S.castingToSonos + ' castMpv=' + S.castingToMpv + ' bootComplete=' + _bootComplete);
     } catch (_e) { /* diagnostic only */ }
@@ -1666,6 +1674,7 @@ const Player = {
     else           audioEl.currentTime = 0;
   },
   updateBar() {
+    if (_sonosFav) return; // the Sonos-Favourite poll owns the bar while external content plays
     const s = S.queue[S.idx];
     if (!s) return;
     // Reset progress bar immediately on song change
@@ -15778,6 +15787,7 @@ async function viewRadio() {
 let _sonosRadioFavorites = [];
 let _sonosRadioCurrentPath = []; // Navigation breadcrumb: [{id, title, type}]
 let _sonosRadioCurrentItems = null;
+let _sonosShowHidden = false; // reveal admin-hidden favourites in the root list
 let _sonosNavPollTimer = null;
 let _serverAudioPollTimer = null;
 let _sonosNavReachable = false;
@@ -15945,7 +15955,7 @@ async function _loadSonosRadioFavorites() {
       return;
     }
     
-    const data = await api('GET', `api/v1/sonos/radio-favorites?ip=${targetIp}`).catch(() => ({}));
+    const data = await api('GET', `api/v1/sonos/favorites?ip=${targetIp}`).catch(() => ({}));
     _sonosRadioFavorites = data.favorites || [];
     _sonosRadioCurrentItems = null;
   } catch (e) {
@@ -16024,7 +16034,8 @@ async function _renderSonosRadioView() {
   let items = [];
   let title = t('player.sonosRadio.title');
   let isRoot = true;
-  
+  let hiddenCount = 0;
+
   if (_sonosRadioCurrentPath.length === 0) {
     // Show favorites list
     items = _sonosRadioFavorites.map(fav => ({
@@ -16036,7 +16047,20 @@ async function _renderSonosRadioView() {
       artUri: fav.artUri || null,
       isContainer: fav.isContainer,
       parentId: fav.parentId,
+      favorite: true,
+      res: fav.res || null,
+      service: fav.service || null,
+      serviceKey: fav.serviceKey || null,
+      key: fav.key || null,
+      hidden: fav.hidden === true,
     }));
+    // A favourite with no playable <res> can't be started via the local API
+    // (these are the art-less Sonos shortcut folders) — conceal it by default
+    // alongside anything an admin has explicitly hidden. Both are recalled via
+    // "Show hidden".
+    items.forEach(it => { it.unsupported = !it.res; });
+    hiddenCount = items.filter(it => it.hidden || it.unsupported).length;
+    if (!_sonosShowHidden) items = items.filter(it => !(it.hidden || it.unsupported));
   } else {
     // Show browsed content from the last path item
     isRoot = false;
@@ -16046,34 +16070,52 @@ async function _renderSonosRadioView() {
   }
   
   const itemRows = items.map(item => {
-    const canBrowse = item.isContainer === true;
-    const isUnsupported = false;
     const itemType = String(item.type || '').toLowerCase();
-    const canPlayOnSonos = Boolean(item.cloudObjectId)
-      && canBrowse !== true
-      && !isUnsupported
-      && itemType !== 'shortcut';
+    // Root favourites carry their own playable <res> (resolved server-side by
+    // FV:2 id), so any service — radio, Spotify, Apple Music — plays via
+    // /play-favorite. Browsed sub-items keep the legacy cloud-object path.
+    const isFav = item.favorite === true;
+    const canPlayOnSonos = isFav
+      ? Boolean(item.res)
+      : (Boolean(item.cloudObjectId) && item.isContainer !== true && itemType !== 'shortcut');
+    // Only offer Browse for containers that aren't directly playable (the Sonos
+    // Radio shortcut folders) — a playable container (e.g. a Spotify playlist)
+    // gets Play instead, since browsing it over ContentDirectory returns nothing.
+    const canBrowse = item.isContainer === true && !(isFav && item.res);
     const art = item.artUri
       ? `<img src="${esc(item.artUri)}" alt="" class="sonos-card-art">`
       : `<div class="sonos-card-art sonos-card-art--placeholder">
            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="6" y="4" width="12" height="16" rx="2"/><path d="M9 4v16"/><path d="M15 4v16"/></svg>
          </div>`;
     
+    // Per-favourite hide/show toggle — admin only, persisted in server config.
+    const canHide = isFav && S.isAdmin && item.key;
+    const hideBtn = canHide ? `<button class="btn-flat sonos-hide-btn" data-fav-key="${esc(item.key)}" data-hidden="${item.hidden ? '1' : '0'}" title="${item.hidden ? t('player.sonosRadio.unhide') : t('player.sonosRadio.hide')}">
+            ${item.hidden
+              ? `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7z"/><circle cx="12" cy="12" r="3"/></svg>`
+              : `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>`}
+            ${item.hidden ? t('player.sonosRadio.unhide') : t('player.sonosRadio.hide')}
+          </button>` : '';
+    const concealed = isFav && (item.hidden || item.unsupported);
+    const metaHtml = (item.noteNoChildren || (isFav && item.unsupported))
+      ? t('player.sonosRadio.directPlayHint')
+      : (isFav && item.service ? esc(item.service) : t('player.sonosRadio.subtitle'));
     return `
-      <div class="sonos-item-row sonos-card" data-id="${item.id}" data-cloud-id="${item.cloudObjectId || ''}" data-auth-token="${item.authToken || ''}">
+      <div class="sonos-item-row sonos-card${concealed ? ' sonos-card--hidden' : ''}" data-id="${item.id}" data-cloud-id="${item.cloudObjectId || ''}" data-auth-token="${item.authToken || ''}"${concealed ? ' style="opacity:.55"' : ''}>
         ${art}
         <div class="sonos-card-body">
-          <div class="sonos-item-title sonos-card-title">${esc(item.title)}</div>
-          <div class="sonos-item-meta sonos-card-meta">${item.noteNoChildren ? t('player.sonosRadio.directPlayHint') : t('player.sonosRadio.subtitle')}</div>
+          <div class="sonos-item-title sonos-card-title">${esc(item.title)}${item.hidden ? ` <span style="font-size:.72rem;color:var(--t3);font-weight:400">(${t('player.sonosRadio.hidden')})</span>` : ''}</div>
+          <div class="sonos-item-meta sonos-card-meta">${metaHtml}</div>
         </div>
         <div class="sonos-card-actions">
+          ${hideBtn}
           ${canBrowse ? `
             <button class="btn-flat sonos-browse-btn" data-id="${item.id}" data-cloud-id="${item.cloudObjectId || ''}" data-auth-token="${item.authToken || ''}" title="${t('player.sonosRadio.browseTitle')}">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
               ${t('player.sonosRadio.browseTitle')}
             </button>
           ` : ''}
-          ${canPlayOnSonos ? `<button class="btn-primary sonos-play-btn" data-id="${item.id}" data-cloud-id="${item.cloudObjectId || ''}" data-auth-token="${item.authToken || ''}" title="${t('player.sonosRadio.playOnSonos')}">
+          ${canPlayOnSonos ? `<button class="btn-primary sonos-play-btn" data-id="${item.id}" data-fav-id="${isFav ? esc(item.id) : ''}" data-cloud-id="${item.cloudObjectId || ''}" data-auth-token="${item.authToken || ''}" title="${t('player.sonosRadio.playOnSonos')}">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M6 4l14 8-14 8V4z"/></svg>
             ${t('player.sonosRadio.playOnSonos')}
           </button>` : ''}
@@ -16100,6 +16142,12 @@ async function _renderSonosRadioView() {
           <div>${t('player.sonosRadio.info')}</div>
           <div style="margin-top:.45rem;color:var(--t3)">${t('player.sonosRadio.warning')}</div>
         </div>
+        ${(isRoot && hiddenCount > 0) ? `
+        <div style="padding:.6rem 1.5rem;border-bottom:1px solid var(--card);display:flex;justify-content:flex-end">
+          <button class="btn-flat" id="sonos-show-hidden-btn" style="font-size:.85rem">
+            ${_sonosShowHidden ? t('player.sonosRadio.hideHidden') : t('player.sonosRadio.showHidden', { count: hiddenCount })}
+          </button>
+        </div>` : ''}
         <div id="sonos-radio-list" class="sonos-radio-grid">${itemRows}</div>
       </div>
     </div>`;
@@ -16108,25 +16156,39 @@ async function _renderSonosRadioView() {
   body.querySelectorAll('.sonos-play-btn').forEach(btn => {
     btn.addEventListener('click', async (e) => {
       e.stopPropagation();
+      const favId = btn.dataset.favId;
       const cloudId = btn.dataset.cloudId;
       const authToken = btn.dataset.authToken;
       const title = btn.closest('.sonos-item-row')?.querySelector('.sonos-item-title')?.textContent || 'Sonos Radio';
-      
-      if (!cloudId) { toast(t('player.sonosRadio.error')); return; }
-      
+
+      if (!favId && !cloudId) { toast(t('player.sonosRadio.error')); return; }
+
       try {
         const sonosConfig = S.sonosConfig || await api('GET', 'api/v1/sonos/devices').catch(() => ({}));
         const targetIp = _sonosTargetIp(sonosConfig);
         if (!targetIp) { toast(t('player.sonosRadio.noDevice')); return; }
         await _pauseVelvetPlaybackForSonosFavorite();
-        
-        const playRes = await api('POST', 'api/v1/sonos/play-cloud-object', {
-          ip: targetIp,
-          cloudObjectId: cloudId,
-          title,
-          authToken,
-        });
+
+        const playRes = favId
+          ? await api('POST', 'api/v1/sonos/play-favorite', { ip: targetIp, favoriteId: favId })
+          : await api('POST', 'api/v1/sonos/play-cloud-object', {
+              ip: targetIp,
+              cloudObjectId: cloudId,
+              title,
+              authToken,
+            });
         if (playRes?.ok === true) {
+          const favMeta = favId ? (_sonosRadioFavorites.find(f => f.id === favId) || {}) : {};
+          const roomName = (S.sonosRooms.find(r => r.ip === targetIp)?.name)
+            || sonosConfig?.defaultRoom?.name || targetIp;
+          _enterSonosFavorite({
+            ip: targetIp,
+            title,
+            service: playRes.service || favMeta.service || 'Sonos',
+            key: favMeta.key || favId || cloudId || null,
+            artUri: favMeta.artUri || null,
+            roomName,
+          });
           toast(`${t('player.sonosRadio.playOnSonos')}: ${title}`);
         } else if (playRes?.unsupported) {
           toast(playRes.error || t('player.sonosRadio.playUnsupported'));
@@ -16138,7 +16200,31 @@ async function _renderSonosRadioView() {
       }
     });
   });
-  
+
+  document.getElementById('sonos-show-hidden-btn')?.addEventListener('click', () => {
+    _sonosShowHidden = !_sonosShowHidden;
+    _renderSonosRadioView();
+  });
+
+  body.querySelectorAll('.sonos-hide-btn').forEach(btn => {
+    btn.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      const key = btn.dataset.favKey;
+      const hidden = btn.dataset.hidden !== '1'; // toggle
+      if (!key) return;
+      try {
+        const r = await api('POST', 'api/v1/sonos/favorite-visibility', { key, hidden });
+        if (r?.ok !== true) { toast(r?.error || t('player.sonosRadio.error')); return; }
+        const fav = _sonosRadioFavorites.find(f => f.key === key);
+        if (fav) fav.hidden = hidden;
+        toast(hidden ? t('player.sonosRadio.hiddenToast') : t('player.sonosRadio.shownToast'));
+        _renderSonosRadioView();
+      } catch (err) {
+        toast(t('player.sonosRadio.error') + ': ' + (err.message || String(err)));
+      }
+    });
+  });
+
   body.querySelectorAll('.sonos-browse-btn').forEach(btn => {
     btn.addEventListener('click', async (e) => {
       e.stopPropagation();
@@ -17891,9 +17977,11 @@ function _updateOutputBtn() {
     if (S.castingToMpv) _deactivateCast(false);
     if (S.castingToSonos) _deactivateSonosCast(false);
   }
-  const active = S.castingToMpv || S.castingToSonos;
+  const active = S.castingToMpv || S.castingToSonos || !!_sonosFav;
   btn.classList.toggle('output-active', active);
-  if (S.castingToSonos && S.sonosRoom) {
+  if (_sonosFav) {
+    btn.title = _sonosFav.roomName || _sonosFav.service || t('player.output.castTo');
+  } else if (S.castingToSonos && S.sonosRoom) {
     btn.title = S.sonosRoom.name;
   } else if (S.castingToMpv) {
     btn.title = t('player.output.serverSpeaker');
@@ -17958,9 +18046,10 @@ function _openOutputPicker() {
   const hasSonos = S.sonosEnabled && (S.sonosRooms.length > 0 || S.sonosDefaultRoom);
 
   // Browser row — always present
-  drop.appendChild(row(t('player.output.browser'), !S.castingToMpv && !S.castingToSonos, () => {
+  drop.appendChild(row(t('player.output.browser'), !S.castingToMpv && !S.castingToSonos && !_sonosFav, () => {
     if (S.castingToMpv)   { _deactivateCast(true); toast(t('player.output.castStop')); }
     if (S.castingToSonos) { _deactivateSonosCast(true); toast(t('player.output.castStop')); }
+    if (_sonosFav)        { _exitSonosFavorite({ stopDevice: true }); toast(t('player.output.castStop')); }
   }));
 
   // Server Speaker row
@@ -18334,6 +18423,119 @@ function _deactivateSonosCast(notify = true) {
   }
   _updateOutputBtn();
   if (notify) toast(t('player.output.castStop'));
+}
+
+// ── Sonos Favourite playback (external content: Spotify, radio, …) ───────────
+// A favourite plays content that is NOT in Velvet's queue, so the queue-mirroring
+// cast machinery (_activateSonosCast / position-sync) doesn't apply. Instead we
+// enter a dedicated mode: the web player is paused + muted, the player bar shows
+// the device's live now-playing (polled), and pressing Play (or picking a track)
+// takes control back to the browser.
+function _enterSonosFavorite(fav) {
+  // Stop a queue-mirroring cast if one was active — don't fight over the device.
+  if (S.castingToSonos) {
+    _stopSonosPositionSync();
+    _stopSonosBatteryPoll();
+    if (S.sonosRoom) _sonosClearQueue(S.sonosRoom.ip);
+    S.castingToSonos = false;
+    S.sonosRoom = null;
+    _sonosNeedsRecast = false; _sonosCeded = false; _sonosDivergeCount = 0;
+    localStorage.removeItem(_uKey('casting_sonos'));
+  }
+  // Pause + mute the web player (the favourite is now the audible output).
+  if (!audioEl.paused) audioEl.pause();
+  VIZ.setCastMute(true);
+  _sonosFav = fav;
+  _sonosFavStoppedTicks = 0;
+  localStorage.setItem(_uKey('casting_sonos_fav'), JSON.stringify(fav));
+  _updateOutputBtn();
+  syncPlayIcons();
+  _startSonosFavPoll(fav.ip);
+}
+
+// Leave favourite mode. stopDevice pauses the device's playback (clean takeover);
+// resumeWeb starts the current queue track in the browser.
+function _exitSonosFavorite({ stopDevice = true, resumeWeb = false } = {}) {
+  if (!_sonosFav) return;
+  const ip = _sonosFav.ip;
+  _stopSonosFavPoll();
+  _sonosFav = null;
+  localStorage.removeItem(_uKey('casting_sonos_fav'));
+  if (stopDevice) api('POST', 'api/v1/sonos/set-pause', { ip, paused: true }).catch(() => {});
+  VIZ.setCastMute(S.castingToMpv || S.castingToSonos);
+  _updateOutputBtn();
+  if (resumeWeb && S.queue[S.idx]) {
+    VIZ.initAudio();
+    audioEl.play().catch(() => {});
+    VIZ.resumeAudio().catch(() => {});
+  } else if (S.queue[S.idx]) {
+    Player.updateBar(); // restore the bar to the current (paused) queue track
+  }
+  syncPlayIcons();
+}
+
+function _startSonosFavPoll(ip) {
+  _stopSonosFavPoll();
+  const tick = () => {
+    if (!_sonosFav) { _stopSonosFavPoll(); return; }
+    api('GET', 'api/v1/sonos/transport-status?ip=' + encodeURIComponent(ip))
+      .then(st => {
+        if (!_sonosFav) return;
+        if (st?.unreachable) return;
+        if (st.stopped) {
+          // Favourite ended or was stopped on the device — exit after 2 polls.
+          if (++_sonosFavStoppedTicks >= 2) _exitSonosFavorite({ stopDevice: false });
+          return;
+        }
+        _sonosFavStoppedTicks = 0;
+        _paintSonosFavorite(st);
+      })
+      .catch(() => {});
+  };
+  tick();
+  _sonosFavPollTimer = setInterval(tick, 3000);
+}
+function _stopSonosFavPoll() {
+  clearInterval(_sonosFavPollTimer);
+  _sonosFavPollTimer = null;
+}
+
+// Drive the player bar from the device's live now-playing while a favourite plays.
+function _paintSonosFavorite(st) {
+  const fav = _sonosFav;
+  if (!fav) return;
+  const title  = st.trackTitle  || fav.title || '';
+  const artist = st.trackArtist || '';
+  document.getElementById('player-title').textContent  = title || fav.title || '—';
+  document.getElementById('player-artist').textContent = artist;
+  const albumEl = document.getElementById('player-album');
+  const sub = [st.trackAlbum, t('player.sonosRadio.nowPlayingVia', { service: fav.service || 'Sonos' })].filter(Boolean).join(' · ');
+  albumEl.textContent = sub;
+  albumEl.classList.remove('hidden');
+  // Prefer the favourite's own HTTPS cover; the device's per-track art is a
+  // relative/HTTP /getaa proxy URL that an HTTPS page can't load (mixed content).
+  let u = fav.artUri || '';
+  if (!u && /^https:\/\//i.test(st.trackArt || '')) u = st.trackArt;
+  const thumb = document.getElementById('player-art');
+  thumb.innerHTML = u
+    ? `<img src="${esc(u)}" alt="" loading="lazy" onerror="this.parentNode.innerHTML=noArtHtml()">`
+    : noArtHtml();
+  VU_NEEDLE.setArt(u || '');
+  const fill = document.getElementById('prog-fill');
+  const thumbEl = document.getElementById('prog-thumb');
+  const dur = st.duration || 0;
+  if (dur > 0) {
+    const pct = Math.max(0, Math.min(100, (st.position / dur) * 100));
+    if (fill) fill.style.width = pct + '%';
+    if (thumbEl) { thumbEl.style.display = ''; thumbEl.style.left = pct + '%'; }
+    document.getElementById('time-cur').textContent   = fmt(st.position || 0);
+    document.getElementById('time-total').textContent = fmt(dur);
+  } else {
+    if (fill) fill.style.width = '100%';
+    if (thumbEl) thumbEl.style.display = 'none';
+    document.getElementById('time-cur').textContent   = fmt(st.position || 0);
+    document.getElementById('time-total').textContent = '';
+  }
 }
 
 // Sleep mode (admin-configurable): when on, pausing a Sonos cast drops the status
