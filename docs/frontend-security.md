@@ -11,7 +11,6 @@ This guide covers the DOM-safe patterns used in the Velvet frontend.
 
 ## Where this matters
 
-- `webapp/assets/js/velvet.js` and `webapp/alpha/m.js` contain legacy string-based renderers.
 - `webapp/assets/js/i18n.js` shows how to build a toast without raw `innerHTML`.
 - Mobile screens in `webapp/mobile/app.js` already use escaped render helpers; keep that pattern when adding new markup.
 

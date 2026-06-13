@@ -121,7 +121,7 @@ services:
       - ./image-cache:/app/image-cache
     # user: "1000:1000"             # optional; enable only after host folder ownership is correct
     environment:
-      MSTREAM_MUSIC_DIR: /music     # triggers first-run auto-config (optional, see below)
+      VELVET_MUSIC_DIR: /music     # triggers first-run auto-config (optional, see below)
 ```
 
 ```shell
@@ -234,32 +234,32 @@ services:
       - ./image-cache:/app/image-cache
     # user: "1000:1000"            # optional; set only when mounted folders are writable by this UID:GID
     environment:
-      MSTREAM_MUSIC_DIR: /music     # must match the volume target above
+      VELVET_MUSIC_DIR: /music     # must match the volume target above
 
       # Admin account (optional).
       # If omitted the server starts in open mode — no login required.
-      # MSTREAM_ADMIN_USER: admin
-      # MSTREAM_ADMIN_PASS: changeme
+      # VELVET_ADMIN_USER: admin
+      # VELVET_ADMIN_PASS: changeme
 
       # Extra feature folders — uncomment to enable.
-      # By default each type is applied directly to MSTREAM_MUSIC_DIR (/music).
+      # By default each type is applied directly to VELVET_MUSIC_DIR (/music).
       # If your files live in a sub-folder, add the matching *_SUBDIR variable:
-      #   MSTREAM_ENABLE_YOUTUBE: "true"
-      #   MSTREAM_YOUTUBE_SUBDIR: YouTube        # → folder root becomes /music/YouTube
+      #   VELVET_ENABLE_YOUTUBE: "true"
+      #   VELVET_YOUTUBE_SUBDIR: YouTube        # → folder root becomes /music/YouTube
       # You can also add, change or remove folders at any time in the Admin panel.
       # For full control, skip env vars and edit save/conf/default.json directly.
 
       # AudioBooks & Podcasts  (type: audio-books)
-      # MSTREAM_ENABLE_AUDIOBOOKS: "true"
-      # MSTREAM_AUDIOBOOKS_SUBDIR: Audiobooks    # optional — omit to use /music directly
+      # VELVET_ENABLE_AUDIOBOOKS: "true"
+      # VELVET_AUDIOBOOKS_SUBDIR: Audiobooks    # optional — omit to use /music directly
 
       # Radio Recordings  (type: recordings — also enables the radio feature)
-      # MSTREAM_ENABLE_RECORDINGS: "true"
-      # MSTREAM_RECORDINGS_SUBDIR: Recordings    # optional — omit to use /music directly
+      # VELVET_ENABLE_RECORDINGS: "true"
+      # VELVET_RECORDINGS_SUBDIR: Recordings    # optional — omit to use /music directly
 
       # YouTube Downloads  (type: youtube)
-      # MSTREAM_ENABLE_YOUTUBE: "true"
-      # MSTREAM_YOUTUBE_SUBDIR: YouTube          # optional — omit to use /music directly
+      # VELVET_ENABLE_YOUTUBE: "true"
+      # VELVET_YOUTUBE_SUBDIR: YouTube          # optional — omit to use /music directly
 ```
 
 ```shell

@@ -1,4 +1,4 @@
-title = "mStream Velvet Gitleaks Configuration"
+title = "Velvet Gitleaks Configuration"
 
 [extend]
 # Use the default gitleaks ruleset as a base

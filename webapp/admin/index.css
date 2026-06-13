@@ -1,4 +1,4 @@
-/* mStream Admin — Design System */
+/* Velvet Admin — Design System */
 
 /* ── VELVET (default) ── navy/purple dark ───────────────────── */
 :root {
@@ -306,7 +306,7 @@ tr:hover td { background: var(--raised); }
 /* ── Misc ───────────────────────────────────────────────────── */
 .content-switcher { padding-bottom: 60px; max-width: 860px; margin: 0 auto; }
 .flex { display: flex; } .flow-root { display: flow-root; }
-.logo-row { max-width: 500px; } .logo-row-mstream { max-width: 800px; }
+.logo-row { max-width: 500px; }
 .powered-by-row { display: flex; align-items: center; gap: 1rem; margin-bottom: 1.5rem; }
 .powered-by-label { font-size: .75rem; font-weight: 600; text-transform: uppercase; letter-spacing: .08em; color: var(--t2); white-space: nowrap; }
 .divider { border: none; border-top: 1px solid var(--border); margin: 1rem 0; }

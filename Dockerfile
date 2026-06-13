@@ -119,16 +119,16 @@ COPY --chmod=755 docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 # These are a convenience for simple single-library setups only.
 # For multiple volumes, child-vpaths, albumsOnly, or any advanced config,
 # edit save/conf/default.json directly instead of using these variables.
-# MSTREAM_MUSIC_DIR is the only trigger; empty here = bootstrap never runs.
-ENV MSTREAM_MUSIC_DIR=""
-ENV MSTREAM_ADMIN_USER=""
-ENV MSTREAM_ADMIN_PASS=""
-ENV MSTREAM_ENABLE_AUDIOBOOKS=""
-ENV MSTREAM_ENABLE_RECORDINGS=""
-ENV MSTREAM_ENABLE_YOUTUBE=""
-ENV MSTREAM_AUDIOBOOKS_SUBDIR=""
-ENV MSTREAM_RECORDINGS_SUBDIR=""
-ENV MSTREAM_YOUTUBE_SUBDIR=""
+# VELVET_MUSIC_DIR is the only trigger; empty here = bootstrap never runs.
+ENV VELVET_MUSIC_DIR=""
+ENV VELVET_ADMIN_USER=""
+ENV VELVET_ADMIN_PASS=""
+ENV VELVET_ENABLE_AUDIOBOOKS=""
+ENV VELVET_ENABLE_RECORDINGS=""
+ENV VELVET_ENABLE_YOUTUBE=""
+ENV VELVET_AUDIOBOOKS_SUBDIR=""
+ENV VELVET_RECORDINGS_SUBDIR=""
+ENV VELVET_YOUTUBE_SUBDIR=""
 
 EXPOSE 3000
 

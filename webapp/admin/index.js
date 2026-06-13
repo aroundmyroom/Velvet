@@ -5136,7 +5136,7 @@ const federationMainPanel = Vue.component('federation-main-panel', { // activeTa
     //   paths: folderNames
     // };
 
-  //   MSTREAMAPI.acceptFederationInvite(sendThis, function(res, err){
+  //   API.acceptFederationInvite(sendThis, function(res, err){
   //     if (err !== false) {
   //       boilerplateFailure(res, err);
   //       return;

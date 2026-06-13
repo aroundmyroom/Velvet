@@ -29,7 +29,7 @@ async function createExportArchive(options = {}) {
   await fsp.mkdir(tempDir, { recursive: true });
 
   const manifest = {
-    version: process.env.MSTREAM_VERSION || 'unknown',
+    version: process.env.VELVET_VERSION || process.env.MSTREAM_VERSION || 'unknown',
     exportedAt: new Date().toISOString(),
     vpathRoots: getVpathRoots(),
     includes: {

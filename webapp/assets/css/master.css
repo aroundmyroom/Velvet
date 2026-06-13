@@ -423,11 +423,6 @@ h3 {
   margin: auto;
 }
 
-.mstream-player{
-  position:fixed;
-  bottom:0;
-}
-
 #share-textarea, #fed-textarea {
   height: 8em;
 }

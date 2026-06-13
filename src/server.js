@@ -486,8 +486,8 @@ export async function serveIt(configFile) {
     if (status === 401 || status === 403) {
       // Auth failures on unknown paths are internet scanner noise — log at debug only.
       // Real Velvet routes all start with /api/, /rest/, /media/, /album-art/, /waveform/.
-      const isMstreamPath = /^\/(api|rest|media|album-art|waveform)(\/|$)/i.test(req.originalUrl);
-      if (isMstreamPath) {
+      const isApiPath = /^\/(api|rest|media|album-art|waveform)(\/|$)/i.test(req.originalUrl);
+      if (isApiPath) {
         winston.warn(`Auth failure on route ${req.originalUrl} [${status}]`);
       } else {
         winston.debug(`Auth probe (ignored) on ${req.originalUrl} [${status}]`);
