@@ -1,5 +1,5 @@
 'use strict';
-const VELVET_VERSION = '0.1.1';
+const VELVET_VERSION = '0.1.2';
 // ── SERVER IDENTITY GUARD ────────────────────────────────────────────────────
 // Detects when this browser's localStorage belongs to a different Velvet
 // instance (fresh install, IP change, reverse-proxy swap, second server).
@@ -15845,7 +15845,16 @@ async function _refreshSonosNavDetection() {
 
 function _sonosTargetIp(sonosConfig) {
   const rooms = sonosConfig?.rooms || [];
-  return sonosConfig?.defaultRoom?.ip || (rooms.length > 0 ? rooms[0]?.ip : null);
+  const def = sonosConfig?.defaultRoom || null;
+  // The default room's stored IP can go stale when the speaker's DHCP address
+  // changes. Prefer the live discovered IP for that same device (match by UUID,
+  // fall back to name), so reachability checks don't probe a dead address.
+  if (def) {
+    const match = rooms.find(r => (def.uuid && r.uuid === def.uuid) || (!def.uuid && def.name && r.name === def.name));
+    if (match?.ip) return match.ip;
+    if (def.ip) return def.ip;
+  }
+  return rooms.length > 0 ? rooms[0]?.ip : null;
 }
 
 function _sonosDecodeXml(value) {

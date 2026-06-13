@@ -1,3 +1,10 @@
+## v0.1.2 (2026-06-13)
+
+Sonos fix.
+
+### Sonos
+- **Fixed: "Sonos Radio" nav hidden after the speaker's IP changed.** The Radio-nav reachability check (and the favourites/browse loaders) used the stored default-room IP, which goes stale when the speaker's DHCP address changes — probing the dead address hid the menu even while casting worked. `_sonosTargetIp()` now resolves the default room to its live discovered IP by UUID, self-healing DHCP drift.
+
 ## v0.1.1 (2026-06-13)
 
 Sonos sleep mode.
