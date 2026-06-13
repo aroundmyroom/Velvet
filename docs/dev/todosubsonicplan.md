@@ -353,7 +353,7 @@ Phase 3 (optional):
 - `src/api/subsonic.js` — all route changes (Phases 1, 2, 3)
 - `src/db/sqlite-backend.js` — new DB helpers for `getTopSongsByArtist`, bookmarks, play queue tables + queries
 - `docs/subsonic.md` — update compliance table after implementation
-- `changes-fork-velvet.md` — add v7.3.0 entry
+- `changes-velvet.md` — add v7.3.0 entry
 
 ---
 

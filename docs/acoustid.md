@@ -226,7 +226,7 @@ main loop:
 | `webapp/locales/nl.json` | Dutch translations |
 | `webapp/locales/*.json` (×10) | English placeholder for all other locales |
 | `docs/dev/todo.md` | Remove Tag Workshop Phase 2 AcoustID items (completed) |
-| `changes-fork-velvet.md` | Versioned entry |
+| `changes-velvet.md` | Versioned entry |
 
 ---
 

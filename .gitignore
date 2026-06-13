@@ -97,5 +97,7 @@ releases/earlier/
 releases/v5.*
 releases/v6.*
 releases/v7.*
-changes-fork-velvet.md
 dev-app-update.yml
+
+# fork philosophy doc — kept local only, never published
+docs/dev/philosophy.md
