@@ -539,6 +539,30 @@ function _resolveStreamUrl(track, baseUrl, streamToken, seekTo = 0) {
   return `${baseUrl}/media/${encodeURIComponent(track.vpath)}/${encodedPath}?token=${streamToken}`;
 }
 
+// Look up a file's DB row by (vpath, relPath), with a child-vpath fallback:
+// child vpaths (e.g. "12-inches", root /media/music/12 inches A-Z) are NOT indexed
+// separately — their files live under the parent ROOT vpath. A direct lookup with
+// the child vpath name misses, so resolve the full filesystem path and retry against
+// every ROOT vpath whose root is a prefix. Without this, sample_rate is unknown for
+// child-vpath files and hi-res (>48 kHz) FLAC streams directly instead of being
+// transcoded — Sonos can't decode it and plays silence.
+function _findRowWithVpathFallback(vpath, relPath) {
+  let row = db.findFileByPath(relPath, vpath);
+  if (row) return row;
+  const sentRoot = config.program?.folders?.[vpath]?.root;
+  if (!sentRoot) return null;
+  const fullPath = path.join(sentRoot, relPath);
+  for (const [dbVpath, dbCfg] of Object.entries(config.program?.folders ?? {})) {
+    if (dbVpath === vpath || !dbCfg?.root) continue;
+    const base = dbCfg.root.endsWith(path.sep) ? dbCfg.root : dbCfg.root + path.sep;
+    if (fullPath === dbCfg.root || fullPath.startsWith(base)) {
+      const r = db.findFileByPath(fullPath.slice(base.length), dbVpath);
+      if (r) return r;
+    }
+  }
+  return null;
+}
+
 async function _queueAndPlay(ip, streamUrl, didl, seekTo, paused) {
   await soapCall(ip, 'RemoveAllTracksFromQueue', '');
   await soapCall(ip, 'AddURIToQueue', [
@@ -1195,7 +1219,7 @@ export function setup(velvet) {
         if (slash < 1) continue;
         const track = { vpath: fp.slice(0, slash), filepath: fp.slice(slash + 1), title: raw.title || '', artist: raw.artist || '', album: raw.album || '', aaFile: raw.aaFile || null };
         try {
-          const row = db.findFileByPath(track.filepath, track.vpath);
+          const row = _findRowWithVpathFallback(track.vpath, track.filepath);
           if (row?.aaFile && !track.aaFile) track.aaFile = row.aaFile;
           if (row?.duration) track.duration = row.duration;
           if (row?.sample_rate != null) track.sample_rate = row.sample_rate;
@@ -1211,7 +1235,8 @@ export function setup(velvet) {
         const artUrl = isTranscode
           ? (track.aaFile ? `${artBase}/album-art/${encodeURIComponent(track.aaFile)}` : null)
           : `/getaa?u=${encodeURIComponent(streamUrl)}`;
-        items.push({ streamUrl, didl: buildDidl(track, streamUrl, artUrl, String(i + 1)) });
+        const label = [track.artist, track.title].filter(Boolean).join(' - ') || track.filepath.split('/').pop();
+        items.push({ streamUrl, didl: buildDidl(track, streamUrl, artUrl, String(i + 1)), label, fp, isTranscode, sampleRate: track.sample_rate ?? null });
       }
       if (!items.length) return res.status(400).json({ error: 'no valid tracks' });
       // The currently-playing track is sent first (items[0]); upcoming tracks follow.
@@ -1243,6 +1268,9 @@ export function setup(velvet) {
       if (soapSeekTo > 1) await soapCall(resolvedIp, 'Seek', `<Unit>REL_TIME</Unit><Target>${secsToTime(soapSeekTo)}</Target>`);
       await soapCall(resolvedIp, 'Play', '<Speed>1</Speed>');
       if (paused) await soapCall(resolvedIp, 'Pause', '');
+      const cur = items[0];
+      const hiResNote = (cur.sampleRate ?? 0) > 48000 ? ` ${cur.sampleRate}Hz` : '';
+      console.log(`[sonos] cast-queue ▶ ${cur.label} [${cur.fp}]${cur.isTranscode ? ` (transcoded${hiResNote})` : hiResNote ? ` (DIRECT${hiResNote} — Sonos may not decode)` : ''} → ${resolvedIp}`);
       res.json({ ok: true, actualIp: resolvedIp, count: items.length, index: 0, streamStartOffset, isTranscodeStream: !!curIsTranscode });
 
       // Append the upcoming tracks in the background; abort if a newer cast-queue supersedes us.
@@ -1251,7 +1279,7 @@ export function setup(velvet) {
           if (_queueAppendGen.get(resolvedIp) !== gen) return;
           try { await addUri(items[i]); } catch { return; }
         }
-        console.log(`[sonos] cast-queue: ${items.length} track(s) queued → ${resolvedIp}`);
+        if (items.length > 1) console.log(`[sonos] cast-queue: +${items.length - 1} upcoming track(s) queued → ${resolvedIp}`);
       })();
     } catch (e) {
       console.error('[sonos] /cast-queue error:', e);

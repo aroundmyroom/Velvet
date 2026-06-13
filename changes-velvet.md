@@ -1,3 +1,14 @@
+## v0.1.5 (2026-06-13)
+
+Sonos casting fixes.
+
+### Sonos
+- **Fixed: hi-res FLAC silent on Sonos when queued via a child vpath.** `/cast-queue` looked up the track's `sample_rate` with an exact `(vpath, filepath)` match, which misses for child vpaths (e.g. `12-inches`) — their files are indexed under the parent ROOT (`Music`). With `sample_rate` unknown, hi-res (>48 kHz) detection failed and the file streamed **directly** instead of being transcoded, so Sonos (which can't decode 192 kHz) played silence. `/cast-queue` now uses the same child-vpath fallback as `/cast`, so hi-res files are correctly transcoded to 48 kHz MP3 and play.
+- **Cast log now names the song.** The `cast-queue` log line shows the now-playing track and how it's routed, e.g. `cast-queue ▶ Alphaville - Sounds Like A Melody [12-inches/A/…flac] (transcoded 192000Hz) → 10.1.1.210`. A direct hi-res stream is flagged `(DIRECT … — Sonos may not decode)`. Upcoming queued tracks are logged separately.
+
+### Maintenance
+- **One-command releases.** `npm run release` (or the `/release` command) runs the whole release sequence — bump `package.json`, `sync-version`, release-note retention, `docs/docker.md` pin, tests, commit, push, tag, GitHub release — with safety guards (must be on `main`, Mon–Fri 09:00–17:00 CET blackout check, tag must be free, changelog entry + `releases/vX.Y.Z.md` required). Version and title are read from the top changelog entry. Flags: `--dry-run`, `--no-push`, `--force`, `--skip-tests`, `--title`. See `docs/dev/release.md`.
+
 ## v0.1.4 (2026-06-13)
 
 Sonos Favourites — every service, hide controls, live now-playing.

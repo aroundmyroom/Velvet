@@ -1,6 +1,6 @@
 {
   "name": "velvet",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "Velvet — your personal music server",
   "type": "module",
   "main": "cli-boot-wrapper.js",
@@ -16,6 +16,7 @@
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
     "sync-version": "node scripts/sync-webapp-version.cjs",
+    "release": "node scripts/release.cjs",
     "version": "node scripts/sync-webapp-version.cjs && git add -A",
     "test": "node --test test/integration/*.test.cjs test/*.test.mjs"
   },
