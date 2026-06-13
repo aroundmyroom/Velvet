@@ -9,9 +9,13 @@
  *   POST /api/v1/sonos/cast                 — cast a specific track to a Sonos device (player use)
  *   GET  /api/v1/sonos/transcode-stream     — dedicated ffmpeg pipe for Sonos-incompatible formats
  *   POST /api/v1/sonos/test-play            — play a random song on a Sonos device (admin test)
+ *   GET  /api/v1/sonos/sleep                — read native sleep-timer remaining duration
+ *   POST /api/v1/sonos/sleep                — set/clear native sleep timer (ConfigureSleepTimer)
+ *   GET  /api/v1/sonos/led                  — read status-LED state (GetLEDState)
+ *   POST /api/v1/sonos/led                  — set status-LED On/Off (SetLEDState) — sleep cue
  *
  * Admin endpoints:
- *   POST /api/v1/admin/sonos                — update enabled flag + transcodeOpus flag
+ *   POST /api/v1/admin/sonos                — update enabled + transcodeOpus + sleepEnabled + pauseSleepMinutes
  *
  * Sonos UPnP/SOAP protocol is a public standard; all interaction is via direct
  * HTTP on port 1400. We do not use @svrooij/sonos because its internal
@@ -33,6 +37,8 @@ import * as vpath from '../util/vpath.js';
 import { DatabaseSync } from 'node:sqlite';
 
 // ── Shared helpers ────────────────────────────────────────────────────────────
+
+const SONOS_DP_SVC = 'urn:schemas-upnp-org:service:DeviceProperties:1';
 
 /** XML-escape a string for embedding in SOAP/DIDL XML. */
 const xmlEsc = s => String(s)
@@ -450,6 +456,14 @@ function secsToTime(s) {
   return `${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:${String(sec).padStart(2,'0')}`;
 }
 
+/** Parse an ISO8601 / UPnP HH:MM:SS string to seconds. Empty / NOT_IMPLEMENTED → 0. */
+function timeToSecs(t) {
+  if (!t || t === 'NOT_IMPLEMENTED') return 0;
+  const p = String(t).trim().split(':');
+  if (p.length < 3) return 0;
+  return Number.parseInt(p[0], 10) * 3600 + Number.parseInt(p[1], 10) * 60 + Math.floor(Number.parseFloat(p[2]));
+}
+
 /** Validate that an IP is RFC-1918 (SSRF guard). */
 function assertPrivateIp(ip) {
   if (!/^(10\.|172\.(1[6-9]|2\d|3[01])\.|192\.168\.)/.test(ip)) {
@@ -840,9 +854,11 @@ export function setup(velvet) {
         rooms:          _cachedRooms,
         lastScan:       _lastScanTime,
         cached:         true,
-        defaultRoom:    config.program?.sonos?.defaultRoom || null,
-        enabled:        config.program?.sonos?.enabled !== false,
-        transcodeOpus:  config.program?.sonos?.transcodeOpus === true,
+        defaultRoom:        config.program?.sonos?.defaultRoom || null,
+        enabled:            config.program?.sonos?.enabled !== false,
+        transcodeOpus:      config.program?.sonos?.transcodeOpus === true,
+        sleepEnabled:       config.program?.sonos?.sleepEnabled === true,
+        pauseSleepMinutes:  Number(config.program?.sonos?.pauseSleepMinutes) || 5,
       });
     } catch (e) {
       console.error('[sonos] /devices error:', e);
@@ -875,18 +891,24 @@ export function setup(velvet) {
   });
 
   // ── POST /api/v1/admin/sonos — update Sonos config
-  // Body: { enabled?: boolean, transcodeOpus?: boolean }
+  // Body: { enabled?: boolean, transcodeOpus?: boolean, sleepEnabled?: boolean, pauseSleepMinutes?: number }
   velvet.post('/api/v1/admin/sonos', async (req, res) => {
     if (!req.user?.admin) return res.status(403).json({ error: 'Admin only' });
-    const { enabled, transcodeOpus } = req.body || {};
-    if (enabled === undefined && transcodeOpus === undefined) {
-      return res.status(400).json({ error: 'enabled or transcodeOpus required' });
+    const { enabled, transcodeOpus, sleepEnabled, pauseSleepMinutes } = req.body || {};
+    if (enabled === undefined && transcodeOpus === undefined && sleepEnabled === undefined && pauseSleepMinutes === undefined) {
+      return res.status(400).json({ error: 'enabled, transcodeOpus, sleepEnabled or pauseSleepMinutes required' });
     }
     if (enabled !== undefined && typeof enabled !== 'boolean') {
       return res.status(400).json({ error: 'enabled must be boolean' });
     }
     if (transcodeOpus !== undefined && typeof transcodeOpus !== 'boolean') {
       return res.status(400).json({ error: 'transcodeOpus must be boolean' });
+    }
+    if (sleepEnabled !== undefined && typeof sleepEnabled !== 'boolean') {
+      return res.status(400).json({ error: 'sleepEnabled must be boolean' });
+    }
+    if (pauseSleepMinutes !== undefined && (!Number.isFinite(pauseSleepMinutes) || pauseSleepMinutes < 1 || pauseSleepMinutes > 120)) {
+      return res.status(400).json({ error: 'pauseSleepMinutes must be a number between 1 and 120' });
     }
     try {
       const loadedCfg = await loadFile(config.configFile);
@@ -900,8 +922,22 @@ export function setup(velvet) {
         loadedCfg.sonos.transcodeOpus = transcodeOpus;
         config.program.sonos.transcodeOpus = transcodeOpus;
       }
+      if (sleepEnabled !== undefined) {
+        loadedCfg.sonos.sleepEnabled = sleepEnabled;
+        config.program.sonos.sleepEnabled = sleepEnabled;
+      }
+      if (pauseSleepMinutes !== undefined) {
+        loadedCfg.sonos.pauseSleepMinutes = pauseSleepMinutes;
+        config.program.sonos.pauseSleepMinutes = pauseSleepMinutes;
+      }
       await saveFile(loadedCfg, config.configFile);
-      res.json({ ok: true, enabled: config.program.sonos.enabled !== false, transcodeOpus: config.program.sonos.transcodeOpus === true });
+      res.json({
+        ok: true,
+        enabled: config.program.sonos.enabled !== false,
+        transcodeOpus: config.program.sonos.transcodeOpus === true,
+        sleepEnabled: config.program.sonos.sleepEnabled === true,
+        pauseSleepMinutes: Number(config.program.sonos.pauseSleepMinutes) || 5,
+      });
     } catch (e) {
       console.error('[sonos] /admin/sonos error:', e);
       res.status(500).json({ error: String(e.message || e) });
@@ -1296,6 +1332,116 @@ export function setup(velvet) {
       // unreachable:true lets the client distinguish device-offline from device-stopped
       // so it can auto-deactivate cast and fall back to browser audio.
       return res.json({ playing: false, paused: false, stopped: true, state: 'STOPPED', position: 0, duration: 0, unreachable: true });
+    }
+  });
+
+  // ── GET /api/v1/sonos/sleep?ip=X ─────────────────────────────────────
+  // Read the native Sonos sleep-timer state via AVTransport GetRemainingSleepTimerDuration.
+  // Response: { ok, active, remaining (secs), generation, raw }
+  velvet.get('/api/v1/sonos/sleep', async (req, res) => {
+    const ip = req.query?.ip || config.program?.sonos?.defaultRoom?.ip;
+    if (!ip) return res.status(400).json({ error: 'ip required' });
+    try {
+      const resolvedIp = _resolveIp(ip);
+      assertPrivateIp(resolvedIp);
+      const xml = await soapCall(resolvedIp, 'GetRemainingSleepTimerDuration', '');
+      const raw = (xml.match(/<RemainingSleepTimerDuration[^>]*>([^<]*)<\/RemainingSleepTimerDuration>/i) || [])[1] || '';
+      const generation = Number.parseInt((xml.match(/<CurrentSleepTimerGeneration[^>]*>([^<]*)<\/CurrentSleepTimerGeneration>/i) || [])[1] || '0', 10) || 0;
+      const remaining = timeToSecs(raw);
+      res.json({ ok: true, active: remaining > 0, remaining, generation, raw: raw.trim() });
+    } catch (e) {
+      const msg = String(e.message || e);
+      if (e.code === 'EHOSTUNREACH' || e.code === 'ECONNREFUSED' || msg.includes('timeout')) {
+        return res.status(503).json({ ok: false, unreachable: true, error: msg });
+      }
+      res.status(500).json({ ok: false, error: msg });
+    }
+  });
+
+  // ── POST /api/v1/sonos/sleep ─────────────────────────────────────────
+  // Set or clear the native Sonos sleep timer via AVTransport ConfigureSleepTimer.
+  // Body: { ip, seconds?: number, minutes?: number, play?: boolean }
+  //   seconds/minutes <= 0  → wake (clear timer); if play:true also resume playback
+  //   seconds/minutes  > 0  → sleep after that duration
+  // ConfigureSleepTimer accepts an ISO8601 HH:MM:SS duration; an empty string cancels it.
+  velvet.post('/api/v1/sonos/sleep', async (req, res) => {
+    const ip = req.body?.ip || config.program?.sonos?.defaultRoom?.ip;
+    if (!ip) return res.status(400).json({ error: 'ip required' });
+    const totalSecs = req.body?.seconds != null
+      ? Math.floor(Number(req.body.seconds) || 0)
+      : Math.floor((Number(req.body?.minutes) || 0) * 60);
+    try {
+      const resolvedIp = _resolveIp(ip);
+      assertPrivateIp(resolvedIp);
+      const duration = totalSecs > 0 ? secsToTime(totalSecs) : '';
+      await soapCall(resolvedIp, 'ConfigureSleepTimer', `<NewSleepTimerDuration>${duration}</NewSleepTimerDuration>`);
+      if (totalSecs <= 0 && req.body?.play === true) {
+        try { await soapCall(resolvedIp, 'Play', '<Speed>1</Speed>'); }
+        catch (e) { console.info(`[sonos] /sleep wake-play ignored (${resolvedIp}): ${e.message || e}`); }
+      }
+      // Re-read so the client sees the authoritative device state
+      let remaining = totalSecs;
+      try {
+        const xml = await soapCall(resolvedIp, 'GetRemainingSleepTimerDuration', '');
+        const raw = (xml.match(/<RemainingSleepTimerDuration[^>]*>([^<]*)<\/RemainingSleepTimerDuration>/i) || [])[1] || '';
+        remaining = timeToSecs(raw);
+      } catch { /* keep optimistic value */ }
+      console.log(`[sonos] sleep ${totalSecs > 0 ? `→ ${duration}` : 'cleared'}${totalSecs <= 0 && req.body?.play === true ? ' + play' : ''} → ${resolvedIp}`);
+      res.json({ ok: true, active: remaining > 0, remaining, requested: totalSecs });
+    } catch (e) {
+      const msg = String(e.message || e);
+      if (msg.includes('HTTP 500') || msg.includes('UPnPError')) {
+        return res.json({ ok: true, active: false, remaining: 0, ignored: 'device idle' });
+      }
+      if (e.code === 'EHOSTUNREACH' || e.code === 'ECONNREFUSED' || msg.includes('timeout')) {
+        console.info(`[sonos] /sleep: device offline (${ip}) — ${msg}`);
+        return res.status(503).json({ ok: false, unreachable: true, error: msg });
+      }
+      console.error('[sonos] /sleep error:', e);
+      res.status(500).json({ ok: false, error: msg });
+    }
+  });
+
+  // ── GET /api/v1/sonos/led?ip=X ───────────────────────────────────────
+  // Read the status-LED state via DeviceProperties GetLEDState. Returns { ok, state }.
+  velvet.get('/api/v1/sonos/led', async (req, res) => {
+    const ip = req.query?.ip || config.program?.sonos?.defaultRoom?.ip;
+    if (!ip) return res.status(400).json({ error: 'ip required' });
+    try {
+      const resolvedIp = _resolveIp(ip);
+      assertPrivateIp(resolvedIp);
+      const xml = await localSoapCall(resolvedIp, '/DeviceProperties/Control', SONOS_DP_SVC, 'GetLEDState', '');
+      const state = (xml.match(/<CurrentLEDState[^>]*>([^<]*)<\/CurrentLEDState>/i) || [])[1] || '';
+      res.json({ ok: true, state: state.trim() });
+    } catch (e) {
+      const msg = String(e.message || e);
+      if (e.code === 'EHOSTUNREACH' || e.code === 'ECONNREFUSED' || msg.includes('timeout')) {
+        return res.status(503).json({ ok: false, unreachable: true, error: msg });
+      }
+      res.status(500).json({ ok: false, error: msg });
+    }
+  });
+
+  // ── POST /api/v1/sonos/led ───────────────────────────────────────────
+  // Set the status-LED state via DeviceProperties SetLEDState. Body: { ip, state: 'On'|'Off' }.
+  // Used as a visual sleep cue — the LED is a persistent global device setting.
+  velvet.post('/api/v1/sonos/led', async (req, res) => {
+    const ip = req.body?.ip || config.program?.sonos?.defaultRoom?.ip;
+    const state = String(req.body?.state || '').toLowerCase() === 'off' ? 'Off' : 'On';
+    if (!ip) return res.status(400).json({ error: 'ip required' });
+    try {
+      const resolvedIp = _resolveIp(ip);
+      assertPrivateIp(resolvedIp);
+      await localSoapCall(resolvedIp, '/DeviceProperties/Control', SONOS_DP_SVC, 'SetLEDState', `<DesiredLEDState>${state}</DesiredLEDState>`);
+      console.log(`[sonos] LED ${state} → ${resolvedIp}`);
+      res.json({ ok: true, state });
+    } catch (e) {
+      const msg = String(e.message || e);
+      if (e.code === 'EHOSTUNREACH' || e.code === 'ECONNREFUSED' || msg.includes('timeout')) {
+        return res.status(503).json({ ok: false, unreachable: true, error: msg });
+      }
+      console.error('[sonos] /led error:', e);
+      res.status(500).json({ ok: false, error: msg });
     }
   });
 

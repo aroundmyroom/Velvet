@@ -1,3 +1,13 @@
+## v0.1.1 (2026-06-13)
+
+Sonos sleep mode.
+
+### Sonos
+- **Sleep mode (opt-in, per admin).** Enable under **Admin → Sonos**. When on and casting to a Sonos device, **pause turns the speaker's status LED off** (direct sleep — a paused/zero-volume state; the device stays reachable) and **play turns it back on**. Selecting or re-selecting a device aligns the LED with playback (paused keeps it asleep, playing wakes it), and closing the tab drops the LED.
+- **New endpoints.** `GET`/`POST /api/v1/sonos/led` read/set the status LED (`GetLEDState`/`SetLEDState`); `GET`/`POST /api/v1/sonos/sleep` read/set the native sleep timer (`ConfigureSleepTimer`). `POST /api/v1/admin/sonos` now accepts `sleepEnabled`.
+- **Admin test panel.** With sleep mode enabled, a test panel exposes **Sleep now** / **Wake** with a live countdown plus transport + LED readout to verify the device responds. Hidden when sleep mode is disabled.
+- **Admin notes.** Clarified that sleep mode is a reachable paused/zero-volume state, not a power-off, and that the device's **Battery Saver** (a Sonos cloud/app setting, not on the local API) powers the speaker off after ~30 min idle — disable it in the Sonos app for a reachable low-power sleep.
+
 ## v0.1.0 (2026-06-12)
 
 Accessibility milestone.

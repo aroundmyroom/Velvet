@@ -790,7 +790,11 @@ Admin only. Finds albums (folders) with no cover art, fetches suggestions from D
 | `POST` | `/api/v1/sonos/play-cloud-object` | `{ deviceIp, id, title? }` | Start a Sonos cloud object (for example a radio favourite) on the target device with resilient fallback behavior. Requires `allow-mpv-cast`. |
 | `GET` | `/api/v1/sonos/transcode-stream?fp=&token=` | — | Stream a Sonos-incompatible file as MP3 (192 k @ 48 kHz) via ffmpeg. Used automatically when Auto-transcode is enabled and the file is Opus or hi-res (>48 kHz). |
 | `POST` | `/api/v1/sonos/test-play` | `{ deviceIp }` | Play a random song (admin test). |
-| `POST` | `/api/v1/admin/sonos` | `{ enabled?, transcodeOpus? }` | Save Sonos config (admin only). `transcodeOpus: true` enables auto-transcode for Opus and hi-res files. |
+| `GET` | `/api/v1/sonos/sleep?ip=` | — | Read the speaker's native sleep timer. Returns `{ ok, active, remaining, generation, raw }` (`remaining` in seconds). |
+| `POST` | `/api/v1/sonos/sleep` | `{ ip, seconds?, minutes?, play? }` | Set or clear the native Sonos sleep timer (`ConfigureSleepTimer`). `seconds`/`minutes` ≤ 0 clears it; `play: true` also resumes playback on wake. Returns `{ ok, active, remaining, requested }`. |
+| `GET` | `/api/v1/sonos/led?ip=` | — | Read the status-LED state (`GetLEDState`). Returns `{ ok, state }` (`On`/`Off`). |
+| `POST` | `/api/v1/sonos/led` | `{ ip, state }` | Set the status-LED state (`SetLEDState`, `On`/`Off`). Used as the sleep-mode visual cue. Returns `{ ok, state }`. |
+| `POST` | `/api/v1/admin/sonos` | `{ enabled?, transcodeOpus?, sleepEnabled? }` | Save Sonos config (admin only). `transcodeOpus: true` enables auto-transcode for Opus and hi-res files. `sleepEnabled: true` turns on sleep mode — when casting, pausing drops the speaker's status LED (direct sleep) and resuming turns it back on. |
 
 ---
 

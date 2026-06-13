@@ -1,5 +1,5 @@
 'use strict';
-const VELVET_VERSION = '0.1.0';
+const VELVET_VERSION = '0.1.1';
 // ── SERVER IDENTITY GUARD ────────────────────────────────────────────────────
 // Detects when this browser's localStorage belongs to a different Velvet
 // instance (fresh install, IP change, reverse-proxy swap, second server).
@@ -1592,6 +1592,8 @@ const Player = {
       } catch (e) { if (_BOOT_DBG) console.warn('[BOOT] Player.toggle: resumeAudio() THREW', e && e.name, e && e.message); }
       if (S.castingToMpv) api('POST', 'api/v1/server-playback/set-pause', { paused: false }).catch(() => {});
       if (S.castingToSonos && S.sonosRoom) {
+        // Sleep mode: play = direct wake — turn the status LED back on.
+        if (_sonosSleepEnabled()) api('POST', 'api/v1/sonos/led', { ip: S.sonosRoom.ip, state: 'On' }).catch(() => {});
         if (_sonosNeedsRecast) {
           // Page refresh: Sonos queue is empty — re-cast the current track instead of sending set-pause
           // _sonosNeedsRecast cleared only on success so a failed cast retries on next Play
@@ -1630,7 +1632,11 @@ const Player = {
         }}).catch(() => {});
       }
       if (S.castingToMpv) api('POST', 'api/v1/server-playback/set-pause', { paused: true }).catch(() => {});
-      if (S.castingToSonos && S.sonosRoom) api('POST', 'api/v1/sonos/set-pause', { ip: S.sonosRoom.ip, paused: true }).catch(() => {});
+      if (S.castingToSonos && S.sonosRoom) {
+        api('POST', 'api/v1/sonos/set-pause', { ip: S.sonosRoom.ip, paused: true }).catch(() => {});
+        // Sleep mode: pause = direct sleep — drop the status LED as the visible cue.
+        if (_sonosSleepEnabled()) api('POST', 'api/v1/sonos/led', { ip: S.sonosRoom.ip, state: 'Off' }).catch(() => {});
+      }
     }
   },
   next() {
@@ -18265,6 +18271,9 @@ async function _activateSonosCast(room) {
     const activeRoom = activeIp !== room.ip ? { ...room, ip: activeIp } : room;
     S.castingToSonos = true;
     S.sonosRoom = activeRoom;
+    // Sleep mode: align the LED with playback — paused (e.g. re-selected after a
+    // force refresh) keeps it asleep (LED off); playing wakes it (LED on).
+    if (_sonosSleepEnabled()) api('POST', 'api/v1/sonos/led', { ip: activeRoom.ip, state: paused ? 'Off' : 'On' }).catch(() => {});
     _sonosNeedsRecast = false; // fresh cast — Sonos now has the current track
     _sonosCastTime = Date.now(); // start grace period — Sonos seeks internally, position may be 0 briefly
     localStorage.setItem(_uKey('casting_sonos'), JSON.stringify(activeRoom));
@@ -18330,6 +18339,13 @@ function _deactivateSonosCast(notify = true) {
   }
   _updateOutputBtn();
   if (notify) toast(t('player.output.castStop'));
+}
+
+// Sleep mode (admin-configurable): when on, pausing a Sonos cast drops the status
+// LED (direct sleep) and resuming turns it back on. The device stays reachable —
+// it is essentially a paused / zero-volume state, not a real power-off.
+function _sonosSleepEnabled() {
+  return S.sonosConfig?.sleepEnabled === true;
 }
 
 function _clearSonosCastClientState() {
@@ -20719,6 +20735,15 @@ function showApp() {
         '/api/v1/sonos/set-pause?token=' + encodeURIComponent(S.token),
         new Blob([JSON.stringify({ ip: S.sonosRoom.ip, paused: true })], { type: 'application/json' })
       );
+      // Sleep mode: also drop the LED so the device reads as asleep after the close.
+      // State isn't persisted across a force refresh — re-selecting Sonos realigns the
+      // LED with playback (paused → keep asleep, play → wake).
+      if (_sonosSleepEnabled()) {
+        navigator.sendBeacon(
+          '/api/v1/sonos/led?token=' + encodeURIComponent(S.token),
+          new Blob([JSON.stringify({ ip: S.sonosRoom.ip, state: 'Off' })], { type: 'application/json' })
+        );
+      }
     }
     // Flush exact current position to DB synchronously via sendBeacon so an
     // immediate F5 restores to the right spot (not up to 15 s behind).

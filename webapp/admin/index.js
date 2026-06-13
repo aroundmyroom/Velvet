@@ -4095,6 +4095,15 @@ const sonosView = Vue.component('sonos-view', {
       enabled:      true,
       transcodeOpus: false,
       togglingTranscodeOpus: false,
+      sleepEnabled: false,
+      togglingSleep: false,
+      sleepTestSecs: 5,
+      sleepBusy:    false,
+      sleepRemaining: null,
+      sleepState:   '',
+      sleepLed:     '',
+      sleepUnreachable: false,
+      sleepPollTimer: null,
       rooms:        [],
       scanning:     false,
       probing:      false,
@@ -4164,6 +4173,64 @@ const sonosView = Vue.component('sonos-view', {
             </td>
           </tr>
         </table>
+      </div>
+
+      <!-- Sonos Sleep Mode -->
+      <div class="admin-card" style="margin-bottom:1.5rem;">
+        <table style="width:100%;border-collapse:collapse;">
+          <tr>
+            <td style="padding:.5rem 0;">
+              <b>{{ this.t('admin.sonos.labelSleep') }}</b>
+              <div style="font-size:.82rem;color:var(--t2);margin-top:4px">{{ this.t('admin.sonos.helpSleep') }}</div>
+            </td>
+            <td style="text-align:right;white-space:nowrap;">
+              <label style="display:inline-flex;align-items:center;gap:8px;cursor:pointer;user-select:none">
+                <span style="position:relative;display:inline-block;width:44px;height:24px">
+                  <input type="checkbox" :checked="sleepEnabled" @change="toggleSleep()" style="opacity:0;width:0;height:0;position:absolute" :disabled="togglingSleep">
+                  <span :style="{ position:'absolute', inset:0, borderRadius:'12px', background: sleepEnabled ? 'var(--primary,#6366f1)' : 'var(--t3,#888)', transition:'background 0.2s', cursor: togglingSleep ? 'not-allowed' : 'pointer' }"></span>
+                  <span :style="{ position:'absolute', top:'3px', left: sleepEnabled ? '23px' : '3px', width:'18px', height:'18px', borderRadius:'50%', background:'#fff', transition:'left 0.2s', pointerEvents:'none' }"></span>
+                </span>
+                <span style="font-size:.85rem;color:var(--t2)">{{ sleepEnabled ? this.t('admin.sonos.statusEnabled') : this.t('admin.sonos.statusDisabled') }}</span>
+              </label>
+            </td>
+          </tr>
+        </table>
+
+        <div v-if="sleepEnabled" style="margin-top:.75rem;padding:.7rem .85rem;border-radius:6px;background:color-mix(in srgb,var(--primary,#6366f1) 8%,var(--raised));font-size:.8rem;line-height:1.5;">
+          <div style="margin-bottom:.4rem;">⚠&#xFE0E; {{ this.t('admin.sonos.sleepNote30min') }}</div>
+          <div>💡 {{ this.t('admin.sonos.sleepNoteLed') }}</div>
+        </div>
+
+        <div v-if="sleepEnabled" style="margin-top:1rem;padding-top:1rem;border-top:1px solid var(--border2);">
+          <h3 style="margin:0 0 .35rem;font-size:.95rem;">{{ this.t('admin.sonos.sleepTestTitle') }}</h3>
+          <p style="margin:0 0 .6rem;font-size:.82rem;opacity:.7;">{{ this.t('admin.sonos.sleepTestDesc') }}</p>
+          <div style="display:flex;gap:.5rem;align-items:center;flex-wrap:wrap;">
+            <input class="admin-input" type="text" v-model="testIp" placeholder="192.168.1.x" style="width:160px;" />
+            <button class="btn" :disabled="testing || !testIp.trim()" style="background:var(--raised);" @click="testPlay">
+              <span v-if="testing">{{ this.t('admin.sonos.testPlaying') }}</span>
+              <span v-else>▶ {{ this.t('admin.sonos.sleepTestPlay') }}</span>
+            </button>
+            <input class="admin-input" type="number" min="1" max="3600" v-model.number="sleepTestSecs" style="width:80px;text-align:right;" :title="this.t('admin.sonos.sleepTestSecs')" />
+            <span style="font-size:.82rem;opacity:.6">{{ this.t('admin.sonos.secondsUnit') }}</span>
+            <button class="btn btn-primary" :disabled="sleepBusy || !testIp.trim()" @click="sleepNow">
+              💤 {{ this.t('admin.sonos.sleepNowBtn') }}
+            </button>
+            <button class="btn" :disabled="sleepBusy || !testIp.trim()" style="background:var(--raised);" @click="wakeNow">
+              ☀&#xFE0E; {{ this.t('admin.sonos.wakeBtn') }}
+            </button>
+          </div>
+          <div style="margin-top:.5rem;font-size:.78rem;opacity:.6;">ⓘ {{ this.t('admin.sonos.sleepTestHint') }}</div>
+          <div v-if="sleepRemaining !== null" style="margin-top:.6rem;padding:.6rem .75rem;border-radius:6px;background:var(--raised);font-size:.9rem;">
+            <span v-if="sleepUnreachable" style="color:var(--red);">✖ {{ this.t('admin.sonos.sleepStateUnreachable') }}</span>
+            <span v-else-if="sleepRemaining > 0" style="color:var(--green);">
+              ⏳ {{ this.t('admin.sonos.sleepActive') }}: <strong>{{ fmtSleep(sleepRemaining) }}</strong>
+              <span style="opacity:.6;">· {{ sleepState || '—' }}</span>
+            </span>
+            <span v-else-if="sleepState === 'PLAYING'" style="color:var(--green);">▶ {{ this.t('admin.sonos.sleepStateAwake') }}</span>
+            <span v-else>💤 {{ this.t('admin.sonos.sleepStateAsleep') }} <span style="opacity:.6;">({{ sleepState || 'STOPPED' }})</span></span>
+            <span v-if="sleepLed" style="opacity:.6;margin-left:.5rem;">· {{ this.t('admin.sonos.ledLabel') }}: {{ sleepLed }}</span>
+          </div>
+        </div>
       </div>
 
       <div class="admin-card" style="margin-bottom:1.5rem;">
@@ -4287,6 +4354,9 @@ const sonosView = Vue.component('sonos-view', {
   async mounted() {
     await this.loadDevices();
   },
+  beforeDestroy() {
+    this._stopSleepPoll();
+  },
   methods: {
     async loadDevices() {
       this.scanning = true; this.error = null;
@@ -4297,6 +4367,7 @@ const sonosView = Vue.component('sonos-view', {
         this.defaultRoom = r.data.defaultRoom || null;
         this.enabled = r.data.enabled !== false;
         this.transcodeOpus = r.data.transcodeOpus === true;
+        this.sleepEnabled = r.data.sleepEnabled === true;
         if (this.rooms.length > 0 && !this.testIp) this.testIp = this.rooms[0].ip;
       } catch (e) {
         this.error = e?.response?.data?.error || e.message;
@@ -4321,6 +4392,68 @@ const sonosView = Vue.component('sonos-view', {
       } catch (e) {
         this.error = e?.response?.data?.error || e.message;
       } finally { this.togglingTranscodeOpus = false; }
+    },
+    async toggleSleep() {
+      const next = !this.sleepEnabled;
+      this.togglingSleep = true;
+      try {
+        await API.axios({ method: 'POST', url: `${API.url()}/api/v1/admin/sonos`, data: { sleepEnabled: next } });
+        this.sleepEnabled = next;
+        if (!next) { this._stopSleepPoll(); this.sleepRemaining = null; }
+      } catch (e) {
+        this.error = e?.response?.data?.error || e.message;
+      } finally { this.togglingSleep = false; }
+    },
+    fmtSleep(secs) {
+      const s = Math.max(0, Math.floor(secs));
+      const m = Math.floor(s / 60);
+      return m > 0 ? `${m}m ${String(s % 60).padStart(2, '0')}s` : `${s}s`;
+    },
+    async sleepNow() {
+      const ip = this.testIp.trim(); if (!ip) return;
+      const seconds = Math.min(3600, Math.max(1, Math.round(Number(this.sleepTestSecs) || 5)));
+      this.sleepBusy = true; this.sleepUnreachable = false;
+      try {
+        const r = await API.axios({ method: 'POST', url: `${API.url()}/api/v1/sonos/sleep`, data: { ip, seconds } });
+        this.sleepRemaining = r.data.remaining ?? seconds;
+        API.axios({ method: 'POST', url: `${API.url()}/api/v1/sonos/led`, data: { ip, state: 'Off' } }).catch(() => {});
+        this._startSleepPoll(ip);
+      } catch (e) {
+        this.error = e?.response?.data?.error || e.message;
+      } finally { this.sleepBusy = false; }
+    },
+    async wakeNow() {
+      const ip = this.testIp.trim(); if (!ip) return;
+      this.sleepBusy = true; this.sleepUnreachable = false;
+      try {
+        const r = await API.axios({ method: 'POST', url: `${API.url()}/api/v1/sonos/sleep`, data: { ip, seconds: 0, play: true } });
+        this.sleepRemaining = r.data.remaining ?? 0;
+        API.axios({ method: 'POST', url: `${API.url()}/api/v1/sonos/led`, data: { ip, state: 'On' } }).catch(() => {});
+        this._startSleepPoll(ip);
+      } catch (e) {
+        this.error = e?.response?.data?.error || e.message;
+      } finally { this.sleepBusy = false; }
+    },
+    async _sleepPollTick(ip) {
+      try {
+        const [sl, tr, led] = await Promise.all([
+          API.axios({ method: 'GET', url: `${API.url()}/api/v1/sonos/sleep?ip=${encodeURIComponent(ip)}` }),
+          API.axios({ method: 'GET', url: `${API.url()}/api/v1/sonos/transport-status?ip=${encodeURIComponent(ip)}` }).catch(() => ({ data: { unreachable: true } })),
+          API.axios({ method: 'GET', url: `${API.url()}/api/v1/sonos/led?ip=${encodeURIComponent(ip)}` }).catch(() => ({ data: {} })),
+        ]);
+        this.sleepUnreachable = sl.data?.unreachable === true || tr.data?.unreachable === true;
+        this.sleepRemaining = sl.data?.remaining ?? 0;
+        this.sleepState = tr.data?.state || '';
+        this.sleepLed = led.data?.state || '';
+      } catch { this.sleepUnreachable = true; }
+    },
+    _startSleepPoll(ip) {
+      this._stopSleepPoll();
+      this._sleepPollTick(ip);
+      this.sleepPollTimer = setInterval(() => this._sleepPollTick(ip), 3000);
+    },
+    _stopSleepPoll() {
+      if (this.sleepPollTimer) { clearInterval(this.sleepPollTimer); this.sleepPollTimer = null; }
     },
     async scanDevices() {
       this.scanning = true; this.error = null; this.rooms = [];

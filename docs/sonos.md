@@ -98,6 +98,7 @@ The Sonos Radio menu entry is now tied to live reachability:
 |---------|-------------|
 | **Enable / Disable toggle** | When disabled, Sonos output is hidden from all output pickers |
 | **Auto-transcode for Sonos** | Automatically convert incompatible audio to MP3 before sending to Sonos. Covers Opus files (YouTube downloads, recordings), WAV files, and hi-res audio (88/96/176/192 kHz FLAC/WAV — most Sonos hardware caps at 48 kHz). Uses the built-in ffmpeg — no separate Transcode setup required. |
+| **Sleep mode** | Toggle direct sleep control. When on and casting to Sonos, **pause** drops the speaker's status LED (direct sleep — a paused / zero-volume state, device stays reachable) and **play** turns it back on. A **Test sleep timer** panel exposes **Sleep now** / **Wake** with a live countdown + LED/transport readout to verify the device responds. Note: with the device's Battery Saver enabled it powers off (unreachable) after 30 min idle — disable Battery Saver in the Sonos app for a reachable low-power sleep. |
 | **Probe by IP** | Enter any Sonos IP to test reachability and retrieve room name + UUID |
 | **Scan** | Trigger discovery using the seed IP; populates the room list |
 | **Default room** | The room pre-selected in the output picker; set by clicking a room in the list |
@@ -181,8 +182,12 @@ All endpoints require a valid JWT (`x-access-token` header or `token` query para
 | `POST` | `/api/v1/sonos/set-volume` | User + `allow-mpv-cast` | Set volume (0–100; server caps at 50) |
 | `GET` | `/api/v1/sonos/transport-status?ip=X` | User + `allow-mpv-cast` | Poll playback state from Sonos (playing/paused/stopped, position, duration) |
 | `POST` | `/api/v1/sonos/test-play` | Admin | Play a random song on a device (admin test) |
+| `GET` | `/api/v1/sonos/sleep?ip=X` | User | Read the native sleep timer — `{ active, remaining, generation }` |
+| `POST` | `/api/v1/sonos/sleep` | User | Set/clear the native sleep timer via `ConfigureSleepTimer`. `{ ip, seconds?, minutes?, play? }` — ≤ 0 clears it; `play: true` resumes on wake |
+| `GET` | `/api/v1/sonos/led?ip=X` | User | Read the status-LED state (`GetLEDState`) — `{ state: 'On'｜'Off' }` |
+| `POST` | `/api/v1/sonos/led` | User | Set the status-LED state (`SetLEDState`). `{ ip, state: 'On'｜'Off' }` — sleep-mode visual cue |
 | `GET` | `/api/v1/sonos/transcode-stream?fp=&token=` | User | Stream a file as MP3 (192 k @ 48 kHz) via the built-in ffmpeg. Used automatically when Auto-transcode is enabled. |
-| `POST` | `/api/v1/admin/sonos` | Admin | Save Sonos config (`enabled`, `transcodeOpus`) |
+| `POST` | `/api/v1/admin/sonos` | Admin | Save Sonos config (`enabled`, `transcodeOpus`, `sleepEnabled`) |
 
 ---
 
@@ -195,6 +200,7 @@ All endpoints require a valid JWT (`x-access-token` header or `token` query para
   "sonos": {
     "enabled": true,
     "transcodeOpus": true,
+    "sleepEnabled": false,
     "defaultRoom": {
       "ip": "192.168.1.100",
       "name": "Living Room",
