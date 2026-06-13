@@ -1,3 +1,10 @@
+## v0.1.6 (2026-06-13)
+
+Release tooling hardening.
+
+### Maintenance
+- **`npm run release` now rebases before pushing.** The first run of the new release script failed when `main` had advanced (Dependabot merges) since the local commit. The Push step now runs `git pull --rebase origin main` before `git push`, so concurrent commits on `main` are integrated automatically instead of the push being rejected.
+
 ## v0.1.5 (2026-06-13)
 
 Sonos casting fixes.

@@ -148,7 +148,11 @@ say(`committed: ${subject}`);
 
 if (NO_PUSH) { console.log(C.y('\n  --no-push: committed locally. Push/tag/release skipped.')); process.exit(0); }
 
-stepLog('Push main');
+stepLog('Sync with remote + push main');
+// Integrate any commits pushed to main since we branched (e.g. Dependabot merges)
+// so the push is a fast-forward. The working tree is clean here (just committed),
+// so the rebase is safe; a genuine conflict stops the run for manual resolution.
+sh('git pull --rebase origin main');
 sh('git push origin main');
 
 stepLog('Tag + push tag (triggers Docker build)');

@@ -101,7 +101,7 @@ docker pull ghcr.io/aroundmyroom/velvet:latest
 Or pin to a specific release:
 
 ```shell
-docker pull ghcr.io/aroundmyroom/velvet:v0.1.5
+docker pull ghcr.io/aroundmyroom/velvet:v0.1.6
 ```
 
 ### compose.yaml (ghcr.io — recommended)
