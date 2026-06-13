@@ -2195,6 +2195,7 @@
   "player.output.cantCastRadio": "Can’t cast radio to Sonos",
   "player.output.noSonos": "No Sonos rooms found",
   "player.output.sonosLost": "Sonos device offline — switched to browser audio",
+  "player.output.sonosExternalControl": "Playback taken over on the Sonos app — paused here",
   "player.output.statusChecking": "Checking…",
   "player.output.statusReady": "Ready",
   "player.output.statusWarmingUp": "Warming up — device found, renderer starting",

@@ -784,7 +784,9 @@ Admin only. Finds albums (folders) with no cover art, fetches suggestions from D
 | `POST` | `/api/v1/sonos/set-volume` | `{ deviceIp, volume }` | Set volume (0–100). Requires `allow-mpv-cast`. |
 | `GET` | `/api/v1/sonos/battery?ip=` | — | Battery status for portable devices (Roam, Roam 2, Move, Move 2). Returns `{ supported, level, powerSource, health, temperature }`. Mains-powered devices return `{ supported: false }`. |
 | `GET` | `/api/v1/sonos/device-info?ip=` | — | Device info from `/status/zp` + `/status/wireless`. Returns `{ zoneName, model, firmware, firmwareDate, ipAddress, macAddress, seriesId, wifi, wifiMode, sonosNetPeers }`. |
-| `GET` | `/api/v1/sonos/transport-status?ip=` | — | Poll playback state: `{ playing, paused, stopped, state, position, duration }`. |
+| `GET` | `/api/v1/sonos/transport-status?ip=` | — | Poll playback state: `{ playing, paused, stopped, state, position, duration, track }` (`track` = current queue position; the player uses it to detect Sonos-app navigation and cede control). |
+| `POST` | `/api/v1/sonos/cast-queue` | `{ ip, tracks[], index, seekTo?, paused? }` | Mirror a window of the player queue (current + upcoming) onto the Sonos queue. Plays the current track immediately, then appends the rest in the background. |
+| `POST` | `/api/v1/sonos/queue/clear` | `{ ip }` | Wipe the Sonos queue **only if every track is Velvet's** (a user-built/foreign queue is left untouched). |
 | `GET` | `/api/v1/sonos/radio-favorites?ip=` | — | Return Sonos favourite channels that are directly playable from the local Sonos MusicServices bridge. |
 | `GET` | `/api/v1/sonos/browse-content?ip=&id=` | — | Browse Sonos MusicServices content containers by object id. |
 | `POST` | `/api/v1/sonos/play-cloud-object` | `{ deviceIp, id, title? }` | Start a Sonos cloud object (for example a radio favourite) on the target device with resilient fallback behavior. Requires `allow-mpv-cast`. |

@@ -7,6 +7,8 @@
  *   GET  /api/v1/sonos/probe                — probe a single IP for Sonos info
  *   POST /api/v1/sonos/save-default         — save a room as the default cast target
  *   POST /api/v1/sonos/cast                 — cast a specific track to a Sonos device (player use)
+ *   POST /api/v1/sonos/cast-queue           — mirror a window of the player queue onto the Sonos queue
+ *   POST /api/v1/sonos/queue/clear          — wipe the Sonos queue, only if it belongs to Velvet
  *   GET  /api/v1/sonos/transcode-stream     — dedicated ffmpeg pipe for Sonos-incompatible formats
  *   POST /api/v1/sonos/test-play            — play a random song on a Sonos device (admin test)
  *   GET  /api/v1/sonos/sleep                — read native sleep-timer remaining duration
@@ -95,7 +97,7 @@ function buildArtBaseUrl(req) {
  *   use the same DIDL metadata (art + title + artist + album).
  * artUrl (optional): full URL to album art image.
  */
-function buildDidl({ title, artist, album, duration }, streamUrl, artUrl = null) {
+function buildDidl({ title, artist, album, duration }, streamUrl, artUrl = null, itemId = '1') {
   // dlna: namespace MUST be declared on the root element, not inline on the child tag.
   // No dlna:profileID attribute — many iOS/Android DLNA stacks silently skip
   // the image when dlna:profileID is present but not negotiated via DLNA headers.
@@ -112,9 +114,10 @@ function buildDidl({ title, artist, album, duration }, streamUrl, artUrl = null)
     ' xmlns:r="urn:schemas-rinconnetworks-com:metadata-1-0/"',
     ' xmlns:dlna="urn:schemas-dlna-org:metadata-1-0/"',
     ' xmlns="urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/">',
-    // id must be a positive integer — Sonos legacy parser sometimes ignores
-    // dc:title / upnp:artist when id="-1" (treats it as unresolved/transient item).
-    '<item id="1" restricted="1" parentID="A:TRACKS">',
+    // id must be a positive integer AND unique per queue item — Sonos ignores the
+    // metadata of items that share an id (all-same-id => only the first renders
+    // title/art/duration). Multi-track queues therefore pass a distinct itemId.
+    `<item id="${xmlEsc(itemId)}" restricted="1" parentID="A:TRACKS">`,
     `<dc:title>${xmlEsc(title || 'Unknown')}</dc:title>`,
     `<dc:creator>${xmlEsc(artist || '')}</dc:creator>`,
     `<upnp:artist>${xmlEsc(artist || '')}</upnp:artist>`,
@@ -662,6 +665,7 @@ function _logDiscovery(sig, level, msg) {
 const _castInFlight = new Map(); // ip → { superseded: boolean }
 const _ipAliases    = new Map(); // oldIp → currentIp — set when /cast auto-redirects after SSDP re-discovery
 const _castStateByIp = new Map(); // ip → { ts:number, wasTranscode:boolean }
+const _queueAppendGen = new Map(); // ip → number — cancels stale background queue appends when a newer cast-queue arrives
 
 /**
  * Run a discovery scan with deduplication.
@@ -1134,6 +1138,135 @@ export function setup(velvet) {
     }
   });
 
+  // ── POST /api/v1/sonos/cast-queue ────────────────────────────────────
+  // Mirror a window of the player's queue onto the Sonos queue and play at `index`.
+  // The player remains the source of truth; this just keeps the Sonos app's
+  // played/upcoming list in sync while Sonos is the active output.
+  // Body: { ip, tracks:[{filepath,title,artist,album,aaFile}], index, seekTo, paused }
+  //   tracks[].filepath must include the vpath prefix; only the played track (index) is seeked.
+  velvet.post('/api/v1/sonos/cast-queue', async (req, res) => {
+    const ip        = req.body?.ip || config.program?.sonos?.defaultRoom?.ip;
+    const rawTracks = Array.isArray(req.body?.tracks) ? req.body.tracks : [];
+    const seekTo    = Number(req.body?.seekTo) || 0;
+    const paused    = !!req.body?.paused;
+    if (!ip)              return res.status(400).json({ error: 'ip required' });
+    if (!rawTracks.length) return res.status(400).json({ error: 'tracks required' });
+    const index = Math.max(0, Math.min(rawTracks.length - 1, Number.parseInt(req.body?.index, 10) || 0));
+    try {
+      const resolvedIp = _resolveIp(ip);
+      assertPrivateIp(resolvedIp);
+      const streamToken = jwt.sign({ username: req.user.username }, config.program.secret, { expiresIn: '8h' });
+      const baseUrl = buildBaseUrl(req);
+      const artBase = buildArtBaseUrl(req);
+
+      const items = [];
+      for (let i = 0; i < rawTracks.length; i++) {
+        const raw = rawTracks[i];
+        const fp = String(raw?.filepath || '').replace(/^\/+/, '');
+        const slash = fp.indexOf('/');
+        if (slash < 1) continue;
+        const track = { vpath: fp.slice(0, slash), filepath: fp.slice(slash + 1), title: raw.title || '', artist: raw.artist || '', album: raw.album || '', aaFile: raw.aaFile || null };
+        try {
+          const row = db.findFileByPath(track.filepath, track.vpath);
+          if (row?.aaFile && !track.aaFile) track.aaFile = row.aaFile;
+          if (row?.duration) track.duration = row.duration;
+          if (row?.sample_rate != null) track.sample_rate = row.sample_rate;
+        } catch (e) { console.debug('[velvet]', e?.message ?? e); }
+        const trackSeek = i === index ? seekTo : 0;
+        const streamUrl = _resolveStreamUrl(track, baseUrl, streamToken, trackSeek);
+        // Per-row art: controllers (CLIC, Sonos app) only render queue-row art that the
+        // speaker serves via its own /getaa proxy — not external URLs. /getaa?u=<stream>
+        // makes the speaker extract the embedded cover from our stream (relative URL, so
+        // it resolves against the speaker). Transcoded streams drop the cover (-vn), so
+        // fall back to the cached /album-art/ URL there (no per-row art, but now-playing works).
+        const isTranscode = streamUrl.includes('/api/v1/sonos/transcode-stream');
+        const artUrl = isTranscode
+          ? (track.aaFile ? `${artBase}/album-art/${encodeURIComponent(track.aaFile)}` : null)
+          : `/getaa?u=${encodeURIComponent(streamUrl)}`;
+        items.push({ streamUrl, didl: buildDidl(track, streamUrl, artUrl, String(i + 1)) });
+      }
+      if (!items.length) return res.status(400).json({ error: 'no valid tracks' });
+      // The currently-playing track is sent first (items[0]); upcoming tracks follow.
+      // We add the current track, start playback immediately, then append the rest in
+      // the background — so casting starts fast instead of waiting for the whole window.
+      const curIsTranscode = items[0].streamUrl.includes('/api/v1/sonos/transcode-stream');
+      const soapSeekTo = curIsTranscode ? 0 : seekTo;
+      const streamStartOffset = curIsTranscode && seekTo > 0.5 ? Math.floor(seekTo) : 0;
+      const addUri = it => soapCall(resolvedIp, 'AddURIToQueue', [
+        `<EnqueuedURI>${xmlEsc(it.streamUrl)}</EnqueuedURI>`,
+        `<EnqueuedURIMetaData>${xmlEsc(it.didl)}</EnqueuedURIMetaData>`,
+        '<DesiredFirstTrackNumberEnqueued>0</DesiredFirstTrackNumberEnqueued>',
+        '<EnqueueAsNext>0</EnqueueAsNext>',
+      ].join(''));
+
+      const gen = (_queueAppendGen.get(resolvedIp) || 0) + 1;
+      _queueAppendGen.set(resolvedIp, gen);
+
+      await soapCall(resolvedIp, 'RemoveAllTracksFromQueue', '');
+      await addUri(items[0]);
+      let uuid = _cachedRooms.find(r => r.ip === resolvedIp)?.uuid;
+      if (!uuid) { try { const room = await _fetchDeviceDescription(resolvedIp, 3000); if (room?.uuid) uuid = room.uuid; } catch (e) { console.debug('[velvet]', e?.message ?? e); } }
+      const queueUri = uuid ? `x-rincon-queue:${uuid}#0` : items[0].streamUrl;
+      await soapCall(resolvedIp, 'SetAVTransportURI', [
+        `<CurrentURI>${xmlEsc(queueUri)}</CurrentURI>`,
+        `<CurrentURIMetaData>${uuid ? '' : xmlEsc(items[0].didl)}</CurrentURIMetaData>`,
+      ].join(''));
+      await soapCall(resolvedIp, 'Seek', '<Unit>TRACK_NR</Unit><Target>1</Target>');
+      if (soapSeekTo > 1) await soapCall(resolvedIp, 'Seek', `<Unit>REL_TIME</Unit><Target>${secsToTime(soapSeekTo)}</Target>`);
+      await soapCall(resolvedIp, 'Play', '<Speed>1</Speed>');
+      if (paused) await soapCall(resolvedIp, 'Pause', '');
+      res.json({ ok: true, actualIp: resolvedIp, count: items.length, index: 0, streamStartOffset, isTranscodeStream: !!curIsTranscode });
+
+      // Append the upcoming tracks in the background; abort if a newer cast-queue supersedes us.
+      (async () => {
+        for (let i = 1; i < items.length; i++) {
+          if (_queueAppendGen.get(resolvedIp) !== gen) return;
+          try { await addUri(items[i]); } catch { return; }
+        }
+        console.log(`[sonos] cast-queue: ${items.length} track(s) queued → ${resolvedIp}`);
+      })();
+    } catch (e) {
+      console.error('[sonos] /cast-queue error:', e);
+      res.status(500).json({ ok: false, error: String(e.message || e) });
+    }
+  });
+
+  // ── POST /api/v1/sonos/queue/clear ───────────────────────────────────
+  // Wipe the Sonos queue, but ONLY if every track belongs to Velvet (points at
+  // our server). A user-built queue (streaming service, line-in, another server)
+  // is left untouched. Body: { ip }
+  velvet.post('/api/v1/sonos/queue/clear', async (req, res) => {
+    const ip = req.body?.ip || config.program?.sonos?.defaultRoom?.ip;
+    if (!ip) return res.status(400).json({ error: 'ip required' });
+    try {
+      const resolvedIp = _resolveIp(ip);
+      assertPrivateIp(resolvedIp);
+      let uris;
+      try {
+        uris = await _sonosQueueResUris(resolvedIp);
+      } catch (e) {
+        const msg = String(e.message || e);
+        if (e.code === 'EHOSTUNREACH' || e.code === 'ECONNREFUSED' || msg.includes('timeout')) {
+          return res.status(503).json({ ok: false, unreachable: true, error: msg });
+        }
+        throw e;
+      }
+      if (uris.length === 0) return res.json({ ok: true, wiped: false, reason: 'empty' });
+      const base = buildBaseUrl(req);
+      const isOurs = u => u.startsWith(base) || u.includes('/api/v1/sonos/transcode-stream') || (u.includes('/media/') && u.includes('token='));
+      if (!uris.every(isOurs)) {
+        console.log(`[sonos] queue/clear: foreign queue on ${resolvedIp} (${uris.length} tracks) — leaving untouched`);
+        return res.json({ ok: true, wiped: false, reason: 'foreign-queue', count: uris.length });
+      }
+      await soapCall(resolvedIp, 'RemoveAllTracksFromQueue', '');
+      console.log(`[sonos] queue/clear: wiped ${uris.length} Velvet track(s) → ${resolvedIp}`);
+      res.json({ ok: true, wiped: true, count: uris.length });
+    } catch (e) {
+      console.error('[sonos] /queue/clear error:', e);
+      res.status(500).json({ ok: false, error: String(e.message || e) });
+    }
+  });
+
   // ── POST /api/v1/sonos/set-pause ─────────────────────────────────────
   // Mirror browser pause/resume to a Sonos device.
   // Body: { ip, paused: true|false }
@@ -1325,6 +1458,7 @@ export function setup(velvet) {
         state,
         position: parseTime(tag(posXml, 'RelTime')),
         duration: parseTime(tag(posXml, 'TrackDuration')),
+        track:    Number.parseInt(tag(posXml, 'Track'), 10) || 0,
       });
     } catch {
       // Any error reaching the Sonos device (timeout, ECONNREFUSED, EHOSTUNREACH,
@@ -1692,6 +1826,43 @@ export function setup(velvet) {
    * Browse a Sonos device's ContentDirectory service.
    * Returns array of items/containers with parsed metadata.
    */
+  // Browse the local queue (Q:0) and return the list of <res> stream URIs.
+  // Used to decide whether a queue belongs to Velvet before wiping it.
+  async function _sonosQueueResUris(ip) {
+    const body = [
+      '<?xml version="1.0" encoding="utf-8"?>',
+      '<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/"',
+      ' s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/">',
+      '<s:Body>',
+      '<u:Browse xmlns:u="urn:schemas-upnp-org:service:ContentDirectory:1">',
+      '<ObjectID>Q:0</ObjectID><BrowseFlag>BrowseDirectChildren</BrowseFlag>',
+      '<Filter>*</Filter><StartingIndex>0</StartingIndex><RequestedCount>200</RequestedCount>',
+      '<SortCriteria></SortCriteria>',
+      '</u:Browse></s:Body></s:Envelope>',
+    ].join('');
+    const data = await new Promise((resolve, reject) => {
+      const hreq = http.request({
+        hostname: ip, port: 1400, path: '/MediaServer/ContentDirectory/Control', method: 'POST',
+        headers: { 'Content-Type': 'text/xml; charset="utf-8"', 'Content-Length': Buffer.byteLength(body), soapaction: '"urn:schemas-upnp-org:service:ContentDirectory:1#Browse"' },
+      }, hres => {
+        let d = ''; hres.on('data', c => d += c);
+        hres.on('end', () => hres.statusCode >= 400
+          ? reject(Object.assign(new Error('Sonos Browse HTTP ' + hres.statusCode), { code: hres.statusCode }))
+          : resolve(d));
+      });
+      hreq.on('error', reject);
+      hreq.setTimeout(6000, () => hreq.destroy(new Error('Sonos Browse timeout')));
+      hreq.write(body); hreq.end();
+    });
+    const m = data.match(/<Result>(.*?)<\/Result>/s);
+    if (!m) return [];
+    const didl = m[1].replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&amp;/g, '&');
+    const uris = [];
+    const rx = /<res[^>]*>([^<]+)<\/res>/g;
+    let r; while ((r = rx.exec(didl)) !== null) uris.push(r[1].trim());
+    return uris;
+  }
+
   async function _browseSonosContentDirectory(ip, objectId, browseFlag, startingIndex, requestedCount) {
     const body = [
       '<?xml version="1.0" encoding="utf-8"?>',

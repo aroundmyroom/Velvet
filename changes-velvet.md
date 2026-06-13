@@ -1,3 +1,14 @@
+## v0.1.3 (2026-06-13)
+
+Sonos queue mirroring.
+
+### Sonos
+- **The Sonos app now shows the queue.** While casting, Velvet mirrors a window of the player queue (current + up to ~30 upcoming) onto the Sonos queue via the new `POST /api/v1/sonos/cast-queue` (plays the current track immediately, appends the rest in the background). The web player stays the source of truth.
+- **Per-row album art in CLIC.** Queue-row art is served through the speaker's `/getaa` proxy (extracts the embedded cover from the stream); transcoded streams fall back to the cached `/album-art/` URL. CLIC shows title + duration + per-row art. (The official Sonos S2 app resolves queue-row metadata by source, so its list rows stay blank for HTTP-streamed content — a structural S2 limitation; now-playing renders fully everywhere.)
+- **Bidirectional pause + cede control.** Pause/resume from the Sonos app or CLIC is now reflected back in the web player (the sleep LED follows). Navigating on the Sonos app (next / previous / shuffle) makes the web player cede control — it pauses and stops syncing until you press Play in the web again.
+- **Never deletes a foreign queue.** `POST /api/v1/sonos/queue/clear` (used on output-switch / tab-close) wipes the Sonos queue only if every track is Velvet's; a user-built queue (e.g. Spotify) is left untouched.
+- `GET /api/v1/sonos/transport-status` now also returns the current `track` number.
+
 ## v0.1.2 (2026-06-13)
 
 Sonos fix.

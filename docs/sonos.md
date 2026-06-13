@@ -148,18 +148,29 @@ Sonos devices may change IP address between sessions (DHCP lease renewal) or aft
 
 This means a DHCP IP change is corrected **no later than the next track change** — and often before that if the output picker is opened.---
 
-## Metadata in controller apps
+## Queue mirroring
 
-Velvet uses **queue-based playback** to ensure title, artist, album, and art display correctly in all controller apps:
+While Sonos is the active output, Velvet mirrors a **window of the player queue** (the current track + up to ~30 upcoming) onto the Sonos queue, so the Sonos app shows what's playing and what's next. The web player remains the source of truth; the Sonos queue is re-synced on track changes and wiped (only if it's ours) when you switch away or close the tab.
 
-| App | Art | Title/Artist |
-|-----|-----|-------------|
-| Sonos S2 (iOS/Android) | ✅ | ✅ |
-| CLIC (iOS) | ✅ | ✅ |
-| Any UPnP controller | ✅ | ✅ |
+**Bidirectional pause + cede control:**
+- Pause/resume from the Sonos app or CLIC is reflected back to the web player (and the sleep LED follows).
+- If you navigate on the Sonos app (next / previous / shuffle), the web player detects it's no longer on our current track and **cedes control** — it pauses and stops syncing until you press Play in the web again (which re-casts and takes control back).
+
+### Metadata in controller apps
+
+| App | Now-playing | Queue rows |
+|-----|-------------|-----------|
+| CLIC (iOS) | ✅ art + title | ✅ title + duration + **per-row art** |
+| Sonos S2 (iOS/Android) | ✅ art + title | ⚠️ rows visible, **metadata blank** |
+| Any UPnP controller | ✅ | varies |
+
+### Why per-row art works in CLIC but not S2
+Per-row album art is served via the speaker's own `/getaa` proxy (`albumArtURI=/getaa?u=<stream>`), which extracts the embedded cover from the stream — controllers only render queue-row art the speaker serves. Transcoded streams (which drop the cover) fall back to the cached `/album-art/` URL.
+
+The **S2 app resolves queue-row metadata by *source*** (a registered music service or indexed library), not from the stored DIDL — so HTTP-streamed content shows blank rows in the S2 *list* view (now-playing still reads the DIDL directly and renders fully). This is a structural S2 limitation, not missing data; CLIC reads the stored DIDL and renders everything.
 
 ### Why queue-based?
-Direct `SetAVTransportURI` with a plain HTTP stream URL causes S2 to switch into "radio stream" display mode (album art only, no text). Adding the track to the Sonos queue first tells S2 this is a proper library track — the full Now Playing view with all metadata fields is rendered.
+Direct `SetAVTransportURI` with a plain HTTP stream URL causes S2 to switch into "radio stream" display mode (album art only, no text). Casting through the Sonos queue tells S2 this is a proper track — the full Now Playing view with all metadata fields is rendered.
 
 ### Album art URL
 Art is served via the main **HTTPS** endpoint (`https://host:port/album-art/...`) regardless of whether `localHttpPort` is configured. iOS apps enforce App Transport Security (ATS) which silently blocks plain `http://` image loads.
@@ -180,7 +191,9 @@ All endpoints require a valid JWT (`x-access-token` header or `token` query para
 | `POST` | `/api/v1/sonos/set-pause` | User + `allow-mpv-cast` | Pause or resume Sonos playback |
 | `POST` | `/api/v1/sonos/seek` | User + `allow-mpv-cast` | Seek to a position (seconds) |
 | `POST` | `/api/v1/sonos/set-volume` | User + `allow-mpv-cast` | Set volume (0–100; server caps at 50) |
-| `GET` | `/api/v1/sonos/transport-status?ip=X` | User + `allow-mpv-cast` | Poll playback state from Sonos (playing/paused/stopped, position, duration) |
+| `GET` | `/api/v1/sonos/transport-status?ip=X` | User + `allow-mpv-cast` | Poll playback state (playing/paused/stopped, position, duration, current **track** number) |
+| `POST` | `/api/v1/sonos/cast-queue` | User + `allow-mpv-cast` | Mirror a window of the player queue (current + upcoming) onto the Sonos queue; plays current immediately, appends the rest in the background |
+| `POST` | `/api/v1/sonos/queue/clear` | User + `allow-mpv-cast` | Wipe the Sonos queue — only if every track belongs to Velvet (foreign queues untouched) |
 | `POST` | `/api/v1/sonos/test-play` | Admin | Play a random song on a device (admin test) |
 | `GET` | `/api/v1/sonos/sleep?ip=X` | User | Read the native sleep timer — `{ active, remaining, generation }` |
 | `POST` | `/api/v1/sonos/sleep` | User | Set/clear the native sleep timer via `ConfigureSleepTimer`. `{ ip, seconds?, minutes?, play? }` — ≤ 0 clears it; `play: true` resumes on wake |

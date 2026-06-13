@@ -1,5 +1,5 @@
 'use strict';
-const VELVET_VERSION = '0.1.2';
+const VELVET_VERSION = '0.1.3';
 // ── SERVER IDENTITY GUARD ────────────────────────────────────────────────────
 // Detects when this browser's localStorage belongs to a different Velvet
 // instance (fresh install, IP change, reverse-proxy swap, second server).
@@ -1407,16 +1407,9 @@ const Player = {
     if (S.castingToMpv && !s.isRadio) {
       _mpvLoadSong(s.filepath).catch(() => {});
     }
-    // If casting to Sonos, push the new track to the device
+    // If casting to Sonos, mirror the queue window to the device
     if (S.castingToSonos && S.sonosRoom && !s.isRadio) {
-      _sonosLoadingSong = true;
-      setTimeout(() => { _sonosLoadingSong = false; }, 2500);
-      api('POST', 'api/v1/sonos/cast', {
-        ip: S.sonosRoom.ip, filepath: s.filepath,
-        title: s.title || '', artist: s.artist || '', album: s.album || '',
-        aaFile: s['album-art'] || null,
-        ...(_cueSeek > 0 ? { seekTo: Math.floor(_cueSeek) } : {}),
-      }).then(r => _handleCastResponse(r)).catch(() => {});
+      _sonosPushWindow(_cueSeek > 0 ? _cueSeek : 0);
     }
     if (!s.isRadio) {
       loadCuePoints(s.filepath);
@@ -1592,22 +1585,15 @@ const Player = {
       } catch (e) { if (_BOOT_DBG) console.warn('[BOOT] Player.toggle: resumeAudio() THREW', e && e.name, e && e.message); }
       if (S.castingToMpv) api('POST', 'api/v1/server-playback/set-pause', { paused: false }).catch(() => {});
       if (S.castingToSonos && S.sonosRoom) {
+        _sonosLocalControlAt = Date.now(); // web-initiated play — suppress device→browser state sync briefly
+        _sonosCeded = false; _sonosDivergeCount = 0; // taking control back from the Sonos app
         // Sleep mode: play = direct wake — turn the status LED back on.
         if (_sonosSleepEnabled()) api('POST', 'api/v1/sonos/led', { ip: S.sonosRoom.ip, state: 'On' }).catch(() => {});
         if (_sonosNeedsRecast) {
-          // Page refresh: Sonos queue is empty — re-cast the current track instead of sending set-pause
-          // _sonosNeedsRecast cleared only on success so a failed cast retries on next Play
+          // Page refresh: Sonos queue is empty — re-push the window instead of set-pause.
           const _ts = S.queue[S.idx];
-          if (_ts && !_ts.isRadio) {
-            api('POST', 'api/v1/sonos/cast', {
-              ip: S.sonosRoom.ip, filepath: _ts.filepath,
-              title: _ts.title || '', artist: _ts.artist || '', album: _ts.album || '',
-              aaFile: _ts['album-art'] || null,
-              seekTo: Math.floor(audioEl.currentTime || 0),
-            }).then(r => { _sonosNeedsRecast = false; _handleCastResponse(r); }).catch(() => {});
-          } else {
-            _sonosNeedsRecast = false;
-          }
+          _sonosNeedsRecast = false;
+          if (_ts && !_ts.isRadio) _sonosPushWindow(Math.floor(audioEl.currentTime || 0));
         } else {
           api('POST', 'api/v1/sonos/set-pause', { ip: S.sonosRoom.ip, paused: false }).catch(() => {});
         }
@@ -1633,6 +1619,7 @@ const Player = {
       }
       if (S.castingToMpv) api('POST', 'api/v1/server-playback/set-pause', { paused: true }).catch(() => {});
       if (S.castingToSonos && S.sonosRoom) {
+        _sonosLocalControlAt = Date.now(); // web-initiated pause — suppress device→browser state sync briefly
         api('POST', 'api/v1/sonos/set-pause', { ip: S.sonosRoom.ip, paused: true }).catch(() => {});
         // Sleep mode: pause = direct sleep — drop the status LED as the visible cue.
         if (_sonosSleepEnabled()) api('POST', 'api/v1/sonos/led', { ip: S.sonosRoom.ip, state: 'Off' }).catch(() => {});
@@ -3799,13 +3786,9 @@ async function _npId3ApplyTags(song) {
       toast(t('player.toast.tagsSaved'));
       // If casting to MPV, reload the rewritten file on the server player from position 0.
       if (S.castingToMpv) _mpvLoadSong(song.filepath, 0);
-      // If casting to Sonos, push the new file to the device
+      // If casting to Sonos, re-push the window so the rewritten file/metadata shows
       if (S.castingToSonos && S.sonosRoom) {
-        api('POST', 'api/v1/sonos/cast', {
-          ip: S.sonosRoom.ip, filepath: song.filepath,
-          title: song.title || '', artist: song.artist || '', album: song.album || '',
-          aaFile: song['album-art'] || null,
-        }).then(r => _handleCastResponse(r)).catch(() => {});
+        _sonosPushWindow(Math.floor(audioEl.currentTime || 0));
       }
       audioEl.addEventListener('loadedmetadata', () => {
         if (_wasPlaying) audioEl.play().catch(() => {});
@@ -18268,11 +18251,10 @@ async function _activateSonosCast(room) {
   const seekTo = audioEl.currentTime || 0;
   const paused = audioEl.paused;
   try {
-    const castResp = await api('POST', 'api/v1/sonos/cast', {
-      ip: room.ip, filepath: s.filepath,
-      title: s.title || '', artist: s.artist || '', album: s.album || '',
-      aaFile: s['album-art'] || null,
-      seekTo, paused,
+    const tracks = _sonosBuildWindow();
+    if (!tracks.length) tracks.push({ filepath: s.filepath, title: s.title || '', artist: s.artist || '', album: s.album || '', aaFile: s['album-art'] || null });
+    const castResp = await api('POST', 'api/v1/sonos/cast-queue', {
+      ip: room.ip, tracks, index: 0, seekTo: Math.floor(seekTo) || 0, paused,
     });
     // Server may have redirected to a different IP (SSDP re-discovery on boot).
     // Resolve the actual IP used so room.ip is always up-to-date from the start.
@@ -18280,6 +18262,7 @@ async function _activateSonosCast(room) {
     const activeRoom = activeIp !== room.ip ? { ...room, ip: activeIp } : room;
     S.castingToSonos = true;
     S.sonosRoom = activeRoom;
+    _sonosCeded = false; _sonosDivergeCount = 0; // fresh cast — we are driving again
     // Sleep mode: align the LED with playback — paused (e.g. re-selected after a
     // force refresh) keeps it asleep (LED off); playing wakes it (LED on).
     if (_sonosSleepEnabled()) api('POST', 'api/v1/sonos/led', { ip: activeRoom.ip, state: paused ? 'Off' : 'On' }).catch(() => {});
@@ -18314,13 +18297,16 @@ async function _activateSonosCast(room) {
 function _deactivateSonosCast(notify = true) {
   _stopSonosPositionSync();
   _stopSonosBatteryPoll();
-  // Stop Sonos playback FIRST (before clearing S.sonosRoom so we still have the IP)
+  // Sonos is no longer the active output — wipe OUR queue (the server refuses to
+  // touch a user-built queue). Removing our tracks also stops playback. Done before
+  // clearing S.sonosRoom so we still have the IP.
   if (S.sonosRoom) {
-    api('POST', 'api/v1/sonos/set-pause', { ip: S.sonosRoom.ip, paused: true }).catch(() => {});
+    _sonosClearQueue(S.sonosRoom.ip);
   }
   S.castingToSonos = false;
   S.sonosRoom = null;
   _sonosNeedsRecast = false;
+  _sonosCeded = false; _sonosDivergeCount = 0;
   localStorage.removeItem(_uKey('casting_sonos'));
   VIZ.setCastMute(false);
   // Resume browser audio only when the user manually switched output (notify=true).
@@ -18357,12 +18343,55 @@ function _sonosSleepEnabled() {
   return S.sonosConfig?.sleepEnabled === true;
 }
 
+// Number of upcoming tracks mirrored into the Sonos queue alongside the current one,
+// so the Sonos app shows "what's next". History accumulates naturally as Sonos plays
+// through (already-played tracks stay above the current one until the next rebuild).
+const SONOS_WIN_FWD = 30;
+
+// Build the window to mirror: the current track first, then up to SONOS_WIN_FWD
+// upcoming file tracks. Stops at the first radio entry (radio uses a separate path).
+function _sonosBuildWindow() {
+  const to = Math.min(S.queue.length, S.idx + SONOS_WIN_FWD + 1);
+  const tracks = [];
+  for (let i = S.idx; i < to; i++) {
+    const s = S.queue[i];
+    if (!s || s.isRadio) break;
+    tracks.push({ filepath: s.filepath, title: s.title || '', artist: s.artist || '', album: s.album || '', aaFile: s['album-art'] || null });
+  }
+  return tracks;
+}
+
+// Mirror the current window onto the Sonos queue. Replaces the old single-track cast
+// on every cast point so the Sonos app always reflects the player's queue while casting.
+async function _sonosPushWindow(seekTo = 0, paused = false) {
+  if (!S.castingToSonos || !S.sonosRoom) return;
+  const cur = S.queue[S.idx];
+  if (!cur || cur.isRadio) return; // radio uses the single-URI cast path
+  const tracks = _sonosBuildWindow();
+  if (!tracks.length) return;
+  _sonosLoadingSong = true;
+  setTimeout(() => { _sonosLoadingSong = false; }, 2500);
+  _sonosCastTime = Date.now();
+  try {
+    const r = await api('POST', 'api/v1/sonos/cast-queue', { ip: S.sonosRoom.ip, tracks, index: 0, seekTo: Math.floor(seekTo) || 0, paused });
+    _handleCastResponse(r);
+  } catch (e) { /* device busy/offline — the position-sync poll self-heals */ }
+}
+
+// Wipe the Sonos queue when Sonos is no longer the active output — but only if the
+// queue is ours (the server refuses to delete a user-built queue).
+function _sonosClearQueue(ip) {
+  if (!ip || !S.token) return;
+  api('POST', 'api/v1/sonos/queue/clear', { ip }).catch(() => {});
+}
+
 function _clearSonosCastClientState() {
   _stopSonosPositionSync();
   _stopSonosBatteryPoll();
   S.castingToSonos = false;
   S.sonosRoom = null;
   _sonosNeedsRecast = false;
+  _sonosCeded = false; _sonosDivergeCount = 0;
   localStorage.removeItem(_uKey('casting_sonos'));
 }
 
@@ -20035,12 +20064,7 @@ function _doXfadeHandoff(nextIdx) {
   }
   // Mirror track switch to Sonos when casting
   if (S.castingToSonos && S.sonosRoom && !s.isRadio) {
-    _sonosLoadingSong = true;
-    setTimeout(() => { _sonosLoadingSong = false; }, 2500);
-    api('POST', 'api/v1/sonos/cast', {
-      ip: S.sonosRoom.ip, filepath: s.filepath,
-      title: s.title || '', artist: s.artist || '', album: s.album || '',
-    }).then(r => _handleCastResponse(r)).catch(() => {});
+    _sonosPushWindow();
   }
   clearTimeout(scrobbleTimer);
   (function(){ const el = document.getElementById('np-scrobble-status'); if (el) { el.textContent = ''; el.className = 'np-scrobble-status'; } })();
@@ -20735,14 +20759,14 @@ function showApp() {
         new Blob(['{}'], { type: 'application/json' })
       );
     }
-    // Pause Sonos on refresh/close so it doesn't keep playing unattended.
-    // casting_sonos stays in localStorage so the next page load restores the
-    // room selection (output picker shows Sonos selected, browser muted) —
-    // pressing Play will re-cast automatically via loadSong.
+    // On refresh/close, wipe OUR Sonos queue so it doesn't keep playing unattended
+    // (the server refuses to touch a user-built queue). casting_sonos stays in
+    // localStorage so the next page load restores the room selection and pressing
+    // Play re-pushes the window via the refresh-resume path.
     if (S.castingToSonos && S.sonosRoom && S.token) {
       navigator.sendBeacon(
-        '/api/v1/sonos/set-pause?token=' + encodeURIComponent(S.token),
-        new Blob([JSON.stringify({ ip: S.sonosRoom.ip, paused: true })], { type: 'application/json' })
+        '/api/v1/sonos/queue/clear?token=' + encodeURIComponent(S.token),
+        new Blob([JSON.stringify({ ip: S.sonosRoom.ip })], { type: 'application/json' })
       );
       // Sleep mode: also drop the LED so the device reads as asleep after the close.
       // State isn't persisted across a force refresh — re-selecting Sonos realigns the
@@ -22678,6 +22702,9 @@ let _sonosConsecutiveFailures = 0; // counts consecutive unreachable transport-s
 let _sonosCastTime = 0;       // timestamp of last successful _activateSonosCast — position sync skips corrections during grace period
 let _sonosStreamOffset = 0;   // seconds offset for transcoded streams started mid-file: Sonos reports stream-relative position, so add this to convert to original-file position
 let _sonosLastRecastAt = 0;   // throttle for the stopped-device self-heal re-cast (resume after the stream drops/idles)
+let _sonosLocalControlAt = 0; // timestamp of a web-initiated play/pause — suppresses device→browser state sync briefly so the poll doesn't race our own set-pause
+let _sonosCeded = false;      // true after the user took control on the Sonos app (next/prev/shuffle) — web pauses and stops syncing until the user presses Play here again
+let _sonosDivergeCount = 0;   // consecutive polls where Sonos plays a track other than our current — debounces natural-advance transients before ceding
 
 // Start polling Sonos position and syncing audioEl when casting is active.
 // When the user seeks in S2/CLIC, Sonos's position drifts from audioEl.currentTime.
@@ -22701,6 +22728,29 @@ function _startSonosPositionSync(ip) {
           return; // skip position drift correction when device is unreachable
         }
         _sonosConsecutiveFailures = 0; // reset on any successful response
+        // Ceded to the Sonos app — the user is driving from there; don't sync or fight.
+        // Pressing Play in the web (toggle) clears this and re-takes control.
+        if (_sonosCeded) return;
+        // Detect the user taking control on the Sonos app (next/prev/shuffle): Sonos is
+        // playing a track other than our current one (we always cast current as track 1).
+        // We can't cleanly follow Sonos-side navigation, so we cede: pause the web player
+        // and stop syncing. Debounced over 2 polls so a natural-advance transient (Sonos
+        // briefly on track 2 before the browser re-pushes) doesn't trip it.
+        {
+          const _grace = (Date.now() - _sonosCastTime) < 8000;
+          const _recent = (Date.now() - _sonosLocalControlAt) < 4000;
+          if (!_grace && !_recent && !_sonosLoadingSong && (st.track || 0) > 1) {
+            if (++_sonosDivergeCount >= 2) {
+              _sonosCeded = true;
+              _sonosDivergeCount = 0;
+              _sonosNeedsRecast = true; // next web Play re-pushes the window from our current track
+              if (!audioEl.paused) audioEl.pause();
+              toast(t('player.output.sonosExternalControl'));
+            }
+            return; // skip position drift while diverging
+          }
+          if ((st.track || 0) <= 1) _sonosDivergeCount = 0;
+        }
         // Self-heal: device is reachable but STOPPED while we should be playing
         // (the HTTP stream dropped or the device idled). Re-cast the current track
         // at the current position so audio resumes on its own — without the user
@@ -22714,15 +22764,7 @@ function _startSonosPositionSync(ip) {
             (Date.now() - _sonosLastRecastAt) >= 10000 &&
             _dur > 0 && (audioEl.currentTime || 0) < _dur - 5) {
           _sonosLastRecastAt = Date.now();
-          _sonosCastTime = Date.now(); // restart grace so drift-sync doesn't snap the bar to 0 while Sonos re-seeks
-          _sonosLoadingSong = true;
-          setTimeout(() => { _sonosLoadingSong = false; }, 2500);
-          api('POST', 'api/v1/sonos/cast', {
-            ip, filepath: _cur.filepath,
-            title: _cur.title || '', artist: _cur.artist || '', album: _cur.album || '',
-            aaFile: _cur['album-art'] || null,
-            seekTo: Math.floor(audioEl.currentTime || 0),
-          }).then(r => _handleCastResponse(r)).catch(() => {});
+          _sonosPushWindow(Math.floor(audioEl.currentTime || 0));
           return; // skip position-drift correction this tick
         }
         const sonosPos = (st.position || 0) + _sonosStreamOffset; // compensate transcoded-stream offset
@@ -22735,6 +22777,24 @@ function _startSonosPositionSync(ip) {
         // while it is still seeking the HTTP stream internally, which would
         // otherwise reset the visual progress bar to the start of the song.
         const _castGrace = (Date.now() - _sonosCastTime) < 8000;
+        // Reflect play/pause initiated on the Sonos app or CLIC back to the (muted)
+        // web player. Without this the browser keeps "playing" while Sonos is paused,
+        // fighting the device (the 1–2 s play-then-restart bounce) and never reaching
+        // a pause state — so the sleep LED-off never fires. Skip right after a
+        // web-initiated control (avoid racing our own set-pause) and during cast grace.
+        const _recentLocal = (Date.now() - _sonosLocalControlAt) < 4000;
+        if (!_castGrace && !_recentLocal && !_sonosLoadingSong) {
+          if (st.paused && !audioEl.paused) {
+            audioEl.pause();
+            if (_sonosSleepEnabled()) api('POST', 'api/v1/sonos/led', { ip: S.sonosRoom.ip, state: 'Off' }).catch(() => {});
+            return;
+          }
+          if (st.playing && audioEl.paused) {
+            audioEl.play().catch(() => {});
+            if (_sonosSleepEnabled()) api('POST', 'api/v1/sonos/led', { ip: S.sonosRoom.ip, state: 'On' }).catch(() => {});
+            return;
+          }
+        }
         if (!_castGrace && (st.playing || st.paused) && Math.abs(sonosPos - browserPos) > 5) {
           _sonosSyncFromDevice = true;
           audioEl.currentTime = sonosPos;
