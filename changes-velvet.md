@@ -1,3 +1,20 @@
+## v0.1.7 (2026-06-14)
+
+Album-Art Workshop — MusicBrainz covers, a proper review journey, and full undo.
+
+### Album-Art Workshop
+- **MusicBrainz / Cover Art Archive is the first art source.** For albums whose tracks carry a MusicBrainz release id (from Tag Workshop enrichment), the workshop fetches the official front cover from the [Cover Art Archive](https://musicbrainz.org/doc/Cover_Art_Archive/API) first; only when CAA has nothing does it fall back to Discogs → Deezer → iTunes. Releases with no CAA art are never shown — they fall through. ~70% of enriched art-less albums get an official cover this way.
+- **Preview before apply — no more wrong covers stored.** Clicking any cover (the big one or a small alternate) now opens a **large preview** with **Apply this cover** / **Back**. Alternates are bigger, and nothing is written until you confirm.
+- **Full undo (Restore).** Every apply snapshots the album's previous art; the **Applied** view shows the stored cover with a **Restore** button that reverts exactly (folder `cover.jpg` + DB pointers, or removes it if the album had none).
+- **Fix a cover (any album).** A new **Fix a cover** mode searches *any* album — including ones that already have a wrong cover (which never appear under “missing”) — shows the current art, and lets you replace it from **all sources** or a manual URL. New `GET /api/v1/admin/art/find` + `POST /api/v1/admin/art/fix-suggest`.
+- **Source filter + MusicBrainz view.** A source chip row (All · ♪ MusicBrainz · Discogs · Deezer · iTunes, with counts) next to the status chips lets you check suggestions by provider.
+- **Find missing covers (MusicBrainz).** A dedicated button in the MusicBrainz box runs a Cover-Art-Archive-only pass (`POST /api/v1/admin/art/scan { source:'musicbrainz' }`). Per-album, a **Find cover** button searches a single folder on demand.
+- **Batch apply.** **Apply best cover to selected** + `POST /api/v1/admin/art/apply-batch` apply the preferred cover to many albums at once.
+- **Seek alternatives for MusicBrainz-only covers.** When an album's only suggestion is the official Cover Art Archive cover, a **Seek alternative covers** button now queries Discogs, Deezer and iTunes on demand (`POST /api/v1/admin/art/suggest { allSources:true }`), shows a spinner while searching, then lists the alternatives like any other source so you can compare and pick.
+- **Bigger, clearer previews in Fix a cover.** Suggestions render as larger tiles (with a source badge and a hover *Preview* hint), the album's **current cover is itself clickable** to open a full-size view, and the search-result thumbnails are enlarged — so you can actually see what you're choosing.
+- **Detect automatically, apply only on a human decision.** The workshop is deliberately proposal-only: because the library is mostly singles, 12-inches and loose songs (where art searches throw many false positives), nothing is ever written to disk until the admin confirms the cover. See the **Philosophy** section in [docs/album-art-workshop.md](docs/album-art-workshop.md).
+- **Cover-forward UI** with source badges (Cover Art Archive covers get a blue **♪ MUSICBRAINZ** badge) and a visible **Prefer official Cover Art Archive covers** toggle (on by default). See [docs/album-art-workshop.md](docs/album-art-workshop.md).
+
 ## v0.1.6 (2026-06-13)
 
 Release tooling hardening.

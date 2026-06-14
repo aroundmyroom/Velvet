@@ -485,16 +485,64 @@ async function _itunesChoices(artist, album) {
     }));
 }
 
+// Cover Art Archive — official release art keyed on the MusicBrainz release id
+// resolved during Tag Workshop enrichment. Returns a choice only when CAA
+// actually holds a front cover (verified by fetching the 250px thumbnail), so
+// art-less releases simply fall through to the other services. The thumbnail
+// fetch follows CAA's redirect to the archive.org CDN; fetchPublicUrlBuffer
+// re-checks each hop is a public host (no allowlist needed for the dynamic
+// ia*.us.archive.org subdomains).
+async function _caaChoice(mbReleaseId) {
+  const id = String(mbReleaseId || '').trim();
+  if (!/^[0-9a-f-]{36}$/i.test(id)) return null;
+  const base = `https://coverartarchive.org/release/${id}`;
+  let buf;
+  try {
+    buf = await fetchPublicUrlBuffer(`${base}/front-250`, {
+      headers: { 'User-Agent': UA_BASE },
+      maxContentLength: 12 * 1024 * 1024,
+    });
+  } catch (e) {
+    // A 404 just means this release has no cover in the archive — expected, not an
+    // error. Only surface genuine failures (timeouts, 5xx) at debug level.
+    if (!/\b404\b/.test(String(e?.message || ''))) console.debug('[art-suggest] caa unavailable:', e?.message ?? e);
+    return null;
+  }
+  if (!buf || buf.length < 100) return null;
+  return {
+    source:   'musicbrainz',
+    coverUrl: `${base}/front-500`,
+    thumb:    `${base}/front-250`,
+    label:    'Cover Art Archive',
+  };
+}
+
 /**
  * Query every enabled art service for cover suggestions for one album.
  * Returns a unified list of descriptors the Album-Art Workshop can present and,
  * on approval, apply via /api/v1/albums/set-art (releaseId for Discogs, coverUrl
- * for Deezer/iTunes). Each service failure is isolated — one outage never blocks
- * the others.
+ * for Deezer/iTunes/CAA). Each service failure is isolated — one outage never
+ * blocks the others.
+ *
+ * MusicBrainz / Cover Art Archive is the preferred source: when the album has a
+ * resolved MB release id and CAA holds a cover, that single official cover is
+ * returned and the slower fallback services are skipped.
  */
-export async function suggestCovers({ artist, title, album, year, filepath }) {
+export async function suggestCovers({ artist, title, album, year, filepath, mbReleaseId, onlyCaa, allSources }) {
   const out = [];
   const cfg = config.program.discogs || {};
+
+  if (mbReleaseId && config.program.albumArt?.coverArtArchive !== false) {
+    try {
+      const caa = await _caaChoice(mbReleaseId);
+      // Default missing-covers pass: CAA wins outright. allSources (fix panel):
+      // offer CAA first AND keep the other services. onlyCaa (MusicBrainz pass):
+      // CAA or nothing.
+      if (caa && !allSources) return [caa];
+      if (caa) out.push(caa);
+    } catch (e) { console.debug('[art-suggest] caa:', e?.message ?? e); }
+  }
+  if (onlyCaa) return out;
 
   if (cfg.enabled !== false && cfg.apiKey) {
     try {

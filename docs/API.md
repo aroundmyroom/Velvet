@@ -352,18 +352,22 @@ GET /media/<vpath>/<path/to/song.mp3>?token=<jwt>
 
 ## Album-Art Workshop *(Velvet)*
 
-Admin only. Finds albums (folders) with no cover art, fetches suggestions from Discogs/Deezer/iTunes, and writes `cover.jpg` on approval. The suggestion pass runs through the background broker (serialised, scan-aware).
+Admin only. Finds albums (folders) with no cover art, fetches suggestions, and writes `cover.jpg` on approval. The suggestion pass runs through the background broker (serialised, scan-aware). **Source priority: MusicBrainz / Cover Art Archive first** — when an album's tracks carry a MusicBrainz release id (resolved by Tag Workshop enrichment) and the Cover Art Archive holds a front cover, that official cover is the sole suggestion; otherwise it falls back to Discogs → Deezer → iTunes.
 
 | Method | Endpoint | Params / Body | Description |
 |---|---|---|---|
-| `GET` | `/api/v1/admin/art/status` | — | Worker state, per-status counts, current album, and the `autoApprove` / `autoSuggestNewContent` config. |
-| `GET` | `/api/v1/admin/art/candidates` | `?offset=&limit=&status=&q=` | Paginated art-less albums with their cached suggestions. `status` filters by `pending\|suggested\|notfound\|applied\|skipped\|error`. `q` matches folder/album/artist (substring). Returns `{ total, candidates[] }`. |
-| `POST` | `/api/v1/admin/art/scan` | — | Reconcile candidates and start a suggestion pass via the bg-broker. Returns `{ status }`. |
+| `GET` | `/api/v1/admin/art/status` | — | Worker state, per-status `counts`, per-source `sourceCounts` (for the source chips), current album, and the `autoApprove` / `autoSuggestNewContent` / `coverArtArchive` config. |
+| `GET` | `/api/v1/admin/art/candidates` | `?offset=&limit=&status=&source=&q=` | Paginated albums with their cached suggestions. `status` filters by `pending\|suggested\|notfound\|applied\|skipped\|error`; `source` filters by primary suggestion source (`musicbrainz\|discogs\|deezer\|itunes`); `q` matches folder/album/artist. Applied rows include `appliedAaFile` (live cover) + `canRestore`. Returns `{ total, candidates[] }`. |
+| `POST` | `/api/v1/admin/art/scan` | `{ source? }` | Reconcile candidates and start a suggestion pass. `source:'musicbrainz'` runs a Cover-Art-Archive-only pass over albums that have a release id. Returns `{ status }`. |
 | `POST` | `/api/v1/admin/art/stop` | — | Request the running suggestion pass to stop after the current album. |
-| `POST` | `/api/v1/admin/art/suggest` | `{ albumKey }` | Re-fetch suggestions for one album now. Returns `{ status, suggestions }`. |
-| `POST` | `/api/v1/admin/art/apply` | `{ albumKey, releaseId? \| coverUrl?, source? }` | Download the chosen cover, write `cover.jpg` into the album folder, cache + thumbnail it, and point every track in the folder at it. Returns `{ ok, aaFile, cover }`. |
+| `POST` | `/api/v1/admin/art/suggest` | `{ albumKey, allSources? }` | Re-fetch suggestions for one album now. With `allSources:true`, also queries Discogs/Deezer/iTunes even when a Cover Art Archive cover exists (used by **Seek alternative covers**). Returns `{ status, suggestions }`. |
+| `POST` | `/api/v1/admin/art/apply` | `{ albumKey, releaseId? \| coverUrl?, source? }` | Download the chosen cover, write `cover.jpg`, cache + thumbnail it, and point every track at it. **Snapshots the album's prior art first** so it can be restored. Returns `{ ok, aaFile, cover }`. |
+| `POST` | `/api/v1/admin/art/apply-batch` | `{ albumKeys: [] }` | Apply the top (preferred) cached suggestion for each selected album in one call. Returns `{ ok, applied[], failed[], appliedCount, failedCount }`. |
+| `POST` | `/api/v1/admin/art/restore` | `{ albumKey }` | Undo an applied cover — restore the album's previous art exactly (DB pointers + folder `cover.jpg` from backup, or remove it if the album had none). Returns `{ ok, status, restoredAaFile }`. |
+| `GET` | `/api/v1/admin/art/find` | `?q=` | Search **any** album by artist/album (incl. ones that already have art) so a wrong cover can be fixed. Returns `{ albums:[{ albumKey, vpath, dir, album, artist, aaFile, hasArt }] }`. |
+| `POST` | `/api/v1/admin/art/fix-suggest` | `{ albumKey }` | Fetch **all-source** suggestions (MusicBrainz + Discogs + Deezer + iTunes) for one album and upsert its workshop row. Returns `{ status, suggestions, current:{ aaFile, hasArt } }`. |
 | `POST` | `/api/v1/admin/art/skip` | `{ albumKey }` | Mark an album skipped so it stops resurfacing (kept as a cooldown record). |
-| `POST` | `/api/v1/admin/art/config` | `{ autoApprove?, autoSuggestNewContent? }` | Persist workshop settings to config. Returns `{ ok, config }`. |
+| `POST` | `/api/v1/admin/art/config` | `{ autoApprove?, autoSuggestNewContent?, coverArtArchive? }` | Persist workshop settings to config. Returns `{ ok, config }`. |
 | `GET` | `/api/v1/admin/art/shelves` | — | List shelved folder prefixes, each with the count of art-less albums it currently suppresses. Returns `{ shelves[] }`. |
 | `POST` | `/api/v1/admin/art/shelve` | `{ vpath, prefix }` or `{ folders: [{ vpath, prefix }] }` | Hide one or more folders (and everything under them) from the workshop. Removes matching non-applied candidates immediately. Returns `{ ok, removed, count }`. |
 | `POST` | `/api/v1/admin/art/unshelve` | `{ vpath, prefix }` or `{ folders: [{ vpath, prefix }] }` | Un-hide one or more shelved folders; their art-less albums reappear on reconcile. Returns `{ ok, count }`. |

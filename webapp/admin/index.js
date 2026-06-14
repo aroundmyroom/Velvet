@@ -6255,10 +6255,14 @@ const albumArtWorkshopView = Vue.component('album-art-workshop-view', {
       running: false, stopping: false, processed: 0, currentAlbum: null,
       scanRunning: false, lastError: null,
       counts: { pending: 0, suggested: 0, applied: 0, skipped: 0, notfound: 0, error: 0 },
-      cfg: { autoApprove: false, autoSuggestNewContent: false },
+      sourceCounts: { all: 0, musicbrainz: 0, discogs: 0, deezer: 0, itunes: 0 },
+      cfg: { autoApprove: false, autoSuggestNewContent: false, coverArtArchive: true },
       candidates: [], total: 0,
-      offset: 0, limit: 24, filterStatus: 'suggested',
-      loading: false, busyKey: null,
+      offset: 0, limit: 24, filterStatus: 'suggested', sourceFilter: '',
+      loading: false, busyKey: null, altSeekKey: null,
+      mode: 'missing', showSettings: false,
+      preview: null, previewSaving: false,
+      fixQuery: '', fixResults: [], fixSelected: null, fixLoading: false, _fixTimer: null,
       shelves: [], showShelves: false,
       manualUrl: {},
       search: '', selectedKeys: [], selectedMeta: {}, selectedShelves: [],
@@ -6275,7 +6279,7 @@ const albumArtWorkshopView = Vue.component('album-art-workshop-view', {
     pageNum()   { return Math.floor(this.offset / this.limit) + 1; },
     allSelected() { return this.total > 0 && this.selectedKeys.length >= this.total; },
   },
-  mounted() { this.loadStatus(); this.loadCandidates(); this.loadShelves(); },
+  mounted() { this._injectAawStyles(); this.loadStatus(); this.loadCandidates(); this.loadShelves(); },
   beforeUnmount() {
     if (this._timer) { clearTimeout(this._timer); this._timer = null; }
     if (this._searchTimer) { clearTimeout(this._searchTimer); this._searchTimer = null; }
@@ -6292,6 +6296,7 @@ const albumArtWorkshopView = Vue.component('album-art-workshop-view', {
         this.scanRunning = d.scanRunning || false;
         this.lastError = d.lastError || null;
         if (d.counts) Object.assign(this.counts, d.counts);
+        if (d.sourceCounts) Object.assign(this.sourceCounts, d.sourceCounts);
         if (d.config) Object.assign(this.cfg, d.config);
         if (wasRunning && !this.running) this.loadCandidates();
       } catch (e) { console.debug('[velvet]', e?.message ?? e); }
@@ -6302,6 +6307,7 @@ const albumArtWorkshopView = Vue.component('album-art-workshop-view', {
       try {
         const qs = `offset=${this.offset}&limit=${this.limit}`
           + (this.filterStatus ? `&status=${this.filterStatus}` : '')
+          + (this.sourceFilter ? `&source=${this.sourceFilter}` : '')
           + (this.search ? `&q=${encodeURIComponent(this.search)}` : '');
         const d = (await API.axios({ method: 'GET', url: `${API.url()}/api/v1/admin/art/candidates?${qs}` })).data;
         this.candidates = d.candidates || [];
@@ -6314,17 +6320,112 @@ const albumArtWorkshopView = Vue.component('album-art-workshop-view', {
       if (this._searchTimer) clearTimeout(this._searchTimer);
       this._searchTimer = setTimeout(() => { this.offset = 0; this.loadCandidates(); }, 300);
     },
-    setFilter(s) { this.filterStatus = s; this.offset = 0; this.loadCandidates(); },
+    setFilter(s) { this.filterStatus = s; if (s !== 'suggested') this.sourceFilter = ''; this.offset = 0; this.loadCandidates(); },
+    setSource(s) { this.sourceFilter = s; this.filterStatus = 'suggested'; this.offset = 0; this.loadCandidates(); },
+    setMode(m) { this.mode = m; if (m === 'fix' && !this.fixResults.length && this.fixQuery.length >= 2) this.doFind(); },
     nextPage() { if (this.pageNum < this.pageCount) { this.offset += this.limit; this.loadCandidates(); } },
     prevPage() { if (this.offset > 0) { this.offset = Math.max(0, this.offset - this.limit); this.loadCandidates(); } },
-    async startScan() {
+    async startScan(source) {
       try {
-        const r = (await API.axios({ method: 'POST', url: `${API.url()}/api/v1/admin/art/scan` })).data;
+        const body = source ? { source } : {};
+        const r = (await API.axios({ method: 'POST', url: `${API.url()}/api/v1/admin/art/scan`, data: body })).data;
         if (r.status === 'already_running') iziToast.info({ title: this.t('admin.art.msgAlreadyRunning'), position: 'topCenter' });
-        else iziToast.success({ title: this.t('admin.art.msgScanStarted'), position: 'topCenter', timeout: 3500 });
+        else iziToast.success({ title: this.t(source === 'musicbrainz' ? 'admin.art.msgMbScanStarted' : 'admin.art.msgScanStarted'), position: 'topCenter', timeout: 3500 });
         this.running = true;
         this.loadStatus();
       } catch (e) { iziToast.error({ title: e?.response?.data?.error || e.message, position: 'topCenter' }); }
+    },
+    mbScan() { this.startScan('musicbrainz'); },
+    // Preview lightbox — open a large view before applying (prevents storing the
+    // wrong cover from a tiny thumbnail).
+    openPreview(cand, choice) { this.preview = { cand, choice }; },
+    previewCurrent() {
+      const c = this.fixSelected && this.fixSelected.current;
+      if (!c || !c.aaFile) return;
+      this.openPreview(this.fixSelected, {
+        coverUrl: this.artUrlFor(c.aaFile),
+        source: 'current',
+        label: this.fixSelected.album || this.fixSelected.dir || '',
+        viewOnly: true,
+      });
+    },
+    closePreview() { this.preview = null; },
+    async applyFromPreview() {
+      const p = this.preview; if (!p || this.previewSaving) return;
+      this.previewSaving = true;
+      let ok = false;
+      try {
+        ok = this.mode === 'fix' ? await this.fixApply(p.choice) : await this.applyCover(p.cand, p.choice);
+      } finally {
+        this.previewSaving = false;
+        if (ok) this.closePreview(); // on failure, keep the preview open so the user can retry or pick another
+      }
+    },
+    previewSrc(choice) {
+      if (!choice) return '';
+      // CAA: prefer the full-size front image for the large preview.
+      if (choice.source === 'musicbrainz' && choice.coverUrl) return choice.coverUrl.replace('/front-500', '/front');
+      return choice.coverUrl || choice.thumb || '';
+    },
+    async restore(cand) {
+      this.busyKey = cand.albumKey;
+      try {
+        await API.axios({ method: 'POST', url: `${API.url()}/api/v1/admin/art/restore`, data: { albumKey: cand.albumKey } });
+        iziToast.success({ title: this.t('admin.art.msgRestored'), message: `${cand.artist || ''} — ${cand.album || ''}`, position: 'topCenter', timeout: 3500 });
+        this.candidates = this.candidates.filter(c => c.albumKey !== cand.albumKey);
+        this.total = Math.max(0, this.total - 1);
+        this.counts.applied = Math.max(0, this.counts.applied - 1);
+      } catch (e) { iziToast.error({ title: e?.response?.data?.error || e.message, position: 'topCenter' }); }
+      this.busyKey = null;
+    },
+    // ── Fix a cover (search any album, incl. ones that already have art) ──────
+    onFixSearch(v) {
+      this.fixQuery = v;
+      if (this._fixTimer) clearTimeout(this._fixTimer);
+      this._fixTimer = setTimeout(() => this.doFind(), 350);
+    },
+    async doFind() {
+      const q = this.fixQuery.trim();
+      if (q.length < 2) { this.fixResults = []; return; }
+      this.fixLoading = true;
+      try {
+        const d = (await API.axios({ method: 'GET', url: `${API.url()}/api/v1/admin/art/find?q=${encodeURIComponent(q)}` })).data;
+        this.fixResults = d.albums || [];
+      } catch (e) { iziToast.error({ title: e?.response?.data?.error || e.message, position: 'topCenter' }); }
+      this.fixLoading = false;
+    },
+    async selectFixAlbum(album) {
+      this.busyKey = album.albumKey;
+      try {
+        const d = (await API.axios({ method: 'POST', url: `${API.url()}/api/v1/admin/art/fix-suggest`, data: { albumKey: album.albumKey } })).data;
+        this.fixSelected = { ...album, suggestions: d.suggestions || [], current: d.current || { aaFile: album.aaFile, hasArt: album.hasArt }, status: d.status };
+        if (!(d.suggestions || []).length) iziToast.info({ title: this.t('admin.art.msgNoneFound'), position: 'topCenter' });
+      } catch (e) { iziToast.error({ title: e?.response?.data?.error || e.message, position: 'topCenter' }); }
+      this.busyKey = null;
+    },
+    closeFixAlbum() { this.fixSelected = null; },
+    async fixApply(choice) {
+      const a = this.fixSelected; if (!a) return false;
+      this.busyKey = a.albumKey;
+      let ok = false;
+      try {
+        const body = { albumKey: a.albumKey, source: choice.source };
+        if (choice.releaseId) body.releaseId = choice.releaseId; else body.coverUrl = choice.coverUrl;
+        await API.axios({ method: 'POST', url: `${API.url()}/api/v1/admin/art/apply`, data: body });
+        iziToast.success({ title: this.t('admin.art.msgApplied'), message: `${a.artist || ''} — ${a.album || ''}`, position: 'topCenter', timeout: 3500 });
+        const hit = this.fixResults.find(r => r.albumKey === a.albumKey);
+        if (hit) { hit.hasArt = true; hit.aaFile = null; }
+        this.fixSelected = null;
+        this.loadStatus();
+        ok = true;
+      } catch (e) { iziToast.error({ title: this.t('admin.art.msgApplyFailed'), message: e?.response?.data?.error || e.message, position: 'topCenter', timeout: 5000 }); }
+      this.busyKey = null;
+      return ok;
+    },
+    fixApplyManual() {
+      const a = this.fixSelected; if (!a) return;
+      const url = (this.manualUrl[a.albumKey] || '').trim();
+      if (url) this.openPreview(null, { coverUrl: url, source: 'manual' });
     },
     async stopScan() {
       try { await API.axios({ method: 'POST', url: `${API.url()}/api/v1/admin/art/stop` }); this.stopping = true; }
@@ -6332,6 +6433,7 @@ const albumArtWorkshopView = Vue.component('album-art-workshop-view', {
     },
     async applyCover(cand, choice) {
       this.busyKey = cand.albumKey;
+      let ok = false;
       try {
         const body = { albumKey: cand.albumKey, source: choice.source };
         if (choice.releaseId) body.releaseId = choice.releaseId; else body.coverUrl = choice.coverUrl;
@@ -6340,8 +6442,10 @@ const albumArtWorkshopView = Vue.component('album-art-workshop-view', {
         this.candidates = this.candidates.filter(c => c.albumKey !== cand.albumKey);
         this.total = Math.max(0, this.total - 1);
         this.counts.applied += 1;
-      } catch (e) { iziToast.error({ title: this.t('admin.art.msgApplyFailed'), message: e?.response?.data?.error || e.message, position: 'topCenter' }); }
+        ok = true;
+      } catch (e) { iziToast.error({ title: this.t('admin.art.msgApplyFailed'), message: e?.response?.data?.error || e.message, position: 'topCenter', timeout: 5000 }); }
       this.busyKey = null;
+      return ok;
     },
     async skipAlbum(cand) {
       this.busyKey = cand.albumKey;
@@ -6363,6 +6467,16 @@ const albumArtWorkshopView = Vue.component('album-art-workshop-view', {
       } catch (e) { iziToast.error({ title: e?.response?.data?.error || e.message, position: 'topCenter' }); }
       this.busyKey = null;
     },
+    async seekAlternatives(cand) {
+      this.altSeekKey = cand.albumKey;
+      try {
+        const d = (await API.axios({ method: 'POST', url: `${API.url()}/api/v1/admin/art/suggest`, data: { albumKey: cand.albumKey, allSources: true } })).data;
+        cand.suggestions = d.suggestions || cand.suggestions;
+        cand.status = d.status || cand.status;
+        if (this.alts(cand).length === 0) iziToast.info({ title: this.t('admin.art.msgNoAlternatives'), position: 'topCenter' });
+      } catch (e) { iziToast.error({ title: e?.response?.data?.error || e.message, position: 'topCenter' }); }
+      this.altSeekKey = null;
+    },
     async toggleConfig(key) {
       const patch = { [key]: !this.cfg[key] };
       try {
@@ -6380,6 +6494,101 @@ const albumArtWorkshopView = Vue.component('album-art-workshop-view', {
       }
     },
     clearSelection() { this.selectedKeys = []; this.selectedMeta = {}; },
+    async applySelected() {
+      if (!this.selectedKeys.length) return;
+      this.loading = true;
+      try {
+        const d = (await API.axios({ method: 'POST', url: `${API.url()}/api/v1/admin/art/apply-batch`, data: { albumKeys: this.selectedKeys.slice() } })).data;
+        const appliedSet = new Set(d.applied || []);
+        this.candidates = this.candidates.filter(c => !appliedSet.has(c.albumKey));
+        this.total = Math.max(0, this.total - (d.appliedCount || 0));
+        this.counts.applied += (d.appliedCount || 0);
+        this.clearSelection();
+        if (d.failedCount) iziToast.warning({ title: this.t('admin.art.msgBatchPartial', { ok: d.appliedCount, fail: d.failedCount }), position: 'topCenter', timeout: 4500 });
+        else iziToast.success({ title: this.t('admin.art.msgBatchApplied', { count: d.appliedCount }), position: 'topCenter', timeout: 3500 });
+      } catch (e) { iziToast.error({ title: e?.response?.data?.error || e.message, position: 'topCenter' }); }
+      this.loading = false;
+    },
+    primary(cand) { return (cand.suggestions && cand.suggestions.length) ? cand.suggestions[0] : null; },
+    alts(cand) { return (cand.suggestions || []).slice(1, 9); },
+    isMB(s) { return !!s && s.source === 'musicbrainz'; },
+    srcLabel(s) { return this.isMB(s) ? 'MusicBrainz' : (s && s.source === 'current' ? this.t('admin.art.fixCurrent') : (s ? s.source : '')); },
+    artUrlFor(aaFile) { return aaFile ? `${API.url()}/album-art/${encodeURIComponent(aaFile)}?compress=zl&token=${API.token()}` : ''; },
+    _injectAawStyles() {
+      if (document.getElementById('aaw-styles')) return;
+      const el = document.createElement('style');
+      el.id = 'aaw-styles';
+      el.textContent = [
+        '.aaw-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(206px,1fr));gap:16px;margin-top:4px}',
+        '.aaw-card{position:relative;display:flex;flex-direction:column;background:var(--raised);border:1px solid var(--border);border-radius:12px;overflow:hidden;transition:border-color .15s,box-shadow .15s}',
+        '.aaw-card:hover{box-shadow:0 6px 22px rgba(0,0,0,.35)}',
+        '.aaw-card.sel{border-color:var(--primary);box-shadow:0 0 0 1px var(--primary) inset}',
+        '.aaw-cover{position:relative;aspect-ratio:1/1;background:#0d0f13;cursor:pointer;overflow:hidden}',
+        '.aaw-cover img{width:100%;height:100%;object-fit:cover;display:block;transition:transform .2s}',
+        '.aaw-card:hover .aaw-cover img{transform:scale(1.04)}',
+        '.aaw-ph{width:100%;height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;color:#5f6672;font-size:.78rem;text-align:center;padding:0 14px;background:repeating-linear-gradient(45deg,#1a1d24,#1a1d24 11px,#191c22 11px,#191c22 22px)}',
+        '.aaw-apply{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;gap:6px;background:rgba(10,14,20,.55);color:#fff;font-weight:600;font-size:.85rem;opacity:0;transition:opacity .15s}',
+        '.aaw-cover:hover .aaw-apply{opacity:1}',
+        '.aaw-chk{position:absolute;top:8px;left:8px;z-index:3;width:22px;height:22px;border-radius:6px;cursor:pointer;accent-color:var(--primary);box-shadow:0 1px 4px rgba(0,0,0,.5)}',
+        '.aaw-badge{position:absolute;top:8px;right:8px;z-index:2;font-size:.6rem;font-weight:700;letter-spacing:.03em;padding:2px 7px;border-radius:5px;text-transform:uppercase;background:rgba(0,0,0,.6);color:#cfd3da}',
+        '.aaw-badge.mb{background:#7cc9ff;color:#0b1b28}',
+        '.aaw-body{padding:9px 11px 11px;display:flex;flex-direction:column;gap:2px}',
+        '.aaw-title{font-weight:600;font-size:.86rem;line-height:1.25;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
+        '.aaw-artist{color:#aab0ba;font-size:.78rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
+        '.aaw-dir{color:#5f6672;font-size:.66rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
+        '.aaw-alts{display:flex;gap:6px;margin-top:8px;flex-wrap:wrap}',
+        '.aaw-alt{position:relative;width:50px;height:50px;border-radius:6px;object-fit:cover;cursor:pointer;border:2px solid transparent;background:#0d0f13}',
+        '.aaw-alt:hover{border-color:var(--primary);transform:scale(1.08)}',
+        '.aaw-acts{display:flex;gap:4px;align-items:center;margin-top:9px;border-top:1px solid var(--border);padding-top:8px}',
+        '.aaw-ico{background:none;border:none;color:#9aa0aa;cursor:pointer;font-size:.74rem;padding:3px 6px;border-radius:5px}',
+        '.aaw-ico:hover{background:rgba(255,255,255,.07);color:#e6e8ec}',
+        '.aaw-ico.danger:hover{color:#ff8a80}',
+        '.aaw-manual{margin-top:8px;display:flex;gap:5px}',
+        '.aaw-manual input{flex:1;min-width:0;font-size:.72rem;padding:4px 7px}',
+        // mode switch + chips
+        '.aaw-modes{display:inline-flex;gap:2px;background:var(--raised2);border-radius:9px;padding:3px;margin:2px 0 10px}',
+        '.aaw-mode{border:none;background:none;color:#aab0ba;font-size:.85rem;font-weight:600;padding:6px 14px;border-radius:7px;cursor:pointer}',
+        '.aaw-mode.on{background:var(--primary);color:#fff}',
+        '.aaw-chip{font-size:.76rem;padding:3px 11px;border-radius:12px;border:1px solid var(--border);cursor:pointer;background:transparent;color:#bbb}',
+        '.aaw-chip.on{background:var(--primary);color:#fff;border-color:var(--primary)}',
+        '.aaw-chip.mb.on{background:#7cc9ff;color:#0b1b28;border-color:#7cc9ff}',
+        // lightbox
+        '.aaw-lb{position:fixed;inset:0;z-index:9999;background:rgba(5,8,12,.85);display:flex;align-items:center;justify-content:center;padding:24px}',
+        '.aaw-lb-card{background:#15171c;border:1px solid #2a2e37;border-radius:14px;max-width:560px;width:100%;max-height:92vh;overflow:auto;box-shadow:0 18px 60px rgba(0,0,0,.6)}',
+        '.aaw-lb-img{width:100%;aspect-ratio:1/1;object-fit:contain;background:#0d0f13;border-radius:13px 13px 0 0;display:block}',
+        '.aaw-lb-body{padding:14px 16px;display:flex;flex-direction:column;gap:10px}',
+        '.aaw-lb-actions{display:flex;gap:8px;justify-content:flex-end}',
+        '.aaw-spin{width:15px;height:15px;border:2px solid rgba(124,201,255,.3);border-top-color:#7cc9ff;border-radius:50%;display:inline-block;animation:aaw-spin .7s linear infinite}',
+        '@keyframes aaw-spin{to{transform:rotate(360deg)}}',
+        '.aaw-procicon{width:64px;height:64px;background:url(/assets/img/geometry.svg) center/contain no-repeat;display:inline-block}',
+        // toolbar + settings + filter bar
+        '.aaw-bar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;background:var(--raised2);border:1px solid var(--border);border-radius:10px;padding:10px 12px;margin-bottom:12px}',
+        '.aaw-bar .grow{flex:1;min-width:8px}',
+        '.aaw-run{font-size:.8rem;color:#9aa0aa;display:flex;align-items:center;gap:8px}',
+        '.aaw-settings{background:var(--raised2);border:1px solid var(--border);border-radius:10px;padding:12px 14px;margin-bottom:12px;display:flex;flex-direction:column;gap:10px}',
+        '.aaw-set-mb{padding:10px 12px;border-radius:8px;background:rgba(126,201,255,.08);border:1px solid rgba(126,201,255,.25)}',
+        '.aaw-toggle{font-size:.85rem;display:flex;gap:.5rem;align-items:flex-start;cursor:pointer}',
+        '.aaw-filters{display:flex;flex-direction:column;gap:8px;margin-bottom:12px}',
+        '.aaw-chiprow{display:flex;gap:6px;flex-wrap:wrap;align-items:center}',
+        '.aaw-gear{margin-left:auto;background:none;border:1px solid var(--border);color:#aab0ba;border-radius:8px;padding:6px 11px;cursor:pointer;font-size:.82rem}',
+        '.aaw-gear.on,.aaw-gear:hover{border-color:var(--primary);color:#fff}',
+        // fix panel
+        '.aaw-fixrow{display:flex;align-items:center;gap:12px;padding:8px 10px;border:1px solid var(--border);border-radius:9px;background:var(--raised);cursor:pointer;margin-bottom:8px}',
+        '.aaw-fixrow:hover{border-color:var(--primary)}',
+        '.aaw-fixrow img,.aaw-fixrow .noart{width:72px;height:72px;border-radius:7px;object-fit:cover;flex:0 0 auto;background:#0d0f13}',
+        '.aaw-fixrow .noart{display:flex;align-items:center;justify-content:center;color:#5f6672;font-size:.62rem;text-align:center}',
+        '.aaw-fixsugg{display:grid;grid-template-columns:repeat(auto-fill,minmax(132px,1fr));gap:12px}',
+        '.aaw-fixsugg-tile{position:relative;aspect-ratio:1/1;border-radius:9px;overflow:hidden;cursor:pointer;background:#0d0f13;border:2px solid transparent;transition:border-color .15s,transform .15s,box-shadow .15s}',
+        '.aaw-fixsugg-tile:hover{border-color:var(--primary);transform:translateY(-2px);box-shadow:0 6px 18px rgba(0,0,0,.4)}',
+        '.aaw-fixsugg-tile img{width:100%;height:100%;object-fit:cover;display:block}',
+        '.aaw-fixsugg-tile .aaw-badge{top:6px;right:6px}',
+        '.aaw-fixsugg-hint{position:absolute;inset:auto 0 0 0;padding:8px 8px 7px;background:linear-gradient(transparent,rgba(0,0,0,.78));color:#fff;font-size:.72rem;font-weight:600;opacity:0;transition:opacity .15s;display:flex;align-items:center;gap:4px}',
+        '.aaw-fixsugg-tile:hover .aaw-fixsugg-hint{opacity:1}',
+        '.aaw-altseek-loading{display:flex;align-items:center;gap:7px;color:#7cc9ff;font-size:.74rem}',
+        '.aaw-altseek-loading .aaw-procicon{width:18px;height:18px}',
+      ].join('');
+      document.head.appendChild(el);
+    },
     toggleSelectAll() {
       if (this.allSelected) { this.clearSelection(); return; }
       this.selectAllFound();
@@ -6404,7 +6613,7 @@ const albumArtWorkshopView = Vue.component('album-art-workshop-view', {
     applyManual(cand) {
       const url = (this.manualUrl[cand.albumKey] || '').trim();
       if (!url) return;
-      this.applyCover(cand, { coverUrl: url, source: 'manual' });
+      this.openPreview(cand, { coverUrl: url, source: 'manual', label: url });
     },
     async loadShelves() {
       try {
@@ -6451,113 +6660,173 @@ const albumArtWorkshopView = Vue.component('album-art-workshop-view', {
   },
   template: `
   <div class="container" style="max-width:1100px;">
-    <div class="card-title-row" style="display:flex; align-items:center; gap:0.75rem; flex-wrap:wrap;">
-      <span class="card-title" style="font-size:1.3rem;">{{ t('admin.art.title') }}</span>
-      <span :style="'font-size:0.8rem; padding:2px 10px; border-radius:12px; ' + (running ? 'background:rgba(76,175,80,0.15); color:#66bb6a;' : 'background:rgba(255,255,255,0.08); color:#aaa;')">{{ statusLabel }}</span>
-    </div>
-    <p style="color:#aaa; font-size:0.9rem; margin-top:0.35rem;">{{ t('admin.art.desc') }}</p>
+    <!-- Header card (matches the Artists admin pattern) -->
+    <div class="card z-depth-1" style="padding:18px 20px; margin-bottom:14px;">
+      <div style="display:flex; align-items:flex-start; justify-content:space-between; gap:12px; flex-wrap:wrap;">
+        <div style="min-width:0;">
+          <span class="card-title">{{ t('admin.art.title') }}</span>
+          <span :style="'margin-left:8px; font-size:0.78rem; padding:2px 10px; border-radius:12px; ' + (running ? 'background:rgba(76,175,80,0.15); color:#66bb6a;' : 'background:rgba(255,255,255,0.08); color:#aaa;')">{{ statusLabel }}</span>
+          <div style="font-size:0.88rem; color:var(--t2); margin-top:4px; max-width:640px;">{{ t('admin.art.desc') }}</div>
+        </div>
+        <div style="display:flex; gap:8px; flex-wrap:wrap;">
+          <button class="btn-flat" @click="setMode('missing')" :style="mode==='missing' ? 'border-color:var(--primary);color:var(--primary);' : ''">{{ t('admin.art.modeMissing') }}</button>
+          <button class="btn-flat" @click="setMode('fix')" :style="mode==='fix' ? 'border-color:var(--primary);color:var(--primary);' : ''">{{ t('admin.art.modeFix') }}</button>
+        </div>
+      </div>
 
-    <div style="background:var(--raised2); border-radius:8px; padding:1rem; margin:1rem 0;">
-      <div style="display:flex; gap:0.6rem; flex-wrap:wrap; align-items:center;">
-        <button class="btn" @click="startScan" :disabled="running">{{ t('admin.art.btnScan') }}</button>
+      <!-- Missing-mode action toolbar -->
+      <div v-show="mode==='missing'" style="display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-top:14px; padding-top:14px; border-top:1px solid var(--border);">
+        <button class="btn" @click="startScan()" :disabled="running">🔍 {{ t('admin.art.btnScan') }}</button>
         <button class="btn-flat" @click="stopScan" v-if="running">{{ t('admin.art.btnStop') }}</button>
-        <span v-if="scanRunning" style="color:#ffb74d; font-size:0.82rem;">{{ t('admin.art.libraryScanRunning') }}</span>
-        <span style="margin-left:auto; font-size:0.82rem; color:#aaa;" v-if="running && currentAlbum">{{ currentAlbum }} ({{ processed }})</span>
+        <span v-if="running && currentAlbum" style="font-size:0.82rem; color:var(--t2);">{{ currentAlbum }} ({{ processed }})</span>
+        <span v-else-if="scanRunning" style="font-size:0.82rem; color:#ffb74d;">{{ t('admin.art.libraryScanRunning') }}</span>
+        <span style="flex:1;"></span>
+        <button class="btn-flat" @click="showSettings=!showSettings" :style="showSettings ? 'border-color:var(--primary);color:var(--primary);' : ''">⚙ {{ t('admin.art.settings') }}</button>
       </div>
-      <div style="display:flex; gap:1.2rem; flex-wrap:wrap; margin-top:0.8rem;">
-        <label style="font-size:0.85rem; display:flex; gap:0.4rem; align-items:center; cursor:pointer;">
-          <input type="checkbox" :checked="cfg.autoApprove" @change="toggleConfig('autoApprove')" style="accent-color:var(--primary);">
-          {{ t('admin.art.cfgAutoApprove') }}
-        </label>
-        <label style="font-size:0.85rem; display:flex; gap:0.4rem; align-items:center; cursor:pointer;">
-          <input type="checkbox" :checked="cfg.autoSuggestNewContent" @change="toggleConfig('autoSuggestNewContent')" style="accent-color:var(--primary);">
-          {{ t('admin.art.cfgAutoSuggest') }}
-        </label>
-      </div>
-      <div v-if="lastError" style="color:#e57373; font-size:0.8rem; margin-top:0.5rem;">{{ lastError }}</div>
+      <div v-show="mode==='fix'" style="font-size:0.88rem; color:var(--t2); margin-top:12px; padding-top:12px; border-top:1px solid var(--border);">{{ t('admin.art.fixDesc') }}</div>
+      <div v-if="lastError" style="color:#e57373; font-size:0.8rem; margin-top:8px;">{{ lastError }}</div>
     </div>
 
-    <div style="display:flex; gap:0.5rem; flex-wrap:wrap; margin-bottom:0.8rem;">
-      <button v-for="f in ['suggested','pending','notfound','applied','skipped','error']" :key="f"
-        @click="setFilter(f)"
-        :style="'font-size:0.78rem; padding:3px 11px; border-radius:12px; border:1px solid var(--border); cursor:pointer; ' + (filterStatus===f ? 'background:var(--primary); color:#fff;' : 'background:transparent; color:#bbb;')">
-        {{ t('admin.art.filter_' + f) }} ({{ counts[f] }})
-      </button>
+    <!-- ───────────── MISSING COVERS ───────────── -->
+    <div v-show="mode==='missing'">
+
+    <!-- Settings (collapsed by default) -->
+    <div class="aaw-settings" v-if="showSettings">
+      <div class="aaw-set-mb">
+        <label class="aaw-toggle">
+          <input type="checkbox" :checked="cfg.coverArtArchive" @change="toggleConfig('coverArtArchive')" style="accent-color:#7cc9ff; margin-top:2px;">
+          <span>
+            <span style="display:inline-flex; align-items:center; gap:0.4rem; font-weight:600;">
+              <span style="font-size:0.68rem; font-weight:700; letter-spacing:0.04em; background:#7cc9ff; color:#0b1b28; padding:1px 6px; border-radius:4px;">MUSICBRAINZ</span>
+              {{ t('admin.art.cfgCaa') }}
+            </span>
+            <span style="display:block; color:#9aa0aa; font-size:0.76rem; margin-top:2px;">{{ t('admin.art.cfgCaaHint') }}</span>
+          </span>
+        </label>
+      </div>
+      <label class="aaw-toggle" style="align-items:center;">
+        <input type="checkbox" :checked="cfg.autoApprove" @change="toggleConfig('autoApprove')" style="accent-color:var(--primary);">
+        {{ t('admin.art.cfgAutoApprove') }}
+      </label>
+      <label class="aaw-toggle" style="align-items:center;">
+        <input type="checkbox" :checked="cfg.autoSuggestNewContent" @change="toggleConfig('autoSuggestNewContent')" style="accent-color:var(--primary);">
+        {{ t('admin.art.cfgAutoSuggest') }}
+      </label>
+      <div>
+        <button class="btn-flat btn-small" @click="showShelves=!showShelves">{{ t('admin.art.shelvedToggle', { count: shelves.length }) }}</button>
+        <div v-if="showShelves" style="margin-top:0.6rem; background:var(--raised); border-radius:8px; padding:0.75rem;">
+          <div style="display:flex; align-items:center; gap:0.6rem; margin-bottom:0.5rem;">
+            <span style="font-size:0.78rem; color:#888; flex:1;">{{ t('admin.art.shelvedDesc') }}</span>
+            <button class="btn-flat btn-small" v-if="selectedShelves.length" @click="unshelveSelected">{{ t('admin.art.btnUnshelveSelected', { count: selectedShelves.length }) }}</button>
+          </div>
+          <div v-if="!shelves.length" style="color:#888; font-size:0.82rem;">{{ t('admin.art.shelvedEmpty') }}</div>
+          <div v-for="s in shelves" :key="s.vpath + '|' + s.prefix" style="display:flex; align-items:center; gap:0.6rem; padding:4px 0; font-size:0.82rem; border-top:1px solid var(--border);">
+            <input type="checkbox" :checked="selectedShelves.includes(s.vpath + '|' + s.prefix)" @change="toggleShelfSel(s.vpath + '|' + s.prefix)" style="accent-color:var(--primary);">
+            <span style="color:#ccc; word-break:break-all; flex:1;">📁 {{ s.vpath }}/{{ s.prefix }}</span>
+            <span style="color:#777; font-size:0.72rem; white-space:nowrap;">{{ t('admin.art.shelvedAlbums', { count: s.albums }) }}</span>
+            <button class="btn-flat btn-small" @click="unshelve(s)">{{ t('admin.art.btnUnshelve') }}</button>
+          </div>
+        </div>
+      </div>
     </div>
 
-    <div style="display:flex; gap:0.5rem; flex-wrap:wrap; align-items:center; margin-bottom:0.8rem;">
-      <input type="search" :value="search" @input="onSearch($event.target.value)" :placeholder="t('admin.art.searchPlaceholder')"
-        spellcheck="false" autocomplete="off" style="flex:1; min-width:220px; font-size:0.85rem; padding:6px 10px;">
-      <button class="btn-flat btn-small" @click="toggleSelectAll" v-if="candidates.length">
-        {{ allSelected ? t('admin.art.btnDeselectAll') : t('admin.art.btnSelectAllFound', { count: total }) }}
-      </button>
+    <!-- Filter bar -->
+    <div class="aaw-filters">
+      <div class="aaw-chiprow">
+        <button v-for="f in ['suggested','pending','notfound','applied','skipped','error']" :key="f"
+          class="aaw-chip" :class="{ on: filterStatus===f }" @click="setFilter(f)">
+          {{ t('admin.art.filter_' + f) }} ({{ counts[f] }})
+        </button>
+      </div>
+      <div class="aaw-chiprow" v-if="filterStatus==='suggested'">
+        <span style="font-size:0.74rem; color:#777;">{{ t('admin.art.sourceLabel') }}</span>
+        <button class="aaw-chip" :class="{ on: sourceFilter==='' }" @click="setSource('')">{{ t('admin.art.srcAll') }} ({{ sourceCounts.all }})</button>
+        <button class="aaw-chip mb" :class="{ on: sourceFilter==='musicbrainz' }" @click="setSource('musicbrainz')">♪ MusicBrainz ({{ sourceCounts.musicbrainz }})</button>
+        <button class="aaw-chip" :class="{ on: sourceFilter==='discogs' }" @click="setSource('discogs')">Discogs ({{ sourceCounts.discogs }})</button>
+        <button class="aaw-chip" :class="{ on: sourceFilter==='deezer' }" @click="setSource('deezer')">Deezer ({{ sourceCounts.deezer }})</button>
+        <button class="aaw-chip" :class="{ on: sourceFilter==='itunes' }" @click="setSource('itunes')">iTunes ({{ sourceCounts.itunes }})</button>
+      </div>
+      <div class="aaw-chiprow">
+        <input type="search" :value="search" @input="onSearch($event.target.value)" :placeholder="t('admin.art.searchPlaceholder')"
+          spellcheck="false" autocomplete="off" style="flex:1; min-width:220px; font-size:0.85rem; padding:6px 10px;">
+        <button class="btn-flat btn-small" @click="toggleSelectAll" v-if="candidates.length">
+          {{ allSelected ? t('admin.art.btnDeselectAll') : t('admin.art.btnSelectAllFound', { count: total }) }}
+        </button>
+      </div>
     </div>
 
     <div v-if="selectedKeys.length" style="display:flex; gap:0.6rem; align-items:center; background:var(--raised2); border-radius:8px; padding:0.5rem 0.85rem; margin-bottom:0.8rem;">
       <span style="font-size:0.85rem; color:#ddd;">{{ t('admin.art.selectedCount', { count: selectedKeys.length }) }}</span>
-      <button class="btn-flat btn-small" @click="clearSelection" style="margin-left:auto;">{{ t('admin.art.btnClearSel') }}</button>
-      <button class="btn btn-small" @click="shelveSelected">{{ t('admin.art.btnShelveSelected') }}</button>
-    </div>
-
-    <div style="margin-bottom:0.8rem;">
-      <button class="btn-flat btn-small" @click="showShelves=!showShelves">{{ t('admin.art.shelvedToggle', { count: shelves.length }) }}</button>
-      <div v-if="showShelves" style="margin-top:0.6rem; background:var(--raised2); border-radius:8px; padding:0.75rem;">
-        <div style="display:flex; align-items:center; gap:0.6rem; margin-bottom:0.5rem;">
-          <span style="font-size:0.78rem; color:#888; flex:1;">{{ t('admin.art.shelvedDesc') }}</span>
-          <button class="btn-flat btn-small" v-if="selectedShelves.length" @click="unshelveSelected">{{ t('admin.art.btnUnshelveSelected', { count: selectedShelves.length }) }}</button>
-        </div>
-        <div v-if="!shelves.length" style="color:#888; font-size:0.82rem;">{{ t('admin.art.shelvedEmpty') }}</div>
-        <div v-for="s in shelves" :key="s.vpath + '|' + s.prefix" style="display:flex; align-items:center; gap:0.6rem; padding:4px 0; font-size:0.82rem; border-top:1px solid var(--border);">
-          <input type="checkbox" :checked="selectedShelves.includes(s.vpath + '|' + s.prefix)" @change="toggleShelfSel(s.vpath + '|' + s.prefix)" style="accent-color:var(--primary);">
-          <span style="color:#ccc; word-break:break-all; flex:1;">📁 {{ s.vpath }}/{{ s.prefix }}</span>
-          <span style="color:#777; font-size:0.72rem; white-space:nowrap;">{{ t('admin.art.shelvedAlbums', { count: s.albums }) }}</span>
-          <button class="btn-flat btn-small" @click="unshelve(s)">{{ t('admin.art.btnUnshelve') }}</button>
-        </div>
-      </div>
+      <button class="btn btn-small" @click="applySelected" :disabled="loading" style="margin-left:auto;">{{ t('admin.art.btnApplySelected') }}</button>
+      <button class="btn-flat btn-small" @click="clearSelection">{{ t('admin.art.btnClearSel') }}</button>
+      <button class="btn-flat btn-small" @click="shelveSelected">{{ t('admin.art.btnShelveSelected') }}</button>
     </div>
 
     <div v-if="loading" style="color:#aaa; padding:1rem;">{{ t('admin.art.loading') }}</div>
     <div v-else-if="!candidates.length" style="color:#888; padding:1.5rem; text-align:center;">{{ t('admin.art.empty') }}</div>
 
-    <div v-else style="display:grid; grid-template-columns:repeat(auto-fill,minmax(400px,1fr)); gap:0.9rem;">
-      <div v-for="cand in candidates" :key="cand.albumKey"
-        :style="'border:1px solid ' + (selectedKeys.includes(cand.albumKey) ? 'var(--primary)' : 'var(--border)') + '; border-radius:8px; padding:0.75rem; background:var(--raised);'">
-        <div style="display:flex; align-items:flex-start; gap:0.5rem;">
-          <input type="checkbox" :checked="selectedKeys.includes(cand.albumKey)" @change="toggleSelect(cand)" style="accent-color:var(--primary); margin-top:3px; flex:0 0 auto;">
-          <div style="font-weight:600; word-break:break-word; flex:1;">{{ cand.album || cand.dir }}</div>
-        </div>
-        <div style="font-size:0.82rem; color:#aaa; word-break:break-word;">{{ cand.artist || '—' }}</div>
-        <div style="font-size:0.72rem; color:#777; margin:2px 0 8px; word-break:break-all;" :title="cand.vpath + '/' + cand.dir">📁 {{ cand.vpath }}/{{ cand.dir }}</div>
+    <div v-else class="aaw-grid">
+      <div v-for="cand in candidates" :key="cand.albumKey" class="aaw-card" :class="{ sel: selectedKeys.includes(cand.albumKey) }">
+        <input v-if="cand.status!=='applied'" type="checkbox" class="aaw-chk" :checked="selectedKeys.includes(cand.albumKey)" @change="toggleSelect(cand)" :title="t('admin.art.selectThis')">
+        <span v-if="cand.status==='applied'" class="aaw-badge" style="background:rgba(76,175,80,.85);color:#fff">{{ t('admin.art.filter_applied') }}</span>
+        <span v-else-if="primary(cand)" class="aaw-badge" :class="{ mb: isMB(primary(cand)) }">{{ isMB(primary(cand)) ? '♪ ' + srcLabel(primary(cand)) : srcLabel(primary(cand)) }}</span>
 
-        <div v-if="cand.suggestions && cand.suggestions.length" style="display:grid; grid-auto-flow:column; grid-template-rows:repeat(2,auto); gap:10px; overflow-x:auto; padding-bottom:8px;">
-          <div v-for="(s, i) in cand.suggestions.slice(0, 12)" :key="i" style="width:180px; text-align:center;">
-            <img :src="s.thumb" loading="lazy" :title="s.label"
-              style="width:180px; height:180px; object-fit:cover; border-radius:6px; cursor:pointer; border:2px solid transparent;"
-              @click="applyCover(cand, s)" @mouseover="$event.target.style.borderColor='var(--primary)'" @mouseout="$event.target.style.borderColor='transparent'">
-            <div style="font-size:0.68rem; color:#aaa; margin-top:4px; line-height:1.2; max-height:2.4em; overflow:hidden;">{{ s.label }}</div>
-            <div style="font-size:0.6rem; color:#888; text-transform:uppercase;">{{ s.source }}</div>
+        <!-- Applied: show the stored cover -->
+        <div class="aaw-cover" v-if="cand.status==='applied'" style="cursor:default">
+          <img v-if="cand.appliedAaFile" :src="artUrlFor(cand.appliedAaFile)" loading="lazy" alt="">
+          <div v-else class="aaw-ph">✓</div>
+        </div>
+        <!-- Suggested: cover opens the large preview -->
+        <div class="aaw-cover" v-else-if="primary(cand)" @click="openPreview(cand, primary(cand))" :title="t('admin.art.clickToPreview')">
+          <img :src="primary(cand).thumb" loading="lazy" :alt="primary(cand).label || ''">
+          <div class="aaw-apply">🔍 {{ t('admin.art.preview') }}</div>
+        </div>
+        <!-- Pending / not found -->
+        <div class="aaw-cover" v-else style="cursor:default">
+          <div class="aaw-ph">
+            <svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/></svg>
+            {{ cand.status === 'notfound' ? t('admin.art.phNotFound') : t('admin.art.phNoSuggestions') }}
+            <button class="btn btn-small" @click="refreshOne(cand)" :disabled="busyKey===cand.albumKey" style="margin-top:8px;">{{ busyKey===cand.albumKey ? '…' : t('admin.art.btnFindCover') }}</button>
           </div>
         </div>
-        <div v-else style="font-size:0.8rem; color:#888; padding:0.4rem 0;">{{ t('admin.art.noSuggestions') }}</div>
 
-        <div style="margin-top:0.7rem;">
-          <div style="font-size:0.72rem; color:#888; margin-bottom:4px;">{{ t('admin.art.manualUrlLabel') }}</div>
-          <div style="display:flex; gap:0.4rem; align-items:center;">
-            <img v-if="manualUrl[cand.albumKey]" :src="manualUrl[cand.albumKey]" loading="lazy"
-              style="width:54px; height:54px; object-fit:cover; border-radius:4px; border:1px solid var(--border); flex:0 0 auto;">
+        <div class="aaw-body">
+          <div class="aaw-title" :title="cand.album || cand.dir">{{ cand.album || cand.dir }}</div>
+          <div class="aaw-artist" :title="cand.artist || ''">{{ cand.artist || '—' }}</div>
+          <div class="aaw-dir" :title="cand.vpath + '/' + cand.dir">📁 {{ cand.vpath }}/{{ cand.dir }}</div>
+
+          <!-- Alternative covers (open preview) -->
+          <div class="aaw-alts" v-if="cand.status!=='applied' && alts(cand).length">
+            <img v-for="(s, i) in alts(cand)" :key="i" class="aaw-alt" :src="s.thumb" loading="lazy"
+              :title="srcLabel(s) + ' — ' + (s.label || '')" @click="openPreview(cand, s)">
+          </div>
+
+          <!-- MusicBrainz-only cover: offer to seek alternatives from the other services -->
+          <div v-if="cand.status==='suggested' && isMB(primary(cand)) && !alts(cand).length" style="margin-top:8px;">
+            <div v-if="altSeekKey===cand.albumKey" class="aaw-altseek-loading">
+              <span class="aaw-procicon"></span> {{ t('admin.art.seekingAlternatives') }}
+            </div>
+            <button v-else class="aaw-ico" @click="seekAlternatives(cand)" :title="t('admin.art.seekAlternativesHint')">🔍 {{ t('admin.art.seekAlternatives') }}</button>
+          </div>
+
+          <!-- Applied actions: restore -->
+          <div class="aaw-acts" v-if="cand.status==='applied'">
+            <span style="font-size:.72rem;color:#66bb6a;">✓ {{ cand.appliedCover }}</span>
+            <button class="aaw-ico" @click="restore(cand)" :disabled="busyKey===cand.albumKey || !cand.canRestore" style="margin-left:auto" :title="t('admin.art.btnRestore')">↩ {{ t('admin.art.btnRestore') }}</button>
+          </div>
+          <!-- Normal actions -->
+          <div class="aaw-acts" v-else>
+            <button class="aaw-ico" @click="refreshOne(cand)" :disabled="busyKey===cand.albumKey" :title="t('admin.art.btnRefresh')">⟳ {{ t('admin.art.btnRefresh') }}</button>
+            <button class="aaw-ico" @click="shelveFolder(cand)" :disabled="busyKey===cand.albumKey" :title="t('admin.art.btnShelveFolder')">📁</button>
+            <button class="aaw-ico danger" @click="skipAlbum(cand)" :disabled="busyKey===cand.albumKey" style="margin-left:auto" :title="t('admin.art.btnSkip')">✕ {{ t('admin.art.btnSkip') }}</button>
+          </div>
+
+          <div class="aaw-manual" v-if="cand.status!=='applied'">
             <input :value="manualUrl[cand.albumKey] || ''" @input="setManual(cand.albumKey, $event.target.value)"
-              type="url" spellcheck="false" autocomplete="off" :placeholder="t('admin.art.manualUrlPlaceholder')"
-              style="flex:1; min-width:0; font-size:0.78rem; padding:5px 8px;">
-            <button class="btn btn-small" @click="applyManual(cand)" :disabled="!manualUrl[cand.albumKey] || busyKey===cand.albumKey">{{ t('admin.art.btnApplyUrl') }}</button>
+              type="url" spellcheck="false" autocomplete="off" :placeholder="t('admin.art.manualUrlPlaceholder')">
+            <button class="btn btn-small" @click="applyManual(cand)" :disabled="!manualUrl[cand.albumKey] || busyKey===cand.albumKey">{{ t('admin.art.btnPreviewUrl') }}</button>
           </div>
         </div>
-
-        <div style="display:flex; gap:0.4rem; margin-top:0.6rem; flex-wrap:wrap;">
-          <button class="btn-flat btn-small" @click="refreshOne(cand)" :disabled="busyKey===cand.albumKey">{{ t('admin.art.btnRefresh') }}</button>
-          <button class="btn-flat btn-small" @click="shelveFolder(cand)" :disabled="busyKey===cand.albumKey">{{ t('admin.art.btnShelveFolder') }}</button>
-          <button class="btn-flat btn-small" @click="skipAlbum(cand)" :disabled="busyKey===cand.albumKey" style="margin-left:auto;">{{ t('admin.art.btnSkip') }}</button>
-        </div>
-        <div style="font-size:0.68rem; color:#777; margin-top:4px;">{{ t('admin.art.clickToApply') }}</div>
       </div>
     </div>
 
@@ -6565,6 +6834,88 @@ const albumArtWorkshopView = Vue.component('album-art-workshop-view', {
       <button class="btn-flat btn-small" @click="prevPage" :disabled="offset===0">‹</button>
       <span style="font-size:0.82rem; color:#aaa;">{{ pageNum }} / {{ pageCount }}</span>
       <button class="btn-flat btn-small" @click="nextPage" :disabled="pageNum>=pageCount">›</button>
+    </div>
+    </div>
+
+    <!-- ───────────── FIX A COVER ───────────── -->
+    <div v-show="mode==='fix'">
+      <input type="search" :value="fixQuery" @input="onFixSearch($event.target.value)" :placeholder="t('admin.art.fixSearchPlaceholder')"
+        spellcheck="false" autocomplete="off" style="width:100%; font-size:0.9rem; padding:8px 12px; margin-bottom:0.9rem;">
+
+      <div v-if="fixLoading" style="color:#aaa; padding:0.5rem;">{{ t('admin.art.loading') }}</div>
+      <div v-else-if="fixQuery.length>=2 && !fixResults.length" style="color:#888; padding:0.5rem;">{{ t('admin.art.fixNoResults') }}</div>
+
+      <div v-if="!fixSelected">
+        <div v-for="a in fixResults" :key="a.albumKey" class="aaw-fixrow" @click="selectFixAlbum(a)">
+          <img v-if="a.aaFile" :src="artUrlFor(a.aaFile)" loading="lazy" alt="">
+          <div v-else class="noart">{{ t('admin.art.fixNoArt') }}</div>
+          <div style="min-width:0; flex:1;">
+            <div style="font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">{{ a.album || a.dir }}</div>
+            <div style="color:#aab0ba; font-size:0.82rem; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">{{ a.artist || '—' }}</div>
+            <div style="color:#5f6672; font-size:0.7rem; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">📁 {{ a.vpath }}/{{ a.dir }}</div>
+          </div>
+          <span style="font-size:0.72rem; color:#777; white-space:nowrap;">{{ a.hasArt ? t('admin.art.fixHasArt') : t('admin.art.fixMissing') }}</span>
+        </div>
+      </div>
+
+      <!-- Selected album: current art + all-source suggestions -->
+      <div v-if="fixSelected" style="background:var(--raised2); border-radius:10px; padding:1rem;">
+        <div style="display:flex; align-items:center; gap:0.7rem; margin-bottom:0.9rem;">
+          <button class="btn-flat btn-small" @click="closeFixAlbum">‹ {{ t('admin.art.fixBack') }}</button>
+          <div style="min-width:0;">
+            <div style="font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">{{ fixSelected.album || fixSelected.dir }}</div>
+            <div style="color:#aab0ba; font-size:0.82rem;">{{ fixSelected.artist || '—' }}</div>
+          </div>
+        </div>
+        <div style="display:flex; gap:1rem; flex-wrap:wrap;">
+          <div style="text-align:center;">
+            <div style="font-size:0.72rem; color:#888; margin-bottom:4px;">{{ t('admin.art.fixCurrent') }}</div>
+            <div v-if="fixSelected.current && fixSelected.current.aaFile" class="aaw-fixsugg-tile" style="width:132px;"
+              :title="t('admin.art.clickToPreview')" @click="previewCurrent()">
+              <img :src="artUrlFor(fixSelected.current.aaFile)" alt="">
+              <div class="aaw-fixsugg-hint">🔍 {{ t('admin.art.preview') }}</div>
+            </div>
+            <div v-else class="noart" style="width:132px;height:132px;border-radius:9px;display:flex;align-items:center;justify-content:center;color:#5f6672;font-size:.7rem;background:#0d0f13;">{{ t('admin.art.fixNoArt') }}</div>
+          </div>
+          <div style="flex:1; min-width:240px;">
+            <div style="font-size:0.72rem; color:#888; margin-bottom:6px;">{{ t('admin.art.fixSuggestions') }}</div>
+            <div v-if="fixSelected.suggestions.length" class="aaw-fixsugg">
+              <div v-for="(s,i) in fixSelected.suggestions" :key="i" class="aaw-fixsugg-tile"
+                :title="srcLabel(s) + ' — ' + (s.label||'')" @click="openPreview(fixSelected, s)">
+                <span class="aaw-badge" :class="{ mb: isMB(s) }">{{ isMB(s) ? '♪ ' + srcLabel(s) : srcLabel(s) }}</span>
+                <img :src="s.thumb" loading="lazy" :alt="s.label||''">
+                <div class="aaw-fixsugg-hint">🔍 {{ t('admin.art.preview') }}</div>
+              </div>
+            </div>
+            <div v-else style="color:#888; font-size:0.82rem;">{{ t('admin.art.noSuggestions') }}</div>
+            <div class="aaw-manual" style="margin-top:12px; max-width:420px;">
+              <input :value="manualUrl[fixSelected.albumKey] || ''" @input="setManual(fixSelected.albumKey, $event.target.value)"
+                type="url" spellcheck="false" autocomplete="off" :placeholder="t('admin.art.manualUrlPlaceholder')">
+              <button class="btn btn-small" @click="fixApplyManual()" :disabled="!manualUrl[fixSelected.albumKey]">{{ t('admin.art.btnPreviewUrl') }}</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ───────────── PREVIEW LIGHTBOX ───────────── -->
+    <div v-if="preview" class="aaw-lb" @click.self="!previewSaving && closePreview()">
+      <div class="aaw-lb-card">
+        <img class="aaw-lb-img" :src="previewSrc(preview.choice)" :alt="preview.choice.label || ''">
+        <div class="aaw-lb-body">
+          <div style="display:flex; align-items:center; gap:0.5rem;">
+            <span class="aaw-badge" style="position:static" :class="{ mb: isMB(preview.choice) }">{{ isMB(preview.choice) ? '♪ '+srcLabel(preview.choice) : srcLabel(preview.choice) }}</span>
+            <span style="color:#cfd3da; font-size:0.85rem; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">{{ preview.choice.label || '' }}</span>
+          </div>
+          <div v-if="previewSaving" style="display:flex; flex-direction:column; align-items:center; gap:8px; color:#7cc9ff; font-size:0.88rem; padding:6px 0;">
+            <span class="aaw-procicon"></span> {{ t('admin.art.saving') }}
+          </div>
+          <div class="aaw-lb-actions">
+            <button class="btn-flat" @click="closePreview" :disabled="previewSaving">{{ t('admin.art.previewBack') }}</button>
+            <button v-if="!preview.choice.viewOnly" class="btn" @click="applyFromPreview" :disabled="previewSaving">{{ previewSaving ? t('admin.art.saving') : '✓ ' + t('admin.art.btnApplyThis') }}</button>
+          </div>
+        </div>
+      </div>
     </div>
   </div>
   `,
