@@ -528,6 +528,24 @@ button, a, .song-row, .artist-row, .album-card, .album-row,
 }
 @keyframes spin{to{transform:rotate(360deg);}}
 .empty-state{display:flex;align-items:center;justify-content:center;height:140px;color:var(--t3);font-size:14px;}
+/* Rich empty state — icon + title + message + optional CTA */
+.empty-state--rich{flex-direction:column;height:auto;min-height:200px;gap:10px;padding:48px 24px;text-align:center;}
+.empty-state--rich .empty-ico{color:var(--t3);opacity:.5;margin-bottom:2px;}
+.empty-state--rich .empty-title{font-size:16px;font-weight:600;color:var(--t1);}
+.empty-state--rich .empty-msg{font-size:13px;color:var(--t3);max-width:340px;line-height:1.6;}
+.empty-cta{margin-top:6px;background:var(--primary);color:#fff;font-size:13px;font-weight:600;
+  padding:8px 18px;border-radius:99px;transition:background .14s;}
+.empty-cta:hover{background:var(--primary-h);}
+.q-empty-state .empty-cta{margin-top:4px;padding:6px 14px;font-size:12px;}
+
+/* First-run tip strip on Home */
+.intro-strip{display:flex;align-items:center;gap:10px;margin:0 0 18px;padding:10px 14px;
+  background:var(--primary-d);border:1px solid var(--primary-g);border-radius:var(--r2);
+  color:var(--t1);font-size:13px;}
+.intro-strip-ico{flex:0 0 auto;color:var(--primary);}
+.intro-strip-text{flex:1;line-height:1.5;}
+.intro-strip-close{flex:0 0 auto;font-size:20px;line-height:1;color:var(--t3);padding:0 4px;border-radius:6px;}
+.intro-strip-close:hover{color:var(--t1);background:var(--hover);}
 
 /* ── SONG ROWS ─────────────────────────────────────────────── */
 .song-list{display:flex;flex-direction:column;gap:1px;}

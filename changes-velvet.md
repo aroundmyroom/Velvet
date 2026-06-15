@@ -1,13 +1,17 @@
 ## v0.1.8 (2026-06-15)
 
-Player UI polish — Wave 1: perceived performance & feedback.
+Player UI polish — perceived performance, feedback, and clearer empty states.
 
-### Player
+### Player — perceived performance & feedback
 - **Skeleton loaders.** Slow views now show shimmer placeholders shaped like their result instead of a blank pane or a bare spinner — the Artists gallery, Album Library, search results, and the Home shelves (each shelf fills in as its data arrives).
 - **Reduced-motion support.** Velvet now honours the OS *"reduce motion"* setting: a single global rule neutralises every CSS animation/transition, and the auto-triggered JS animations (the Auto-DJ dice throw and the scrolling-title marquee) are skipped via a `_reducedMotion()` guard.
 - **Keyboard focus ring.** A consistent `:focus-visible` outline (a new per-theme `--focus` token) now appears on nav buttons, icon buttons, song/queue rows, cards and sliders when navigating by keyboard — and never on mouse/touch.
 - **Stacking toasts.** Toasts now stack instead of overwriting one another, announce to screen readers (`role="status"`, errors `role="alert"`), and can carry an action button.
 - **Add-to-playlist is instant.** Adding a song to a playlist confirms immediately and reconciles in the background; if the request fails, the error toast offers a **Retry** instead of a dead end.
+
+### Player — empty states & onboarding
+- **Clearer empty states.** A consistent illustrated placeholder (icon + title + message + a one-tap action) now replaces bare one-liners for an empty queue, an empty playlist, no starred songs, and zero search results — each offering a relevant next step (browse music, browse by artist).
+- **First-run tip.** A quiet, dismissible strip on Home points newcomers at the `?` keyboard-shortcut overlay and Auto-DJ. It appears once and never again after it's dismissed.
 
 ## v0.1.7 (2026-06-14)
 
