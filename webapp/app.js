@@ -2389,6 +2389,23 @@ async function _djBpmFallbackCall(skipBpm = false) {
   });
 }
 
+// Auto-DJ recently-played memory. The server returns an ignoreList of offsets
+// capped at half the matching pool, which on a large library is tens of
+// thousands of integers. Persisting that unbounded array every pick eventually
+// blows the localStorage quota (and bloats the account-prefs sync). Cap the
+// retained window and never let a full store throw — the list is a best-effort
+// dedup hint, not critical state.
+const DJ_IGNORE_MAX = 2000;
+function _persistDjIgnore(list) {
+  S.djIgnore = Array.isArray(list) ? list : [];
+  if (S.djIgnore.length > DJ_IGNORE_MAX) S.djIgnore = S.djIgnore.slice(-DJ_IGNORE_MAX);
+  try {
+    localStorage.setItem(_djKey('ignore'), JSON.stringify(S.djIgnore));
+  } catch (_) {
+    try { localStorage.removeItem(_djKey('ignore')); } catch (_) {}
+  }
+}
+
 async function autoDJPrefetch() {
   if (S._djPrefetching) return;          // already in-flight
   if (S.queue.length > S.idx + 1) return; // already pre-queued
@@ -2397,8 +2414,7 @@ async function autoDJPrefetch() {
     let d, song, attempts = 0;
     do {
       d    = await _djApiCall();
-      S.djIgnore = d.ignoreList;
-      localStorage.setItem(_djKey('ignore'), JSON.stringify(S.djIgnore));
+      _persistDjIgnore(d.ignoreList);
       song = norm(d.songs[0]);
       attempts++;
     } while (_djSongBlocked(song) && attempts < 5);
@@ -2411,8 +2427,7 @@ async function autoDJPrefetch() {
       let tier2Blocked = false;
       try {
         const fd = await _djBpmFallbackCall();
-        S.djIgnore = fd.ignoreList;
-        localStorage.setItem(_djKey('ignore'), JSON.stringify(S.djIgnore));
+        _persistDjIgnore(fd.ignoreList);
         song = norm(fd.songs[0]);
         tier2Blocked = _djSongBlocked(song);
       } catch(_) { tier2Blocked = true; } // no BPM-matching songs — try tier-3
@@ -2420,8 +2435,7 @@ async function autoDJPrefetch() {
         // Tier 3: drop BPM/key entirely — any song from the selected vpath
         const fd2 = await _djBpmFallbackCall(true);
         if (!fd2?.songs?.[0]) return;
-        S.djIgnore = fd2.ignoreList;
-        localStorage.setItem(_djKey('ignore'), JSON.stringify(S.djIgnore));
+        _persistDjIgnore(fd2.ignoreList);
         song = norm(fd2.songs[0]);
         if (!song?.filepath) return;
         _djLastPickFree = true;
@@ -2463,8 +2477,7 @@ async function autoDJFetch() {
     let d, song, attempts = 0;
     do {
       d    = await _djApiCall();
-      S.djIgnore = d.ignoreList;
-      localStorage.setItem(_djKey('ignore'), JSON.stringify(S.djIgnore));
+      _persistDjIgnore(d.ignoreList);
       song = norm(d.songs[0]);
       attempts++;
     } while (_djSongBlocked(song) && attempts < 5);
@@ -2478,8 +2491,7 @@ async function autoDJFetch() {
       try {
         console.warn('[Auto-DJ] similar-artist pool has no BPM match — trying library-wide BPM fallback');
         const fd = await _djBpmFallbackCall();
-        S.djIgnore = fd.ignoreList;
-        localStorage.setItem(_djKey('ignore'), JSON.stringify(S.djIgnore));
+        _persistDjIgnore(fd.ignoreList);
         song = norm(fd.songs[0]);
         tier2Blocked = _djSongBlocked(song);
       } catch(_) { tier2Blocked = true; } // no BPM-matching songs anywhere — proceed to tier-3
@@ -2488,8 +2500,7 @@ async function autoDJFetch() {
         console.warn('[Auto-DJ] BPM fallback exhausted — dropping BPM/key constraint, free pick');
         const fd2 = await _djBpmFallbackCall(true);
         if (!fd2?.songs?.[0]) { toast(t('player.toast.djNoBpmMatch')); return; }
-        S.djIgnore = fd2.ignoreList;
-        localStorage.setItem(_djKey('ignore'), JSON.stringify(S.djIgnore));
+        _persistDjIgnore(fd2.ignoreList);
         song = norm(fd2.songs[0]);
         if (!song?.filepath) { toast(t('player.toast.djNoBpmMatch')); return; }
         _djLastPickFree = true;
@@ -20667,8 +20678,7 @@ function _applyServerSettings(data) {
     try { S.djFilterWords = JSON.parse(prefs.dj_filter_words) || []; } catch(_) {}
   }
   if (prefs.dj_ignore     != null) {
-    ls('ms2_dj_ignore_' + u, prefs.dj_ignore);
-    try { S.djIgnore = JSON.parse(prefs.dj_ignore) || []; } catch(_) {}
+    try { _persistDjIgnore(JSON.parse(prefs.dj_ignore)); } catch(_) {}
   }
   if (prefs.dj_artist_history != null) {
     ls('ms2_dj_artist_history_' + u, prefs.dj_artist_history);
@@ -21041,7 +21051,7 @@ function showApp() {
   }
   // Restore Auto-DJ play history before re-enabling so the DJ doesn't re-play recent songs
   const _savedIgnore = JSON.parse(localStorage.getItem(_djKey('ignore')) || 'null');
-  if (_savedIgnore) S.djIgnore = _savedIgnore;
+  if (Array.isArray(_savedIgnore)) _persistDjIgnore(_savedIgnore);
   // Apply stored audio output device to the main audio element
   _applyOutputDevice(audioEl).catch(() => {});
   // Restore auto-DJ state from previous session
