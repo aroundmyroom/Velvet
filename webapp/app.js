@@ -19475,11 +19475,13 @@ function _drawWaveformBars(ctx, W, H, data, pct) {
   grad.addColorStop(0, colPri);
   grad.addColorStop(1, colAcc);
   const html = document.documentElement;
+  // Unplayed bars reuse the played gradient at low alpha so the waveform stays
+  // on-brand even at 0% played; contrast comes from opacity, not a grey hue.
   const unplayedAlpha = html.classList.contains('light')
-    ? 'rgba(0,0,0,0.22)'
+    ? 0.24
     : html.classList.contains('dark')
-      ? 'rgba(255,255,255,0.28)'
-      : 'rgba(255,255,255,0.35)';
+      ? 0.28
+      : 0.30;
   if (splitX > 0) {
     ctx.save();
     ctx.beginPath(); ctx.rect(0, 0, splitX, H); ctx.clip();
@@ -19493,7 +19495,8 @@ function _drawWaveformBars(ctx, W, H, data, pct) {
   }
   ctx.save();
   ctx.beginPath(); ctx.rect(splitX, 0, W - splitX, H); ctx.clip();
-  ctx.fillStyle = unplayedAlpha;
+  ctx.globalAlpha = unplayedAlpha;
+  ctx.fillStyle = grad;
   for (let i = 0; i < data.length; i++) {
     const x = (i / data.length) * W;
     const barH = Math.max(2, (data[i] / 255) * midY * 1.8);
