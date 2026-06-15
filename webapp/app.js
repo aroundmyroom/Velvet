@@ -3068,6 +3068,12 @@ function setBody(html) {
   const b = document.getElementById('content-body');
   b.classList.remove('browse-mode');
   b.innerHTML = html;
+  // Soft cross-fade on view change. Stays fully synchronous (callers read the
+  // DOM right after setBody), unlike the View Transitions API. The animation
+  // itself is gated by prefers-reduced-motion in CSS.
+  b.classList.remove('content-enter');
+  void b.offsetWidth;            // force reflow so re-adding the class re-triggers it
+  b.classList.add('content-enter');
 }
 function setBack(fn) {
   S.backFn = fn;
@@ -22888,6 +22894,28 @@ function _onAudioTimeupdatePersist() {
     }
   }, 5000);
 }
+// Buffered-range indicator: paint a faint bar up to the buffered end nearest
+// the playhead. Zeroes out for live radio / unknown-duration streams.
+function _updateBufferBars() {
+  const dur = audioEl.duration;
+  const isLive = !!S.queue[S.idx]?.isRadio || !Number.isFinite(dur) || dur <= 0;
+  let pct = 0;
+  if (!isLive) {
+    const t = audioEl.currentTime;
+    const b = audioEl.buffered;
+    for (let i = 0; i < b.length; i++) {
+      if (t >= b.start(i) - 0.5 && t <= b.end(i) + 0.5) {
+        pct = Math.max(0, Math.min(100, (b.end(i) / dur) * 100));
+        break;
+      }
+    }
+  }
+  for (const id of ['prog-buffer', 'np-prog-buffer']) {
+    const el = document.getElementById(id);
+    if (el) el.style.width = isLive ? '0%' : pct + '%';
+  }
+}
+
 function _onAudioTimeupdateUI() {
   const _cueSong = S.queue[S.idx];
   // CUE virtual track: advance to next queue entry when reaching this track's end boundary
@@ -22904,6 +22932,7 @@ function _onAudioTimeupdateUI() {
     document.getElementById('time-total').textContent = elapsedFmt;
     document.getElementById('np-time-cur').textContent   = '0:00';
     document.getElementById('np-time-total').textContent = elapsedFmt;
+    _updateBufferBars();
     _syncGaplessWaveformNote();
     return;
   }
@@ -22923,6 +22952,7 @@ function _onAudioTimeupdateUI() {
   const _isLiveRadio = !!_cueSong?.isRadio;
   const pct = _isLiveRadio ? 100 : (audioEl.currentTime / audioEl.duration) * 100;
   document.getElementById('prog-fill').style.width = pct + '%';
+  _updateBufferBars();
   const _progThumb = document.getElementById('prog-thumb');
   if (_progThumb) {
     _progThumb.style.display = _isLiveRadio ? 'none' : '';
@@ -23003,6 +23033,7 @@ function _attachAudioListeners(el) {
   el.addEventListener('canplay',        _onAudioCanPlay);
   el.addEventListener('timeupdate',     _onAudioTimeupdatePersist);
   el.addEventListener('timeupdate',     _onAudioTimeupdateUI);
+  el.addEventListener('progress',       _updateBufferBars);
   el.addEventListener('seeked',         _onAudioSeeked);
   el.addEventListener('durationchange', _onAudioDurationChange);
   el.addEventListener('loadedmetadata', _onAudioDurationChange);
@@ -23017,6 +23048,7 @@ function _detachAudioListeners(el) {
   el.removeEventListener('canplay',        _onAudioCanPlay);
   el.removeEventListener('timeupdate',     _onAudioTimeupdatePersist);
   el.removeEventListener('timeupdate',     _onAudioTimeupdateUI);
+  el.removeEventListener('progress',       _updateBufferBars);
   el.removeEventListener('seeked',         _onAudioSeeked);
   el.removeEventListener('durationchange', _onAudioDurationChange);
   el.removeEventListener('loadedmetadata', _onAudioDurationChange);

@@ -20,6 +20,10 @@ Player UI polish — perceived performance, feedback, and clearer empty states.
 - **Jump to now playing.** A new button in the queue header re-centres the list on the currently-playing track — handy after scrolling through a long queue.
 - **Drag drop-indicator.** Dragging a queue item now shows a precise insertion line at the exact spot it will land (top or bottom of the hovered row, matching the drag direction), instead of just highlighting the row.
 
+### Player — visual delight
+- **Buffered-range indicator.** The progress bars (player bar and the Now-Playing view) now show a faint bar that fills ahead of the playhead as audio buffers, so you can see how much is loaded. It stays hidden for live radio streams.
+- **Soft view cross-fade.** Switching views now gives the content a brief, subtle fade-in instead of an instant swap. (Implemented as a synchronous CSS animation rather than the View Transitions API, which would have broken views that read the DOM immediately after rendering; it is automatically disabled under *reduce motion*.)
+
 ### Player — fixes
 - **Auto-DJ no longer floods the console with `QuotaExceededError`.** The Auto-DJ recently-played memory (`ms2_dj_ignore_*` in localStorage) grew without bound — on a large library the server-returned ignore list is tens of thousands of entries, and the whole array was re-serialised on every pick. It eventually exceeded the browser storage quota and every prefetch/fetch threw repeatedly. The list is now capped to a rolling 2 000-entry window and every write is fail-safe, so a full store can never break playback or spam the console. Oversized entries left over from earlier sessions are trimmed automatically on next load and on prefs sync.
 
