@@ -1911,6 +1911,7 @@
   "player.ctrl.openQueue": "Wachtrij openen",
   "player.ctrl.collapseQueue": "Wachtrij inklappen",
   "player.ctrl.shuffleQueue": "Wachtrij schudden",
+  "player.ctrl.jumpToNowPlaying": "Spring naar wat nu speelt",
   "player.ctrl.shareQueue": "Wachtrij delen als publieke link",
   "player.ctrl.saveQueue": "Wachtrij opslaan als afspeellijst",
   "player.ctrl.clearQueue": "Wachtrij wissen",

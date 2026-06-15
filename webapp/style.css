@@ -931,7 +931,11 @@ button, a, .song-row, .artist-row, .album-card, .album-row,
 .q-drag-handle{width:14px;display:flex;align-items:center;justify-content:center;color:var(--t3);opacity:0;cursor:grab;flex-shrink:0;transition:opacity .14s;touch-action:none;}
 .q-item:hover .q-drag-handle{opacity:0.55;}
 .q-item.q-dragging{opacity:.35;pointer-events:none;}
-.q-item.q-drag-over{box-shadow:inset 0 2px 0 0 var(--primary);}
+/* Hovered drop target gets a subtle wash; the directional line shows where the
+   dragged item will actually land (top = before, bottom = after). */
+.q-item.q-drag-over{background:var(--hover);}
+.q-item.q-drop-before{box-shadow:inset 0 2px 0 0 var(--primary);}
+.q-item.q-drop-after{box-shadow:inset 0 -2px 0 0 var(--primary);}
 .q-remove{
   opacity:0;width:24px;height:24px;display:flex;align-items:center;justify-content:center;
   color:var(--t3);border-radius:4px;transition:opacity .14s,color .14s,background .14s;flex-shrink:0;
