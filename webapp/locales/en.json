@@ -1911,6 +1911,7 @@
   "player.ctrl.openQueue": "Open queue",
   "player.ctrl.collapseQueue": "Collapse queue",
   "player.ctrl.shuffleQueue": "Shuffle queue",
+  "player.ctrl.jumpToNowPlaying": "Jump to now playing",
   "player.ctrl.shareQueue": "Share queue as public link",
   "player.ctrl.saveQueue": "Save queue as playlist",
   "player.ctrl.clearQueue": "Clear queue",

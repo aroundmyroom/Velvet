@@ -16,6 +16,10 @@ Player UI polish — perceived performance, feedback, and clearer empty states.
 ### Player — command palette
 - **`Ctrl`/`Cmd` + `K` command palette.** A fast fuzzy launcher: type to filter, arrow-keys to move, Enter to run, Esc to close. Jump to any sidebar view or run a transport action (play/pause, next, previous, shuffle, repeat, open equalizer, keyboard-shortcuts help) without reaching for the mouse. It reuses the existing controls' handlers, announces as a dialog with a listbox, and skips its entrance animation under *reduce motion*.
 
+### Player — queue quality-of-life
+- **Jump to now playing.** A new button in the queue header re-centres the list on the currently-playing track — handy after scrolling through a long queue.
+- **Drag drop-indicator.** Dragging a queue item now shows a precise insertion line at the exact spot it will land (top or bottom of the hovered row, matching the drag direction), instead of just highlighting the row.
+
 ### Player — fixes
 - **Auto-DJ no longer floods the console with `QuotaExceededError`.** The Auto-DJ recently-played memory (`ms2_dj_ignore_*` in localStorage) grew without bound — on a large library the server-returned ignore list is tens of thousands of entries, and the whole array was re-serialised on every pick. It eventually exceeded the browser storage quota and every prefetch/fetch threw repeatedly. The list is now capped to a rolling 2 000-entry window and every write is fail-safe, so a full store can never break playback or spam the console. Oversized entries left over from earlier sessions are trimmed automatically on next load and on prefs sync.
 

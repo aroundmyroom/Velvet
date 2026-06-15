@@ -2861,23 +2861,30 @@ function refreshQueueUI() {
   // queue panel isn't visible yet (clientHeight=0 during boot), retry on
   // the next frame so resume-on-refresh always lands the user on the
   // currently-playing song without manual scrolling.
-  const _scrollToActive = () => {
-    const _aRow = _qvsRows.findIndex(r => r.type === 'item' && r.qi === S.idx);
-    if (_aRow < 0) return;
-    const _aTop = _qvsCumH[_aRow], _aBot = _qvsCumH[_aRow + 1];
-    const _vH   = list.clientHeight;
-    if (!_vH) { requestAnimationFrame(_scrollToActive); return; }
-    const _sTop = list.scrollTop, _sBot = _sTop + _vH;
-    if (_aTop < _sTop || _aBot > _sBot) {
-      list.scrollTop = Math.max(0, _aTop - (_vH - _QH_ITEM) / 2);
-      // After programmatic scrollTop, re-render so the viewport rows are correct.
-      _qvsFIdx = -1; _qvsLIdx = -1;
-      _qvsRender(list, true);
-    }
-  };
-  _scrollToActive();
+  _scrollQueueToActive();
 
   _syncQueueLabel();
+}
+
+// Scroll the now-playing item into view in the virtual-scrolled queue.
+// Without `force`, only scrolls when the active row is outside the viewport
+// (used by the auto refresh); the jump-to-now-playing button passes force=true
+// to always re-centre it. Retries on the next frame if the panel has no height
+// yet (e.g. during boot).
+function _scrollQueueToActive(force) {
+  const list = document.getElementById('queue-list');
+  if (!list) return;
+  const aRow = _qvsRows.findIndex(r => r.type === 'item' && r.qi === S.idx);
+  if (aRow < 0) return;
+  const aTop = _qvsCumH[aRow], aBot = _qvsCumH[aRow + 1];
+  const vH   = list.clientHeight;
+  if (!vH) { requestAnimationFrame(() => _scrollQueueToActive(force)); return; }
+  const sTop = list.scrollTop, sBot = sTop + vH;
+  if (force || aTop < sTop || aBot > sBot) {
+    list.scrollTop = Math.max(0, aTop - (vH - _QH_ITEM) / 2);
+    _qvsFIdx = -1; _qvsLIdx = -1;
+    _qvsRender(list, true);
+  }
 }
 
 // ── One-time queue event-listener setup ──────────────────────────────────────
@@ -2886,6 +2893,9 @@ function refreshQueueUI() {
 function _initQueueListeners() {
   const list = document.getElementById('queue-list');
   if (!list) return;
+  const _clearQDropIndicators = () =>
+    list.querySelectorAll('.q-drag-over, .q-drop-before, .q-drop-after')
+        .forEach(el => el.classList.remove('q-drag-over', 'q-drop-before', 'q-drop-after'));
 
   // Virtual-scroll: re-render on scroll (RAF-throttled)
   list.addEventListener('scroll', () => {
@@ -2941,24 +2951,30 @@ function _initQueueListeners() {
     const item = e.target.closest('.q-item');
     if (sep)  sep.classList.remove('q-dragging');
     if (item) item.classList.remove('q-dragging');
-    list.querySelectorAll('.q-drag-over').forEach(el => el.classList.remove('q-drag-over'));
+    _clearQDropIndicators();
   });
   list.addEventListener('dragover', e => {
     e.preventDefault();
     e.dataTransfer.dropEffect = 'move';
     const target = e.target.closest('.q-item, .q-disc-sep');
     if (!target || target.classList.contains('q-drag-over')) return;
-    list.querySelectorAll('.q-drag-over').forEach(el => el.classList.remove('q-drag-over'));
+    _clearQDropIndicators();
     target.classList.add('q-drag-over');
+    // Insertion line — mirrors the actual reorder (it inserts at the target
+    // index after removing the source, so drag direction decides before/after).
+    if (target.classList.contains('q-item') && _qDragSrc !== null) {
+      const to = Number.parseInt(target.dataset.qi);
+      if (Number.isFinite(to) && to !== _qDragSrc) target.classList.add(_qDragSrc < to ? 'q-drop-after' : 'q-drop-before');
+    }
   });
   list.addEventListener('dragleave', e => {
     const target = e.target.closest('.q-item, .q-disc-sep');
-    if (target && !target.contains(e.relatedTarget)) target.classList.remove('q-drag-over');
+    if (target && !target.contains(e.relatedTarget)) target.classList.remove('q-drag-over', 'q-drop-before', 'q-drop-after');
   });
   list.addEventListener('drop', e => {
     _qvsDrag = false;
     e.preventDefault();
-    list.querySelectorAll('.q-drag-over').forEach(el => el.classList.remove('q-drag-over'));
+    _clearQDropIndicators();
 
     // ── Disc block drop ─────────────────────────────────────────
     if (_qDragDisc !== null) {
@@ -21895,6 +21911,7 @@ document.getElementById('qp-share-btn').addEventListener('click', () => {
   if (!S.queue.length) { toast(t('player.toast.queueEmpty')); return; }
   showSharePlaylistModal(S.queue);
 });
+document.getElementById('qp-jump-btn').addEventListener('click', () => _scrollQueueToActive(true));
 document.getElementById('qp-save-btn').addEventListener('click', () => showSavePlaylistModal());
 document.getElementById('qp-shuffle-btn').addEventListener('click', () => {
   if (!S.queue.length) return;
@@ -22304,6 +22321,7 @@ function _syncQueueLabel() {
   const label = document.getElementById('qp-np-label');
   if (!label) return;
   const hasSong = !!S.queue[S.idx];
+  document.getElementById('qp-jump-btn')?.classList.toggle('hidden', !hasSong);
   const playing = !audioEl.paused;
   let icon, text;
   if (_xfadeFired) {
