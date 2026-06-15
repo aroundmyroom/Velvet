@@ -2814,7 +2814,8 @@ function refreshQueueUI() {
           <line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/>
           <line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/>
         </svg>
-        <p>Queue is empty.<br>Click <strong>+</strong> on any song to add it here.</p>
+        <p>${t('player.queue.emptyMsg')}</p>
+        <button class="empty-cta" data-empty-view="album-library">${t('player.queue.emptyCta')}</button>
       </div>`;
     _syncQueueLabel();
     return;
@@ -3063,6 +3064,50 @@ function skeletonShelf(n = 6) {
     + '<div class="skel skel-line"></div><div class="skel skel-line sm"></div></div>';
   return `<div class="home-row skel-shelf" aria-hidden="true">${card.repeat(n)}</div>`;
 }
+
+// Consistent empty-list placeholder. `cta` (optional) is { label, view }; the
+// button routes through the matching sidebar nav item via one delegated
+// listener (wired once below), so no per-render binding is needed.
+const _EMPTY_ICONS = {
+  queue:  '<svg viewBox="0 0 24 24" width="40" height="40" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 6h13M3 12h13M3 18h9"/><circle cx="19" cy="16" r="3"/><path d="M22 16V7l-3 1"/></svg>',
+  star:   '<svg viewBox="0 0 24 24" width="40" height="40" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M12 3l2.6 5.3 5.9.9-4.3 4.1 1 5.8L12 16.9 6.8 19.1l1-5.8L3.5 9.2l5.9-.9z"/></svg>',
+  search: '<svg viewBox="0 0 24 24" width="40" height="40" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>',
+  list:   '<svg viewBox="0 0 24 24" width="40" height="40" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/></svg>',
+  music:  '<svg viewBox="0 0 24 24" width="40" height="40" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>',
+};
+function emptyState({ icon = 'music', title = '', msg = '', cta = null } = {}) {
+  return `<div class="empty-state empty-state--rich">
+    <div class="empty-ico" aria-hidden="true">${_EMPTY_ICONS[icon] || _EMPTY_ICONS.music}</div>
+    ${title ? `<h3 class="empty-title">${esc(title)}</h3>` : ''}
+    ${msg ? `<p class="empty-msg">${esc(msg)}</p>` : ''}
+    ${cta && cta.label ? `<button class="empty-cta" data-empty-view="${esc(cta.view || '')}">${esc(cta.label)}</button>` : ''}
+  </div>`;
+}
+// First-run tip strip — shown once on Home, dismissal persisted to localStorage.
+const _INTRO_SEEN_KEY = 'velvet.seen.intro';
+function _introSeen() { try { return localStorage.getItem(_INTRO_SEEN_KEY) === '1'; } catch (_) { return true; } }
+function introStripHtml() {
+  if (_introSeen()) return '';
+  return `<div class="intro-strip" id="intro-strip">
+    <svg class="intro-strip-ico" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M9 18h6M10 21h4M12 3a6 6 0 0 0-4 10c.7.7 1 1.3 1 2h6c0-.7.3-1.3 1-2a6 6 0 0 0-4-10z"/></svg>
+    <span class="intro-strip-text">${t('player.intro.tip')}</span>
+    <button class="intro-strip-close" aria-label="${t('player.intro.dismiss')}">&times;</button>
+  </div>`;
+}
+
+document.addEventListener('click', e => {
+  const cta = e.target.closest('.empty-cta[data-empty-view]');
+  if (cta) {
+    const view = cta.dataset.emptyView;
+    if (view) document.querySelector(`.nav-btn[data-view="${view}"]`)?.click();
+    return;
+  }
+  const close = e.target.closest('.intro-strip-close');
+  if (close) {
+    try { localStorage.setItem(_INTRO_SEEN_KEY, '1'); } catch (_) { /* private mode */ }
+    close.closest('.intro-strip')?.remove();
+  }
+});
 function setNavActive(view) {
   document.querySelectorAll('.nav-btn').forEach(b => b.classList.toggle('active', b.dataset.view === view));
   document.querySelectorAll('.pl-row').forEach(r => r.classList.remove('active'));
@@ -7303,7 +7348,7 @@ async function openPlaylist(name) {
     const d = await api('POST', 'api/v1/playlist/load', { playlistname: name });
     const songs = d.map(item => ({ ...norm(item), _plid: item.id }));
     S.curSongs = songs;
-    if (!songs.length) { setBody('<div class="empty-state">This playlist is empty</div>'); return; }
+    if (!songs.length) { setBody(emptyState({ icon: 'list', title: t('player.playlist.emptyTitle'), msg: t('player.playlist.emptyHint'), cta: { label: t('player.queue.emptyCta'), view: 'album-library' } })); return; }
     const totalDurSec = songs.reduce((sum, s) => sum + (s.duration || 0), 0);
     const plMeta = `${songs.length} ${songs.length === 1 ? 'song' : 'songs'}${totalDurSec > 5 ? ' · ' + fmt(totalDurSec) : ''}`;
     const body = document.getElementById('content-body');
@@ -10431,7 +10476,7 @@ async function doSearch(q) {
       // Remaining rows beyond the first batch load lazily as the user scrolls.
       html += `<div class="search-section" data-section="tracks"><h3>${t('player.search.sectionSongs', { count: allSongs.length })}</h3><div class="song-list search-lazy-list">${renderSearchRows(firstBatch)}</div></div>`;
     }
-    if (!html) html = `<div class="empty-state">${t('player.search.noResults', { query: esc(q) })}</div>`;
+    if (!html) html = emptyState({ icon: 'search', title: t('player.search.noResults', { query: q }), msg: t('player.search.noResultsHint'), cta: { label: t('player.search.browseArtists'), view: 'artists' } });
 
     // Tab bar — only shown when at least 2 section types have results.
     // Kept in S.searchTab so switching back from a drill-down preserves the selection.
@@ -10574,7 +10619,7 @@ async function viewRated() {
       ...(abEx.ignoreVPaths.length ? { ignoreVPaths: abEx.ignoreVPaths } : {}),
       ...(abEx.excludeFilepathPrefixes.length ? { excludeFilepathPrefixes: abEx.excludeFilepathPrefixes } : {}),
     });
-    if (!d.length) { setBody(`<div class="empty-state">${t('player.search.noStarred')}</div>`); return; }
+    if (!d.length) { setBody(emptyState({ icon: 'star', title: t('player.search.noStarred'), msg: t('player.starred.emptyHint'), cta: { label: t('player.queue.emptyCta'), view: 'album-library' } })); return; }
     showSongs(d.map(norm), null, null, { appendOnly: true });
   } catch(e) { setBody(`<div class="empty-state">${t('player.search.failed', { error: esc(e.message) })}</div>`); }
 }
@@ -11433,6 +11478,7 @@ async function viewHome() {
     <div id="home-greeting-slot"><div class="home-greeting">
       <div class="home-greeting-text">${t(greetKey, { name: esc(homeDisplayName) })}</div>
     </div></div>
+    ${introStripHtml()}
     <div id="home-recent-added-slot"></div>
     <div id="home-continue-slot"></div>
     <div id="home-temporal-slot"></div>
