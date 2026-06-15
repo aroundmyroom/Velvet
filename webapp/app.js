@@ -578,21 +578,52 @@ function _toggleSelectMode() {
   }
 }
 
-let _toastT;
-function toast(msg, ms = 2800) {
-  const el = document.getElementById('toast');
-  el.textContent = msg;
-  el.classList.remove('hidden', 'toast-error');
-  clearTimeout(_toastT);
-  _toastT = setTimeout(() => el.classList.add('hidden'), ms);
+// Honours the OS "reduce motion" setting. CSS neutralises declarative
+// animations globally; JS animation loops query this to skip work entirely.
+const _reducedMotionMQ = window.matchMedia('(prefers-reduced-motion: reduce)');
+function _reducedMotion() { return _reducedMotionMQ.matches; }
+
+// Toasts stack (newest nearest the player) and auto-dismiss. An optional
+// action ({ label, onClick }) renders a button — used for Retry / Undo.
+// Back-compat: toast(msg) and toast(msg, ms) still work; toast(msg, {action})
+// is the new form.
+const _TOAST_MAX = 4;
+function _showToast(msg, { error = false, ms, action } = {}) {
+  const stack = document.getElementById('toast-stack');
+  if (!stack) return null;
+  const el = document.createElement('div');
+  el.className = 'toast' + (error ? ' toast-error' : '');
+  el.setAttribute('role', error ? 'alert' : 'status');
+  const span = document.createElement('span');
+  span.className = 'toast-msg';
+  span.textContent = msg;
+  el.appendChild(span);
+  let timer;
+  let gone = false;
+  const dismiss = () => {
+    if (gone) return; gone = true;
+    clearTimeout(timer);
+    el.classList.add('toast-leaving');
+    setTimeout(() => el.remove(), 200);
+  };
+  if (action && action.label) {
+    const btn = document.createElement('button');
+    btn.className = 'toast-action';
+    btn.textContent = action.label;
+    btn.addEventListener('click', () => { try { action.onClick?.(); } finally { dismiss(); } });
+    el.appendChild(btn);
+  }
+  stack.appendChild(el);
+  while (stack.children.length > _TOAST_MAX) stack.firstElementChild.remove();
+  const base = ms ?? (error ? 4000 : 2800);
+  timer = setTimeout(dismiss, action ? Math.max(base, 6000) : base);
+  return el;
 }
-function toastError(msg, ms = 4000) {
-  const el = document.getElementById('toast');
-  el.textContent = msg;
-  el.classList.remove('hidden');
-  el.classList.add('toast-error');
-  clearTimeout(_toastT);
-  _toastT = setTimeout(() => { el.classList.add('hidden'); el.classList.remove('toast-error'); }, ms);
+function toast(msg, ms) {
+  return _showToast(msg, (ms && typeof ms === 'object') ? ms : { ms });
+}
+function toastError(msg, ms) {
+  return _showToast(msg, (ms && typeof ms === 'object') ? { ...ms, error: true } : { error: true, ms });
 }
 
 let _similarStripT = null;
@@ -1728,7 +1759,7 @@ const Player = {
         el.classList.remove('marquee-scroll');
         el.style.removeProperty('--scroll-by');
         const overflow = el.scrollWidth - el.clientWidth;
-        if (overflow > 10) {
+        if (overflow > 10 && !_reducedMotion()) {
           el.style.setProperty('--scroll-by', `-${overflow}px`);
           el.classList.add('marquee-scroll');
         }
@@ -3013,6 +3044,24 @@ function setBody(html) {
 function setBack(fn) {
   S.backFn = fn;
   document.getElementById('back-btn').classList.toggle('hidden', !fn);
+}
+// Shimmer placeholders shown while a view's data loads, so slow fetches show
+// the shape of the result instead of a blank pane. Decorative → aria-hidden.
+function skeletonGrid(n = 12) {
+  const card = '<div class="skel-card"><div class="skel skel-art"></div>'
+    + '<div class="skel skel-line"></div><div class="skel skel-line sm"></div></div>';
+  return `<div class="skel-grid" aria-hidden="true">${card.repeat(n)}</div>`;
+}
+function skeletonRows(n = 10) {
+  const row = '<div class="skel-row"><div class="skel skel-art"></div>'
+    + '<div class="skel-meta"><div class="skel skel-line"></div><div class="skel skel-line sm"></div></div></div>';
+  return `<div class="skel-rows" aria-hidden="true">${row.repeat(n)}</div>`;
+}
+// Horizontal card row matching a home shelf, shown in a slot while it loads.
+function skeletonShelf(n = 6) {
+  const card = '<div class="skel-card skel-shelf-card"><div class="skel skel-art"></div>'
+    + '<div class="skel skel-line"></div><div class="skel skel-line sm"></div></div>';
+  return `<div class="home-row skel-shelf" aria-hidden="true">${card.repeat(n)}</div>`;
 }
 function setNavActive(view) {
   document.querySelectorAll('.nav-btn').forEach(b => b.classList.toggle('active', b.dataset.view === view));
@@ -7081,12 +7130,18 @@ function showAddToPlaylistModal(song) {
       </div>`
     ).join('');
     list.querySelectorAll('.modal-pl-item').forEach(el => {
-      el.addEventListener('click', async () => {
+      el.addEventListener('click', () => {
+        const plName = el.dataset.pl;
         hideModal('atp-modal');
-        try {
-          await api('POST', 'api/v1/playlist/add-song', { song: song.filepath, playlist: el.dataset.pl });
-          toast(t('player.toast.addedToPlaylist', { playlist: el.dataset.pl }));
-        } catch(e) { toast(t('player.toast.failedToAddPlaylist')); }
+        // Optimistic: confirm immediately, then reconcile. On failure surface a
+        // Retry action instead of a dead-end error.
+        const attempt = isRetry =>
+          api('POST', 'api/v1/playlist/add-song', { song: song.filepath, playlist: plName })
+            .then(() => { if (isRetry) toast(t('player.toast.addedToPlaylist', { playlist: plName })); })
+            .catch(() => toastError(t('player.toast.failedToAddPlaylist'),
+              { action: { label: t('player.toast.retry'), onClick: () => attempt(true) } }));
+        toast(t('player.toast.addedToPlaylist', { playlist: plName }));
+        attempt(false);
       });
     });
   }
@@ -8184,7 +8239,7 @@ async function viewArtistProfile(artistKey, displayName, variants, backFn) {
 async function viewArtists() {
   setTitle(t('player.nav.artists')); setBack(null); setNavActive('artists'); S.view = 'artists';
   const sig = _navCancel();
-  setBody('<div class="loading-state"></div>');
+  setBody(skeletonGrid());
   try {
     const data = await api('GET', 'api/v1/artists/home', undefined, sig);
     if (S.view !== 'artists') return;
@@ -8987,7 +9042,7 @@ async function _loadAlbLib() {
 
 async function viewAlbumLibrary() {
   setTitle(t('player.title.albums')); setBack(null); setNavActive('album-library'); S.view = 'album-library';
-  if (!_albLib) setBody('<div class="loading-state"></div>');
+  if (!_albLib) setBody(skeletonGrid());
   try {
     await _loadAlbLib();
     const { albums, series } = _albLib;
@@ -10274,7 +10329,7 @@ async function doSearch(q) {
   const res = document.getElementById('search-results');
   if (!res) return;
   const gen = ++_searchGen;
-  res.innerHTML = '<div class="loading-state"></div>';
+  res.innerHTML = skeletonRows(8);
   try {
     const meta = S.vpathMeta || {};
     const selectedVpaths = (S.searchVpaths && S.searchVpaths.length > 0) ? S.searchVpaths : S.vpaths;
@@ -11725,7 +11780,7 @@ async function viewShortcuts() {
   // Build initial HTML: playlists shelf has real content; data-dependent shelves are empty slot divs
   const skeletonHtml = _ord.map(id =>
     id === 'playlists' ? (playlistShelfHtml || `<div id="sc-slot-${id}"></div>`)
-                       : `<div id="sc-slot-${id}"></div>`
+                       : `<div id="sc-slot-${id}">${skeletonShelf()}</div>`
   ).join('');
   setBody(`<div class="home-view">${_toolbarHtml}${skeletonHtml}</div>`);
 
@@ -19924,7 +19979,7 @@ function _finishArtXfade() {
 // ── Auto-DJ dice throw ──────────────────────────────────────────────────────
 // Throws a tumbling 3D die for the entire crossfade duration.
 function _throwDjDice(xfSec) {
-  if (!S.autoDJ || !S.djDice || !_webAnimSupported) return;
+  if (!S.autoDJ || !S.djDice || !_webAnimSupported || _reducedMotion()) return;
   const wrap = document.getElementById('dj-dice');
   if (!wrap) return;
   const cube = wrap.querySelector('.dj-dice-cube');

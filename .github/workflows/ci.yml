@@ -22,6 +22,9 @@ jobs:
         with:
           node-version: '24'
           cache: 'npm'
+      # Test fixtures generate audio via `ffmpeg` (test/helpers/fixtures.mjs);
+      # the runner has none by default, so the Subsonic suite's setup fails.
+      - run: sudo apt-get update && sudo apt-get install -y ffmpeg
       - run: npm ci
       - run: npm test
 
