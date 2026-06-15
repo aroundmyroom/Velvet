@@ -1591,6 +1591,7 @@
   "player.toast.deleteFailed": "Failed to delete",
   "player.toast.addedToPlaylist": "Added to \"{{playlist}}\"",
   "player.toast.failedToAddPlaylist": "Failed to add to playlist",
+  "player.toast.retry": "Retry",
   "player.toast.shareCreateFailed": "Failed to create share link",
   "player.toast.playlistCreated": "Playlist \"{{name}}\" created",
   "player.toast.playlistSaved": "Saved {{count}} songs to \"{{name}}\"",

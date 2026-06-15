@@ -1597,6 +1597,7 @@
   "player.toast.deleteFailed": "Verwijderen mislukt",
   "player.toast.addedToPlaylist": "Toegevoegd aan \"{{playlist}}\"",
   "player.toast.failedToAddPlaylist": "Toevoegen aan afspeellijst mislukt",
+  "player.toast.retry": "Opnieuw",
   "player.toast.shareCreateFailed": "Aanmaken van gedeelde link mislukt",
   "player.toast.playlistCreated": "Afspeellijst \"{{name}}\" aangemaakt",
   "player.toast.playlistSaved": "{{count}} nummers opgeslagen in \"{{name}}\"",

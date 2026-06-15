@@ -10,6 +10,7 @@
   --primary-d:rgba(139,92,246,.15); --primary-g:rgba(139,92,246,.4);
   --accent:#60a5fa; --green:#34d399; --red:#f87171; --yellow:#fbbf24;
   --t1:#eeeeff; --t2:#8888b0; --t3:#7e8ec0; --t4:#2a3a5e;
+  --focus:#a78bfa; --skel:rgba(255,255,255,.06); --skel-sheen:rgba(255,255,255,.13);
   --sidebar:236px; --player:210px; --r:7px; --r2:12px; --qp-width:488px;
 }
 
@@ -22,6 +23,7 @@
   --primary-d:rgba(167,139,250,.14); --primary-g:rgba(167,139,250,.38);
   --accent:#60a5fa; --green:#34d399; --red:#f87171; --yellow:#fbbf24;
   --t1:#f1f1f1; --t2:#8a8a9a; --t3:#707082; --t4:#252530;
+  --focus:#a78bfa; --skel:rgba(255,255,255,.05); --skel-sheen:rgba(255,255,255,.11);
   --sidebar:236px; --player:210px; --r:7px; --r2:12px; --qp-width:488px;
 }
 
@@ -37,6 +39,7 @@
   --primary-d:rgba(109,60,230,.12); --primary-g:rgba(109,60,230,.35);
   --accent:#2563eb; --green:#16a34a; --red:#dc2626; --yellow:#d97706;
   --t1:#0c0c1a; --t2:#42425e; --t3:#7878a0; --t4:#b8b8d0;
+  --focus:#5b28d4; --skel:rgba(0,0,0,.07); --skel-sheen:rgba(0,0,0,.04);
   --sidebar:236px; --player:210px; --r:7px; --r2:12px; --qp-width:488px;
 }
 html{height:100%;}
@@ -51,6 +54,44 @@ button, a, .song-row, .artist-row, .album-card, .album-row,
 .q-item, .fe-dir, .fe-file, .fe-crumb,
 .nav-toggle, .player-left, .player-stars-row,
 .sidebar-item, .playlist-item { touch-action:manipulation; }
+
+/* ── FOCUS-VISIBLE (keyboard-only) ─────────────────────────── */
+/* Mouse/touch interaction never shows the ring; keyboard Tab always does. */
+:focus{outline:none;}
+:focus-visible{outline:2px solid var(--focus);outline-offset:2px;border-radius:var(--r);}
+.nav-btn:focus-visible,.icon-btn:focus-visible,.song-row:focus-visible,
+.q-item:focus-visible,.album-card:focus-visible,.artist-row:focus-visible,
+[role="slider"]:focus-visible{outline:2px solid var(--focus);outline-offset:2px;}
+
+/* ── REDUCED MOTION ────────────────────────────────────────── */
+/* Honour the OS "reduce motion" setting: neutralise every animation/
+   transition in one place rather than per-keyframe. JS loops check the
+   _reducedMotion() helper. */
+@media (prefers-reduced-motion: reduce){
+  *,*::before,*::after{
+    animation-duration:.001ms!important;animation-iteration-count:1!important;
+    transition-duration:.001ms!important;scroll-behavior:auto!important;
+  }
+}
+
+/* ── SKELETON LOADERS ──────────────────────────────────────── */
+.skel-wrap{display:grid;gap:14px;padding:4px 2px;}
+.skel-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:18px;}
+.skel-rows{display:flex;flex-direction:column;gap:8px;}
+.skel{position:relative;overflow:hidden;background:var(--skel);border-radius:var(--r);}
+.skel::after{content:"";position:absolute;inset:0;transform:translateX(-150%);
+  background:linear-gradient(90deg,transparent,var(--skel-sheen),transparent);
+  animation:skel-shimmer 1.4s ease-in-out infinite;}
+.skel-card{display:flex;flex-direction:column;gap:8px;}
+.skel-art{aspect-ratio:1/1;border-radius:var(--r2);}
+.skel-line{height:11px;}
+.skel-line.sm{width:60%;height:9px;}
+.skel-row{display:flex;align-items:center;gap:12px;padding:8px 6px;}
+.skel-row .skel-art{width:42px;height:42px;flex:0 0 42px;aspect-ratio:auto;border-radius:var(--r);}
+.skel-row .skel-meta{flex:1;display:flex;flex-direction:column;gap:7px;}
+.skel-shelf{padding:4px 2px;}
+.skel-shelf-card{flex:0 0 124px;width:124px;}
+@keyframes skel-shimmer{0%{transform:translateX(-150%);}100%{transform:translateX(250%);}}
 
 /* ── SCROLLBAR ─────────────────────────────────────────────── */
 ::-webkit-scrollbar{width:5px;height:5px;}
@@ -1551,9 +1592,21 @@ body.vu-needle-mode .eq-panel{bottom:calc(var(--player) + 8px);}
 #rate-clear:hover{color:var(--red);}
 
 /* ── TOAST ─────────────────────────────────────────────────── */
-.toast{position:fixed;bottom:calc(var(--player) + 14px);left:50%;transform:translateX(-50%);background:var(--card);border:1px solid var(--border2);padding:9px 18px;border-radius:99px;font-size:13px;font-weight:500;box-shadow:0 8px 28px rgba(0,0,0,.4);z-index:600;animation:toast-in .2s ease;pointer-events:none;}
+#toast-stack{position:fixed;bottom:calc(var(--player) + 14px);left:50%;transform:translateX(-50%);
+  z-index:600;display:flex;flex-direction:column-reverse;align-items:center;gap:8px;pointer-events:none;}
+.toast{display:flex;align-items:center;gap:12px;background:var(--card);border:1px solid var(--border2);
+  padding:9px 18px;border-radius:99px;font-size:13px;font-weight:500;box-shadow:0 8px 28px rgba(0,0,0,.4);
+  animation:toast-in .2s ease;pointer-events:auto;max-width:min(92vw,440px);}
+.toast.toast-leaving{animation:toast-out .2s ease forwards;}
+.toast-msg{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.toast-action{flex:0 0 auto;background:var(--primary);color:#fff;border-radius:99px;padding:3px 12px;
+  font-size:12px;font-weight:600;cursor:pointer;}
+.toast-action:hover{background:var(--primary-h);}
 .toast.toast-error{background:#c0392b;border-color:#e74c3c;color:#fff;}
-@keyframes toast-in{from{opacity:0;transform:translateX(-50%) translateY(8px)}}
+.toast.toast-error .toast-action{background:rgba(255,255,255,.22);}
+.toast.toast-error .toast-action:hover{background:rgba(255,255,255,.34);}
+@keyframes toast-in{from{opacity:0;transform:translateY(8px)}}
+@keyframes toast-out{to{opacity:0;transform:translateY(8px)}}
 
 /* ── CUSTOM TOOLTIP ─────────────────────────────────────────── */
 #tip-box{position:fixed;z-index:9999;pointer-events:none;padding:5px 10px;background:var(--raised);border:1px solid var(--border2);border-radius:6px;font-size:12px;font-weight:500;color:var(--t1);box-shadow:0 4px 16px rgba(0,0,0,.45);white-space:nowrap;opacity:0;transform:translateY(4px);transition:opacity .12s ease,transform .12s ease;}
@@ -1572,7 +1625,7 @@ body.vu-needle-mode .eq-panel{bottom:calc(var(--player) + 8px);}
 :root.bar-top .dj-similar-strip{top:var(--player);bottom:auto;transform:translateY(-100%);border-top:none;border-bottom:2px solid var(--border);box-shadow:0 4px 20px rgba(109,40,217,.12);}
 :root.bar-top .dj-similar-strip.dj-strip-out{transform:translateY(-100%);}
 :root.bar-top #dj-dice{bottom:auto;top:calc(var(--player) + 10px);}
-:root.bar-top .toast{bottom:auto;top:calc(var(--player) + 14px);}
+:root.bar-top #toast-stack{bottom:auto;top:calc(var(--player) + 14px);flex-direction:column;}
 .dj-strip-badge{display:none;}
 .dj-strip-content{flex:1;min-width:0;display:flex;align-items:center;gap:6px;overflow:hidden;}
 .dj-strip-label{font-size:12px;color:var(--t2);white-space:nowrap;flex-shrink:0;}

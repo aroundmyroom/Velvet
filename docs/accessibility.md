@@ -34,6 +34,20 @@ field. Press **`?`** at any time to open an in-app cheat-sheet of this list.
   **returns focus** to the control that opened it when dismissed.
 - **Localised** — all labels above are translated through Velvet's i18n system,
   so screen-reader announcements follow the selected language.
+- **Focus ring** — a clear `:focus-visible` outline follows keyboard navigation
+  across nav buttons, icon buttons, song/queue rows, cards and sliders. It is
+  shown only for keyboard interaction, never for mouse or touch.
+- **Toasts** — status messages announce politely (`role="status"`); errors
+  announce assertively (`role="alert"`). Multiple toasts stack rather than
+  replacing one another, and may offer an action (e.g. **Retry**).
+
+## Reduced motion
+
+Velvet honours the operating-system *“reduce motion”* preference
+(`prefers-reduced-motion`). When it is enabled, all CSS animations and
+transitions are neutralised, and the auto-triggered JavaScript animations — the
+Auto-DJ dice throw and the scrolling-title marquee — are skipped. Loading
+**skeleton** placeholders still render, just without their shimmer sweep.
 
 ## Notes
 
