@@ -49,10 +49,9 @@ check-*.cjs
 check-*.mjs
 testsonos/
 
-# local test infrastructure — helpers, fixtures and test suites are not committed
-test/helpers/
-test/fixtures/
-test/*.test.mjs
+# stray test runtime artefacts — keep test suites, drop logs/loose assets
+test/debug.log
+test/*.svg
 
 # weekly job state file
 .last-weekly
@@ -86,7 +85,6 @@ competitors.md
 CLAUDE.md
 docs/dev/CLAUDE.md
 .test-cache/
-test/
 settings.local.json
 sonar-project.properties
 .scannerwork/
