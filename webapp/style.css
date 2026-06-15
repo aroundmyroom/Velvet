@@ -93,6 +93,12 @@ button, a, .song-row, .artist-row, .album-card, .album-row,
 .skel-shelf-card{flex:0 0 124px;width:124px;}
 @keyframes skel-shimmer{0%{transform:translateX(-150%);}100%{transform:translateX(250%);}}
 
+/* ── VIEW CHANGE CROSS-FADE ────────────────────────────────── */
+/* Re-triggered by setBody() on every view change. The global reduced-motion
+   rule above neutralises it for users who ask for less motion. */
+.content-enter{animation:content-enter .16s ease;}
+@keyframes content-enter{from{opacity:0;transform:translateY(4px);}}
+
 /* ── SCROLLBAR ─────────────────────────────────────────────── */
 ::-webkit-scrollbar{width:5px;height:5px;}
 ::-webkit-scrollbar-track{background:transparent;}
@@ -1210,6 +1216,10 @@ body.vu-needle-mode .eq-panel{bottom:calc(var(--player) + 8px);}
 .player-progress span{font-size:11px;color:var(--t2);flex-shrink:0;min-width:38px;font-variant-numeric:tabular-nums;cursor:pointer;user-select:none;}
 .player-progress span:last-child{text-align:right;}
 .prog-track{flex:1;height:5px;border-radius:99px;background:rgba(255,255,255,.08);position:relative;}
+/* Buffered range — faint bar that fills ahead of the playhead as audio loads.
+   Sits behind .prog-fill (earlier in DOM); both are width-driven from the left. */
+.prog-buffer{position:absolute;left:0;top:0;height:100%;width:0;border-radius:99px;background:rgba(255,255,255,.22);pointer-events:none;transition:width .25s linear;}
+:root.light .prog-buffer{background:rgba(0,0,0,.18);}
 /* Gradient fill — purple to accent blue, feels alive across the full width */
 .prog-fill{height:100%;border-radius:99px;background:linear-gradient(90deg,var(--primary) 0%,var(--accent) 100%);pointer-events:none;position:relative;overflow:visible;}
 .prog-thumb{position:absolute;right:-6px;top:50%;width:12px;height:12px;border-radius:50%;background:var(--primary);border:2.5px solid rgba(255,255,255,.85);box-shadow:0 1px 6px rgba(0,0,0,.5);transform:translateY(-50%);transition:width .15s,height .15s,right .15s,box-shadow .15s;pointer-events:none;}
