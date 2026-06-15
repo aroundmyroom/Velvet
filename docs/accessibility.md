@@ -19,8 +19,9 @@ field. Press **`?`** at any time to open an in-app cheat-sheet of this list.
 | `S` | Toggle shuffle |
 | `R` | Cycle repeat mode (off → all → one) |
 | `/` | Jump to Search and focus the search box |
+| `Ctrl` / `⌘` + `K` | Open the command palette — fuzzy jump to any view or transport action |
 | `?` | Show / hide this keyboard-shortcuts overlay |
-| `Esc` | Close the open dialog, menu, or the Now-Playing / visualizer view |
+| `Esc` | Close the open dialog, menu, command palette, or the Now-Playing / visualizer view |
 
 ## Screen-reader & focus features
 

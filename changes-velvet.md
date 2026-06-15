@@ -13,6 +13,9 @@ Player UI polish — perceived performance, feedback, and clearer empty states.
 - **Clearer empty states.** A consistent illustrated placeholder (icon + title + message + a one-tap action) now replaces bare one-liners for an empty queue, an empty playlist, no starred songs, and zero search results — each offering a relevant next step (browse music, browse by artist).
 - **First-run tip.** A quiet, dismissible strip on Home points newcomers at the `?` keyboard-shortcut overlay and Auto-DJ. It appears once and never again after it's dismissed.
 
+### Player — command palette
+- **`Ctrl`/`Cmd` + `K` command palette.** A fast fuzzy launcher: type to filter, arrow-keys to move, Enter to run, Esc to close. Jump to any sidebar view or run a transport action (play/pause, next, previous, shuffle, repeat, open equalizer, keyboard-shortcuts help) without reaching for the mouse. It reuses the existing controls' handlers, announces as a dialog with a listbox, and skips its entrance animation under *reduce motion*.
+
 ## v0.1.7 (2026-06-14)
 
 Album-Art Workshop — MusicBrainz covers, a proper review journey, and full undo.

@@ -1442,6 +1442,23 @@ body.vu-needle-mode .eq-panel{bottom:calc(var(--player) + 8px);}
 .modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,.6);backdrop-filter:blur(4px);display:flex;align-items:center;justify-content:center;z-index:300;}
 .modal-box{background:var(--surface);border:1px solid var(--border2);border-radius:var(--r2);padding:24px;min-width:300px;max-width:400px;width:90%;box-shadow:0 24px 60px rgba(0,0,0,.5);}
 .modal-box h3{font-size:16px;font-weight:700;margin-bottom:16px;}
+
+/* ── COMMAND PALETTE (Cmd/Ctrl+K) ──────────────────────────── */
+.cmdk-sr-only{position:absolute!important;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap;border:0;}
+.cmdk-overlay{align-items:flex-start;justify-content:center;}
+.cmdk-box{margin-top:12vh;padding:0;width:92%;max-width:560px;overflow:hidden;animation:cmdk-in .14s ease;}
+.cmdk-overlay.no-anim .cmdk-box{animation:none;}
+@keyframes cmdk-in{from{opacity:0;transform:translateY(-8px) scale(.98);}}
+.cmdk-input{width:100%;background:transparent;border:none;border-bottom:1px solid var(--border);
+  color:var(--t1);font-size:16px;padding:16px 18px;outline:none;}
+.cmdk-input::placeholder{color:var(--t3);}
+.cmdk-list{max-height:50vh;overflow-y:auto;padding:6px;}
+.cmdk-group-label{font-size:11px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;
+  color:var(--t3);padding:10px 12px 4px;}
+.cmdk-option{display:flex;align-items:center;padding:9px 12px;border-radius:var(--r);font-size:14px;
+  color:var(--t1);cursor:pointer;}
+.cmdk-option.active,.cmdk-option:hover{background:var(--active);}
+.cmdk-empty{padding:22px 14px;text-align:center;color:var(--t3);font-size:13px;}
 .modal-box input{width:100%;padding:10px 12px;background:var(--raised);border:1px solid var(--border);border-radius:var(--r);color:var(--t1);font-size:14px;outline:none;transition:border-color .18s;}
 .modal-box input:focus{border-color:var(--primary);}
 .modal-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:16px;}
