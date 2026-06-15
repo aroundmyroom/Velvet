@@ -24236,6 +24236,9 @@ document.addEventListener('keydown', e => {
       _setVolPct(vDn);
       break;
     }
+    case 'KeyK':
+      if (e.ctrlKey || e.metaKey) { e.preventDefault(); _openCmdK(); }
+      break;
     case 'KeyM':
       document.getElementById('mute-btn')?.click();
       break;
@@ -24351,6 +24354,7 @@ function _toggleShortcutsHelp() {
     ['S', t('player.shortcuts.shuffle')],
     ['R', t('player.shortcuts.repeat')],
     ['/', t('player.shortcuts.search')],
+    ['Ctrl / ⌘ + K', t('player.shortcuts.cmdk')],
     ['?', t('player.shortcuts.help')],
     ['Esc', t('player.shortcuts.close')],
   ];
@@ -24369,6 +24373,103 @@ function _toggleShortcutsHelp() {
   _shortcutsHelpEl = el;
   el.addEventListener('click', ev => { if (ev.target === el) _toggleShortcutsHelp(); });
   el.querySelector('#shortcuts-help-close').addEventListener('click', () => _toggleShortcutsHelp());
+}
+
+// ── Command palette (Cmd/Ctrl+K) ──────────────────────────────────────────────
+// A fuzzy launcher over every sidebar view + the core transport actions. It
+// reuses the exact handlers the on-screen controls call (clicks their buttons /
+// nav items) so there is no duplicated logic. Built as a .modal-overlay so the
+// shared modal-a11y layer gives it dialog semantics and focus restoration.
+let _cmdkEl = null;
+function _cmdkBuildItems() {
+  const items = [];
+  // VIEWS — every visible sidebar target, routed by clicking its nav button.
+  document.querySelectorAll('.nav-btn[data-view]').forEach(btn => {
+    if (btn.offsetParent === null) return;                 // hidden / feature-flagged
+    const label = (btn.querySelector('[data-i18n]')?.textContent || btn.textContent || '').replace(/\s+/g, ' ').trim();
+    const view  = btn.dataset.view;
+    if (label && view) items.push({ group: 'views', label, run: () => document.querySelector(`.nav-btn[data-view="${view}"]`)?.click() });
+  });
+  // ACTIONS — reuse the same handlers the transport buttons fire.
+  const clickItem = (label, id) => ({ group: 'actions', label, run: () => document.getElementById(id)?.click() });
+  items.push(
+    clickItem(t('player.cmdk.playPause'), 'play-btn'),
+    clickItem(t('player.cmdk.next'),      'next-btn'),
+    clickItem(t('player.cmdk.previous'),  'prev-btn'),
+    clickItem(t('player.cmdk.shuffle'),   'shuffle-btn'),
+    clickItem(t('player.cmdk.repeat'),    'repeat-btn'),
+    clickItem(t('player.cmdk.equalizer'), 'eq-btn'),
+    { group: 'actions', label: t('player.cmdk.shortcuts'), run: () => _toggleShortcutsHelp() },
+  );
+  return items;
+}
+function _closeCmdK() { if (_cmdkEl) { _cmdkEl.remove(); _cmdkEl = null; } }
+function _openCmdK() {
+  if (_cmdkEl) { document.getElementById('cmdk-input')?.focus(); return; }
+  const items = _cmdkBuildItems();
+  let filtered = items.slice();
+  let active = 0;
+
+  const el = document.createElement('div');
+  el.className = 'modal-overlay cmdk-overlay' + (_reducedMotion() ? ' no-anim' : '');
+  el.innerHTML = `<div class="modal-box cmdk-box">
+    <h3 class="modal-title cmdk-sr-only">${esc(t('player.cmdk.title'))}</h3>
+    <input id="cmdk-input" class="cmdk-input" type="text" autocomplete="off" spellcheck="false"
+      role="combobox" aria-expanded="true" aria-controls="cmdk-list" aria-activedescendant=""
+      placeholder="${esc(t('player.cmdk.placeholder'))}" aria-label="${esc(t('player.cmdk.placeholder'))}">
+    <div id="cmdk-list" class="cmdk-list" role="listbox" aria-label="${esc(t('player.cmdk.title'))}"></div>
+  </div>`;
+  document.body.appendChild(el);
+  _cmdkEl = el;
+
+  const input = el.querySelector('#cmdk-input');
+  const list  = el.querySelector('#cmdk-list');
+  const groupLabel = g => g === 'views' ? t('player.cmdk.groupViews') : t('player.cmdk.groupActions');
+
+  function render() {
+    if (!filtered.length) {
+      list.innerHTML = `<div class="cmdk-empty">${esc(t('player.cmdk.noMatches'))}</div>`;
+      input.setAttribute('aria-activedescendant', '');
+      return;
+    }
+    let html = '', lastGroup = null;
+    filtered.forEach((it, i) => {
+      if (it.group !== lastGroup) { html += `<div class="cmdk-group-label">${esc(groupLabel(it.group))}</div>`; lastGroup = it.group; }
+      html += `<div class="cmdk-option${i === active ? ' active' : ''}" id="cmdk-opt-${i}" role="option" aria-selected="${i === active}">${esc(it.label)}</div>`;
+    });
+    list.innerHTML = html;
+    input.setAttribute('aria-activedescendant', `cmdk-opt-${active}`);
+    list.querySelector('.cmdk-option.active')?.scrollIntoView({ block: 'nearest' });
+  }
+  function applyFilter() {
+    const needle = input.value.trim().toLowerCase();
+    filtered = needle ? items.filter(it => it.label.toLowerCase().includes(needle)) : items.slice();
+    active = 0;
+    render();
+  }
+  function run(i) {
+    const it = filtered[i];
+    _closeCmdK();
+    if (it) setTimeout(() => { try { it.run(); } catch (_) { /* action gone */ } }, 0);
+  }
+
+  input.addEventListener('input', applyFilter);
+  input.addEventListener('keydown', e => {
+    if (e.key === 'ArrowDown')    { e.preventDefault(); if (filtered.length) { active = (active + 1) % filtered.length; render(); } }
+    else if (e.key === 'ArrowUp') { e.preventDefault(); if (filtered.length) { active = (active - 1 + filtered.length) % filtered.length; render(); } }
+    else if (e.key === 'Enter')   { e.preventDefault(); run(active); }
+    else if (e.key === 'Escape')  { e.preventDefault(); e.stopPropagation(); _closeCmdK(); }
+  });
+  list.addEventListener('click', e => {
+    const opt = e.target.closest('.cmdk-option');
+    if (!opt) return;
+    const idx = [...list.querySelectorAll('.cmdk-option')].indexOf(opt);
+    if (idx >= 0) run(idx);
+  });
+  el.addEventListener('click', e => { if (e.target === el) _closeCmdK(); });
+
+  render();
+  setTimeout(() => input.focus(), 0);
 }
 
 // ── SIDEBAR COLLAPSE ─────────────────────────────────────────
