@@ -1,6 +1,6 @@
 ## v0.2.2 (2026-06-16)
 
-Accessibility — screen-reader track announcements, WCAG-AA contrast, and high-contrast / colorblind-safe themes.
+Player experience — accessibility, design system, queue multi-select, and stability fixes.
 
 ### Server
 - **Fixed: browser-cached `index.html` caused stale UI after deploys.** The HTML entry point was served without a `Cache-Control` header, so browsers applied heuristic caching and could hold on to old HTML for hours or days. New JS and CSS would load (they have content-hash cache-busters) but new DOM elements added to the HTML — like the queue selection bar — would be missing, silently breaking features. Now served with `Cache-Control: no-cache` so the browser always revalidates on the next navigation.
@@ -25,6 +25,7 @@ Accessibility — screen-reader track announcements, WCAG-AA contrast, and high-
 - **Ctrl/Cmd+click to select queue items, Shift+click to range-select.** Selected items show a checkmark in the position cell and a subtle `--active` background tint; selection state lives only in a JS Set, so it survives virtual-scroll row recycling correctly.
 - **Selection bar with bulk actions.** When one or more items are selected, a compact bar appears above the queue list showing the count, a **Remove** button (deletes all selected tracks from the queue in one step, adjusting the current-song pointer cleanly), and an **Add to playlist** button (opens the existing playlist picker and bulk-adds all selected songs). The bar disappears when the selection is cleared.
 - **Escape clears the selection.** The global Escape handler now also clears the queue multi-select and re-renders the queue when a selection is active.
+- **Fixed: selection stopped working after logout → login.** `_initQueueListeners()` registered a second click handler on `#queue-list` on every login (logout does not reload the page). Each `.q-num` click fired twice — adding then immediately removing the item from the selection Set — so the bar never appeared. A one-per-page-load guard prevents re-registration.
 
 ## v0.2.1 (2026-06-16)
 
