@@ -3,7 +3,7 @@
 Accessibility — screen-reader track announcements, WCAG-AA contrast, and high-contrast / colorblind-safe themes.
 
 ### Auto-DJ — fix localStorage quota crash
-- **Fixed: Auto-DJ repeatedly threw `QuotaExceededError` and stopped picking next songs.** Older code stored full file-path strings (instead of bare artist names) in the artist-history key, which grew to several MB. On first load after this update a one-time migration wipes the key so all existing users start clean. Going forward the cap is 500 entries (`.slice(-500)`), and a self-healing catch block halves to 250 and retries if quota is still exceeded.
+- **Fixed: Auto-DJ repeatedly threw `QuotaExceededError` and stopped picking next songs.** Two separate sources of localStorage bloat were found: (1) waveform cache keys (`wf:…`) accumulated indefinitely at ~2 KB each with no eviction policy; (2) older Auto-DJ builds stored full file-path strings instead of bare artist names in the history key. Together they filled the 5 MB quota. Fix: `_wfLsSet` now catches `QuotaExceededError` and clears the entire waveform cache before retrying (waveforms are re-generated on demand). The artist-history write also has a self-healing catch that halves the array to 250 entries. A one-time startup migration clears both the waveform cache and the artist-history key for all existing users.
 
 ### Player — accessibility
 - **Track changes are announced to screen readers.** A polite ARIA live region now reads out *"Now playing: &lt;title&gt; — &lt;artist&gt;"* whenever the current track changes, so screen-reader users hear what started without hunting for the now-playing bar.

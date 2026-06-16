@@ -46,15 +46,21 @@ const _browserId = (() => {
 // Read once at startup — avoids 14 repeated localStorage.getItem calls inside
 // the object literal (each call is a synchronous hash-map lookup + string copy).
 const _u = localStorage.getItem('ms2_user') || '';
-// One-time migration: wipe artist history written by older code that stored full
-// file paths or song objects instead of bare artist name strings, which bloated
-// the key to several MB and caused repeated QuotaExceededError in Auto-DJ.
+// One-time migration: clear the waveform cache and any bloated artist history.
+// Older waveform builds accumulated wf: keys without eviction (each ~2 KB) and
+// older DJ code stored full file-path strings in the artist-history key, both
+// filling localStorage to quota. This runs once per user on first load.
 (function() {
-  const migKey = 'ms2_dj_hist_clean_v1';
-  if (!localStorage.getItem(migKey)) {
-    try { localStorage.removeItem('ms2_dj_artist_history_' + _u); } catch (_) {}
-    try { localStorage.setItem(migKey, '1'); } catch (_) {}
+  const migKey = 'ms2_ls_clean_v1';
+  if (localStorage.getItem(migKey)) return;
+  const toRemove = [];
+  for (let i = 0; i < localStorage.length; i++) {
+    const k = localStorage.key(i);
+    if (k && k.startsWith('wf:')) toRemove.push(k);
   }
+  toRemove.forEach(k => { try { localStorage.removeItem(k); } catch (_) {} });
+  try { localStorage.removeItem('ms2_dj_artist_history_' + _u); } catch (_) {}
+  try { localStorage.setItem(migKey, '1'); } catch (_) {}
 })();
 const S = {
   token:    localStorage.getItem('ms2_token') || '',
@@ -19499,8 +19505,23 @@ function _wfLsGet(filepath) {
     return Array.isArray(arr) && arr.length > 0 ? arr : null;
   } catch (_e) { return null; }
 }
+function _wfLsClearAll() {
+  const keys = [];
+  for (let i = 0; i < localStorage.length; i++) {
+    const k = localStorage.key(i);
+    if (k && k.startsWith(_WF_LS_PREFIX)) keys.push(k);
+  }
+  keys.forEach(k => { try { localStorage.removeItem(k); } catch (_) {} });
+}
 function _wfLsSet(filepath, data) {
-  try { localStorage.setItem(_WF_LS_PREFIX + filepath, JSON.stringify(data)); } catch (_e) {}
+  try {
+    localStorage.setItem(_WF_LS_PREFIX + filepath, JSON.stringify(data));
+  } catch (e) {
+    if (e.name === 'QuotaExceededError') {
+      _wfLsClearAll();
+      try { localStorage.setItem(_WF_LS_PREFIX + filepath, JSON.stringify(data)); } catch (_) {}
+    }
+  }
 }
 
 // ── WAVEFORM BACKGROUND PRE-FETCH ─────────────────────────────
