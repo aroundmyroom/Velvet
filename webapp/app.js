@@ -886,6 +886,31 @@ function _buildLocalQueueSnapshot(playing, nowMs) {
   };
 }
 
+// Guard against a single localStorage value bloating to a pathological size.
+// Historically the uncapped Auto-DJ ignore list grew to several MB and filled
+// the ~5MB origin quota, after which persistQueue() could no longer save the
+// queue and it was lost on every refresh. No legitimate Velvet key is anywhere
+// near this large — the windowed queue tops out ~240KB and every pref is well
+// under 1KB — so any oversized value is dropped and the server reseeds it on
+// the next settings sync. Best-effort; never throws. Returns the dropped keys.
+const _LS_VALUE_HARD_CAP = 512 * 1024; // 512 KB per key
+function _sanitizeLocalStorage() {
+  const purged = [];
+  try {
+    for (let i = localStorage.length - 1; i >= 0; i--) {
+      const k = localStorage.key(i);
+      if (!k || !k.startsWith('ms2_')) continue;   // only our own keys
+      let len = 0;
+      try { len = (localStorage.getItem(k) || '').length; } catch (_) { continue; }
+      if (len > _LS_VALUE_HARD_CAP) {
+        try { localStorage.removeItem(k); purged.push(`${k} (${(len / 1048576).toFixed(2)}MB)`); } catch (_) { /* ignore */ }
+      }
+    }
+    if (purged.length) console.warn('[velvet] dropped oversized localStorage (server reseeds): ' + purged.join(', '));
+  } catch (_) { /* localStorage unavailable */ }
+  return purged;
+}
+
 function persistQueue() {
   if (!S.username) return;
   // Use the dedicated playing key as source-of-truth for the playing flag.
@@ -898,7 +923,14 @@ function persistQueue() {
   try {
     localStorage.setItem(_queueKey(), JSON.stringify(snap));
   } catch (e) {
-    // localStorage full — try a smaller slice (±25 songs around current track)
+    // Quota hit — most often a single pathologically-large key (e.g. a stale
+    // pre-cap Auto-DJ ignore list) is starving us. Drop the bloat and retry the
+    // full snapshot before falling back to a smaller window.
+    if (_sanitizeLocalStorage().length) {
+      try { localStorage.setItem(_queueKey(), JSON.stringify(snap)); return; }
+      catch (_) { /* still full — fall through to mini */ }
+    }
+    // localStorage still full — try a smaller slice (±25 songs around current track)
     try {
       const qIdx = Number.isInteger(S.idx) ? S.idx : 0;
       const wStart = Math.max(0, qIdx - 25);
@@ -1310,9 +1342,13 @@ const Player = {
   },
   playSingle(song) {
     S.queue = [song]; _qvsVersion++;
+    // Fresh playback resets Auto-DJ memory. Clear the persisted copies too —
+    // not just the in-memory state — so a stale (possibly oversized) ignore
+    // list can't linger in localStorage or be pushed back by _syncPrefs().
     S.djIgnore = [];
     S.djArtistHistory = [];
-    localStorage.removeItem(_djKey('artist_history'));
+    try { localStorage.removeItem(_djKey('ignore')); } catch (_) { /* ignore */ }
+    try { localStorage.removeItem(_djKey('artist_history')); } catch (_) { /* ignore */ }
     _syncPrefs();
     this.playAt(0);
   },
@@ -20988,6 +21024,9 @@ function openAdminPanel() {
 }
 
 function showApp() {
+  // Reclaim the storage quota from any pathologically-large key BEFORE restoring
+  // the queue, so a stale multi-MB value can never starve the queue write.
+  _sanitizeLocalStorage();
   // ── Boot overlay: show while queue/waveform restore is in progress ──────
   const _bootEl  = document.getElementById('boot-overlay');
   const _bootSt  = document.getElementById('boot-status');
