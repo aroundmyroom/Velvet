@@ -1987,11 +1987,11 @@ body.vu-needle-mode .eq-panel{bottom:calc(var(--player) + 8px);}
 
 /* Tablet / Safari iPad desktop mode (landscape ~1366 px) */
 @media(max-width:1366px){
-  :root,:root.dark,:root.light{--qp-width:280px;--sidebar:200px;}
+  :root,:root.dark,:root.light,:root.hc,:root.cb{--qp-width:280px;--sidebar:200px;}
 }
 /* Responsive: shrink VU column on medium screens */
 @media(max-width:1024px){
-  :root,:root.dark,:root.light{--qp-width:280px;--sidebar:200px;}
+  :root,:root.dark,:root.light,:root.hc,:root.cb{--qp-width:280px;--sidebar:200px;}
   .player{padding:8px 12px 0 12px;column-gap:10px;}
   .player-thumb{width:64px;height:64px;}
   .player-controls{gap:3px;}
@@ -2012,7 +2012,7 @@ body.vu-needle-mode .eq-panel{bottom:calc(var(--player) + 8px);}
 }
 /* Large / TV screens — expand sidebar and increase base sizes for comfortable viewing */
 @media(min-width:1600px){
-  :root,:root.dark,:root.light{--sidebar:260px;}
+  :root,:root.dark,:root.light,:root.hc,:root.cb{--sidebar:260px;}
   .player-title{font-size:20px;}
   .player-artist{font-size:16px;}
   .nav-btn{font-size:14px;padding:9px 12px;}
