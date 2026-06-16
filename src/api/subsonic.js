@@ -381,6 +381,16 @@ function encodeSongId(row) {
   return row.id != null ? `${h}@${row.id}` : h;
 }
 
+// Re-encode a (possibly legacy bare-hash or stale-rowid) song id into the canonical
+// form for an already-resolved row, preserving any CUE wrapper. Used by the play
+// queue handlers so a stored/returned `current` always matches the freshly-built
+// entry ids even after a rescan reassigns rowids. Unresolvable ids pass through.
+function canonicalSongId(rawId, row) {
+  if (!row) return rawId;
+  const dec = decodeSongId(rawId);
+  return dec.cue ? `cue:${encodeSongId(row)}:${dec.cueIdx}` : encodeSongId(row);
+}
+
 // Build a virtual Subsonic song entry for one CUE-sheet track.
 // ID format: "cue:<baseHash>:<index>" — parsed in getSong / handleStream.
 // The stream handler always transcodes the slice to FLAC (lossless re-mux with
@@ -1757,11 +1767,17 @@ export function setup(velvet) {
   // save the full queue + current position to the server so it survives client
   // restarts reliably — more durable than client-side local storage.
   router('savePlayQueue', (req, res) => {
-    const rawIds = [req.query.id || req.body?.id || []].flat().filter(Boolean);
-    const current   = req.query.current   || req.body?.current   || rawIds[0] || null;
-    const position  = Number(req.query.position  ?? req.body?.position  ?? 0);
-    const changedBy = req.query.c || req.body?.c || null;
-    db.savePlayQueue(req.subsonicUser, current, position, changedBy, JSON.stringify(rawIds));
+    const rawIds     = [req.query.id || req.body?.id || []].flat().filter(Boolean);
+    const rawCurrent = req.query.current || req.body?.current || rawIds[0] || null;
+    const position   = Number(req.query.position ?? req.body?.position ?? 0);
+    const changedBy  = req.query.c || req.body?.c || null;
+    // Canonicalise ids to the current "<hash>@<rowid>" form before storing so the
+    // saved queue keeps matching what getPlayQueue/stream emit even after a rescan
+    // reassigns rowids. Ids that don't resolve are kept verbatim so nothing is lost.
+    const songMap = resolveSongRows([...rawIds, rawCurrent].filter(Boolean), req.subsonicUser);
+    const ids     = rawIds.map(id => canonicalSongId(id, songMap.get(id)));
+    const current = rawCurrent ? canonicalSongId(rawCurrent, songMap.get(rawCurrent)) : null;
+    db.savePlayQueue(req.subsonicUser, current, position, changedBy, JSON.stringify(ids));
     sendResponse(req, res, makeResponse());
   });
 
@@ -1797,10 +1813,28 @@ export function setup(velvet) {
       }
     }
 
+    // The saved current_id may be in a stale/legacy format (bare hash, or a rowid a
+    // rescan has reassigned) that no longer matches the freshly-encoded entry ids.
+    // Re-resolve it through the same encoder as the entries so `current` is always
+    // byte-identical to one of them — otherwise clients like Feishin lose their place
+    // in a restored queue and stop auto-advancing (pause at end-of-track, replay the
+    // previous track). If the current track is gone, fall back to the head of the queue.
+    const entryIds = new Set(entries.map(e => e.id));
+    let current = '';
+    let position = row.position_ms ?? 0;
+    if (row.current_id) {
+      const reId = canonicalSongId(row.current_id, resolveSongRow(row.current_id, req.subsonicUser));
+      if (entryIds.has(reId)) current = reId;
+    }
+    if (!current) {
+      current = entries[0]?.id ?? '';
+      position = 0;
+    }
+
     sendResponse(req, res, makeResponse('ok', {
       playQueue: {
-        current:   row.current_id ?? '',
-        position:  row.position_ms ?? 0,
+        current,
+        position,
         username:  req.subsonicUser,
         changed:   new Date(row.changed).toISOString(),
         changedBy: row.changed_by ?? '',
