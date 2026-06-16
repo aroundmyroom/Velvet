@@ -2,6 +2,9 @@
 
 Accessibility — screen-reader track announcements, WCAG-AA contrast, and high-contrast / colorblind-safe themes.
 
+### Server
+- **Fixed: browser-cached `index.html` caused stale UI after deploys.** The HTML entry point was served without a `Cache-Control` header, so browsers applied heuristic caching and could hold on to old HTML for hours or days. New JS and CSS would load (they have content-hash cache-busters) but new DOM elements added to the HTML — like the queue selection bar — would be missing, silently breaking features. Now served with `Cache-Control: no-cache` so the browser always revalidates on the next navigation.
+
 ### Auto-DJ — fix localStorage quota crash
 - **Fixed: Auto-DJ repeatedly threw `QuotaExceededError` and stopped picking next songs.** Two sources of localStorage bloat filled the 5 MB quota: (1) waveform cache keys (`wf:…`, ~2 KB each) accumulated forever — unnecessary because the server already persists generated waveforms to disk and returns them instantly on subsequent requests; (2) older Auto-DJ builds stored full file-path strings instead of bare artist names in the history key. Fix: the `wf:` localStorage layer is removed entirely and replaced with a session-only `Map` (used for crossfade look-ahead and fast track-switching within the same page load). The artist-history write now uses `slice(-500)` and a self-healing catch block. A one-time startup migration (`ms2_ls_clean_v1`) clears all existing `wf:` keys and the artist-history key for every user on first load.
 

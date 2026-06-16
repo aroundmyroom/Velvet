@@ -166,12 +166,14 @@ export async function serveIt(configFile) {
       if (!_mobileIndexCache) {
         _mobileIndexCache = fs.readFileSync(path.join(config.program.webAppDirectory, 'mobile', 'index.html'), 'utf-8');
       }
+      res.setHeader('Cache-Control', 'no-cache');
       return res.type('text/html').send(_mobileIndexCache);
     }
     if (!_indexHtmlCache) {
       const raw = fs.readFileSync(path.join(config.program.webAppDirectory, 'index.html'), 'utf-8');
       _indexHtmlCache = raw.replace(/app\.js\?v=[^"']+/, `app.js?v=${packageJson.version}`);
     }
+    res.setHeader('Cache-Control', 'no-cache');
     res.type('text/html').send(_indexHtmlCache);
   });
 
