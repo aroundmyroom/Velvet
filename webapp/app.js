@@ -3006,6 +3006,16 @@ function _initQueueListeners() {
     if (!item || e.target.closest('.q-drag-handle')) return;
     const qi = Number.parseInt(item.dataset.qi);
 
+    if (e.target.closest('.q-num')) {
+      if (_qvsSelected.has(qi)) _qvsSelected.delete(qi);
+      else _qvsSelected.add(qi);
+      _qvsLastClick = qi;
+      _updateQueueSelBar();
+      _qvsFIdx = -1; _qvsLIdx = -1;
+      _qvsRender(list, true);
+      return;
+    }
+
     if (e.ctrlKey || e.metaKey) {
       if (_qvsSelected.has(qi)) _qvsSelected.delete(qi);
       else _qvsSelected.add(qi);
