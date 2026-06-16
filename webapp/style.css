@@ -9,7 +9,7 @@
   --primary:#8b5cf6; --primary-h:#7c3aed;
   --primary-d:rgba(139,92,246,.15); --primary-g:rgba(139,92,246,.4);
   --accent:#60a5fa; --green:#34d399; --red:#f87171; --yellow:#fbbf24;
-  --t1:#eeeeff; --t2:#8888b0; --t3:#7e8ec0; --t4:#2a3a5e;
+  --t1:#eeeeff; --t2:#a6a6d0; --t3:#a3aede; --t4:#2a3a5e;
   --focus:#a78bfa; --skel:rgba(255,255,255,.06); --skel-sheen:rgba(255,255,255,.13);
   --sidebar:236px; --player:210px; --r:7px; --r2:12px; --qp-width:488px;
 }
@@ -22,7 +22,7 @@
   --primary:#a78bfa; --primary-h:#9061f9;
   --primary-d:rgba(167,139,250,.14); --primary-g:rgba(167,139,250,.38);
   --accent:#60a5fa; --green:#34d399; --red:#f87171; --yellow:#fbbf24;
-  --t1:#f1f1f1; --t2:#8a8a9a; --t3:#707082; --t4:#252530;
+  --t1:#f1f1f1; --t2:#8a8a9a; --t3:#9a9aac; --t4:#252530;
   --focus:#a78bfa; --skel:rgba(255,255,255,.05); --skel-sheen:rgba(255,255,255,.11);
   --sidebar:236px; --player:210px; --r:7px; --r2:12px; --qp-width:488px;
 }
@@ -38,8 +38,33 @@
   --primary:#6d3ce6; --primary-h:#5b28d4;
   --primary-d:rgba(109,60,230,.12); --primary-g:rgba(109,60,230,.35);
   --accent:#2563eb; --green:#16a34a; --red:#dc2626; --yellow:#d97706;
-  --t1:#0c0c1a; --t2:#42425e; --t3:#7878a0; --t4:#b8b8d0;
+  --t1:#0c0c1a; --t2:#42425e; --t3:#5b5b80; --t4:#b8b8d0;
   --focus:#5b28d4; --skel:rgba(0,0,0,.07); --skel-sheen:rgba(0,0,0,.04);
+  --sidebar:236px; --player:210px; --r:7px; --r2:12px; --qp-width:488px;
+}
+
+/* ── HIGH-CONTRAST — AAA-level, pure black/white with strong accents ── */
+:root.hc {
+  --bg:#000000; --surface:#000000; --raised:#0a0a0a; --card:#0a0a0a;
+  --hover:rgba(255,255,255,.16); --active:rgba(255,255,255,.26);
+  --border:#ffffff; --border2:#ffffff;
+  --primary:#ffffff; --primary-h:#ffffff;
+  --primary-d:rgba(255,255,255,.22); --primary-g:rgba(255,255,255,.55);
+  --accent:#ffe066; --green:#00e676; --red:#ff5252; --yellow:#ffe066;
+  --t1:#ffffff; --t2:#ffffff; --t3:#e6e6e6; --t4:#9a9a9a;
+  --focus:#ffe066; --skel:rgba(255,255,255,.10); --skel-sheen:rgba(255,255,255,.22);
+  --sidebar:236px; --player:210px; --r:7px; --r2:12px; --qp-width:488px;
+}
+/* ── COLORBLIND-SAFE — blue/orange palette, no red/green reliance ── */
+:root.cb {
+  --bg:#10131a; --surface:#161a24; --raised:#1d2230; --card:#1b2030;
+  --hover:rgba(255,255,255,.08); --active:rgba(56,135,255,.20);
+  --border:#2a3140; --border2:#3a4458;
+  --primary:#3b82f6; --primary-h:#2f6fe0;
+  --primary-d:rgba(59,130,246,.16); --primary-g:rgba(59,130,246,.42);
+  --accent:#f59e0b; --green:#3b82f6; --red:#f59e0b; --yellow:#f59e0b;
+  --t1:#f3f5f9; --t2:#aab4c6; --t3:#aeb8ca; --t4:#2a3140;
+  --focus:#f59e0b; --skel:rgba(255,255,255,.06); --skel-sheen:rgba(255,255,255,.13);
   --sidebar:236px; --player:210px; --r:7px; --r2:12px; --qp-width:488px;
 }
 html{height:100%;}
@@ -293,13 +318,14 @@ button, a, .song-row, .artist-row, .album-card, .album-row,
 }
 .footer-link:hover,.footer-action:hover{background:var(--hover);color:var(--t1);}
 
-/* ── THEME SEGMENTED PILL (3-step: Velvet / Dark / Light) ───── */
-.theme-seg{display:flex;width:calc(100% - 1.5rem);box-sizing:border-box;padding:3px;gap:2px;background:var(--border);border-radius:calc(var(--r) + 4px);margin:0 .75rem .55rem;overflow:hidden;}
+/* ── THEME SEGMENTED PILL (Velvet / Dark / Light / High-contrast / Colorblind) ── */
+/* Wraps to a second row when more than three themes are present. */
+.theme-seg{display:flex;flex-wrap:wrap;width:calc(100% - 1.5rem);box-sizing:border-box;padding:3px;gap:2px;background:var(--border);border-radius:calc(var(--r) + 4px);margin:0 .75rem .55rem;}
 .theme-seg-btn{
-  flex:1 1 0;width:0;display:flex;align-items:center;justify-content:center;gap:4px;
+  flex:1 1 28%;min-width:0;display:flex;align-items:center;justify-content:center;gap:4px;
   padding:5px 4px;border-radius:var(--r);font-size:11px;font-weight:600;
   color:var(--t3);background:none;border:none;cursor:pointer;
-  transition:background .15s,color .15s;font-family:inherit;white-space:nowrap;line-height:1;overflow:hidden;
+  transition:background .15s,color .15s;font-family:inherit;white-space:nowrap;line-height:1;
 }
 .theme-seg-btn:hover{color:var(--t2);}
 .theme-seg-btn.active{background:var(--surface);color:var(--primary);box-shadow:0 1px 4px rgba(0,0,0,.4);}
@@ -1458,7 +1484,7 @@ body.vu-needle-mode .eq-panel{bottom:calc(var(--player) + 8px);}
 .modal-box h3{font-size:16px;font-weight:700;margin-bottom:16px;}
 
 /* ── COMMAND PALETTE (Cmd/Ctrl+K) ──────────────────────────── */
-.cmdk-sr-only{position:absolute!important;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap;border:0;}
+.sr-only,.cmdk-sr-only{position:absolute!important;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap;border:0;}
 .cmdk-overlay{align-items:flex-start;justify-content:center;}
 .cmdk-box{margin-top:12vh;padding:0;width:92%;max-width:560px;overflow:hidden;animation:cmdk-in .14s ease;}
 .cmdk-overlay.no-anim .cmdk-box{animation:none;}

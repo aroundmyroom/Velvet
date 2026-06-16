@@ -23842,6 +23842,17 @@ document.addEventListener('velvet-song-change', () => _pnowOnSongChange());
 // ── Play History — live refresh on song change ────────────────────────────────
 document.addEventListener('velvet-song-change', () => { _historyRefreshFn?.(); });
 
+// ── Screen-reader announcement of the now-playing track on change ─────────────
+document.addEventListener('velvet-song-change', () => {
+  const el = document.getElementById('np-live');
+  const s  = S.queue[S.idx];
+  if (!el || !s) return;
+  const title  = s.title || s.filepath?.split('/').pop() || '';
+  const artist = s.artist || '';
+  const track  = artist ? `${title} — ${artist}` : title;
+  el.textContent = t('player.a11y.nowPlaying', { track });
+});
+
 // ── Audiobook controls ────────────────────────────────────────────────────────
 document.getElementById('ab-speed-btn').addEventListener('click', function() { _toggleSpeedPop(this); });
 // Close speed popup when clicking outside it
@@ -23990,10 +24001,10 @@ function _applyNavVisibility() {
 // theme: 'velvet' | 'dark' | 'light'
 // persist=true  → user chose explicitly, save to localStorage
 // persist=false → OS-driven, don't overwrite a future explicit choice
+const _THEME_CLASSES = ['dark', 'light', 'hc', 'cb'];
 function applyTheme(theme, persist = true) {
-  document.documentElement.classList.remove('dark', 'light');
-  if (theme === 'dark')  document.documentElement.classList.add('dark');
-  if (theme === 'light') document.documentElement.classList.add('light');
+  document.documentElement.classList.remove(..._THEME_CLASSES);
+  if (_THEME_CLASSES.includes(theme)) document.documentElement.classList.add(theme);
   document.querySelectorAll('.theme-seg-btn').forEach(btn => {
     btn.classList.toggle('active', btn.dataset.theme === theme);
   });
