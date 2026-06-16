@@ -1,3 +1,10 @@
+## v0.2.1 (2026-06-16)
+
+Fixes Subsonic saved-queue restore so clients like Feishin resume and auto-advance correctly.
+
+### Subsonic — fixes
+- **Restored play queues advance correctly again.** When a Subsonic client (e.g. Feishin) reopened with a partially-played queue saved on the server, playback would stop instead of advancing at the end of a track, the Next button wouldn't auto-play, and the queue could replay the previous track — an off-by-one. Cause: `getPlayQueue` echoed the stored `current` track id verbatim while rebuilding every entry id in the canonical `<hash>@<rowid>` form, so after a Velvet upgrade (older queues stored bare-hash ids) or a library rescan (rowids are reassigned) the `current` matched none of the entries and the client lost its place. `getPlayQueue` now re-encodes `current` through the same resolver as the entries — so it is always one of the returned entry ids — and falls back to the head of the queue if the current track is gone. `savePlayQueue` also canonicalises ids before storing, so freshly-saved queues stay consistent across rescans.
+
 ## v0.2.0 (2026-06-16)
 
 Player experience overhaul + queue-reliability fixes.

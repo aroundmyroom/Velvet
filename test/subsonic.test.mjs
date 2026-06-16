@@ -314,3 +314,82 @@ describe('Subsonic – playlists', () => {
     assert.ok(!after.some(p => p.name === 'Test List'), 'playlist should be deleted');
   });
 });
+
+// ---------------------------------------------------------------------------
+// Suite: play queue (savePlayQueue / getPlayQueue)
+// ---------------------------------------------------------------------------
+
+describe('Subsonic – play queue', () => {
+  let srv;
+
+  before(async () => {
+    srv = await startServer({ users: [ALICE] });
+  });
+
+  after(async () => { await srv.stop(); });
+
+  // Collect a few real song ids (canonical "<hash>@<rowid>" form) from the library.
+  async function collectSongs(min) {
+    const listSr = await subGet(srv.subsonicBaseUrl, 'getAlbumList2', { type: 'alphabeticalByName', size: 50 });
+    const albums = [].concat(listSr.albumList2?.album ?? []);
+    const songs = [];
+    for (const al of albums) {
+      const aSr = await subGet(srv.subsonicBaseUrl, 'getAlbum', { id: al.id });
+      songs.push(...[].concat(aSr.album?.song ?? []));
+      if (songs.length >= min) break;
+    }
+    return songs;
+  }
+
+  function savePlayQueueUrl(ids, current, position) {
+    const p = new URLSearchParams({ u: 'alice', p: 'alice123', v: '1.16.1', c: 'feishin-test', f: 'json' });
+    for (const id of ids) p.append('id', id);
+    if (current != null) p.set('current', current);
+    if (position != null) p.set('position', String(position));
+    return `${srv.subsonicBaseUrl}/rest/savePlayQueue?${p.toString()}`;
+  }
+
+  const bareHash = id => (id.includes('@') ? id.slice(0, id.indexOf('@')) : id);
+
+  // The Feishin bug: a queue saved by an older client used bare-hash ids, but
+  // getPlayQueue rebuilt entries as "<hash>@<rowid>". The returned `current` then
+  // matched none of the entry ids, so Feishin lost its place and stopped advancing.
+  it('legacy bare-hash queue restores a current that matches an entry id', async () => {
+    const songs = await collectSongs(3);
+    assert.ok(songs.length >= 3, 'fixtures need at least 3 songs');
+    const legacyIds = songs.slice(0, 3).map(s => bareHash(s.id));
+    const current   = legacyIds[1];
+
+    const saveJson = await (await fetch(savePlayQueueUrl(legacyIds, current, 4242))).json();
+    assert.equal(saveJson['subsonic-response'].status, 'ok', JSON.stringify(saveJson));
+
+    const sr = await subGet(srv.subsonicBaseUrl, 'getPlayQueue');
+    assert.equal(sr.status, 'ok');
+    const pq = sr.playQueue;
+    const entries = [].concat(pq.entry ?? []);
+    assert.equal(entries.length, 3, 'all three tracks restored');
+
+    const entryIds = entries.map(e => e.id);
+    assert.ok(entryIds.includes(pq.current),
+      `current "${pq.current}" must be one of the entry ids ${JSON.stringify(entryIds)}`);
+    assert.equal(bareHash(pq.current), current, 'current still points at the saved track');
+    assert.equal(Number(pq.position), 4242, 'position preserved when current is valid');
+  });
+
+  it('falls back to head of queue when the saved current is unresolvable', async () => {
+    const songs = await collectSongs(2);
+    assert.ok(songs.length >= 2, 'fixtures need at least 2 songs');
+    const ids   = songs.slice(0, 2).map(s => s.id);
+    const bogus = 'deadbeefdeadbeefdeadbeefdeadbeef';
+
+    const saveJson = await (await fetch(savePlayQueueUrl(ids, bogus, 9999))).json();
+    assert.equal(saveJson['subsonic-response'].status, 'ok', JSON.stringify(saveJson));
+
+    const sr = await subGet(srv.subsonicBaseUrl, 'getPlayQueue');
+    const pq = sr.playQueue;
+    const entries = [].concat(pq.entry ?? []);
+    assert.equal(entries.length, 2);
+    assert.equal(pq.current, entries[0].id, 'current falls back to the first entry');
+    assert.equal(Number(pq.position), 0, 'position reset when current is dropped');
+  });
+});
