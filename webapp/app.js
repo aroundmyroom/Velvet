@@ -1213,6 +1213,7 @@ let _qvsBuiltVersion = -1;  // version when _qvsRows/_qvsCumH were last built
 let _qvsStartOffsets = [];  // estimated cumulative start time (s) for each queue index
 let _qvsSelected = new Set();  // set of selected queue indices (qi) for multi-select
 let _qvsLastClick = -1;        // last qi clicked, for shift-range selection
+let _qvsListenersInited = false; // guard against double-registration on logout+login
 const _QH_ITEM = 58;    // q-item row height px  (7+7 padding + 44 art)
 const _QH_SEP  = 28;    // q-disc-sep row height px
 const _QV_BUF  = 5;     // extra rows to render above/below viewport
@@ -2993,9 +2994,11 @@ function _scrollQueueToActive(force) {
 }
 
 // ── One-time queue event-listener setup ──────────────────────────────────────
-// MUST be called exactly once after the app boots. Delegated listeners work
-// even when #queue-list innerHTML is replaced by refreshQueueUI().
+// showApp() calls this on every login; the guard ensures listeners are only
+// registered once so logout→login doesn't double-fire click handlers.
 function _initQueueListeners() {
+  if (_qvsListenersInited) return;
+  _qvsListenersInited = true;
   const list = document.getElementById('queue-list');
   if (!list) return;
   const _clearQDropIndicators = () =>
