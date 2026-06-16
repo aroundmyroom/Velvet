@@ -2,6 +2,9 @@
 
 Accessibility — screen-reader track announcements, WCAG-AA contrast, and high-contrast / colorblind-safe themes.
 
+### Auto-DJ — fix localStorage quota crash
+- **Fixed: Auto-DJ repeatedly threw `QuotaExceededError` and stopped picking next songs.** The artist-history array was unbounded in older sessions; the previous cap logic used `.shift()` which only removed one entry per call, so a bloated array from an earlier session would never recover. Now uses `slice(-500)` as a hard cap, and a self-healing `catch` block halves the array to 250 entries if the quota is still exceeded. The in-memory array is also capped to 500 on startup so any existing bloated value is immediately trimmed.
+
 ### Player — accessibility
 - **Track changes are announced to screen readers.** A polite ARIA live region now reads out *"Now playing: &lt;title&gt; — &lt;artist&gt;"* whenever the current track changes, so screen-reader users hear what started without hunting for the now-playing bar.
 - **Text now meets WCAG AA contrast.** Secondary and tertiary text colours (`--t2`/`--t3`) were nudged lighter — keeping the same hue — so every normal-text pair clears the 4.5:1 AA threshold across the Velvet, Dark and Light themes (several previously sat at ~3.0–4.3:1, e.g. tertiary text on cards).

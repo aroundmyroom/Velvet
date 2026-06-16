@@ -135,7 +135,7 @@ const S = {
   // Auto-DJ: similar-artists mode
   djSimilar: localStorage.getItem('ms2_dj_similar_' + _u) === '1',
   djDice:    localStorage.getItem('ms2_dj_dice_'    + _u) === '1',  // default OFF
-  djArtistHistory: JSON.parse(localStorage.getItem('ms2_dj_artist_history_' + _u) || 'null') || [],  // rolling list of last N distinct artists
+  djArtistHistory: (JSON.parse(localStorage.getItem('ms2_dj_artist_history_' + _u) || 'null') || []).slice(-500),  // rolling list of last N distinct artists
   // Auto-DJ keyword filter — default OFF; words stored as JSON array
   djFilterEnabled: localStorage.getItem('ms2_dj_filter_on_' + _u) === '1',
   djFilterWords:   JSON.parse(localStorage.getItem('ms2_dj_filter_words_' + _u) || 'null') || [],
@@ -2354,8 +2354,16 @@ function _djPushArtistHistory(artist) {
   const norm = a => a.trim().toLowerCase().replaceAll(/\./g, '');
   S.djArtistHistory = S.djArtistHistory.filter(a => norm(a) !== norm(artist));
   S.djArtistHistory.push(artist.trim());
-  if (S.djArtistHistory.length > DJ_ARTIST_COOLDOWN) S.djArtistHistory.shift();
-  localStorage.setItem(_djKey('artist_history'), JSON.stringify(S.djArtistHistory));
+  S.djArtistHistory = S.djArtistHistory.slice(-500);
+  const _djHistoryJson = JSON.stringify(S.djArtistHistory);
+  try {
+    localStorage.setItem(_djKey('artist_history'), _djHistoryJson);
+  } catch (e) {
+    if (e.name === 'QuotaExceededError') {
+      S.djArtistHistory = S.djArtistHistory.slice(-250);
+      try { localStorage.setItem(_djKey('artist_history'), JSON.stringify(S.djArtistHistory)); } catch (_) {}
+    }
+  }
   _syncPrefs();
 }
 
