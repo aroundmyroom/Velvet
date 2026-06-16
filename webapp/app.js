@@ -7014,6 +7014,13 @@ const VIZ = (() => {
         applyMode();
       }
     },
+    // Open the visualizer straight into synced-lyrics mode (mode 3) — the
+    // discoverable entry point for lyrics from the now-playing view / palette.
+    showLyrics() {
+      vizTopMode = 3;
+      this.open();
+      fetchAndRenderLyrics();
+    },
     close() {
       document.getElementById('viz-overlay').classList.add('hidden');
       document.getElementById('viz-open-btn').classList.remove('active');
@@ -23827,6 +23834,7 @@ document.getElementById('np-time-cur').addEventListener('click',   _toggleTimeFl
 document.getElementById('np-time-total').addEventListener('click', _toggleTimeFlipped);
 
 document.getElementById('np-viz-btn').addEventListener('click', () => { hideNPModal(); VIZ.open(); });
+document.getElementById('np-lyrics-btn').addEventListener('click', () => { hideNPModal(); VIZ.showLyrics(); });
 
 // Visualizer
 document.getElementById('viz-open-btn').addEventListener('click', () => VIZ.open());
@@ -24512,6 +24520,7 @@ function _cmdkBuildItems() {
     clickItem(t('player.cmdk.shuffle'),   'shuffle-btn'),
     clickItem(t('player.cmdk.repeat'),    'repeat-btn'),
     clickItem(t('player.cmdk.equalizer'), 'eq-btn'),
+    { group: 'actions', label: t('player.cmdk.lyrics'), run: () => VIZ.showLyrics() },
     { group: 'actions', label: t('player.cmdk.shortcuts'), run: () => _toggleShortcutsHelp() },
   );
   return items;

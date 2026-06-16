@@ -1,6 +1,9 @@
 ## v0.2.2 (2026-06-16)
 
-Accessibility — screen-reader track announcements, WCAG-AA contrast, and high-contrast / colorblind-safe themes.
+Accessibility, plus lyrics surfaced directly from the now-playing view.
+
+### Player — lyrics
+- **Lyrics are reachable in one click.** Synced lyrics already existed, but only by opening the visualizer and cycling to its Lyrics mode. There is now a **Lyrics** button in the now-playing view and a **Show lyrics** command in the `Ctrl`/`Cmd`+`K` palette, both of which jump straight into the auto-scrolling synced-lyrics view for the current track.
 
 ### Player — accessibility
 - **Track changes are announced to screen readers.** A polite ARIA live region now reads out *"Now playing: &lt;title&gt; — &lt;artist&gt;"* whenever the current track changes, so screen-reader users hear what started without hunting for the now-playing bar.
