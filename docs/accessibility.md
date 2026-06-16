@@ -51,7 +51,9 @@ Five themes are available from the sidebar switcher: **Velvet** (default), **Dar
 **Light**, **High contrast**, and **Colorblind-safe**. The choice persists per user.
 
 - **WCAG AA** — normal text meets the 4.5:1 contrast minimum in Velvet, Dark and
-  Light. **High contrast** pushes well past AAA (pure black/white). **Colorblind-safe**
+  Light. **High contrast** pushes well past AAA (white text on black, with a yellow
+  accent for controls/fills so they never blend into white text or borders).
+  **Colorblind-safe**
   uses a blue/orange palette that never relies on red↔green distinctions
   (deuteranopia/protanopia friendly).
 
