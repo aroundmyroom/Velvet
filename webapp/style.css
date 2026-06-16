@@ -957,7 +957,7 @@ button, a, .song-row, .artist-row, .album-card, .album-row,
 .q-item:hover{background:var(--hover);}
 .q-item.q-active{background:var(--active);}
 .q-item.q-active .q-num{color:var(--primary);}
-.q-num{width:20px;font-size:var(--type-xs);color:var(--t3);text-align:center;flex-shrink:0;display:flex;align-items:center;justify-content:center;}
+.q-num{width:20px;font-size:var(--type-xs);color:var(--t3);text-align:center;flex-shrink:0;display:flex;align-items:center;justify-content:center;cursor:pointer;}
 .q-art{width:44px;height:44px;border-radius:6px;background:var(--raised);flex-shrink:0;overflow:hidden;display:flex;align-items:center;justify-content:center;}
 .q-art-loading{width:44px;height:44px;border-radius:6px;background:var(--raised);flex-shrink:0;}
 .q-art img{width:100%;height:100%;object-fit:cover;}
