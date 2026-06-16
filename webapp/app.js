@@ -19494,35 +19494,12 @@ function _applyRGGain(s) {
 }
 
 // ── WAVEFORM SCRUBBER ─────────────────────────────────────────
-// ── WAVEFORM LOCALSTORAGE CACHE ───────────────────────────────
-// Key prefix; value is a JSON array of 800 integers (0-255), ~2 KB each.
-const _WF_LS_PREFIX = 'wf:';
-function _wfLsGet(filepath) {
-  try {
-    const raw = localStorage.getItem(_WF_LS_PREFIX + filepath);
-    if (!raw) return null;
-    const arr = JSON.parse(raw);
-    return Array.isArray(arr) && arr.length > 0 ? arr : null;
-  } catch (_e) { return null; }
-}
-function _wfLsClearAll() {
-  const keys = [];
-  for (let i = 0; i < localStorage.length; i++) {
-    const k = localStorage.key(i);
-    if (k && k.startsWith(_WF_LS_PREFIX)) keys.push(k);
-  }
-  keys.forEach(k => { try { localStorage.removeItem(k); } catch (_) {} });
-}
-function _wfLsSet(filepath, data) {
-  try {
-    localStorage.setItem(_WF_LS_PREFIX + filepath, JSON.stringify(data));
-  } catch (e) {
-    if (e.name === 'QuotaExceededError') {
-      _wfLsClearAll();
-      try { localStorage.setItem(_WF_LS_PREFIX + filepath, JSON.stringify(data)); } catch (_) {}
-    }
-  }
-}
+// ── WAVEFORM SESSION CACHE ────────────────────────────────────
+// Waveforms are persisted on the SERVER's disk cache (waveformDirectory).
+// A second-level localStorage cache is unnecessary and caused QuotaExceededError
+// on large libraries. We keep only a small in-memory Map for the current session
+// so the crossfade overlay and fast track-switching still avoid redundant fetches.
+const _wfSessionCache = new Map(); // filepath → number[] for the current page session
 
 // ── WAVEFORM BACKGROUND PRE-FETCH ─────────────────────────────
 // Enqueue a filepath so its waveform is generated and stored in localStorage
@@ -19530,7 +19507,7 @@ function _wfLsSet(filepath, data) {
 // 300 ms apart — low priority, silent on error.
 function _wfPrefetchEnqueue(filepath) {
   if (!filepath || /^https?:\/\//i.test(filepath)) return; // skip radio / external URLs
-  if (_wfLsGet(filepath)) return;                          // already cached
+  if (_wfSessionCache.has(filepath)) return;               // already in session cache
   if (_wfPrefetchPending.includes(filepath)) return;       // already queued
   _wfPrefetchPending.push(filepath);
   _wfPrefetchDrain();
@@ -19543,9 +19520,9 @@ async function _wfPrefetchDrain() {
   const ac = typeof AbortController !== 'undefined' ? new AbortController() : null;
   _wfPrefetchAbort = ac;
   try {
-    if (!_wfLsGet(fp)) { // double-check: may have been fetched since enqueue
+    if (!_wfSessionCache.has(fp)) {
       const d = await api('GET', `api/v1/db/waveform?filepath=${encodeURIComponent(fp)}&prefetch=1`, undefined, ac?.signal);
-      if (d.waveform && d.waveform.length > 0) _wfLsSet(fp, d.waveform);
+      if (d.waveform && d.waveform.length > 0) _wfSessionCache.set(fp, d.waveform);
     }
   } catch (_e) { /* silent — waveform unavailable, ffmpeg busy, or aborted */ }
   finally {
@@ -19581,8 +19558,8 @@ async function _fetchWaveform(filepath) {
   // Clear queued prefetch items — server will be busy with this live song
   _wfPrefetchPending.length = 0;
 
-  // Check localStorage before going to the server
-  const cached = _wfLsGet(filepath);
+  // Check session cache before going to the server
+  const cached = _wfSessionCache.get(filepath);
   if (cached) {
     _waveformData = cached;
     _waveformFp   = filepath;
@@ -19614,7 +19591,7 @@ async function _fetchWaveform(filepath) {
     if (d.waveform && d.waveform.length > 0) {
       _waveformData = d.waveform;
       _waveformFp   = filepath;
-      _wfLsSet(filepath, d.waveform);   // persist for future page loads
+      _wfSessionCache.set(filepath, d.waveform);
       _wfFadeIn();
       if (!audioEl.paused) _startWaveformRaf();
     }
@@ -20151,7 +20128,7 @@ function _startArtXfade(nextIdx, durationMs) {
     wfCanvas.style.opacity    = '0';
 
     // Incoming overlay — only if already in cache (pre-fetch warmed it)
-    const nextData = _wfLsGet(s.filepath);
+    const nextData = _wfSessionCache.get(s.filepath);
     if (nextData?.length && cW > 0 && cH > 0) {
       const inC = document.createElement('canvas');
       inC.className = 'xf-wf-in';
