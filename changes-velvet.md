@@ -1,9 +1,10 @@
 ## v0.2.1 (2026-06-16)
 
-Fixes Subsonic saved-queue restore so clients like Feishin resume and auto-advance correctly.
+Makes Subsonic server-side play-queue persistence self-consistent across upgrades and rescans.
 
 ### Subsonic — fixes
-- **Restored play queues advance correctly again.** When a Subsonic client (e.g. Feishin) reopened with a partially-played queue saved on the server, playback would stop instead of advancing at the end of a track, the Next button wouldn't auto-play, and the queue could replay the previous track — an off-by-one. Cause: `getPlayQueue` echoed the stored `current` track id verbatim while rebuilding every entry id in the canonical `<hash>@<rowid>` form, so after a Velvet upgrade (older queues stored bare-hash ids) or a library rescan (rowids are reassigned) the `current` matched none of the entries and the client lost its place. `getPlayQueue` now re-encodes `current` through the same resolver as the entries — so it is always one of the returned entry ids — and falls back to the head of the queue if the current track is gone. `savePlayQueue` also canonicalises ids before storing, so freshly-saved queues stay consistent across rescans.
+- **Server-side play-queue restore is now self-consistent.** For clients that persist their queue on the server via `savePlayQueue`/`getPlayQueue` (e.g. DSub, play:Sub), the saved `current` track id is now re-encoded through the same resolver as the queue entries, so it always matches one of the returned entry ids — even after a Velvet upgrade (older queues stored bare-hash ids) or a library rescan (which reassigns the rowid embedded in each id). Previously `getPlayQueue` echoed `current` verbatim while rebuilding the entries in the canonical `<hash>@<rowid>` form, so the two could diverge and a client could lose its resume point. `getPlayQueue` now falls back to the head of the queue if the current track is gone, and `savePlayQueue` canonicalises ids before storing.
+  - *Scope note:* this does **not** affect clients that keep their queue entirely client-side (e.g. Feishin, which never calls these endpoints). A separately reported Feishin symptom — a restored or replaced queue playing the previous queue's next track — was traced to Feishin's own gapless prefetch and is not addressed by this change. See `docs/dev/feishin-gapless-findings.md`.
 
 ## v0.2.0 (2026-06-16)
 
