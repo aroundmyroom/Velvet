@@ -3,7 +3,7 @@
 Accessibility — screen-reader track announcements, WCAG-AA contrast, and high-contrast / colorblind-safe themes.
 
 ### Auto-DJ — fix localStorage quota crash
-- **Fixed: Auto-DJ repeatedly threw `QuotaExceededError` and stopped picking next songs.** The artist-history array was unbounded in older sessions; the previous cap logic used `.shift()` which only removed one entry per call, so a bloated array from an earlier session would never recover. Now uses `slice(-500)` as a hard cap, and a self-healing `catch` block halves the array to 250 entries if the quota is still exceeded. The in-memory array is also capped to 500 on startup so any existing bloated value is immediately trimmed.
+- **Fixed: Auto-DJ repeatedly threw `QuotaExceededError` and stopped picking next songs.** Older code stored full file-path strings (instead of bare artist names) in the artist-history key, which grew to several MB. On first load after this update a one-time migration wipes the key so all existing users start clean. Going forward the cap is 500 entries (`.slice(-500)`), and a self-healing catch block halves to 250 and retries if quota is still exceeded.
 
 ### Player — accessibility
 - **Track changes are announced to screen readers.** A polite ARIA live region now reads out *"Now playing: &lt;title&gt; — &lt;artist&gt;"* whenever the current track changes, so screen-reader users hear what started without hunting for the now-playing bar.

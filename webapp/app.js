@@ -46,6 +46,16 @@ const _browserId = (() => {
 // Read once at startup — avoids 14 repeated localStorage.getItem calls inside
 // the object literal (each call is a synchronous hash-map lookup + string copy).
 const _u = localStorage.getItem('ms2_user') || '';
+// One-time migration: wipe artist history written by older code that stored full
+// file paths or song objects instead of bare artist name strings, which bloated
+// the key to several MB and caused repeated QuotaExceededError in Auto-DJ.
+(function() {
+  const migKey = 'ms2_dj_hist_clean_v1';
+  if (!localStorage.getItem(migKey)) {
+    try { localStorage.removeItem('ms2_dj_artist_history_' + _u); } catch (_) {}
+    try { localStorage.setItem(migKey, '1'); } catch (_) {}
+  }
+})();
 const S = {
   token:    localStorage.getItem('ms2_token') || '',
   username: _u,
