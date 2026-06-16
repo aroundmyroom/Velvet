@@ -9,6 +9,11 @@ Accessibility — screen-reader track announcements, WCAG-AA contrast, and high-
 - **Fixed: the theme switcher was unreadable in High-contrast.** The segmented theme pill used the theme `--border` colour as its track fill, but High-contrast sets `--border` to pure white — so the pill turned white and the inactive labels (Velvet/Dark/Light/Colorblind) disappeared. The High-contrast pill now uses a dark track with a white outline, white labels, and a white-on-black active button.
 - **Fixed: High-contrast and Colorblind themes resized the layout.** The responsive breakpoints that scale the queue-panel and sidebar widths (`--qp-width`/`--sidebar`) listed only the Velvet/Dark/Light themes, so the High-contrast and Colorblind themes — which redeclare those widths at higher specificity — ignored the breakpoints and locked to the full desktop width, making the panels jump when switching themes. All five themes now share the same responsive widths at every screen size.
 
+### Player — design system (foundation)
+- **Spacing and type-scale tokens.** CSS custom properties `--sp-1` through `--sp-8` (4 px → 64 px) and `--type-xs` through `--type-2xl` (11 px → 28 px) are now available in `style.css`. A representative adoption pass applies them to the nav sidebar, player bar text, queue panel sizing, and queue list text — the same values, now driven by a single definition.
+- **Button class system.** A canonical `.btn` base class (reset, cursor, transition, font inheritance), `:focus-visible` ring, and `disabled` / `[disabled]` states are now applied consistently to `.btn-primary`, `.btn-ghost`, and `.btn-danger`. A new `.btn-icon` variant mirrors `.icon-btn` for icon-sized square controls.
+- **SVG icon helper.** A small `icon(name, {w, h})` function returns named SVG strings for the six most-repeated shapes (`play`, `plus`, `more`, `search`, `music`, `check`). Row action buttons in the four song-row renderers (`renderSongRows`, `renderSongRowsWithPath`, `renderSearchRows`, `renderMostPlayedRows`) now call `icon('plus')` and `icon('more')` instead of repeating inline SVG literals.
+
 ## v0.2.1 (2026-06-16)
 
 Makes Subsonic server-side play-queue persistence self-consistent across upgrades and rescans.

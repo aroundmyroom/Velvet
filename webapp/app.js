@@ -3134,6 +3134,21 @@ function skeletonShelf(n = 6) {
   return `<div class="home-row skel-shelf" aria-hidden="true">${card.repeat(n)}</div>`;
 }
 
+// Named SVG constants for the 6 most-repeated icon shapes. `icon(name, {w,h})`
+// returns the SVG string; w/h default to 13×13 to match row action buttons.
+const _SVG_ICONS = {
+  play:  (w, h) => `<svg width="${w}" height="${h}" viewBox="0 0 24 24" fill="currentColor"><polygon points="5,3 19,12 5,21"/></svg>`,
+  plus:  (w, h) => `<svg width="${w}" height="${h}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>`,
+  more:  (w, h) => `<svg width="${w}" height="${h}" viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="5" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="12" cy="19" r="1.5"/></svg>`,
+  search:(w, h) => `<svg width="${w}" height="${h}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>`,
+  music: (w, h) => `<svg width="${w}" height="${h}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>`,
+  check: (w, h) => `<svg width="${w}" height="${h}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20,6 9,17 4,12"/></svg>`,
+};
+function icon(name, { w = 13, h = 13 } = {}) {
+  const fn = _SVG_ICONS[name];
+  return fn ? fn(w, h) : '';
+}
+
 // Consistent empty-list placeholder. `cta` (optional) is { label, view }; the
 // button routes through the matching sidebar nav item via one delegated
 // listener (wired once below), so no per-render binding is needed.
@@ -3234,10 +3249,10 @@ function renderSongRows(songs) {
       <div class="row-stars" data-ci="${i}">${stars}</div>
       <div class="row-actions">
         <button class="row-act-btn add-btn" data-ci="${i}" title="${t('player.ctrl.addToQueue')}">
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+          ${icon('plus')}
         </button>
         <button class="row-act-btn ctx-btn" data-ci="${i}" title="${t('player.ctrl.moreOptions')}">
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="5" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="12" cy="19" r="1.5"/></svg>
+          ${icon('more')}
         </button>
       </div>
     </div>`;
@@ -3272,10 +3287,10 @@ function renderSongRowsWithPath(songs) {
       <div class="row-stars" data-ci="${i}">${stars}</div>
       <div class="row-actions">
         <button class="row-act-btn add-btn" data-ci="${i}" title="${t('player.ctrl.addToQueue')}">
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+          ${icon('plus')}
         </button>
         <button class="row-act-btn ctx-btn" data-ci="${i}" title="${t('player.ctrl.moreOptions')}">
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="5" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="12" cy="19" r="1.5"/></svg>
+          ${icon('more')}
         </button>
       </div>
     </div>`;
@@ -3305,10 +3320,10 @@ function renderSearchRows(songs, offset = 0) {
       </div>
       <div class="row-actions">
         <button class="row-act-btn add-btn" data-ci="${ci}" title="${t('player.ctrl.addToQueue')}">
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+          ${icon('plus')}
         </button>
         <button class="row-act-btn ctx-btn" data-ci="${ci}" title="${t('player.ctrl.moreOptions')}">
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="5" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="12" cy="19" r="1.5"/></svg>
+          ${icon('more')}
         </button>
       </div>
     </div>`;
@@ -3344,10 +3359,10 @@ function renderMostPlayedRows(songs, maxPlays) {
       <div class="row-stars" data-ci="${i}">${stars}</div>
       <div class="row-actions">
         <button class="row-act-btn add-btn" data-ci="${i}" title="${t('player.ctrl.addToQueue')}">
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+          ${icon('plus')}
         </button>
         <button class="row-act-btn ctx-btn" data-ci="${i}" title="${t('player.ctrl.moreOptions')}">
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="5" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="12" cy="19" r="1.5"/></svg>
+          ${icon('more')}
         </button>
       </div>
     </div>`;
@@ -12194,7 +12209,7 @@ function renderFileExplorer(d) {
             <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><polygon points="5,3 19,12 5,21"/></svg>
           </button>
           <button class="fe-act fe-add-btn" title="${t('player.fe.btnAddQueue')}">
-            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+            ${icon('plus')}
           </button>
           <a class="fe-act" href="${fp ? dlUrl(fp) : '#'}" download="${esc(file.name)}" title="${t('player.fe.btnDownload')}" onclick="event.stopPropagation()">
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7,10 12,15 17,10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
@@ -13574,10 +13589,10 @@ function _mountSongVScroll(allSongs, container) {
       <div class="row-stars" data-ci="${i}">${stars}</div>
       <div class="row-actions">
         <button class="row-act-btn add-btn" data-ci="${i}" title="${t('player.ctrl.addToQueue')}">
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+          ${icon('plus')}
         </button>
         <button class="row-act-btn ctx-btn" data-ci="${i}" title="${t('player.ctrl.moreOptions')}">
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="5" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="12" cy="19" r="1.5"/></svg>
+          ${icon('more')}
         </button>
       </div>
     </div>`;
