@@ -13,7 +13,7 @@
   <script defer src="../assets/js/lib/butterchurn.min.js"></script>
   <script defer src="../assets/js/lib/audiomotion-analyzer.js"></script>
   <script defer src="../assets/js/lib/qr.js"></script>
-  <link rel="stylesheet" href="/style.css?v=0.2.1-ff1b3f8c">
+  <link rel="stylesheet" href="/style.css?v=0.2.1-23c70cd7">
   <script src="/assets/js/i18n.js"></script>
 </head>
 <body>
@@ -409,6 +409,14 @@
       <button class="theme-seg-btn" data-theme="light">
         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>
         Light
+      </button>
+      <button class="theme-seg-btn" data-theme="hc">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 3v18a9 9 0 0 0 0-18z" fill="currentColor" stroke="none"/></svg>
+        <span data-i18n="player.theme.highContrast">Contrast</span>
+      </button>
+      <button class="theme-seg-btn" data-theme="cb">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"/></svg>
+        <span data-i18n="player.theme.colorblind">Colorblind</span>
       </button>
     </div>
 
@@ -1004,6 +1012,7 @@
 
 <audio id="audio" preload="auto"></audio>
 <div id="toast-stack"></div>
+<div id="np-live" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></div>
 
 <!-- EASTER EGG – outside #app so position:fixed is always viewport-relative -->
 <div id="egg-pixel" style="position:fixed;left:var(--sidebar);bottom:var(--player);width:6px;height:6px;opacity:0;cursor:pointer;z-index:9999;"></div>
@@ -1021,7 +1030,7 @@
 
 <div id="tip-box"></div>
 <script src="/assets/js/player-locale.js"></script>
-  <script src="/app.js?v=0.2.1-ee9673eb"></script>
+  <script src="/app.js?v=0.2.1-7ffb2ccd"></script>
 
 </body>
 </html>

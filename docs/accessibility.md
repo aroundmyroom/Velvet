@@ -41,6 +41,19 @@ field. Press **`?`** at any time to open an in-app cheat-sheet of this list.
 - **Toasts** — status messages announce politely (`role="status"`); errors
   announce assertively (`role="alert"`). Multiple toasts stack rather than
   replacing one another, and may offer an action (e.g. **Retry**).
+- **Now-playing announcements** — a visually-hidden polite live region
+  (`role="status"`, `aria-live="polite"`) announces *“Now playing: &lt;title&gt; —
+  &lt;artist&gt;”* whenever the track changes.
+
+## Themes & contrast
+
+Five themes are available from the sidebar switcher: **Velvet** (default), **Dark**,
+**Light**, **High contrast**, and **Colorblind-safe**. The choice persists per user.
+
+- **WCAG AA** — normal text meets the 4.5:1 contrast minimum in Velvet, Dark and
+  Light. **High contrast** pushes well past AAA (pure black/white). **Colorblind-safe**
+  uses a blue/orange palette that never relies on red↔green distinctions
+  (deuteranopia/protanopia friendly).
 
 ## Reduced motion
 
