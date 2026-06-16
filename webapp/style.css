@@ -982,6 +982,15 @@ button, a, .song-row, .artist-row, .album-card, .album-row,
 }
 .q-item:hover .q-remove{opacity:1;}
 .q-remove:hover{color:var(--red);background:rgba(248,113,113,.1);}
+/* Queue multi-select — selected row highlight */
+.q-item.q-sel{background:var(--active);}
+.q-item.q-sel .q-num{color:var(--primary);}
+/* Selection action bar */
+.q-sel-bar{display:flex;align-items:center;justify-content:space-between;gap:var(--sp-2);padding:var(--sp-2) var(--sp-3);background:var(--primary-d);border-bottom:1px solid var(--border);flex-shrink:0;}
+.q-sel-count{font-size:var(--type-xs);font-weight:600;color:var(--primary);white-space:nowrap;}
+.q-sel-actions{display:flex;gap:6px;flex-shrink:0;}
+.q-sel-actions .btn-ghost{padding:4px 10px;font-size:var(--type-xs);}
+.q-sel-actions .btn-danger{padding:4px 10px;font-size:var(--type-xs);}
 
 /* ── PLAYER BAR ────────────────────────────────────────────── */
 .player{
