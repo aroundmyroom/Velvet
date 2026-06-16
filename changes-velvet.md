@@ -1,6 +1,6 @@
-## v0.1.8 (2026-06-15)
+## v0.2.0 (2026-06-16)
 
-Player UI polish — perceived performance, feedback, and clearer empty states.
+Player experience overhaul + queue-reliability fixes.
 
 ### Player — perceived performance & feedback
 - **Skeleton loaders.** Slow views now show shimmer placeholders shaped like their result instead of a blank pane or a bare spinner — the Artists gallery, Album Library, search results, and the Home shelves (each shelf fills in as its data arrives).
