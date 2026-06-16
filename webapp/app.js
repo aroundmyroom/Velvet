@@ -1195,6 +1195,8 @@ let _qvsRafP = false;   // RAF pending flag
 let _qvsVersion = 0;        // incremented on any structural queue change (add/remove/reorder)
 let _qvsBuiltVersion = -1;  // version when _qvsRows/_qvsCumH were last built
 let _qvsStartOffsets = [];  // estimated cumulative start time (s) for each queue index
+let _qvsSelected = new Set();  // set of selected queue indices (qi) for multi-select
+let _qvsLastClick = -1;        // last qi clicked, for shift-range selection
 const _QH_ITEM = 58;    // q-item row height px  (7+7 padding + 44 art)
 const _QH_SEP  = 28;    // q-disc-sep row height px
 const _QV_BUF  = 5;     // extra rows to render above/below viewport
@@ -2769,8 +2771,9 @@ function _qvsRender(list, force) {
       const { qi: i, s } = row;
       const startOffset = _qvsStartOffsets[i] || 0;
       const isActive = i === S.idx;
+      const isSel = _qvsSelected.has(i);
       const estStart = (!isActive && startOffset > 0) ? ` title="~${fmt(startOffset)}"` : '';
-      html.push(`<div class="q-item${isActive ? ' q-active' : ''}${s._dj ? ' q-dj' : ''}" data-qi="${i}" draggable="true"${estStart}>
+      html.push(`<div class="q-item${isActive ? ' q-active' : ''}${s._dj ? ' q-dj' : ''}${isSel ? ' q-sel' : ''}" data-qi="${i}" draggable="true"${estStart}>
         <div class="q-drag-handle" title="${t('player.ctrl.queueDragHandle')}">
           <svg width="10" height="14" viewBox="0 0 10 14" fill="currentColor" opacity=".7">
             <circle cx="3" cy="2.5" r="1.2"/><circle cx="7" cy="2.5" r="1.2"/>
@@ -2778,9 +2781,11 @@ function _qvsRender(list, force) {
             <circle cx="3" cy="11.5" r="1.2"/><circle cx="7" cy="11.5" r="1.2"/>
           </svg>
         </div>
-        <div class="q-num">${isActive
-          ? '<svg width="9" height="9" viewBox="0 0 24 24" fill="currentColor"><polygon points="5,3 19,12 5,21"/></svg>'
-          : i + 1}
+        <div class="q-num">${isSel
+          ? '<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><polyline points="20,6 9,17 4,12"/></svg>'
+          : isActive
+            ? '<svg width="9" height="9" viewBox="0 0 24 24" fill="currentColor"><polygon points="5,3 19,12 5,21"/></svg>'
+            : i + 1}
         </div>
         <div class="q-art">${artOrPlaceholder(s['album-art'], 's', 'no-art-sm', true)}</div>
         <div class="q-info">
@@ -2902,6 +2907,46 @@ function refreshQueueUI() {
   _syncQueueLabel();
 }
 
+function _updateQueueSelBar() {
+  const bar = document.getElementById('q-sel-bar');
+  const cnt = document.getElementById('q-sel-count');
+  if (!bar) return;
+  if (_qvsSelected.size === 0) {
+    bar.classList.add('hidden');
+  } else {
+    bar.classList.remove('hidden');
+    if (cnt) cnt.textContent = t('player.queue.selected', { count: _qvsSelected.size });
+  }
+}
+
+function showAddToPlaylistModalBulk(songs) {
+  const list = document.getElementById('atp-list');
+  if (!S.playlists.length) {
+    list.innerHTML = `<div class="modal-empty">No playlists yet. Create one first.</div>`;
+  } else {
+    list.innerHTML = S.playlists.map(p =>
+      `<div class="modal-pl-item" data-pl="${esc(p.name)}">
+        <svg class="modal-pl-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>
+        ${esc(p.name)}
+      </div>`
+    ).join('');
+    list.querySelectorAll('.modal-pl-item').forEach(el => {
+      el.addEventListener('click', () => {
+        const plName = el.dataset.pl;
+        hideModal('atp-modal');
+        _qvsSelected.clear(); _qvsLastClick = -1;
+        _updateQueueSelBar();
+        const queueList = document.getElementById('queue-list');
+        if (queueList) { _qvsFIdx = -1; _qvsLIdx = -1; _qvsRender(queueList, true); }
+        Promise.all(songs.map(song =>
+          api('POST', 'api/v1/playlist/add-song', { song: song.filepath, playlist: plName }).catch(() => {})
+        )).then(() => toast(t('player.toast.addedToPlaylist', { playlist: plName })));
+      });
+    });
+  }
+  showModal('atp-modal');
+}
+
 // Scroll the now-playing item into view in the virtual-scrolled queue.
 // Without `force`, only scrolls when the active row is outside the viewport
 // (used by the auto refresh); the jump-to-now-playing button passes force=true
@@ -2959,7 +3004,30 @@ function _initQueueListeners() {
     }
     const item = e.target.closest('.q-item');
     if (!item || e.target.closest('.q-drag-handle')) return;
-    Player.playAt(Number.parseInt(item.dataset.qi));
+    const qi = Number.parseInt(item.dataset.qi);
+
+    if (e.ctrlKey || e.metaKey) {
+      if (_qvsSelected.has(qi)) _qvsSelected.delete(qi);
+      else _qvsSelected.add(qi);
+      _qvsLastClick = qi;
+      _updateQueueSelBar();
+      _qvsFIdx = -1; _qvsLIdx = -1;
+      _qvsRender(list, true);
+      return;
+    }
+
+    if (e.shiftKey && _qvsLastClick >= 0) {
+      const lo = Math.min(qi, _qvsLastClick), hi = Math.max(qi, _qvsLastClick);
+      for (let k = lo; k <= hi; k++) _qvsSelected.add(k);
+      _qvsLastClick = qi;
+      _updateQueueSelBar();
+      _qvsFIdx = -1; _qvsLIdx = -1;
+      _qvsRender(list, true);
+      return;
+    }
+
+    _qvsLastClick = qi;
+    Player.playAt(qi);
   });
 
   list.addEventListener('dragstart', e => {
@@ -21976,6 +22044,28 @@ document.getElementById('qp-share-btn').addEventListener('click', () => {
 });
 document.getElementById('qp-jump-btn').addEventListener('click', () => _scrollQueueToActive(true));
 document.getElementById('qp-save-btn').addEventListener('click', () => showSavePlaylistModal());
+document.getElementById('q-sel-remove-btn').addEventListener('click', () => {
+  const toRemove = [..._qvsSelected].sort((a, b) => b - a);
+  const curFp = S.queue[S.idx]?.filepath;
+  for (const qi of toRemove) {
+    if (qi < S.idx) S.idx--;
+    else if (qi === S.idx) S.idx = -1;
+    S.queue.splice(qi, 1);
+  }
+  _qvsVersion++;
+  _qvsSelected.clear(); _qvsLastClick = -1;
+  if (S.idx < 0 && S.queue.length > 0) S.idx = S.queue.findIndex(s => s.filepath === curFp);
+  if (S.idx < 0) S.idx = 0;
+  persistQueue();
+  _syncQueueToDb();
+  refreshQueueUI();
+  _updateQueueSelBar();
+});
+document.getElementById('q-sel-atp-btn').addEventListener('click', () => {
+  const songs = [..._qvsSelected].sort((a, b) => a - b).map(qi => S.queue[qi]).filter(Boolean);
+  if (!songs.length) return;
+  showAddToPlaylistModalBulk(songs);
+});
 document.getElementById('qp-shuffle-btn').addEventListener('click', () => {
   if (!S.queue.length) return;
   // Fisher-Yates shuffle
@@ -24324,6 +24414,12 @@ document.addEventListener('keydown', e => {
   switch (e.code) {
     case 'Escape':
       hideNPModal(); hideCtxMenu(); VIZ.close();
+      if (_qvsSelected.size) {
+        _qvsSelected.clear(); _qvsLastClick = -1;
+        _updateQueueSelBar();
+        const _escQList = document.getElementById('queue-list');
+        if (_escQList) { _qvsFIdx = -1; _qvsLIdx = -1; _qvsRender(_escQList, true); }
+      }
       break;
     case 'Space':
       e.preventDefault(); Player.toggle();

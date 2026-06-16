@@ -14,6 +14,11 @@ Accessibility — screen-reader track announcements, WCAG-AA contrast, and high-
 - **Button class system.** A canonical `.btn` base class (reset, cursor, transition, font inheritance), `:focus-visible` ring, and `disabled` / `[disabled]` states are now applied consistently to `.btn-primary`, `.btn-ghost`, and `.btn-danger`. A new `.btn-icon` variant mirrors `.icon-btn` for icon-sized square controls.
 - **SVG icon helper.** A small `icon(name, {w, h})` function returns named SVG strings for the six most-repeated shapes (`play`, `plus`, `more`, `search`, `music`, `check`). Row action buttons in the four song-row renderers (`renderSongRows`, `renderSongRowsWithPath`, `renderSearchRows`, `renderMostPlayedRows`) now call `icon('plus')` and `icon('more')` instead of repeating inline SVG literals.
 
+### Player — queue multi-select
+- **Ctrl/Cmd+click to select queue items, Shift+click to range-select.** A plain click still plays the track immediately. Selected items show a checkmark in the position cell and a subtle `--active` background tint; selection state lives only in a JS Set, so it survives virtual-scroll row recycling correctly.
+- **Selection bar with bulk actions.** When one or more items are selected, a compact bar appears above the queue list showing the count, a **Remove** button (deletes all selected tracks from the queue in one step, adjusting the current-song pointer cleanly), and an **Add to playlist** button (opens the existing playlist picker and bulk-adds all selected songs). The bar disappears when the selection is cleared.
+- **Escape clears the selection.** The global Escape handler now also clears the queue multi-select and re-renders the queue when a selection is active.
+
 ## v0.2.1 (2026-06-16)
 
 Makes Subsonic server-side play-queue persistence self-consistent across upgrades and rescans.

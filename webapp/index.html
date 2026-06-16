@@ -13,7 +13,7 @@
   <script defer src="../assets/js/lib/butterchurn.min.js"></script>
   <script defer src="../assets/js/lib/audiomotion-analyzer.js"></script>
   <script defer src="../assets/js/lib/qr.js"></script>
-  <link rel="stylesheet" href="/style.css?v=0.2.1-b51ae4b6">
+  <link rel="stylesheet" href="/style.css?v=0.2.1-85b15f23">
   <script src="/assets/js/i18n.js"></script>
 </head>
 <body>
@@ -727,6 +727,15 @@
       </div>
     </div>
 
+    <!-- Multi-select action bar — visible when ≥1 queue items are selected -->
+    <div id="q-sel-bar" class="q-sel-bar hidden" role="toolbar" aria-label="Queue selection">
+      <span id="q-sel-count" class="q-sel-count"></span>
+      <div class="q-sel-actions">
+        <button id="q-sel-atp-btn" class="btn-ghost" data-i18n="player.queue.addToPlaylist">Add to playlist</button>
+        <button id="q-sel-remove-btn" class="btn-danger" data-i18n="player.queue.removeSelected">Remove</button>
+      </div>
+    </div>
+
     <div id="queue-list" class="queue-list"></div>
   </div>
 
@@ -1030,7 +1039,7 @@
 
 <div id="tip-box"></div>
 <script src="/assets/js/player-locale.js"></script>
-  <script src="/app.js?v=0.2.1-e7b8e96c"></script>
+  <script src="/app.js?v=0.2.1-5ce4561b"></script>
 
 </body>
 </html>
