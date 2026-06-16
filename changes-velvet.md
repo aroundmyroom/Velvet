@@ -6,6 +6,7 @@ Accessibility — screen-reader track announcements, WCAG-AA contrast, and high-
 - **Track changes are announced to screen readers.** A polite ARIA live region now reads out *"Now playing: &lt;title&gt; — &lt;artist&gt;"* whenever the current track changes, so screen-reader users hear what started without hunting for the now-playing bar.
 - **Text now meets WCAG AA contrast.** Secondary and tertiary text colours (`--t2`/`--t3`) were nudged lighter — keeping the same hue — so every normal-text pair clears the 4.5:1 AA threshold across the Velvet, Dark and Light themes (several previously sat at ~3.0–4.3:1, e.g. tertiary text on cards).
 - **Two new accessible themes.** A **High-contrast** theme (pure black/white, AAA-level contrast, a bright focus ring) and a **Colorblind-safe** theme (a blue/orange palette that never relies on red↔green distinctions) join the theme switcher, which now wraps to fit the five options. Both persist like the other themes.
+- **Fixed: the theme switcher was unreadable in High-contrast.** The segmented theme pill used the theme `--border` colour as its track fill, but High-contrast sets `--border` to pure white — so the pill turned white and the inactive labels (Velvet/Dark/Light/Colorblind) disappeared. The High-contrast pill now uses a dark track with a white outline, white labels, and a white-on-black active button.
 
 ## v0.2.1 (2026-06-16)
 
