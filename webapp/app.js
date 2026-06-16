@@ -22044,7 +22044,7 @@ document.getElementById('qp-share-btn').addEventListener('click', () => {
 });
 document.getElementById('qp-jump-btn').addEventListener('click', () => _scrollQueueToActive(true));
 document.getElementById('qp-save-btn').addEventListener('click', () => showSavePlaylistModal());
-document.getElementById('q-sel-remove-btn').addEventListener('click', () => {
+document.getElementById('q-sel-remove-btn')?.addEventListener('click', () => {
   const toRemove = [..._qvsSelected].sort((a, b) => b - a);
   const curFp = S.queue[S.idx]?.filepath;
   for (const qi of toRemove) {
@@ -22061,7 +22061,7 @@ document.getElementById('q-sel-remove-btn').addEventListener('click', () => {
   refreshQueueUI();
   _updateQueueSelBar();
 });
-document.getElementById('q-sel-atp-btn').addEventListener('click', () => {
+document.getElementById('q-sel-atp-btn')?.addEventListener('click', () => {
   const songs = [..._qvsSelected].sort((a, b) => a - b).map(qi => S.queue[qi]).filter(Boolean);
   if (!songs.length) return;
   showAddToPlaylistModalBulk(songs);
