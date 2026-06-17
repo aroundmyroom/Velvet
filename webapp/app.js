@@ -23252,18 +23252,30 @@ let _sonosLastRecastAt = 0;   // throttle for the stopped-device self-heal re-ca
 let _sonosLocalControlAt = 0; // timestamp of a web-initiated play/pause — suppresses device→browser state sync briefly so the poll doesn't race our own set-pause
 let _sonosCeded = false;      // true after the user took control on the Sonos app (next/prev/shuffle) — web pauses and stops syncing until the user presses Play here again
 let _sonosDivergeCount = 0;   // consecutive polls where Sonos plays a track other than our current — debounces natural-advance transients before ceding
+let _sonosAnchored = false;       // false during the lead-in: hold the muted UI clock to the device until it confirms streaming, so the clock never runs ahead of the speaker
+let _sonosAnchorCastTime = 0;     // the _sonosCastTime the lead-in was last armed for — re-arms on every fresh cast/track
 
 // Start polling Sonos position and syncing audioEl when casting is active.
 // When the user seeks in S2/CLIC, Sonos's position drifts from audioEl.currentTime.
 // We detect drift >5 s and seek audioEl to match (suppressing the seek echo to Sonos).
+// Fast (1 s) polling ONLY during the initial lead-in — which is inside the cede grace
+// window, so it cannot trip the external-control debounce. Steady 3 s otherwise,
+// INCLUDING near a track's end: a near-end fast poll is exactly what tripped #32's
+// false cede on a natural advance, so it is deliberately never done.
+function _sonosNextPollDelay() {
+  if (!_sonosAnchored && (Date.now() - _sonosCastTime) < 10000) return 1000;
+  return 3000;
+}
 function _startSonosPositionSync(ip) {
-  if (_sonosPollTimer) clearInterval(_sonosPollTimer);
+  _stopSonosPositionSync();
   _sonosConsecutiveFailures = 0;
-  _sonosPollTimer = setInterval(() => {
-    if (!S.castingToSonos || !S.sonosRoom) { clearInterval(_sonosPollTimer); _sonosPollTimer = null; return; }
+  const _poll = () => {
+    if (!S.castingToSonos || !S.sonosRoom) { _sonosPollTimer = null; return; }
     api('GET', 'api/v1/sonos/transport-status?ip=' + encodeURIComponent(ip))
       .then(st => {
         if (!S.castingToSonos) return;
+        // Re-arm the lead-in on every fresh cast/track (detected via the _sonosCastTime stamp).
+        if (_sonosAnchorCastTime !== _sonosCastTime) { _sonosAnchorCastTime = _sonosCastTime; _sonosAnchored = false; }
         // Detect device offline: server returns unreachable:true instead of a real status
         if (st?.unreachable) {
           _sonosConsecutiveFailures++;
@@ -23330,6 +23342,19 @@ function _startSonosPositionSync(ip) {
         // a pause state — so the sleep LED-off never fires. Skip right after a
         // web-initiated control (avoid racing our own set-pause) and during cast grace.
         const _recentLocal = (Date.now() - _sonosLocalControlAt) < 4000;
+        // Lead-in buffer: until the device confirms it is really streaming, pin the muted
+        // UI clock to the device position so it never races ahead of the speaker — no
+        // permanent head-offset and no backward jump when audio begins. Skipped during a
+        // recent local seek/control so it can't fight the user's seek target.
+        if (!_sonosAnchored && !_recentLocal && (st.playing || st.paused)) {
+          _sonosSyncFromDevice = true;
+          audioEl.currentTime = sonosPos;
+          setTimeout(() => { _sonosSyncFromDevice = false; }, 1200);
+          if (st.playing && (st.position || 0) > 0.5) {
+            _sonosAnchored = true; // device is truly streaming — hand off to steady-state sync
+          }
+          return;
+        }
         if (!_castGrace && !_recentLocal && !_sonosLoadingSong) {
           if (st.paused && !audioEl.paused) {
             audioEl.pause();
@@ -23342,17 +23367,24 @@ function _startSonosPositionSync(ip) {
             return;
           }
         }
-        if (!_castGrace && (st.playing || st.paused) && Math.abs(sonosPos - browserPos) > 5) {
+        // Drift correction — skip right after a local seek/control so the poll doesn't
+        // snap the UI back to the device's pre-seek position while it is still catching up.
+        if (!_castGrace && !_recentLocal && (st.playing || st.paused) && Math.abs(sonosPos - browserPos) > 5) {
           _sonosSyncFromDevice = true;
           audioEl.currentTime = sonosPos;
           setTimeout(() => { _sonosSyncFromDevice = false; }, 2000);
         }
       })
-      .catch(() => {});
-  }, 3000);
+      .catch(() => {})
+      .finally(() => {
+        if (!S.castingToSonos || !S.sonosRoom) { _sonosPollTimer = null; return; }
+        _sonosPollTimer = setTimeout(_poll, _sonosNextPollDelay());
+      });
+  };
+  _sonosPollTimer = setTimeout(_poll, 1000);
 }
 function _stopSonosPositionSync() {
-  clearInterval(_sonosPollTimer);
+  clearTimeout(_sonosPollTimer);
   _sonosPollTimer = null;
   _sonosConsecutiveFailures = 0;
 }
@@ -23388,6 +23420,9 @@ function _onAudioSeeked() {
   }
   // Mirror seek to Sonos when casting — skip during initial track load or device-sync seeks
   if (S.castingToSonos && S.sonosRoom && !_sonosLoadingSong && !_sonosSyncFromDevice) {
+    // Mark a recent local control so the position poll won't snap the UI back to the
+    // device's pre-seek position while the device is still catching up to the new spot.
+    _sonosLocalControlAt = Date.now();
     clearTimeout(_sonosSeekTimer);
     _sonosSeekTimer = setTimeout(() => {
       api('POST', 'api/v1/sonos/seek', { ip: S.sonosRoom.ip, position: Math.floor(audioEl.currentTime) }).catch(() => {});

@@ -1,3 +1,11 @@
+## v0.2.6 (2026-06-17)
+
+Sonos casting: the player UI now stays locked to the speaker, and seeking lands cleanly.
+
+### Player — Sonos casting
+- **The progress bar/waveform no longer runs ahead of the Sonos speaker.** A proper lead-in now pins the (muted) UI clock to the device's real position until Sonos actually starts streaming, then runs in lockstep — so there's no permanent head-offset and no backward jump when audio begins. The poll briefly speeds up (1 s) during this lead-in only; it stays at 3 s the rest of the track (and never speeds up near a track's end). The natural track-to-next transition, external-control cede, and stopped-stream self-heal are unchanged.
+- **Seeking / fast-forwarding now lands cleanly instead of jumping back.** When you scrubbed, a position poll landing mid-seek could read the device's old position and snap the UI back to where you started. The poll now holds off its drift correction for a few seconds after a local seek, so the UI stays at the new position while the speaker catches up.
+
 ## v0.2.5 (2026-06-17)
 
 Auto-DJ now survives a page refresh; reverted the Sonos casting-sync change (#32) that regressed real-world playback.
