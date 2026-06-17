@@ -860,7 +860,8 @@ const _QUEUE_COMPACT_FIELDS = [
   'bitrate', 'sample-rate', 'channels', 'rg',
   'bpm', 'musical_key', 'ts',
   'isRadio', 'isPodcast', 'stationName', 'stationId',
-  'episodeId', 'podcastId', 'streamUrl'
+  'episodeId', 'podcastId', 'streamUrl',
+  '_dj'
 ];
 
 function _compactQueueSong(song) {
@@ -1087,6 +1088,13 @@ function restoreQueue(silent = false) {
   if (_camelotAnchor) _camelotAnchorNeighbours = camelotNeighbours(_camelotAnchor);
   refreshQueueUI();
   _syncQueueLabel();   // render BPM/key chips with restored anchors
+  // Restore Auto-DJ on/off so a refresh keeps it running if it was on. The flag is
+  // persisted by setAutoDJ() but only applied here, after the queue is back (the
+  // music-song guard needs the current track present). skipAutoStart=true: don't
+  // force a fetch/play — the queue restore resumes playback; DJ takes over at end.
+  if (localStorage.getItem(_uKey('autodj')) === '1' && _isMusicSong(S.queue[S.idx])) {
+    setAutoDJ(true, true);
+  }
   if (!silent) {
     _showInfoStrip('✓',
       `<span class="dj-strip-label">${t('player.autodj.stripQueueRestored')}</span><span class="dj-strip-sep">·</span><span class="dj-strip-queued">${S.queue.length}</span><span class="dj-strip-title">&nbsp;${t('label.getLastSongs', {count: S.queue.length})}</span>`,

@@ -1,6 +1,10 @@
 ## v0.2.5 (2026-06-17)
 
-Reverted the Sonos casting-sync change (#32) that regressed real-world playback.
+Auto-DJ now survives a page refresh; reverted the Sonos casting-sync change (#32) that regressed real-world playback.
+
+### Player — Auto-DJ
+- **Auto-DJ now stays on across a page refresh.** The on/off flag was already saved but never restored on boot, so a refresh silently turned Auto-DJ off. It's now reapplied after the queue is restored (without force-starting playback — it takes over at the end of the current track as usual).
+- **The Auto-DJ badge in the queue now survives a refresh.** The per-song `_dj` marker was dropped by the queue-compaction whitelist that keeps localStorage small, so the badge vanished on reload. `_dj` is now persisted with the queue.
 
 ### Player — Sonos casting
 - **Reverted #32.** The lead-in/anchor/device-end rework misunderstood how Sonos casting works: Velvet pushes a multi-track *window* and the device auto-advances through it itself. Disabling the local re-push plus the faster near-end polling made the "external control" cede fire on a normal track change — the web player paused, stopped syncing, and the UI froze on the finished song while Sonos played on. Restored the previous known-good behaviour. The original polish issue (UI clock slightly ahead of the speaker) will be re-addressed with a window-following approach, verified on real hardware before merge.
