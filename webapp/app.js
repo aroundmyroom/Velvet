@@ -22659,7 +22659,17 @@ function _onAudioPlay()  {
   syncPlayIcons(); VIZ.initAudio(); VU_NEEDLE.start(); _startWaveformRaf(); document.body.classList.add('audio-playing'); _TabFav.play(); _startPositionSync(); if (S.queue[S.idx]?.isRadio) { _radioPlayStart = Date.now(); if (_radioNowPlayingStation) _pollRadioNowPlaying(_radioNowPlayingStation); } if ('mediaSession' in navigator) try { navigator.mediaSession.playbackState = 'playing'; } catch(_e) {} /* Re-apply book speed — browsers reset playbackRate to 1 after audioEl.load() */ if (_isAudioBookSong(S.queue[S.idx]) && S.bookSpeed && S.bookSpeed !== 1) audioEl.playbackRate = S.bookSpeed;
 }
 function _onAudioPause() { if (S.username) localStorage.setItem(_playingKey(), '0'); syncPlayIcons(); VU_NEEDLE.stop();  _stopWaveformRaf(); document.body.classList.remove('audio-playing'); _TabFav.pause(); _stopPositionSync(); if ('mediaSession' in navigator) try { navigator.mediaSession.playbackState = 'paused';  } catch(_e) {} persistQueue(); /* flush playing:false to localStorage immediately */ _syncQueueToDbNow(false); /* immediate DB write — no debounce — so even a quick clear+refresh sees playing:false */ const _ps = S.queue[S.idx]; if (_isAudioBookSong(_ps) && audioEl.currentTime > 2) { _saveBookPosition(_ps.filepath, audioEl.currentTime); } }
+// When casting, the muted local <audio> element's 'ended' runs AHEAD of the real
+// device (startup latency), so it would cut the tail by advancing early. Ignore
+// the local 'ended' while casting; the device poll detects the real end and calls
+// _deviceTrackEnded(), which re-runs this same handler with the housekeeping intact.
+let _deviceEndInProgress = false;
+function _deviceTrackEnded() {
+  _deviceEndInProgress = true;
+  try { _onAudioEnded(); } finally { _deviceEndInProgress = false; }
+}
 function _onAudioEnded() {
+  if ((S.castingToSonos || S.castingToMpv) && !_deviceEndInProgress) return;
   // Radio stream ended unexpectedly — try to reconnect on the same link
   const _curSong = S.queue[S.idx];
   if (_curSong?.isRadio) {
@@ -23094,8 +23104,11 @@ function _updateBufferBars() {
 
 function _onAudioTimeupdateUI() {
   const _cueSong = S.queue[S.idx];
-  // CUE virtual track: advance to next queue entry when reaching this track's end boundary
+  // CUE virtual track: advance to next queue entry when reaching this track's end boundary.
+  // Skip while casting — the local clock isn't the source of truth (the device drives
+  // transitions), so a local-clock boundary check would advance early.
   if (_cueSong?._isCueSplit && _cueSong.cueEndOffset != null &&
+      !S.castingToSonos && !S.castingToMpv &&
       audioEl.currentTime >= _cueSong.cueEndOffset - 0.15) {
     Player.next();
     return;
@@ -23244,18 +23257,37 @@ let _sonosLastRecastAt = 0;   // throttle for the stopped-device self-heal re-ca
 let _sonosLocalControlAt = 0; // timestamp of a web-initiated play/pause — suppresses device→browser state sync briefly so the poll doesn't race our own set-pause
 let _sonosCeded = false;      // true after the user took control on the Sonos app (next/prev/shuffle) — web pauses and stops syncing until the user presses Play here again
 let _sonosDivergeCount = 0;   // consecutive polls where Sonos plays a track other than our current — debounces natural-advance transients before ceding
+let _sonosPlaybackConfirmed = false; // false during the lead-in: the device hasn't started streaming yet, so we hold the muted clock at the anchor (kills the startup head-offset)
+let _sonosSyncedFp = null;          // filepath the lead-in is currently armed for — re-arms the lead-in on every track change
+let _sonosBufferingToastFp = null;  // filepath we last showed the "buffering" toast for — once per track
 
 // Start polling Sonos position and syncing audioEl when casting is active.
 // When the user seeks in S2/CLIC, Sonos's position drifts from audioEl.currentTime.
 // We detect drift >5 s and seek audioEl to match (suppressing the seek echo to Sonos).
+// Poll cadence: 1 s during the lead-in and the last 12 s of a track (so the
+// hand-off to the next song is tight), 3 s during steady-state playback.
+function _sonosNextPollDelay() {
+  if (!_sonosPlaybackConfirmed) return 1000;
+  const cur = S.queue[S.idx];
+  const dur = audioEl.duration || cur?.duration || 0;
+  const pos = audioEl.currentTime || 0;
+  if (dur > 0 && dur - pos <= 12) return 1000;
+  return 3000;
+}
 function _startSonosPositionSync(ip) {
-  if (_sonosPollTimer) clearInterval(_sonosPollTimer);
+  _stopSonosPositionSync();
   _sonosConsecutiveFailures = 0;
-  _sonosPollTimer = setInterval(() => {
-    if (!S.castingToSonos || !S.sonosRoom) { clearInterval(_sonosPollTimer); _sonosPollTimer = null; return; }
+  _sonosPlaybackConfirmed = false; // re-arm the lead-in for this cast
+  _sonosSyncedFp = null;
+  const _poll = () => {
+    if (!S.castingToSonos || !S.sonosRoom) { _sonosPollTimer = null; return; }
     api('GET', 'api/v1/sonos/transport-status?ip=' + encodeURIComponent(ip))
       .then(st => {
         if (!S.castingToSonos) return;
+        // Re-arm the lead-in whenever the current track changes (each new track has
+        // its own device startup latency).
+        const _curFp = S.queue[S.idx]?.filepath || null;
+        if (_curFp !== _sonosSyncedFp) { _sonosSyncedFp = _curFp; _sonosPlaybackConfirmed = false; }
         // Detect device offline: server returns unreachable:true instead of a real status
         if (st?.unreachable) {
           _sonosConsecutiveFailures++;
@@ -23308,6 +23340,31 @@ function _startSonosPositionSync(ip) {
         }
         const sonosPos = (st.position || 0) + _sonosStreamOffset; // compensate transcoded-stream offset
         const browserPos = audioEl.currentTime || 0;
+        // Lead-in buffer: until the device actually starts streaming (raw RelTime
+        // advances past ~0.3 s), hold the muted local clock at the device anchor and
+        // tell the user we're buffering. This removes the startup head-offset that
+        // otherwise persists for the whole track and makes the UI run ahead of audio.
+        if (!_sonosPlaybackConfirmed) {
+          if (st.playing && (st.position || 0) > 0.3) {
+            _sonosPlaybackConfirmed = true;
+          } else {
+            if (_sonosBufferingToastFp !== _curFp) { _sonosBufferingToastFp = _curFp; toast(t('player.output.sonosBuffering')); }
+            if (st.playing || st.paused) {
+              _sonosSyncFromDevice = true;
+              audioEl.currentTime = sonosPos;
+              setTimeout(() => { _sonosSyncFromDevice = false; }, 800);
+            }
+            return;
+          }
+        }
+        // Device-driven natural end: the real audio finished on the device. Advance the
+        // queue here — the muted local 'ended' is ignored while casting (it runs ahead
+        // of the device and would cut the tail). _cur/_dur are from the self-heal block.
+        if (_cur && !_cur.isRadio && _dur > 0) {
+          const _atEnd = sonosPos >= _dur - 0.4;
+          const _stoppedAtEnd = (st.stopped || st.transitioning) && Math.max(sonosPos, browserPos) >= _dur - 5;
+          if (_atEnd || _stoppedAtEnd) { _deviceTrackEnded(); return; }
+        }
         // Only sync position when Sonos is actively playing or paused — NOT when
         // stopped/loading (e.g. device has empty queue after page refresh, or is
         // transitioning between tracks). Syncing in stopped state would zero out
@@ -23334,17 +23391,25 @@ function _startSonosPositionSync(ip) {
             return;
           }
         }
-        if (!_castGrace && (st.playing || st.paused) && Math.abs(sonosPos - browserPos) > 5) {
+        // Tight drift correction: keep the muted UI clock within ~0.75 s of the real
+        // device position the whole track (was a coarse 5 s snap suppressed for 8 s,
+        // which never closed the startup offset — the lead-in above handles startup now).
+        if ((st.playing || st.paused) && Math.abs(sonosPos - browserPos) > 0.75) {
           _sonosSyncFromDevice = true;
           audioEl.currentTime = sonosPos;
-          setTimeout(() => { _sonosSyncFromDevice = false; }, 2000);
+          setTimeout(() => { _sonosSyncFromDevice = false; }, 1500);
         }
       })
-      .catch(() => {});
-  }, 3000);
+      .catch(() => {})
+      .finally(() => {
+        if (!S.castingToSonos || !S.sonosRoom) { _sonosPollTimer = null; return; }
+        _sonosPollTimer = setTimeout(_poll, _sonosNextPollDelay());
+      });
+  };
+  _sonosPollTimer = setTimeout(_poll, 1200);
 }
 function _stopSonosPositionSync() {
-  clearInterval(_sonosPollTimer);
+  clearTimeout(_sonosPollTimer);
   _sonosPollTimer = null;
   _sonosConsecutiveFailures = 0;
 }
