@@ -1,9 +1,9 @@
 ## v0.2.5 (2026-06-17)
 
-Casting sync — the player UI now tracks where the audio really is on Sonos.
+Reverted the Sonos casting-sync change (#32) that regressed real-world playback.
 
 ### Player — Sonos casting
-- **Fixed: the progress bar/waveform ran ahead of the Sonos speaker, cutting off the end of each song.** The muted local audio element (used as the UI clock) started instantly while the Sonos stream took a few seconds to begin, so the UI sat permanently ahead of the real audio and the next track was triggered before the current one finished on the device. Now a short lead-in buffer holds the UI until Sonos actually starts streaming (briefly showing "Buffering on Sonos…"), the UI clock is kept within ~0.75 s of the device the whole track, and the hand-off to the next song is driven by the device reaching the end — not the local clock. The poll rate tightens to 1 s during the lead-in and the final 12 s of a track so transitions stay snappy. External-control cede, stopped-device self-heal, and transcoded-seek offset behaviour are unchanged.
+- **Reverted #32.** The lead-in/anchor/device-end rework misunderstood how Sonos casting works: Velvet pushes a multi-track *window* and the device auto-advances through it itself. Disabling the local re-push plus the faster near-end polling made the "external control" cede fire on a normal track change — the web player paused, stopped syncing, and the UI froze on the finished song while Sonos played on. Restored the previous known-good behaviour. The original polish issue (UI clock slightly ahead of the speaker) will be re-addressed with a window-following approach, verified on real hardware before merge.
 
 ## v0.2.4 (2026-06-17)
 
