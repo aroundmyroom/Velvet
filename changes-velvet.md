@@ -1,3 +1,10 @@
+## v0.2.5 (2026-06-17)
+
+Reverted the Sonos casting-sync change (#32) that regressed real-world playback.
+
+### Player — Sonos casting
+- **Reverted #32.** The lead-in/anchor/device-end rework misunderstood how Sonos casting works: Velvet pushes a multi-track *window* and the device auto-advances through it itself. Disabling the local re-push plus the faster near-end polling made the "external control" cede fire on a normal track change — the web player paused, stopped syncing, and the UI froze on the finished song while Sonos played on. Restored the previous known-good behaviour. The original polish issue (UI clock slightly ahead of the speaker) will be re-addressed with a window-following approach, verified on real hardware before merge.
+
 ## v0.2.4 (2026-06-17)
 
 i18n & British English polish — theme switcher fully translated, British spellings, Dutch admin theme labels.
