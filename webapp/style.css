@@ -320,7 +320,7 @@ button, a, .song-row, .artist-row, .album-card, .album-row,
 }
 .footer-link:hover,.footer-action:hover{background:var(--hover);color:var(--t1);}
 
-/* ── THEME SEGMENTED PILL (Velvet / Dark / Light / High-contrast / Colorblind) ── */
+/* ── THEME SEGMENTED PILL (Velvet / Dark / Light / High-contrast / Colourblind) ── */
 /* Wraps to a second row when more than three themes are present. */
 .theme-seg{display:flex;flex-wrap:wrap;width:calc(100% - 1.5rem);box-sizing:border-box;padding:3px;gap:2px;background:var(--border);border-radius:calc(var(--r) + 4px);margin:0 .75rem .55rem;}
 .theme-seg-btn{

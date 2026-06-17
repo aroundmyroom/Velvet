@@ -1,3 +1,16 @@
+## v0.2.4 (2026-06-17)
+
+i18n & British English polish — theme switcher fully translated, British spellings, Dutch admin theme labels.
+
+### Player
+- **Fixed: theme switcher buttons Velvet / Dark / Light had no i18n key.** All five theme buttons now use `data-i18n` spans. Dutch users see Donker / Licht / Hoog contrast / Kleurenblind. The High-contrast fallback text was also wrong ("Contrast" → "High contrast").
+
+### Localisation — English
+- **British English corrections in en.json.** Fixed: `behavior` → `behaviour`, `favorites` → `favourites` (Sonos Radio), `Customize` → `Customise` (Home/Shortcuts shelf buttons), `Colorblind` → `Colourblind`.
+
+### Localisation — Dutch
+- **Fixed: admin default-theme dropdown showed "Velvet Dark" / "Velvet Light" in Dutch.** Now correctly "Velvet Donker" / "Velvet Licht", matching the player theme switcher.
+
 ## v0.2.3 (2026-06-17)
 
 Recently-added calendar-day view, scan-errors i18n fix, Auto-DJ similar-artists loop fix.
