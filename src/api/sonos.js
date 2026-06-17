@@ -1519,6 +1519,7 @@ export function setup(velvet) {
         playing:  state === 'PLAYING',
         paused:   state === 'PAUSED_PLAYBACK',
         stopped:  state === 'STOPPED',
+        transitioning: state === 'TRANSITIONING',
         state,
         position: parseTime(tag(posXml, 'RelTime')),
         duration: parseTime(tag(posXml, 'TrackDuration')),

@@ -2234,6 +2234,7 @@
   "player.output.noSonos": "Geen Sonos-kamers gevonden",
   "player.output.sonosLost": "Sonos-apparaat offline — overgeschakeld naar browsergeluid",
   "player.output.sonosExternalControl": "Afspelen overgenomen in de Sonos-app — hier gepauzeerd",
+  "player.output.sonosBuffering": "Bufferen op Sonos…",
   "player.output.statusChecking": "Controleren…",
   "player.output.statusReady": "Gereed",
   "player.output.statusWarmingUp": "Opwarmen — apparaat gevonden, renderer start",
