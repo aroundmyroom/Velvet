@@ -2235,6 +2235,7 @@
   "player.output.sonosLost": "Sonos device offline — switched to browser audio",
   "player.output.sonosExternalControl": "Playback taken over on the Sonos app — paused here",
   "player.output.sonosBuffering": "Buffering on Sonos…",
+  "player.output.mpvBuffering": "Buffering on server speaker…",
   "player.output.statusChecking": "Checking…",
   "player.output.statusReady": "Ready",
   "player.output.statusWarmingUp": "Warming up — device found, renderer starting",
