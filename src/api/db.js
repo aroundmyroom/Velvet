@@ -700,7 +700,7 @@ export function setup(velvet) {
       req.user.vpaths, req.user.username,
       maxFolders * 20,
       ignoreVPaths,
-      { excludeFilepathPrefixes }
+      { excludeFilepathPrefixes, maxDays }
     );
 
     // Collapse CD/Disc/Side sub-folders so multi-disc albums appear as one card
@@ -1364,6 +1364,12 @@ function _leanRandomPick(db, user, body, bp, ignoreList, ignorePercentage) {
   return _leanFallbackPick(db, user, fallbacks);
 }
 
+// Minimum pool size for similar-artists mode. Below this, the 50% ignoreList cap
+// allows only floor(N/2) cooldown slots — e.g. N=3 means only 1 song cooled, so
+// the same 2 tracks loop forever. When the filtered pool is smaller than this,
+// drop the artist filter and widen to the full library.
+const MIN_SIMILAR_POOL = 10;
+
 // Similar-artist fallback steps (2–3b): progressively relax BPM/key constraints
 // while keeping the artist filter active.
 function _similarArtistFallbacks(query, bp, artists, ignoreArtists, r) {
@@ -1437,7 +1443,11 @@ function _fullLoadFallbackChain(db, user, body, bp, hasArtistFilter, initial) {
 
   let r = initial;
   if (hasArtistFilter) r = _similarArtistFallbacks(query, bp, artists, ignoreArtists, r);
+  // Pool too small to avoid looping — reset so _noSimilarFallbacks widens the search.
+  if (hasArtistFilter && r.length > 0 && r.length < MIN_SIMILAR_POOL) r = [];
   r = _noSimilarFallbacks(query, bp, ignoreArtists, hasArtistFilter, r);
+  // No BPM/key active: _noSimilarFallbacks has no free-pick step, so handle it here.
+  if (!r.length && hasArtistFilter && !bp.hasBpm && !bp.hasKey) r = query({ ignoreArtists });
   return r;
 }
 

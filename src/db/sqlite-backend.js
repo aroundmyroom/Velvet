@@ -2522,17 +2522,29 @@ export function getRecentlyAdded(vpaths, username, limit, ignoreVPaths, opts = {
   const filtered = vpathFilter(vpaths, ignoreVPaths);
   if (filtered.length === 0) { return []; }
   const vIn = inClause('f.vpath', filtered);
+  const daysVIn = inClause('vpath', filtered);
   const pf = prefixClause(opts.filepathPrefix, 'f.filepath');
   const ep = excludePrefixClauses(opts.excludeFilepathPrefixes, 'f.vpath', 'f.filepath');
   const ip = includePrefixClauses(opts.includeFilepathPrefixes, 'f.vpath', 'f.filepath');
+  const maxDays = opts.maxDays ?? 7;
+  // CTE finds the N most recent distinct calendar days that had additions.
+  // "Last N days with songs added" — never empty, old bulk imports fall off naturally.
   const rows = db.prepare(`
+    WITH active_days AS (
+      SELECT DISTINCT date(ts, 'unixepoch') AS day
+      FROM files
+      WHERE ts > 0 AND ${daysVIn.sql}
+      ORDER BY day DESC
+      LIMIT ?
+    )
     SELECT f.rowid AS id, f.*, um.rating
     FROM files f
     LEFT JOIN user_metadata um ON f.hash = um.hash AND um.user = ?
-    WHERE ${vIn.sql}${pf.sql}${ep.sql}${ip.sql} AND f.ts > 0
+    WHERE date(f.ts, 'unixepoch') IN (SELECT day FROM active_days)
+    AND ${vIn.sql}${pf.sql}${ep.sql}${ip.sql} AND f.ts > 0
     ORDER BY CASE WHEN f.ts > unixepoch() THEN 0 ELSE f.ts END DESC, f.rowid DESC
     LIMIT ?
-  `).all(username, ...vIn.params, ...pf.params, ...ep.params, ...ip.params, limit);
+  `).all(...daysVIn.params, maxDays, username, ...vIn.params, ...pf.params, ...ep.params, ...ip.params, limit);
   return rows.map(mapFileRow);
 }
 

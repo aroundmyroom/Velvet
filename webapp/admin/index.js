@@ -1288,7 +1288,7 @@ const scanErrorsView = Vue.component('scan-errors-view', {
 
                   <!-- Row count footer -->
                   <div class="se-table-footer">
-                    {{ t('admin.scanErrors.tableFooter', { shown: filteredErrors.length, total: errors.length }) }}
+                    {{ t('admin.scanErrors.tableFooter', { shown: filteredErrors.length, total: errors.length, count: filteredErrors.length }) }}
                     <span v-if="typeFilter"> {{ t('admin.scanErrors.filteredBy', { type: typeLabel(typeFilter) }) }}</span>
                     <a v-if="typeFilter" @click="typeFilter = null" style="margin-left:.5rem">{{ t('admin.scanErrors.clearFilter') }}</a>
                   </div>

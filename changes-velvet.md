@@ -1,3 +1,16 @@
+## v0.2.3 (2026-06-17)
+
+Recently-added calendar-day view, scan-errors i18n fix, Auto-DJ similar-artists loop fix.
+
+### Server
+- **Fixed: Recently Added groups by calendar day, not by track count.** A bulk import of 500 albums in one session would fill the entire Recently Added view with just that session's tracks. The endpoint now uses a CTE to find the N most recent distinct calendar days on which tracks were added, then returns all tracks from those days — so a bulk import counts as one day and older additions remain visible.
+
+### Admin
+- **Fixed: scan-errors table footer showed wrong plural form.** The i18n translation call was missing the `count` parameter, causing several locales to display the singular form or a raw key regardless of how many errors were listed.
+
+### Auto-DJ
+- **Fixed: similar-artists mode looped over the same 2–3 songs when the library has few matching tracks.** The server-side ignore list is capped at 50% of the candidate pool; with a 3-track similar-artists pool only 1 song could be cooled at a time, so the other 2 cycled indefinitely. A `MIN_SIMILAR_POOL = 10` threshold now detects tiny pools after the similar-artist steps and forces the fallback chain to widen to the full library. A catch-all handles the no-BPM/no-key case where the existing BPM-gated fallback steps would not fire.
+
 ## v0.2.2 (2026-06-16)
 
 Player experience — accessibility, design system, queue multi-select, and stability fixes.
