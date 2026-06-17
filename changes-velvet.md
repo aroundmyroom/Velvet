@@ -1,10 +1,3 @@
-## v0.2.5 (2026-06-17)
-
-Casting sync — the player UI now tracks where the audio really is on Sonos.
-
-### Player — Sonos casting
-- **Fixed: the progress bar/waveform ran ahead of the Sonos speaker, cutting off the end of each song.** The muted local audio element (used as the UI clock) started instantly while the Sonos stream took a few seconds to begin, so the UI sat permanently ahead of the real audio and the next track was triggered before the current one finished on the device. Now a short lead-in buffer holds the UI until Sonos actually starts streaming (briefly showing "Buffering on Sonos…"), the UI clock is kept within ~0.75 s of the device the whole track, and the hand-off to the next song is driven by the device reaching the end — not the local clock. The poll rate tightens to 1 s during the lead-in and the final 12 s of a track so transitions stay snappy. External-control cede, stopped-device self-heal, and transcoded-seek offset behaviour are unchanged.
-
 ## v0.2.4 (2026-06-17)
 
 i18n & British English polish — theme switcher fully translated, British spellings, Dutch admin theme labels.
