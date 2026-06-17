@@ -170,8 +170,12 @@ export async function serveIt(configFile) {
       return res.type('text/html').send(_mobileIndexCache);
     }
     if (!_indexHtmlCache) {
-      const raw = fs.readFileSync(path.join(config.program.webAppDirectory, 'index.html'), 'utf-8');
-      _indexHtmlCache = raw.replace(/app\.js\?v=[^"']+/, `app.js?v=${packageJson.version}`);
+      // Serve the on-disk index.html verbatim — its app.js/style.css cache-busters
+      // are content-hash stamped by sync-webapp-version (run on every boot), so a
+      // changed asset gets a new URL and busts the browser cache without a version
+      // bump. (Previously this rewrote the buster to the plain package version,
+      // which pinned the URL to vX.Y.Z and hid client-only changes until a bump.)
+      _indexHtmlCache = fs.readFileSync(path.join(config.program.webAppDirectory, 'index.html'), 'utf-8');
     }
     res.setHeader('Cache-Control', 'no-cache');
     res.type('text/html').send(_indexHtmlCache);
