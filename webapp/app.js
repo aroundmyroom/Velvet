@@ -19008,6 +19008,7 @@ self.onmessage = e => { if (e.data === 'start') _run(); };
 `;
 
 function _startMpvHeartbeat() {
+  _startMpvPositionSync(); // idempotent; keeps the muted UI clock anchored to mpv
   if (_mpvHeartbeatWorker || _mpvHeartbeatTimer) return; // idempotent — keep the live ticker
   // On every tick: ping the server heartbeat AND run a throttled self-heal.
   // The worker thread is not subject to background-tab timer throttling, so the
@@ -19032,6 +19033,7 @@ function _startMpvHeartbeat() {
 }
 
 function _stopMpvHeartbeat() {
+  _stopMpvPositionSync();
   if (_mpvHeartbeatWorker) {
     _mpvHeartbeatWorker.postMessage('stop');
     _mpvHeartbeatWorker.terminate();
@@ -19039,6 +19041,75 @@ function _stopMpvHeartbeat() {
   }
   clearInterval(_mpvHeartbeatTimer);
   _mpvHeartbeatTimer = null;
+}
+
+// Poll mpv's real position and keep the muted local <audio> clock anchored to it,
+// so the progress bar/waveform track the server speaker instead of running ahead.
+// Mirrors the Sonos sync: lead-in buffer to remove the startup offset, tight drift
+// correction, and device-driven end-of-track (the local 'ended' is ignored while
+// casting). 1 s during lead-in and the last 12 s of a track, 3 s otherwise.
+function _mpvNextPollDelay() {
+  if (!_mpvPlaybackConfirmed) return 1000;
+  const cur = S.queue[S.idx];
+  const dur = audioEl.duration || cur?.duration || 0;
+  const pos = audioEl.currentTime || 0;
+  if (dur > 0 && dur - pos <= 12) return 1000;
+  return 3000;
+}
+function _startMpvPositionSync() {
+  _stopMpvPositionSync();
+  _mpvPlaybackConfirmed = false;
+  _mpvSyncedFp = null;
+  const _poll = () => {
+    if (!S.castingToMpv) { _mpvPollTimer = null; return; }
+    api('GET', 'api/v1/server-playback/status')
+      .then(st => {
+        if (!S.castingToMpv || !st || !st.running) return;
+        const _cur = S.queue[S.idx];
+        if (!_cur || _cur.isRadio) return;
+        const _curFp = _cur.filepath || null;
+        if (_curFp !== _mpvSyncedFp) { _mpvSyncedFp = _curFp; _mpvPlaybackConfirmed = false; }
+        const devicePos  = st.currentTime || 0;
+        const browserPos = audioEl.currentTime || 0;
+        const _dur = st.duration || audioEl.duration || _cur.duration || 0;
+        // Lead-in: hold the muted clock at the device anchor until mpv actually starts
+        // (time-pos advances past ~0.3 s). Removes the persistent startup offset.
+        if (!_mpvPlaybackConfirmed) {
+          if (st.playing && devicePos > 0.3) {
+            _mpvPlaybackConfirmed = true;
+          } else {
+            if (_mpvBufferingToastFp !== _curFp) { _mpvBufferingToastFp = _curFp; toast(t('player.output.mpvBuffering')); }
+            if (st.playing) {
+              _mpvSyncFromDevice = true;
+              audioEl.currentTime = devicePos;
+              setTimeout(() => { _mpvSyncFromDevice = false; }, 800);
+            }
+            return;
+          }
+        }
+        // Device-driven natural end: mpv reached EOF (justEnded), or its position is at
+        // the very end (backstop if the eof flag was consumed elsewhere). Advance here —
+        // the local 'ended' is ignored while casting (it runs ahead and cuts the tail).
+        if (st.justEnded || (_dur > 0 && devicePos >= _dur - 0.4)) { _deviceTrackEnded(); return; }
+        // Tight drift correction: keep the UI within ~0.75 s of mpv the whole track.
+        if (st.playing && Math.abs(devicePos - browserPos) > 0.75) {
+          _mpvSyncFromDevice = true;
+          audioEl.currentTime = devicePos;
+          setTimeout(() => { _mpvSyncFromDevice = false; }, 1500);
+        }
+      })
+      .catch(() => {})
+      .finally(() => {
+        if (!S.castingToMpv) { _mpvPollTimer = null; return; }
+        _mpvPollTimer = setTimeout(_poll, _mpvNextPollDelay());
+      });
+  };
+  _mpvPollTimer = setTimeout(_poll, 1000);
+}
+function _stopMpvPositionSync() {
+  clearTimeout(_mpvPollTimer);
+  _mpvPollTimer = null;
+  _mpvPlaybackConfirmed = false;
 }
 
 async function _mpvLoadSong(filepath, seekTo = 0) {
@@ -23246,6 +23317,11 @@ function _detachAudioListeners(el) {
 // Sync queue position to DB on user-initiated seek (debounced 1s)
 let _seekSyncTimer  = null;
 let _mpvSeekTimer   = null;
+let _mpvPollTimer = null;            // position-sync poll while casting to mpv
+let _mpvSyncFromDevice = false;      // true during a device→browser position sync — suppresses the mpv seek echo
+let _mpvPlaybackConfirmed = false;   // false during the lead-in until mpv reports real playback (time-pos advancing)
+let _mpvSyncedFp = null;             // filepath the lead-in is armed for — re-arms on track change
+let _mpvBufferingToastFp = null;     // filepath we last showed the mpv buffering toast for
 let _sonosSeekTimer = null;
 let _sonosLoadingSong = false; // true for 1 s after a new song is cast to Sonos — suppresses load-triggered seeks
 let _sonosSyncFromDevice = false; // true during a device→browser position sync — suppresses Sonos seek echo
@@ -23437,7 +23513,7 @@ function _onAudioSeeked() {
   if (_cuePoints.length) { _abChapThrottle = 0; _updateAudioBookChapterBar(); }
   // Mirror seek to MPV when casting to server speaker (debounced 400ms to avoid
   // double-firing on initial load seeks)
-  if (S.castingToMpv && !_mpvLoadingSong) {
+  if (S.castingToMpv && !_mpvLoadingSong && !_mpvSyncFromDevice) {
     clearTimeout(_mpvSeekTimer);
     _mpvSeekTimer = setTimeout(() => {
       api('POST', 'api/v1/server-playback/seek', { position: Math.floor(audioEl.currentTime) }).catch(() => {});

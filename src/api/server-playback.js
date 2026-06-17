@@ -64,6 +64,7 @@ const SERVER_AUDIO_CTRL_CANDIDATES = ['Master', 'Speaker', 'PCM', 'Headphone'];
 let serverQueue  = [];
 let currentIndex = -1;
 let _pendingSeek = null; // seconds to seek to once the next file-loaded event fires
+let _justEndedEof = false; // set when mpv reaches a real end-of-file; surfaced once in getStatus so the casting client advances the queue from the device, not its local clock
 
 // ── Cast heartbeat watchdog ───────────────────────────────────────────────
 // While a client is casting, it sends POST /api/v1/server-playback/heartbeat
@@ -497,6 +498,13 @@ function handleIpcMessage(msg) {
     }
   }
 
+  // Natural end of the current file. 'stop' fires on our own queue/clear, so only
+  // 'eof' is a real track end — flag it so the casting client advances on the
+  // device's real end instead of its (ahead-running) local audio clock.
+  if (msg.event === 'end-file' && msg.reason === 'eof') {
+    _justEndedEof = true;
+  }
+
   // File has loaded and playback started — apply any pending seek position and RG gain.
   // This replaces the old client-side hardcoded 2500 ms delay and fires at
   // exactly the right moment regardless of file size or network latency.
@@ -531,9 +539,15 @@ export async function getStatus() {
       volume:       100,
       loopMode:     'none',
       shuffle:      false,
+      justEnded:    false,
       queue:        serverQueue,
     };
   }
+
+  // Consume the end-of-file flag once per read so a single track end advances the
+  // casting client exactly once.
+  const justEnded = _justEndedEof;
+  _justEndedEof = false;
 
   const [timePos, duration, pause, volume, loopFile, loopPlaylist, plPos] = await Promise.all([
     ipcCommand(['get_property', 'time-pos']).catch(() => 0),
@@ -561,6 +575,7 @@ export async function getStatus() {
     volume:       volume     || 100,
     loopMode,
     shuffle:      false, // mpv shuffle state not tracked
+    justEnded,
     queue:        serverQueue,
     currentGainDb: (serverQueue[currentIndex] ?? serverQueue.at(-1))?.gainDb ?? null,
   };

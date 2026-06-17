@@ -1,6 +1,9 @@
 ## v0.2.5 (2026-06-17)
 
-Casting sync — the player UI now tracks where the audio really is on Sonos.
+Casting sync — the player UI now tracks where the audio really is on Sonos and the server speaker.
+
+### Player — server speaker (MPV)
+- **Fixed: the same UI-runs-ahead / cut-off-tail problem when casting to the server speaker (MPV).** The MPV path had no position sync at all — the muted local clock free-ran while mpv buffered, and `ended` advanced from the local clock. Now a lead-in buffer holds the UI until mpv starts playing ("Buffering on server speaker…"), a 1 s poll keeps the UI clock within ~0.75 s of mpv's real `time-pos`, and the next track is triggered by mpv's `end-file` (eof) event — surfaced as `justEnded` in `/api/v1/server-playback/status` — with a position-based backstop. The heartbeat watchdog and seek-mirroring are unchanged (device-sync seeks no longer echo back to mpv).
 
 ### Player — Sonos casting
 - **Fixed: the progress bar/waveform ran ahead of the Sonos speaker, cutting off the end of each song.** The muted local audio element (used as the UI clock) started instantly while the Sonos stream took a few seconds to begin, so the UI sat permanently ahead of the real audio and the next track was triggered before the current one finished on the device. Now a short lead-in buffer holds the UI until Sonos actually starts streaming (briefly showing "Buffering on Sonos…"), the UI clock is kept within ~0.75 s of the device the whole track, and the hand-off to the next song is driven by the device reaching the end — not the local clock. The poll rate tightens to 1 s during the lead-in and the final 12 s of a track so transitions stay snappy. External-control cede, stopped-device self-heal, and transcoded-seek offset behaviour are unchanged.
