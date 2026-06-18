@@ -186,7 +186,9 @@ export function init(dbDirectory) {
     CREATE INDEX IF NOT EXISTS idx_files_vpath ON files(vpath);
     CREATE INDEX IF NOT EXISTS idx_files_hash ON files(hash);
     CREATE INDEX IF NOT EXISTS idx_files_ts ON files(ts);
+    CREATE INDEX IF NOT EXISTS idx_files_vpath_ts ON files(vpath, ts DESC);
     CREATE INDEX IF NOT EXISTS idx_files_year ON files(year);
+    CREATE INDEX IF NOT EXISTS idx_files_vpath_year ON files(vpath, year);
     CREATE INDEX IF NOT EXISTS idx_files_genre ON files(genre);
     CREATE INDEX IF NOT EXISTS idx_files_album ON files(album);
     CREATE INDEX IF NOT EXISTS idx_files_artist ON files(artist);
@@ -340,9 +342,12 @@ export function init(dbDirectory) {
       source       TEXT,
       session_id   TEXT
     );
-    CREATE INDEX IF NOT EXISTS idx_pe_user_started  ON play_events(user_id, started_at);
-    CREATE INDEX IF NOT EXISTS idx_pe_user_hash     ON play_events(user_id, file_hash);
-    CREATE INDEX IF NOT EXISTS idx_pe_session       ON play_events(session_id);
+    CREATE INDEX IF NOT EXISTS idx_pe_user_started      ON play_events(user_id, started_at);
+    CREATE INDEX IF NOT EXISTS idx_pe_user_hash_started ON play_events(user_id, file_hash, started_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_pe_file_hash         ON play_events(file_hash);
+    CREATE INDEX IF NOT EXISTS idx_pe_started_at        ON play_events(started_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_pe_session           ON play_events(session_id);
+    DROP INDEX IF EXISTS idx_pe_user_hash;
     CREATE INDEX IF NOT EXISTS idx_pe_user_completed ON play_events(user_id, completed);
 
     CREATE TABLE IF NOT EXISTS listening_sessions (

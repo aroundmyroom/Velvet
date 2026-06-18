@@ -346,6 +346,42 @@ export function setup(velvet) {
     res.json({ platform, results });
   });
 
+  // Scan each vpath root + its immediate subdirectories for permission issues.
+  // Only returns subdirs that have read or write problems; fully-OK dirs are omitted.
+  velvet.get('/api/v1/admin/directories/health', async (req, res) => {
+    const SUBDIR_CAP = 300;
+    const results = [];
+
+    for (const [vpath, info] of Object.entries(config.program.folders)) {
+      const root = info.root;
+      const rootAccess = await _testDirectoryAccess(root);
+      const problematic = [];
+
+      if (rootAccess.readable) {
+        try {
+          const entries = await fs.promises.readdir(root, { withFileTypes: true });
+          const dirs = entries
+            .filter(e => e.isDirectory() && !e.name.startsWith('.'))
+            .slice(0, SUBDIR_CAP);
+
+          for (const entry of dirs) {
+            const dirPath = path.join(root, entry.name);
+            let readable = false, writable = false;
+            try { await fs.promises.access(dirPath, fs.constants.R_OK); readable = true; } catch (_) {}
+            if (readable) {
+              try { await fs.promises.access(dirPath, fs.constants.W_OK); writable = true; } catch (_) {}
+            }
+            if (!readable || !writable) problematic.push({ name: entry.name, readable, writable });
+          }
+        } catch (_) { /* root unreadable — already captured in rootAccess */ }
+      }
+
+      results.push({ vpath, root, readable: rootAccess.readable, writable: rootAccess.writable, error: rootAccess.error, subdirs: problematic });
+    }
+
+    res.json({ results });
+  });
+
   velvet.get("/api/v1/admin/db/params", (req, res) => {
     res.json({
       ...config.program.scanOptions,

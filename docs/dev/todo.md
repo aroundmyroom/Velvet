@@ -170,6 +170,18 @@ Audit completed 2026-03-26. Strategy: **Option A — separate `mobile.css`** loa
 - [ ] Enhance inline Blob manifest: add `orientation:"portrait"`, `id`, `scope`
 - [ ] (Optional) Service worker for offline caching
 
+### Sonos — reliable seeking into unbuffered audio — PLANNED (approved, not started)
+
+Seeking into a part of a track Sonos hasn't buffered yet stalls the speaker for a long time and sometimes restarts the song from 0. Root cause: Velvet sends `Seek REL_TIME` and relies on Sonos to seek the live HTTP `/media` stream itself (the AVTransport API confirms `REL_TIME` is the only in-track seek unit; Seek returns `701` when the content "does not support seek"). The fix is to stop asking Sonos to seek a live stream and instead **re-cast a fresh stream that begins at the seek point** — the same pattern already used for transcoded streams (`?start=N`), generalised to native FLAC/MP3/WAV via a cheap ffmpeg **remux** (`-ss N -c copy`, no re-encode). Builds on v0.2.6's lead-in (the re-cast re-arms it, so the UI locks to the new position). Full design: `/root/.claude/plans/analyze-my-existing-project-cosmic-map.md`.
+
+- [ ] New `GET /api/v1/sonos/stream-at?fp=&token=&start=N` — `ffmpeg -ss N -i <file> -vn -c:a copy -f <container> -`, modelled on `transcode-stream` (`src/api/sonos.js`)
+- [ ] `_resolveStreamUrl`: native + `seekTo>0.5` → `stream-at`; `seekTo==0` → `/media` (unchanged); transcode path unchanged
+- [ ] Treat the offset stream like the transcoded live-pipe: `soapSeekTo=0`, `streamStartOffset=N`, DIDL `res@duration` = remaining (`duration−N`)
+- [ ] Cheap wins: `_sonosBuildWindow` always sends `duration`; `buildDidl` real per-format `protocolInfo` (`audio/flac` / `audio/wav` / `audio/mpeg`) instead of hardcoded `audio/mpeg`
+- [ ] Client `_onAudioSeeked` Sonos branch → debounced `_sonosPushWindow(newPos)` instead of `POST /api/v1/sonos/seek`
+- [ ] Verify on real Sonos: FLAC mid-file remux plays; WAV piping (else fall back to lossless `-c:a flac`); seek into unbuffered region never restarts from 0; FLAC/MP3/WAV all OK
+- [ ] Separate PR off `main`, hardware-verified before merge (no stacked PRs)
+
 ## FUTURE — image-cache 2-level hash subdirectory layout *(low priority)*
 
 Currently `image-cache/` holds ~109K MD5-named JPEG files in a single flat directory (~15 GB). ext4 htree keeps direct lookups fast, but directory walks (rsync, backup zip creation, `find`) slow down linearly with file count. At ~300K+ files even htree lookups start degrading.

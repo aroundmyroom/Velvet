@@ -1,6 +1,6 @@
 {
   "name": "velvet",
-  "version": "0.2.6",
+  "version": "0.2.7",
   "description": "Velvet — your personal music server",
   "type": "module",
   "main": "cli-boot-wrapper.js",
@@ -52,7 +52,6 @@
     "nanoid": "^5.1.11",
     "sharp": "^0.35.1",
     "tree-kill": "^1.2.2",
-    "undici": "8.4.1",
     "winston": "^3.19.0",
     "winston-daily-rotate-file": "^5.0.0",
     "ws": "^8.21.0"

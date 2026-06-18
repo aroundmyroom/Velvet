@@ -1436,7 +1436,10 @@ const foldersView = Vue.component('folders-view', {
       users: ADMINDATA.users,
       submitPending: false,
       editingFolder: null,
-      editForm: { root: '', type: 'music', users: [] }
+      editForm: { root: '', type: 'music', users: [] },
+      healthResults: null,
+      healthLoading: false,
+      healthExpanded: {}
     };
   },
   computed: {
@@ -1659,6 +1662,55 @@ const foldersView = Vue.component('folders-view', {
                 └── <code>{{ folderStructure.byVpath[vp].root }}</code> <span style="color:var(--t3);">[{{ t('admin.folders.structureWarnTreatAsRoot', { vpath: vp }) }}]</span>
               </div>
               <button class="btn-small" type="button" style="margin-top:8px;" @click="prefillMissingRoot(warn.parentPath)">{{ t('admin.folders.structureAddRootBtn', { root: warn.parentPath }) }}</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-content">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:.5rem;">
+            <span class="card-title" style="margin-bottom:0;">{{ t('admin.folders.healthTitle') }}</span>
+            <button class="btn-small" type="button" @click="scanHealth" :disabled="healthLoading">
+              {{ healthLoading ? t('admin.folders.healthScanning') : t('admin.folders.healthScan') }}
+            </button>
+          </div>
+          <p style="margin:.25rem 0 .85rem;color:var(--t2);font-size:.9rem;">{{ t('admin.folders.healthDesc') }}</p>
+
+          <div v-if="healthResults" style="display:flex;flex-direction:column;gap:8px;">
+            <div v-for="r in healthResults" :key="r.vpath"
+                 style="border:1px solid var(--border);border-radius:8px;overflow:hidden;">
+              <div style="display:flex;align-items:center;gap:8px;padding:10px 12px;cursor:pointer;user-select:none;"
+                   @click="toggleHealthExpand(r.vpath)">
+                <span>{{ !r.readable ? '❌' : !r.writable ? '⚠️' : r.subdirs.length > 0 ? '⚠️' : '✅' }}</span>
+                <code style="color:var(--accent);font-weight:700;">{{ r.vpath }}</code>
+                <span style="color:var(--t3);font-size:.85rem;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">{{ r.root }}</span>
+                <span v-if="r.subdirs.length > 0" style="font-size:.8rem;color:#f59e0b;white-space:nowrap;">
+                  {{ t('admin.folders.healthIssueCount', { count: r.subdirs.length }) }}
+                </span>
+                <span v-else-if="r.readable" style="font-size:.8rem;color:#10b981;white-space:nowrap;">{{ t('admin.folders.healthAllOk') }}</span>
+                <span style="color:var(--t3);font-size:.75rem;margin-left:4px;">{{ healthExpanded[r.vpath] ? '▲' : '▼' }}</span>
+              </div>
+
+              <div v-if="healthExpanded[r.vpath]"
+                   style="padding:6px 12px 10px;border-top:1px solid var(--border);background:var(--raised);">
+                <div v-if="!r.readable" style="color:#ef4444;font-size:.85rem;padding:4px 0;">
+                  ❌ {{ t('admin.folders.healthRootUnreadable') }}
+                </div>
+                <div v-else-if="!r.writable" style="color:#f59e0b;font-size:.85rem;padding:4px 0;">
+                  ⚠️ {{ t('admin.folders.healthRootReadOnly') }}
+                </div>
+                <div v-if="r.readable && r.subdirs.length === 0" style="color:var(--t3);font-size:.85rem;padding:4px 0;">
+                  {{ t('admin.folders.healthNoIssues') }}
+                </div>
+                <div v-for="sub in r.subdirs" :key="sub.name"
+                     style="display:flex;align-items:center;gap:8px;padding:3px 0;font-size:.85rem;">
+                  <span>{{ sub.readable ? '⚠️' : '❌' }}</span>
+                  <code style="font-size:.82rem;">{{ sub.name }}</code>
+                  <span v-if="!sub.readable" style="color:#ef4444;">{{ t('admin.folders.healthNoRead') }}</span>
+                  <span v-else-if="!sub.writable" style="color:#f59e0b;">{{ t('admin.folders.healthNoWrite') }}</span>
+                </div>
+              </div>
             </div>
           </div>
         </div>
@@ -1993,6 +2045,24 @@ const foldersView = Vue.component('folders-view', {
       testAccess: function() {
         modVM.currentViewModal = 'dir-access-test-modal';
         modVM.openModal();
+      },
+      scanHealth: async function() {
+        this.healthLoading = true;
+        this.healthExpanded = {};
+        try {
+          const res = await API.axios({ method: 'GET', url: `${API.url()}/api/v1/admin/directories/health` });
+          this.healthResults = res.data.results;
+          for (const r of this.healthResults) {
+            if (!r.readable || !r.writable || r.subdirs.length > 0) this.healthExpanded[r.vpath] = true;
+          }
+        } catch (e) {
+          console.error('[health-scan]', e);
+        } finally {
+          this.healthLoading = false;
+        }
+      },
+      toggleHealthExpand: function(vpath) {
+        this.healthExpanded = { ...this.healthExpanded, [vpath]: !this.healthExpanded[vpath] };
       },
       toggleRecordDelete: async function(vpath) {
         const folder = ADMINDATA.folders[vpath];

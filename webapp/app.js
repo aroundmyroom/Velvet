@@ -1,5 +1,5 @@
 'use strict';
-const VELVET_VERSION = '0.2.6';
+const VELVET_VERSION = '0.2.7';
 // ── SERVER IDENTITY GUARD ────────────────────────────────────────────────────
 // Detects when this browser's localStorage belongs to a different Velvet
 // instance (fresh install, IP change, reverse-proxy swap, second server).
@@ -754,6 +754,8 @@ let _bpmAnchor               = null;   // always = _bpmAvg(_bpmHistory), or null
 let _camelotAnchor           = null;
 let _camelotAnchorNeighbours = null;
 let _djLastPickFree          = false; // true when last DJ pick had no BPM context (free pick — must not seed anchor)
+let _djGenreHistory          = [];    // rolling window — last 25 picked genres (drift prevention)
+let _djEscaping              = false; // single-shot guard — prevents recursive escape retries
 let _djGenreGroupsCache      = null;  // [{name, genres:[{genre,cnt}]}] — fetched once per viewAutoDJ open
 
 // ── BPM history helpers ──────────────────────────────────────────────────────
@@ -1086,6 +1088,7 @@ function restoreQueue(silent = false) {
   if (_bpmHistory.length) _bpmAnchor = _bpmAvg(_bpmHistory);
   try { _camelotAnchor = localStorage.getItem(_djKey('camelot_anchor')) || null; } catch(_) {}
   if (_camelotAnchor) _camelotAnchorNeighbours = camelotNeighbours(_camelotAnchor);
+  try { _djGenreHistory = JSON.parse(localStorage.getItem(_djKey('genre_hist')) || 'null') || []; } catch(_) { _djGenreHistory = []; }
   refreshQueueUI();
   _syncQueueLabel();   // render BPM/key chips with restored anchors
   // Restore Auto-DJ on/off so a refresh keeps it running if it was on. The flag is
@@ -1356,6 +1359,8 @@ const Player = {
     S.djIgnore = [];
     S.djArtistHistory = [];
     localStorage.removeItem(_djKey('artist_history'));
+    _djGenreHistory = [];
+    try { localStorage.removeItem(_djKey('genre_hist')); } catch (_) {}
     _syncPrefs();
     const idx = start ?? 0;
     this.playAt(idx);
@@ -1376,6 +1381,8 @@ const Player = {
     S.djArtistHistory = [];
     try { localStorage.removeItem(_djKey('ignore')); } catch (_) { /* ignore */ }
     try { localStorage.removeItem(_djKey('artist_history')); } catch (_) { /* ignore */ }
+    _djGenreHistory = [];
+    try { localStorage.removeItem(_djKey('genre_hist')); } catch (_) {}
     _syncPrefs();
     this.playAt(0);
   },
@@ -2150,7 +2157,7 @@ function _djSongBlocked(song) {
 }
 
 // Shared helper — returns {ignoreList, songs} from the random-songs API
-async function _djApiCall() {
+async function _djApiCall(escapeOpts = {}) {
   const selected = S.djVpaths.length > 0 ? S.djVpaths : S.vpaths;
 
   // Child-vpath optimisation: if every selected vpath is a child of the
@@ -2160,7 +2167,10 @@ async function _djApiCall() {
   const abEx = _audioBookExclusions();
   const _epParam = abEx.excludeFilepathPrefixes.length > 0 ? { excludeFilepathPrefixes: abEx.excludeFilepathPrefixes } : {};
   const _expandedGenres = _expandDjGenres(S.djGenres);
-  const _genreParam = S.djGenreEnabled && _expandedGenres.length > 0 ? { genres: _expandedGenres, genreMode: S.djGenreMode } : {};
+  // Genre escape overrides the user-set genre param for this one pick only
+  const _genreParam = escapeOpts.escapeGenre
+    ? { genres: [escapeOpts.escapeGenre], genreMode: 'blacklist' }
+    : (S.djGenreEnabled && _expandedGenres.length > 0 ? { genres: _expandedGenres, genreMode: S.djGenreMode } : {});
   const allChildSameParent =
     selected.length > 0 &&
     selected.every(v => meta[v]?.parentVpath) &&
@@ -2263,6 +2273,8 @@ async function _djApiCall() {
       }
     }
   }
+  // Hard escape: drop similar-artist filter entirely to break out of a deeply locked genre cluster
+  if (escapeOpts.dropArtistFilter) artistFilter = undefined;
 
   if (allChildSameParent) {
     const parentVpath = meta[selected[0]].parentVpath;
@@ -2392,6 +2404,41 @@ function _djPushArtistHistory(artist) {
   _syncPrefs();
 }
 
+// ── Auto-DJ genre drift prevention ──────────────────────────────────────────
+const DJ_GENRE_WINDOW      = 25;   // rolling history length (tracks)
+const DJ_GENRE_CONSEC_SOFT = 3;    // consecutive same-genre picks → soft escape (blacklist + retry)
+const DJ_GENRE_CONSEC_HARD = 5;    // consecutive same-genre picks → hard escape (drop artist filter too)
+const DJ_GENRE_FREQ_THRESH = 0.40; // genre share of window → overrepresented
+
+function _djGenreHistoryPush(genre) {
+  if (!genre) return;
+  _djGenreHistory.push(genre.trim().toLowerCase());
+  if (_djGenreHistory.length > DJ_GENRE_WINDOW) _djGenreHistory.shift();
+  try { localStorage.setItem(_djKey('genre_hist'), JSON.stringify(_djGenreHistory)); } catch (_) {}
+}
+
+function _djGenreConsecutive() {
+  if (!_djGenreHistory.length) return { genre: null, count: 0 };
+  const last = _djGenreHistory[_djGenreHistory.length - 1];
+  let count = 0;
+  for (let i = _djGenreHistory.length - 1; i >= 0; i--) {
+    if (_djGenreHistory[i] === last) count++;
+    else break;
+  }
+  return { genre: last, count };
+}
+
+function _djGenreOverrepresented() {
+  if (_djGenreHistory.length < 10) return null; // too few data points
+  const freq = {};
+  for (const g of _djGenreHistory) freq[g] = (freq[g] || 0) + 1;
+  for (const [g, n] of Object.entries(freq)) {
+    if (n / _djGenreHistory.length >= DJ_GENRE_FREQ_THRESH) return g;
+  }
+  return null;
+}
+// ─────────────────────────────────────────────────────────────────────────────
+
 // Rolling queue cap — prune tracks that are already behind the cursor so the
 // queue never grows without bound. Keeps 10 tracks of history behind the cursor.
 // Critical on slow hardware (CleverTouch, single-CPU) where a large queue makes
@@ -2512,7 +2559,31 @@ async function autoDJPrefetch() {
         _djLastPickFree = true;
       }
     }
+    // ── Genre drift prevention ────────────────────────────────────────────────
+    // Skip when user has an active genre whitelist — the escape blacklist would
+    // conflict with it and the whitelist already restricts the pool.
+    if (!_djEscaping && song?.genre && !(S.djGenreEnabled && S.djGenreMode === 'whitelist')) {
+      const songGenreNorm = song.genre.trim().toLowerCase();
+      const { genre: consecGenre, count: consecCount } = _djGenreConsecutive();
+      const overGenre   = _djGenreOverrepresented();
+      const escapeGenre = consecCount >= DJ_GENRE_CONSEC_SOFT ? consecGenre : overGenre;
+      if (escapeGenre && songGenreNorm === escapeGenre) {
+        _djEscaping = true;
+        try {
+          const escOpts = { escapeGenre, dropArtistFilter: consecCount >= DJ_GENRE_CONSEC_HARD };
+          const ed = await _djApiCall(escOpts);
+          if (ed?.songs?.[0]) {
+            _persistDjIgnore(ed.ignoreList);
+            song = norm(ed.songs[0]);
+            console.log(`[Auto-DJ] Genre escape: "${escapeGenre}" → "${song.genre || '?'}"`);
+          }
+        } catch (_) { /* accept original if escape fails */ }
+        finally { _djEscaping = false; }
+      }
+    }
+    // ─────────────────────────────────────────────────────────────────────────
     _djPushArtistHistory(song.artist);
+    _djGenreHistoryPush(song.genre);
     // Only push if nothing was added while we were waiting (autoDJFetch race guard)
     if (S.queue.length <= S.idx + 1) {
       _pruneQueue();
@@ -2578,7 +2649,29 @@ async function autoDJFetch() {
       }
       _showInfoStrip('Auto-DJ', t('player.autodj.infoBpmFallback'), 8000);
     }
+    // ── Genre drift prevention (same logic as autoDJPrefetch) ────────────────
+    if (!_djEscaping && song?.genre && !(S.djGenreEnabled && S.djGenreMode === 'whitelist')) {
+      const songGenreNorm = song.genre.trim().toLowerCase();
+      const { genre: consecGenre, count: consecCount } = _djGenreConsecutive();
+      const overGenre   = _djGenreOverrepresented();
+      const escapeGenre = consecCount >= DJ_GENRE_CONSEC_SOFT ? consecGenre : overGenre;
+      if (escapeGenre && songGenreNorm === escapeGenre) {
+        _djEscaping = true;
+        try {
+          const escOpts = { escapeGenre, dropArtistFilter: consecCount >= DJ_GENRE_CONSEC_HARD };
+          const ed = await _djApiCall(escOpts);
+          if (ed?.songs?.[0]) {
+            _persistDjIgnore(ed.ignoreList);
+            song = norm(ed.songs[0]);
+            console.log(`[Auto-DJ] Genre escape: "${escapeGenre}" → "${song.genre || '?'}"`);
+          }
+        } catch (_) { /* accept original if escape fails */ }
+        finally { _djEscaping = false; }
+      }
+    }
+    // ─────────────────────────────────────────────────────────────────────────
     _djPushArtistHistory(song.artist);
+    _djGenreHistoryPush(song.genre);
     _pruneQueue();
     song._dj = true;
     S.queue.push(song); _qvsVersion++;

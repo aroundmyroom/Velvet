@@ -914,6 +914,7 @@ Export is built in the background; poll for status before downloading.
 |---|---|---|
 | `GET` | `/api/v1/admin/diagnostics/artist-albums` | Returns artist–album relationships for DB consistency checks. |
 | `GET` | `/api/v1/admin/directories/test` | Test whether all configured library directories are accessible. Returns `[{ vpath, root, accessible, error? }]`. |
+| `GET` | `/api/v1/admin/directories/health` | Scan each vpath root and its immediate subdirectories for read/write permission issues. Returns `{ results: [{ vpath, root, readable, writable, error?, subdirs: [{ name, readable, writable }] }] }`. Only problematic subdirs are included; hidden dirs are skipped; capped at 300 subdirs per vpath. |
 
 ---
 

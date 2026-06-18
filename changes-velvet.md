@@ -1,3 +1,20 @@
+## v0.2.7 (2026-06-18)
+
+Performance, Auto-DJ intelligence, and admin directory health checking.
+
+### Database
+- **5 new composite indexes** on `files` and `play_events` for faster Recently Added, decade browse, smart playlist year filters, artist home stats, and per-play lookups. The redundant 2-column `idx_pe_user_hash` index was replaced by a covering 3-column variant.
+
+### Auto-DJ — genre drift prevention
+- **Auto-DJ no longer locks into a single genre cluster.** A rolling 25-track genre history detects when a genre becomes over-represented (3 consecutive tracks, or ≥ 40 % of the last 25). When triggered, a single escape pick is requested with that genre blacklisted, breaking out of Trance / Hardstyle / Italo loops while still allowing natural exploration. Hard escape (5+ consecutive) also drops the similar-artist filter entirely to guarantee a way out. History persists across page refreshes and clears on queue/session reset.
+
+### Admin — Directory Health Check
+- **New "Scan" button under Admin → Directories.** Checks read and write access for every configured vpath root **and** all its first-level subdirectories. Results are shown inline with expandable per-vpath rows — only problematic subdirectories are listed, hidden dirs are skipped, and the scan is capped at 300 entries per path. Vpaths with issues auto-expand.
+
+### Dependencies
+- Removed `undici` from `package.json` — it was never imported; the only consumer was `@distube/ytdl-core` which manages its own version internally.
+- Updated `axios` → 1.18.0, `eslint` → 10.5.0, `fast-xml-parser` → 5.9.2, `joi` → 18.2.3, `sharp` → 0.35.1.
+
 ## v0.2.6 (2026-06-17)
 
 Sonos casting: the player UI now stays locked to the speaker, and seeking lands cleanly.
