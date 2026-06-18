@@ -19,9 +19,11 @@
 > ```
 > Do **not** chown your music library — those files are already owned correctly.
 >
-> **3. Leave `user:` unset for the first restart** so the entrypoint can repair ownership automatically. After startup succeeds, optionally set `user:` to your host UID/GID.
+> **3. Set `PUID`/`PGID` in your Compose `environment:` block** to the UID/GID from step 1. The entrypoint will repair ownership and then run as that user.
 > ```yaml
-> # user: "1000:1000"
+> environment:
+>   PUID: 1000
+>   PGID: 1000
 > ```
 >
 > **4. Then pull and restart:**
@@ -31,7 +33,7 @@
 > docker compose up -d
 > ```
 >
-> If your library and writable host folders are already owned by your target UID/GID, you can set `user:` immediately. If not, keep it unset until ownership is fixed.
+> With `PUID`/`PGID` set, the entrypoint handles ownership repair automatically — no pre-chown step is needed if you're already on the correct UID/GID.
 
 ---
 
@@ -101,7 +103,7 @@ docker pull ghcr.io/aroundmyroom/velvet:latest
 Or pin to a specific release:
 
 ```shell
-docker pull ghcr.io/aroundmyroom/velvet:v0.2.7
+docker pull ghcr.io/aroundmyroom/velvet:v0.2.8
 ```
 
 ### compose.yaml (ghcr.io — recommended)
@@ -119,8 +121,9 @@ services:
       - /media/music:/music         # adjust host path to your library
       - ./waveform-cache:/app/waveform-cache
       - ./image-cache:/app/image-cache
-    # user: "1000:1000"             # optional; enable only after host folder ownership is correct
     environment:
+      PUID: 1000                   # uid of host user owning the mounted folders (default: 1000)
+      PGID: 1000                   # gid of that user (default: 1000)
       VELVET_MUSIC_DIR: /music     # triggers first-run auto-config (optional, see below)
 ```
 
@@ -170,24 +173,26 @@ No manual steps are needed — tagging a release is enough.
 
 The container defaults to a root entrypoint that repairs host volume ownership and then drops to the unprivileged `node` user.
 
-If your mounted shares already use a specific owner, you can set `user:` in `compose.yaml` to that UID/GID.
+### Recommended — PUID / PGID environment variables
 
-### Find your UID / GID
+Set `PUID` and `PGID` in your `compose.yaml` to the uid/gid that owns your bind-mounted folders. The entrypoint reassigns the internal `node` user to those ids before dropping privileges, so the process reads and writes files as the correct host user.
 
-On the host (or in the NAS shell):
+Find your uid/gid on the host (or in the NAS shell):
 
 ```shell
 id <your-music-user>
 # example output:  uid=1000(soulseek) gid=1000(soulseek)
 ```
 
-### Set them in compose.yaml (optional)
+Then add to your `compose.yaml`:
 
 ```yaml
-  user: "1000:1000"   # optional: only after mounted folders are writable by this UID:GID
+    environment:
+      PUID: 1000   # uid of the host user who owns the mounted folders
+      PGID: 1000   # gid of that user
 ```
 
-If you are migrating from older root-owned data, keep `user:` unset for one restart so the entrypoint can repair ownership.
+Both default to `1000` if omitted.
 
 ### Migration from a root container
 
@@ -201,7 +206,6 @@ chown -R 1000:1000 /path/to/save \
                    /path/to/image-cache \
                    /path/to/waveform-cache
 
-# Leave `user:` unset for this first restart so ownership repair can run, then optionally set it later.
 docker compose up -d
 ```
 
@@ -232,8 +236,9 @@ services:
       - /media/music:/music         # your music library (adjust host path)
       - ./waveform-cache:/app/waveform-cache
       - ./image-cache:/app/image-cache
-    # user: "1000:1000"            # optional; set only when mounted folders are writable by this UID:GID
     environment:
+      PUID: 1000                   # uid of host user owning the mounted folders (default: 1000)
+      PGID: 1000                   # gid of that user (default: 1000)
       VELVET_MUSIC_DIR: /music     # must match the volume target above
 
       # Admin account (optional).

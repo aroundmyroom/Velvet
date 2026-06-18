@@ -37,6 +37,7 @@
 
 import path from 'node:path';
 import fs from 'node:fs';
+import fsp from 'node:fs/promises';
 import crypto from 'node:crypto';
 import Joi from 'joi';
 import winston from 'winston';
@@ -366,6 +367,17 @@ async function _downloadCover(choice) {
   return fetchPublicUrlBuffer(choice.coverUrl, opts);
 }
 
+async function _checkWritable(dir) {
+  const probe = path.join(dir, `.velvet-art-probe-${crypto.randomBytes(4).toString('hex')}`);
+  try {
+    await fsp.writeFile(probe, '', { flag: 'wx' });
+    await fsp.unlink(probe);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 // Download → write cover.jpg into the album folder → cache + thumbnails → point
 // every track in that folder at the cached image.
 async function _applyCover(albumKey, choice) {
@@ -376,6 +388,12 @@ async function _applyCover(albumKey, choice) {
 
   const folderAbs = resolvePathWithinRoot(root, row.dir);
   if (!fs.existsSync(folderAbs)) throw new Error('Album folder not found on disk');
+  if (!await _checkWritable(folderAbs)) {
+    throw new Error(
+      `Cannot write cover to ${folderAbs} — folder is not writable by the current process user. ` +
+      `Grant write access to uid=${process.getuid()} on the host, or set PUID/PGID in your Compose file.`
+    );
+  }
 
   const srcBuf = await _downloadCover(choice);
   if (!_sniffImageExt(srcBuf)) throw new Error('Downloaded data is not a recognised image');

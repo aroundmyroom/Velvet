@@ -1,3 +1,12 @@
+## v0.2.8 (2026-06-18)
+
+Docker: PUID/PGID support and album-art permission safeguard.
+
+### Docker — PUID/PGID support
+- **The container now accepts `PUID` and `PGID` environment variables** (LinuxServer.io convention). When started as root the entrypoint reassigns the internal `node` user to those ids before dropping privileges, so the process uid/gid matches the host filesystem owner without needing a `user:` override in Compose.
+- **Fixed: `user:` override in Compose no longer exits 70 spuriously.** The writable-dir check incorrectly included `/app/bin` — an internal container path that is never bind-mounted and therefore never writable by an arbitrary host uid. It has been removed from the check.
+- **Album-Art Workshop: applying a cover now reports a clear error if the album folder is not writable** instead of crashing with an opaque `EACCES` HTTP 500. The message names the folder, the uid, and the fix to apply.
+
 ## v0.2.7 (2026-06-18)
 
 Performance, Auto-DJ intelligence, and admin directory health checking.

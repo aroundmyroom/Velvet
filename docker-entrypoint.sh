@@ -11,7 +11,7 @@
 set -e
 
 check_writable_dirs() {
-  for d in /app/save /app/save/db /app/save/logs /app/save/conf /app/image-cache /app/waveform-cache /app/bin; do
+  for d in /app/save /app/save/db /app/save/logs /app/save/conf /app/image-cache /app/waveform-cache; do
     mkdir -p "$d" 2>/dev/null || true
     if [ ! -w "$d" ]; then
       return 1
@@ -21,7 +21,13 @@ check_writable_dirs() {
 }
 
 if [ "$(id -u)" = "0" ]; then
-  echo "[entrypoint] Fixing ownership of data directories..."
+  PUID=${PUID:-1000}
+  PGID=${PGID:-1000}
+
+  groupmod -o -g "$PGID" node 2>/dev/null || true
+  usermod  -o -u "$PUID" node 2>/dev/null || true
+
+  echo "[entrypoint] Running as uid=$PUID gid=$PGID"
   chown -R node:node /app/save /app/image-cache /app/waveform-cache /app/bin 2>/dev/null || true
   if gosu node sh -c 'for d in /app/save /app/save/db /app/save/logs /app/save/conf /app/image-cache /app/waveform-cache /app/bin; do mkdir -p "$d" 2>/dev/null || true; [ -w "$d" ] || exit 1; done'; then
     echo "[entrypoint] Dropping privileges to node user"
