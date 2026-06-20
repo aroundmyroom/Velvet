@@ -1,4 +1,4 @@
-## Unreleased
+## v0.3.0 (2026-06-20)
 
 ### Library — Orphaned vpath detection and cleanup
 - **Fixed: "vpath X is not a root folder" error in the Album-Art Workshop** when library rows from a renamed or removed folder still exist in the database. The Workshop now skips any row whose vpath is not a current root folder in config, preventing stale entries from ever entering the workshop table.
