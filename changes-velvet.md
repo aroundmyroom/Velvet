@@ -1,3 +1,11 @@
+## Unreleased
+
+### Library — Orphaned vpath detection and cleanup
+- **Fixed: "vpath X is not a root folder" error in the Album-Art Workshop** when library rows from a renamed or removed folder still exist in the database. The Workshop now skips any row whose vpath is not a current root folder in config, preventing stale entries from ever entering the workshop table.
+- **Post-scan warning in the log** when orphaned vpath rows are detected in the `files` table after a rescan — points the admin to the new cleanup tool.
+- **New admin action: Purge orphaned vpaths** (Admin → Library). A dry-run step reports the affected vpaths and row count before any deletion. Removes rows from both `files` and `album_art_workshop` for vpaths that no longer exist in config — recovers from folder renames without manual SQL.
+- New endpoint: `POST /api/v1/admin/db/purge-orphaned-vpaths` — body `{ dryRun }`, returns `{ orphaned, deleted }`.
+
 ## v0.2.8 (2026-06-18)
 
 Docker: PUID/PGID support and album-art permission safeguard.

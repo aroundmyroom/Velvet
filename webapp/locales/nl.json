@@ -2834,5 +2834,10 @@
   "admin.art.btnShelveSelected": "Selectie opzijzetten",
   "admin.art.shelveTitleMulti": "{{count}} mappen opzijzetten?",
   "admin.art.btnUnshelveSelected": "Selectie terugzetten ({{count}})",
-  "admin.art.shelvedCountMsg": "{{count}} mappen"
+  "admin.art.shelvedCountMsg": "{{count}} mappen",
+  "admin.library.orphanedVpaths": "Verweesde bibliotheekitems",
+  "admin.library.purgeOrphaned": "Verwijder verweesde vpaths",
+  "admin.library.purgeOrphanedConfirm": "{{count}} rij(en) verwijderen voor verwijderde vpaths: {{list}}?",
+  "admin.library.purgeOrphanedDone": "{{count}} verweesde rij(en) verwijderd",
+  "admin.library.noOrphanedVpaths": "Geen verweesde vpaths gevonden"
 }
