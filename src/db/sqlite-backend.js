@@ -5375,3 +5375,17 @@ export function savePlayQueue(username, currentId, positionMs, changedBy, songId
       song_ids    = excluded.song_ids
   `).run(username, currentId ?? null, positionMs ?? 0, Date.now(), changedBy ?? null, songIds ?? '[]');
 }
+
+/** Return vpath values present in `files` that are not in the supplied Set of known vpaths. */
+export function getOrphanedVpaths(knownVpaths) {
+  const rows = db.prepare('SELECT DISTINCT vpath FROM files').all();
+  return rows.map(r => r.vpath).filter(v => !knownVpaths.has(v));
+}
+
+/** Delete all rows from `files` whose vpath is in the supplied array. Returns number deleted. */
+export function deleteOrphanedVpathRows(vpaths) {
+  if (!vpaths.length) return 0;
+  const placeholders = vpaths.map(() => '?').join(',');
+  const result = db.prepare(`DELETE FROM files WHERE vpath IN (${placeholders})`).run(...vpaths);
+  return result.changes;
+}

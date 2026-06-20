@@ -277,6 +277,14 @@ export function setup(velvet) {
     if (pruneAllowed) db.removeStaleFiles(req.body.vpath, req.body.scanId);
 
     try {
+      const known = new Set(Object.keys(config.program.folders || {}));
+      const orphans = db.getOrphanedVpaths(known);
+      if (orphans.length) {
+        console.warn(`[finish-scan] Orphaned vpaths in files table: ${orphans.join(', ')} — these folders were removed from config but rows remain. Use Admin → Library → "Purge orphaned vpaths" to clean up.`);
+      }
+    } catch (e) { console.debug('[velvet]', e?.message ?? e); }
+
+    try {
       const rootDir = config.program.folders[req.body.vpath]?.root;
       if (rootDir) _pruneExcludedVchilds(req.body.vpath, rootDir);
     } catch (e) { console.debug('[velvet]', e?.message ?? e); }
@@ -369,6 +377,19 @@ export function setup(velvet) {
       _txActive = false;
       _txBatch = 0;
       res.status(500).json({ error: 'Scanner database write failed', details: String(e?.message ?? e) });
+    }
+  });
+
+  velvet.post('/api/v1/admin/db/purge-orphaned-vpaths', (req, res) => {
+    if (!req.user?.admin) return res.status(403).json({ error: 'Admin required' });
+    try {
+      const known = new Set(Object.keys(config.program.folders || {}));
+      const orphaned = db.getOrphanedVpaths(known);
+      if (req.body.dryRun) return res.json({ orphaned, deleted: 0 });
+      const deleted = db.deleteOrphanedVpathRows(orphaned);
+      res.json({ orphaned, deleted });
+    } catch (e) {
+      res.status(500).json({ error: e?.message ?? String(e) });
     }
   });
 }

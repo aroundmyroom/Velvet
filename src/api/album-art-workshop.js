@@ -236,9 +236,11 @@ function _reconcileCandidates() {
     VALUES (?, ?, ?, ?, ?, ?, 'pending', 0)
     ON CONFLICT(album_key) DO UPDATE SET dir = excluded.dir, album = excluded.album, artist = excluded.artist
   `);
+  const knownVpaths = new Set(Object.keys(_rootFolders()));
   rawDb.exec('BEGIN');
   try {
     for (const r of rows) {
+      if (!knownVpaths.has(r.vpath)) continue;
       const dir = _dirOf(r.sample_filepath);
       if (_isShelved(shelves, r.vpath, dir)) continue;
       if (containers.has(r.vpath + '\u0000' + dir)) continue;

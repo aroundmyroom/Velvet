@@ -687,6 +687,7 @@ Admin only. Finds albums (folders) with no cover art, fetches suggestions, and w
 | `POST` | `/api/v1/admin/db/generate-waveforms` | — | Generate waveform data for every track. |
 | `GET` | `/api/v1/admin/db/album-version-inventory` | — | Count of files grouped by `album_version_source` (which tag or method produced the version value). Returns `[{ source, count }]`. *(Velvet)* |
 | `POST` | `/api/v1/admin/db/params/album-version-tags` | `{ tags: ["TIT3", "TXXX:EDITION", …] }` | Update the ordered list of tag fields the scanner uses to detect album version/edition. Max 20 entries. *(Velvet)* |
+| `POST` | `/api/v1/admin/db/purge-orphaned-vpaths` | `{ dryRun?: bool }` | Detect (and optionally delete) rows in the `files` table whose vpath no longer exists in config — left behind after a folder rename or removal. `dryRun: true` returns `{ orphaned, deleted: 0 }` without modifying the DB. *(Velvet)* |
 | `POST` | `/api/v1/admin/directory/reset-sentinel` | `{ vpath }` | Re-write the `.velvet.md` mount-guard sentinel file to the vpath root. Use when scanning is blocked after the sentinel was accidentally deleted. *(Velvet)* |
 | `POST` | `/api/v1/admin/db/params/scan-error-retention` | `{ days }` | Set how many days to keep scan errors before automatic pruning. *(Velvet)* |
 

@@ -3098,6 +3098,20 @@ const dbView = Vue.component('db-view', {
             </div>
           </div>
         </div>
+        <div class="row">
+          <div class="col s12">
+            <div class="card">
+              <div class="card-content">
+                <span class="card-title">{{ t('admin.library.orphanedVpaths') }}</span>
+                <p style="color:var(--t2);font-size:.88rem;margin-bottom:12px;">
+                  When a library folder is renamed or removed from config, old rows may remain in the database.
+                  Use this to detect and clean them up.
+                </p>
+                <a class="btn" v-on:click="purgeOrphaned">{{ t('admin.library.purgeOrphaned') }}</a>
+              </div>
+            </div>
+          </div>
+        </div>
       </div>
     </div>`,
   methods: {
@@ -3469,6 +3483,31 @@ const dbView = Vue.component('db-view', {
                       });
                     });
       });
+    },
+    purgeOrphaned: async function() {
+      try {
+        const dry = await API.axios({ method: 'POST', url: `${API.url()}/api/v1/admin/db/purge-orphaned-vpaths`, data: { dryRun: true } });
+        const { orphaned } = dry.data;
+        if (!orphaned || !orphaned.length) {
+          iziToast.success({ title: this.t('admin.library.noOrphanedVpaths'), position: 'topCenter', timeout: 3000 });
+          return;
+        }
+        adminConfirm(
+          this.t('admin.library.purgeOrphaned'),
+          this.t('admin.library.purgeOrphanedConfirm', { count: orphaned.length, list: orphaned.join(', ') }),
+          this.t('admin.library.purgeOrphaned'),
+          async () => {
+            try {
+              const res = await API.axios({ method: 'POST', url: `${API.url()}/api/v1/admin/db/purge-orphaned-vpaths`, data: { dryRun: false } });
+              iziToast.success({ title: this.t('admin.library.purgeOrphanedDone', { count: res.data.deleted }), position: 'topCenter', timeout: 4000 });
+            } catch {
+              iziToast.error({ title: 'Failed to purge orphaned rows', position: 'topCenter', timeout: 3500 });
+            }
+          }
+        );
+      } catch {
+        iziToast.error({ title: 'Failed to check for orphaned vpaths', position: 'topCenter', timeout: 3500 });
+      }
     },
     openModal: function(modalView) {
       modVM.currentViewModal = modalView;

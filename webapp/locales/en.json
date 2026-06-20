@@ -2834,5 +2834,10 @@
   "admin.art.btnShelveSelected": "Shelve selected",
   "admin.art.shelveTitleMulti": "Shelve {{count}} folders?",
   "admin.art.btnUnshelveSelected": "Unshelve selected ({{count}})",
-  "admin.art.shelvedCountMsg": "{{count}} folders"
+  "admin.art.shelvedCountMsg": "{{count}} folders",
+  "admin.library.orphanedVpaths": "Orphaned library entries",
+  "admin.library.purgeOrphaned": "Purge orphaned vpaths",
+  "admin.library.purgeOrphanedConfirm": "Remove {{count}} row(s) for removed vpaths: {{list}}?",
+  "admin.library.purgeOrphanedDone": "Deleted {{count}} orphaned row(s)",
+  "admin.library.noOrphanedVpaths": "No orphaned vpaths found"
 }
