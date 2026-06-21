@@ -1,7 +1,16 @@
-## Unreleased
+## v0.3.1 (2026-06-21)
+
+Fix purge-orphaned-vpaths 500 and dependency bumps.
 
 ### Fix
 - **Fixed: `POST /api/v1/admin/db/purge-orphaned-vpaths` returned 500** because `manager.js` (the manual re-export proxy for `sqlite-backend.js`) was missing the two new functions `getOrphanedVpaths` and `deleteOrphanedVpathRows` introduced in v0.3.0.
+
+### Dependencies
+- `axios` 1.17.0 → 1.18.0
+- `fast-xml-parser` 5.8.0 → 5.9.3
+- `joi` 18.2.1 → 18.2.3
+- `undici` (transitive, group bump)
+- CI: `actions/setup-node` 4 → 6, `aquasecurity/trivy-action` pinned to latest digest
 
 ## v0.3.0 (2026-06-20)
 
