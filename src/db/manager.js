@@ -66,6 +66,8 @@ export function removeFilesByPrefix(vpath, prefix) { return backend.removeFilesB
 export function countFilesByVpath(vpath) { return backend.countFilesByVpath(vpath); }
 export function countFilesByVpaths(vpaths) { return backend.countFilesByVpaths(vpaths); }
 export function countFilesByScanId(vpath, scanId) { return backend.countFilesByScanId(vpath, scanId); }
+export function getOrphanedVpaths(knownVpaths) { return backend.getOrphanedVpaths(knownVpaths); }
+export function deleteOrphanedVpathRows(vpaths) { return backend.deleteOrphanedVpathRows(vpaths); }
 export function recordCompletedScan(vpath, scanId, scanStartTs, finishedAtSec) { return backend.recordCompletedScan(vpath, scanId, scanStartTs, finishedAtSec); }
 export function getStats() { return backend.getStats(); }
 export function countAlbumsForSources(sources) { return backend.countAlbumsForSources(sources); }
