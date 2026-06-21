@@ -31,7 +31,7 @@
     "@distube/ytdl-core": "^4.16.12",
     "@lvcabral/node-ssdp": "^4.0.4",
     "archiver": "^8.0.0",
-    "axios": "^1.17.0",
+    "axios": "^1.18.0",
     "busboy": "^1.6.0",
     "commander": "^15.0.0",
     "compression": "^1.8.1",
