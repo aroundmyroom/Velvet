@@ -1,3 +1,8 @@
+## Unreleased
+
+### Fix
+- **Fixed: `POST /api/v1/admin/db/purge-orphaned-vpaths` returned 500** because `manager.js` (the manual re-export proxy for `sqlite-backend.js`) was missing the two new functions `getOrphanedVpaths` and `deleteOrphanedVpathRows` introduced in v0.3.0.
+
 ## v0.3.0 (2026-06-20)
 
 ### Library — Orphaned vpath detection and cleanup
