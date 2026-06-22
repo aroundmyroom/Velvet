@@ -2,6 +2,7 @@ import Joi from 'joi';
 import * as config from '../state/config.js';
 import * as db from '../db/manager.js';
 import { joiValidate } from '../util/validation.js';
+import WebError from '../util/web-error.js';
 import { createRequire } from 'node:module';
 import { access as fsAccess } from 'node:fs/promises';
 import { constants as FS } from 'node:fs';
@@ -133,7 +134,7 @@ export function setup(velvet) {
 
     const result = db.getPlaylistEntryById(req.body.id);
     if (!result || result.user !== req.user.username) {
-      throw new Error(`User ${req.user.username} tried accessing a resource they don't have access to. Playlist ID: ${req.body.id}`);
+      throw new WebError('Forbidden', 403);
     }
 
     db.removePlaylistEntryById(req.body.id);

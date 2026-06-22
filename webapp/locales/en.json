@@ -1998,6 +1998,7 @@
   "player.autodj.crossfadeOff": "Off",
   "player.autodj.diceLabel": "Dice Roll on Crossfade",
   "player.autodj.diceHint": "Throw a tumbling die each time Auto-DJ crossfades to a new track",
+  "player.autodj.gaplessConflictWarn": "⚠ Gapless playback is on — crossfade is disabled. Turn off gapless to use crossfade.",
   "player.autodj.filterLabel": "Keyword Filter",
   "player.autodj.filterHint": "Skip songs whose title, artist, album or filename contains any of these words",
   "player.autodj.filterTagRemove": "Remove",

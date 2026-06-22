@@ -47,7 +47,7 @@ async function downloadDir(req, res) {
   if (!req.body.directory) { throw new WebError('Validation Error', 403); }
 
   const pathInfo = vpath.getVPathInfo(req.body.directory, req.user);
-  if (!(await fs.stat(pathInfo.fullPath)).isDirectory()) { throw new Error('Not A Directory'); }
+  if (!(await fs.stat(pathInfo.fullPath)).isDirectory()) { throw new WebError('Not A Directory', 400); }
 
   const archive = new ZipArchive();
   archive.on('error', (err) => {
@@ -85,33 +85,24 @@ async function download(req, res, fileArray, filename = 'velvet-download') {
 }
 
 export function setup(velvet) {
-  velvet.post('/api/v1/download/m3u', (req, res) => {
-    // custom wrap download functions to avoid an error with the archiver module
-    downloadM3U(req, res).catch(err  => {
-      throw err;
-    })
+  velvet.post('/api/v1/download/m3u', async (req, res) => {
+    await downloadM3U(req, res);
   });
 
-  velvet.post('/api/v1/download/directory',  (req, res) => {
-    downloadDir(req, res).catch(err => {
-      throw err;
-    })
+  velvet.post('/api/v1/download/directory', async (req, res) => {
+    await downloadDir(req, res);
   });
 
-  velvet.get('/api/v1/download/shared', (req, res) => {
+  velvet.get('/api/v1/download/shared', async (req, res) => {
     if (!req.sharedPlaylistId) { throw new WebError('Missing Playlist Id', 403); }
     const fileArray = shared.lookupPlaylist(req.sharedPlaylistId).playlist;
-    download(req, res, fileArray, 'velvet-shared').catch(err => {
-      throw err;
-    });
+    await download(req, res, fileArray, 'velvet-shared');
   });
 
-  velvet.post('/api/v1/download/zip', (req, res) => {
+  velvet.post('/api/v1/download/zip', async (req, res) => {
     const fileArray = JSON.parse(req.body.fileArray);
     const filename = (req.body.filename || 'velvet-download').replaceAll(/[/\\:*?"<>|]/g, '_').slice(0, 120);
-    download(req, res, fileArray, filename).catch(err => {
-      throw err;
-    });
+    await download(req, res, fileArray, filename);
   });
 
   // Delete a recording file from a recordings-type vpath.

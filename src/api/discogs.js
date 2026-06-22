@@ -388,10 +388,26 @@ export function setup(velvet) {
         }
       }
 
+      // WAV/AIFF can't carry embedded art — write cover.jpg to the folder instead
+      // so the art is immediately visible in the file browser and album library.
+      let writtenCoverFile = null;
+      if (cacheOnly) {
+        const coverPath = resolvePathWithinRoot(path.dirname(absPath), 'cover.jpg');
+        if (!fs.existsSync(coverPath)) {
+          const { default: sharp } = await import('sharp');
+          const jpeg = await sharp(imgBuf)
+            .resize(1200, 1200, { fit: 'inside', withoutEnlargement: true })
+            .jpeg({ quality: 90 })
+            .toBuffer();
+          fs.writeFileSync(coverPath, jpeg);
+          writtenCoverFile = 'cover.jpg';
+        }
+      }
+
       try { fs.unlinkSync(tmpCover); } catch (e) { console.debug('[velvet]', e?.message ?? e); }
 
-      const { aaFile } = await _updateArtRecord(imgBuf, pathInfo, config.program.storage.albumArtDirectory, req.body.coverUrl);
-      res.json({ ok: true, aaFile, cacheOnly });
+      const { aaFile } = await _updateArtRecord(imgBuf, pathInfo, config.program.storage.albumArtDirectory, req.body.coverUrl, writtenCoverFile);
+      res.json({ ok: true, aaFile, cacheOnly, coverFile: writtenCoverFile });
     } catch (e) {
       try { fs.unlinkSync(tmpCover); } catch (e) { console.debug('[velvet]', e?.message ?? e); }
       try { fs.unlinkSync(tmpOut);   } catch (e) { console.debug('[velvet]', e?.message ?? e); }
@@ -868,7 +884,7 @@ function _cleanupOldArt(oldAaFile, newAaFile, artDir) {
   } catch (e) { console.debug('[velvet]', e?.message ?? e); }
 }
 
-async function _updateArtRecord(imgBuf, pathInfo, artDir, coverUrl) {
+async function _updateArtRecord(imgBuf, pathInfo, artDir, coverUrl, coverFile = null) {
   const md5     = crypto.createHash('sha256').update(imgBuf).digest('hex');
   const aaFile  = `${md5}.jpg`;
   const artPath = path.join(artDir, aaFile);
@@ -882,7 +898,7 @@ async function _updateArtRecord(imgBuf, pathInfo, artDir, coverUrl) {
 
   dbManager.commitTransaction();
   try {
-    dbManager.updateFileArt(pathInfo.relativePath, pathInfo.vpath, aaFile, null, coverUrl ? 'deezer' : 'discogs');
+    dbManager.updateFileArt(pathInfo.relativePath, pathInfo.vpath, aaFile, null, coverUrl ? 'deezer' : 'discogs', coverFile);
   } catch (artErr) {
     console.error('[discogs/embed] updateFileArt failed:', artErr.message);
   }

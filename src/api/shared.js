@@ -10,10 +10,13 @@ import WebError from '../util/web-error.js';
 
 function lookupShared(playlistId) {
   const playlistItem = db.findSharedPlaylist(playlistId);
-  if (!playlistItem) { throw new WebError('Playlist Not Found'); }
+  if (!playlistItem) { throw new WebError('Playlist Not Found', 404); }
 
-  // make sure the token is still good
-  jwt.verify(playlistItem.token, config.program.secret);
+  try {
+    jwt.verify(playlistItem.token, config.program.secret);
+  } catch {
+    throw new WebError('Share Link Expired', 401);
+  }
   return {
     token: playlistItem.token,
     playlist: playlistItem.playlist

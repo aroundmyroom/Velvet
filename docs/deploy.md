@@ -84,6 +84,36 @@ Save the proxy host — NPM reloads nginx automatically. No Velvet restart is ne
 
 ---
 
+### Access Lists and the PWA manifest (401 on site.webmanifest)
+
+If you protect your proxy host with an NPM **Access List** (HTTP Basic Auth), browsers will get a `401` when they silently fetch `/assets/fav/site.webmanifest` and the icon files — because the browser sends those requests without credentials. This breaks PWA install prompts.
+
+Fix: add the following location blocks to the **Advanced tab → Custom Nginx Configuration**, *in addition to* the directives above. Replace `localhost:3000` with your Velvet upstream.
+
+```nginx
+location = /assets/fav/site.webmanifest {
+    auth_basic off;
+    proxy_pass http://localhost:3000;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+}
+
+location ~* ^/assets/fav/android-chrome.*\.png$ {
+    auth_basic off;
+    proxy_pass http://localhost:3000;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+}
+```
+
+`auth_basic off` overrides the Access List for those paths only. Everything else remains protected.
+
+---
+
 ## Running as a systemd Service
 
 See [install.md](install.md) for full instructions including PM2 and the `music.service` systemd unit.

@@ -512,7 +512,7 @@ export async function serveIt(configFile) {
 
     // Check for validation error
     if (error instanceof Joi.ValidationError) {
-      return res.status(403).json({ error: error.message });
+      return res.status(400).json({ error: error.message });
     }
 
     if (error instanceof WebError) {

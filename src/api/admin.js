@@ -1,4 +1,5 @@
 import { promisify } from 'node:util';
+import WebError from '../util/web-error.js';
 import path from 'node:path';
 import child from 'node:child_process';
 import fs from 'node:fs';
@@ -1317,7 +1318,7 @@ export function setup(velvet) {
   });
 
   velvet.delete("/api/v1/admin/ssl", async (req, res) => {
-    if (!config.program.ssl.cert) { throw new Error('No Certs'); }
+    if (!config.program.ssl?.cert) { throw new WebError('No Certs', 404); }
     await admin.removeSSL();
     res.json({});
   });

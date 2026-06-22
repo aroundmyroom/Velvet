@@ -1,9 +1,20 @@
+## v0.3.2 (2026-06-22)
+
+Small bugfixes.
+
+- Fix download route error propagation (async/await)
+- Improve error responses with proper HTTP status codes
+- Minor internal cleanup
+
 ## v0.3.1 (2026-06-21)
 
-Fix purge-orphaned-vpaths 500 and dependency bumps.
+Fix purge-orphaned-vpaths 500, WAV cover art folder write, and dependency bumps.
 
 ### Fix
 - **Fixed: `POST /api/v1/admin/db/purge-orphaned-vpaths` returned 500** because `manager.js` (the manual re-export proxy for `sqlite-backend.js`) was missing the two new functions `getOrphanedVpaths` and `deleteOrphanedVpathRows` introduced in v0.3.0.
+
+### Album art — WAV / AIFF files
+- **Fixed: setting cover art for WAV (and AIFF/W64) files now writes `cover.jpg` to the track's folder** when no folder image is present. WAV containers cannot carry embedded art, so previously the image was downloaded and cached in the database but never made visible on disk. The folder image is now written at 1200 × 1200 px (matching the Album-Art Workshop quality), and the `cover_file` database column is updated accordingly — so the art appears immediately in the file browser, album library, and player without a rescan.
 
 ### Dependencies
 - `axios` 1.17.0 → 1.18.0

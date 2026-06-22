@@ -1998,6 +1998,7 @@
   "player.autodj.crossfadeOff": "Uit",
   "player.autodj.diceLabel": "Dobbelsteengooi bij crossfade",
   "player.autodj.diceHint": "Gooi een dobbelsteen elke keer dat Auto-DJ naar een nieuw nummer overgaat",
+  "player.autodj.gaplessConflictWarn": "⚠ Gapless afspelen staat aan — crossfade is uitgeschakeld. Zet gapless uit om crossfade te gebruiken.",
   "player.autodj.filterLabel": "Trefwoordfilter",
   "player.autodj.filterHint": "Sla nummers over waarvan de titel, artiest, album of bestandsnaam één van deze woorden bevat",
   "player.autodj.filterTagRemove": "Verwijderen",

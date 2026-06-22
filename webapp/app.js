@@ -1,5 +1,5 @@
 'use strict';
-const VELVET_VERSION = '0.3.1';
+const VELVET_VERSION = '0.3.2';
 // ── SERVER IDENTITY GUARD ────────────────────────────────────────────────────
 // Detects when this browser's localStorage belongs to a different Velvet
 // instance (fresh install, IP change, reverse-proxy swap, second server).
@@ -2730,6 +2730,7 @@ function _syncGaplessButton() {
   }
   const cb = document.getElementById('gapless-enable');
   if (cb) cb.checked = !!S.gapless;
+  _syncDjGaplessWarn();
 }
 
 function _setCrossfadeRestore(v) {
@@ -2775,6 +2776,11 @@ function _crossfadeLabel(v) {
   return v === 0 ? t('player.autodj.crossfadeOff') : v + 's';
 }
 
+function _syncDjGaplessWarn() {
+  const el = document.getElementById('dj-gapless-warn');
+  if (el) el.style.display = S.gapless && S.crossfade > 0 ? '' : 'none';
+}
+
 function _syncCrossfadeButton() {
   const btn = document.getElementById('crossfade-light');
   if (btn) {
@@ -2795,6 +2801,7 @@ function _syncCrossfadeButton() {
   const miniVal = document.getElementById('xf-val-mini');
   if (mini) mini.value = String(S.crossfade);
   if (miniVal) miniVal.textContent = _crossfadeLabel(S.crossfade);
+  _syncDjGaplessWarn();
 }
 
 function setCrossfade(v) {
@@ -4468,7 +4475,8 @@ const MINI_SPEC = (() => {
 // ── VU NEEDLE METERS (player bar) ─────────────────────────────
 const VU_NEEDLE = (() => {
   let rafId = null;
-  let _mode = localStorage.getItem(_uKey('vu_mode')) || 'spec'; // 'spec' | 'needle' | 'ppm'
+  let _mode = localStorage.getItem(_uKey('vu_mode')) || 'spec'; // 'spec' | 'needle' | 'ppm' | 'art'
+  if (_mode === 'fun') _mode = 'spec'; // fun is not in the normal cycle
 
   // Per-channel ballistics state
   let vuL = -25, vuR = -25;
@@ -4502,6 +4510,14 @@ const VU_NEEDLE = (() => {
   const _ART_GRAVITY = 0.7;    // peak fall acceleration (same as MINI_SPEC)
   let _artPkL      = Array.from({length: _ART_NBARS}, () => ({val:0, ts:0, vel:0}));
   let _artPkR      = Array.from({length: _ART_NBARS}, () => ({val:0, ts:0, vel:0}));
+
+  // Fun mode state — all effects run simultaneously
+  let _funSpinAng  = 0;        // 0→1 progress of "Velvet" spin (clip effect)
+  let _funSpinTs   = null;     // performance.now() when spin was triggered
+  const _FUN_SPIN_MS = 600;    // one full rotation takes 600 ms
+  let _funSilTs    = null;     // when unbroken silence started (bored effect)
+  let _funDroop    = 0;        // extra CCW angle degrees below −25 stop (bored effect)
+  let _funTremor   = 0;        // random jitter in degrees (bored effect)
 
   function _buildArtCols() {
     _artBarsL.fill(0); _artBarsR.fill(0);
@@ -4814,11 +4830,46 @@ const VU_NEEDLE = (() => {
     } else {
       ctx.fillStyle = dark ? 'rgba(180,150,255,.90)' : 'rgba(109,60,230,.75)';
     }
-    ctx.fillText('AroundMyRoom', CX, VH - 48);
+    if (_mode === 'fun') {
+      ctx.letterSpacing = '0px';
+      if (_funSpinAng > 0) {
+        // Clip triggered — spin "Velvet" one full turn
+        ctx.save();
+        ctx.translate(CX, VH - 48);
+        ctx.rotate(_funSpinAng * 2 * Math.PI);
+        ctx.translate(-CX, -(VH - 48));
+        ctx.fillText('Velvet', CX, VH - 48);
+        ctx.restore();
+      } else if (analyserL) {
+        // Each letter of "Velvet" bounces to its own frequency bin
+        const text = 'Velvet';
+        const fbuf = new Uint8Array(analyserL.frequencyBinCount);
+        analyserL.getByteFrequencyData(fbuf);
+        const charSpan = VW * 0.42;
+        const startX   = CX - charSpan / 2;
+        const charW    = charSpan / (text.length - 1);
+        for (let i = 0; i < text.length; i++) {
+          const binIdx = Math.floor((i / text.length) * fbuf.length * 0.45);
+          const bounce = (fbuf[binIdx] / 255) * 22;
+          ctx.fillText(text[i], startX + i * charW, VH - 48 + bounce);
+        }
+      } else {
+        ctx.fillText('Velvet', CX, VH - 48);
+      }
+    } else {
+      ctx.fillText('AroundMyRoom', CX, VH - 48);
+    }
     ctx.letterSpacing = '0px';
     ctx.fillStyle = dark ? 'rgba(139,92,246,.55)' : 'rgba(109,60,230,.45)';
     ctx.font = 'bold 10px system-ui,sans-serif';
-    ctx.fillText('VU', CX, VH - 12);
+    if (_mode === 'fun') {
+      // Emoji label reacts to current VU level
+      const emoji = vu >= CLIP_VU ? '💀' : vu >= 0 ? '🔊' : vu >= -10 ? '🎵' : '😴';
+      ctx.font = '12px system-ui,sans-serif';
+      ctx.fillText(emoji, CX, VH - 12);
+    } else {
+      ctx.fillText('VU', CX, VH - 12);
+    }
 
     // Channel label — y=26 aligns with arc top (CY-R=134-108=26)
     ctx.fillStyle = dark ? 'rgba(139,92,246,.85)' : 'rgba(109,60,230,.70)';
@@ -4848,7 +4899,8 @@ const VU_NEEDLE = (() => {
     ctx.strokeStyle = dark ? '#2a3a5e' : 'rgba(0,0,0,.12)'; ctx.lineWidth = 0.75; ctx.stroke();
 
     // ── Needle — pivots at CY=VH=120 (bottom edge). Tail exits below canvas. ──
-    const ang  = toRad(vuToAngle(vu));
+    const _funAngOff = _mode === 'fun' ? (-_funDroop * 3.5 + _funTremor) : 0;
+    const ang  = toRad(vuToAngle(vu) + _funAngOff);
     const nTip = R - 8, nTail = 10;
     ctx.save();
     ctx.shadowColor = dark ? 'rgba(0,0,0,.8)' : 'rgba(0,0,0,.3)';
@@ -5102,7 +5154,7 @@ const VU_NEEDLE = (() => {
   }
 
   function _drawIdle() {
-    if (_mode === 'needle') {
+    if (_mode === 'needle' || _mode === 'fun') {
       const cL = document.getElementById('vu-dial-L');
       const cR = document.getElementById('vu-dial-R');
       if (cL) drawDial(cL, 'L', -25, 0);
@@ -5262,6 +5314,35 @@ const VU_NEEDLE = (() => {
       if (cL) drawDial(cL, 'L', vuL, lampI(lastClipL));
       if (cR) drawDial(cR, 'R', vuR, lampI(lastClipR));
     }
+    if (_mode === 'fun') {
+      const now = performance.now();
+      let funL = vuL, funR = vuR;
+      // Bored needle: droops and trembles after 5 s of silence
+      const silent = vuL < -22 && vuR < -22;
+      if (silent) {
+        if (_funSilTs === null) _funSilTs = now;
+        const age = (now - _funSilTs) / 1000;
+        if (age > 5) {
+          _funDroop  = Math.min(_funDroop + dt * 3, 10);
+          _funTremor = (Math.random() - 0.5) * 3 * Math.min(age - 5, 3) / 3;
+        }
+      } else {
+        _funSilTs = null;
+        _funDroop  = Math.max(_funDroop - dt * 25, 0);
+        _funTremor = 0;
+      }
+      // Spin "Velvet" text when clip fires
+      if (_funSpinTs !== null) {
+        _funSpinAng = Math.min((now - _funSpinTs) / _FUN_SPIN_MS, 1);
+        if (_funSpinAng >= 1) { _funSpinAng = 0; _funSpinTs = null; }
+      } else if (vuL >= CLIP_VU || vuR >= CLIP_VU) {
+        _funSpinTs = now;
+      }
+      const cL = document.getElementById('vu-dial-L');
+      const cR = document.getElementById('vu-dial-R');
+      if (cL) drawDial(cL, 'L', funL, lampI(lastClipL));
+      if (cR) drawDial(cR, 'R', funR, lampI(lastClipR));
+    }
     if (_mode === 'ppm') {
       const cP = document.getElementById('vu-ppm');
       if (cP) drawPPM(cP, ppmL, ppmR, ppmPkL, ppmPkR, ppmLampI(ppmPkTsL), ppmLampI(ppmPkTsR));
@@ -5325,11 +5406,11 @@ const VU_NEEDLE = (() => {
     const spec = document.getElementById('mini-spec');
     const ppmW = document.getElementById('vu-ppm-wrap');
     const artW = document.getElementById('vu-art-wrap');
-    if (wrap) wrap.classList.toggle('hidden', _mode !== 'needle');
+    if (wrap) wrap.classList.toggle('hidden', _mode !== 'needle' && _mode !== 'fun');
     if (spec) spec.classList.toggle('hidden', _mode !== 'spec');
     if (ppmW) ppmW.classList.toggle('hidden', _mode !== 'ppm');
     if (artW) artW.classList.toggle('hidden', _mode !== 'art');
-    document.body.classList.toggle('vu-needle-mode', _mode === 'needle');
+    document.body.classList.toggle('vu-needle-mode', _mode === 'needle' || _mode === 'fun');
     if (_mode === 'spec') { _stop(); if (startIfPlaying) MINI_SPEC.start(); }
     else                  { MINI_SPEC.stop(); if (startIfPlaying) _start(); else _drawIdle(); }
     localStorage.setItem(_uKey('vu_mode'), _mode);
@@ -5375,16 +5456,38 @@ const VU_NEEDLE = (() => {
       const spec = document.getElementById('mini-spec');
       const ppmW = document.getElementById('vu-ppm-wrap');
       const artW = document.getElementById('vu-art-wrap');
-      if (wrap) wrap.classList.toggle('hidden', _mode !== 'needle');
+      if (wrap) wrap.classList.toggle('hidden', _mode !== 'needle' && _mode !== 'fun');
       if (spec) spec.classList.toggle('hidden', _mode !== 'spec');
       if (ppmW) ppmW.classList.toggle('hidden', _mode !== 'ppm');
       if (artW) artW.classList.toggle('hidden', _mode !== 'art');
-      document.body.classList.toggle('vu-needle-mode', _mode === 'needle');
-      if (_mode === 'needle' || _mode === 'ppm' || _mode === 'art') _drawIdle();
+      document.body.classList.toggle('vu-needle-mode', _mode === 'needle' || _mode === 'fun');
+      if (_mode === 'needle' || _mode === 'ppm' || _mode === 'art' || _mode === 'fun') _drawIdle();
       else MINI_SPEC.stop();  // idle breathing on page load in spec mode
       initKnob();
       initPPMBrightness();
       _bsStartFade();   // start 15 s hide countdown immediately
+      let _preFunMode = 'spec';
+      const _funPx = document.getElementById('fun-pixel');
+      function _posFunPx() {
+        if (!_funPx) return;
+        const qEl = document.getElementById('queue-panel');
+        const qRect = qEl ? qEl.getBoundingClientRect() : null;
+        const x = (qRect && qRect.width > 20) ? qRect.left : window.innerWidth;
+        _funPx.style.left = (x - 6) + 'px';
+      }
+      _posFunPx();
+      window.addEventListener('resize', _posFunPx);
+      document.getElementById('queue-panel')?.addEventListener('transitionend', _posFunPx);
+      if (_funPx) _funPx.addEventListener('click', () => {
+        if (_mode === 'fun') {
+          _mode = _preFunMode;
+          _applyMode(!audioEl.paused);
+        } else {
+          _preFunMode = _mode;
+          _mode = 'fun';
+          _applyMode(!audioEl.paused);
+        }
+      });
     },
   };
 })();
@@ -13177,6 +13280,7 @@ async function viewAutoDJ() {
             <span id="xf-val-dj" class="xf-val">${S.crossfade === 0 ? t('player.autodj.crossfadeOff') : S.crossfade + 's'}</span>
           </div>
         </div>
+        <div id="dj-gapless-warn" class="autodj-opt-hint autodj-warn" style="${S.gapless && S.crossfade > 0 ? '' : 'display:none'}">${t('player.autodj.gaplessConflictWarn')}</div>
 ${_webAnimSupported ? `
         <div class="autodj-opt-row">
           <div>

@@ -842,6 +842,7 @@ button, a, .song-row, .artist-row, .album-card, .album-row,
 .dj-vpath-pill.on{background:var(--primary,#cba6f7);border-color:var(--primary,#cba6f7);color:#fff;box-shadow:0 0 0 2px var(--primary-d);}
 .autodj-opt-label{font-size:13px;font-weight:500;color:var(--t1);margin-bottom:2px;}
 .autodj-opt-hint{font-size:11px;color:var(--t3);}
+.autodj-warn{color:#f59e0b;margin:2px 0 4px;}
 .dj-info-btn{background:none;border:none;cursor:pointer;color:var(--t3);padding:2px;line-height:0;border-radius:50%;transition:color .15s;flex-shrink:0;}
 .dj-info-btn:hover,.dj-info-btn.active{color:var(--primary);}
 .autodj-select{background:var(--raised);border:1px solid var(--border);border-radius:var(--r);color:var(--t1);font-size:12px;padding:5px 8px;outline:none;}

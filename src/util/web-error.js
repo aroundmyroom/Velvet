@@ -8,7 +8,7 @@ class WebError extends Error {
     this.name = this.constructor.name
 
     if(!Number.isInteger(code) || code < 400 || code > 599) {
-      code = 500;
+      code = 400;
     };
     this.status = code;
   }

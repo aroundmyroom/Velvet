@@ -643,7 +643,7 @@ export function setup(velvet) {
     if (/^https?:\/\//i.test(req.body.filepath)) { return res.status(400).json({ error: 'Cannot rate external URLs' }); }
     const pathInfo = vpath.getVPathInfo(req.body.filepath);
     const result = resolveFile(pathInfo, req.user);
-    if (!result) { throw new Error('File Not Found'); }
+    if (!result) { throw new WebError('File Not Found', 404); }
 
     const result2 = db.findUserMetadata(result.hash, req.user.username);
     if (result2) {
