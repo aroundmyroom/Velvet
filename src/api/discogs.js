@@ -896,7 +896,6 @@ async function _updateArtRecord(imgBuf, pathInfo, artDir, coverUrl, coverFile = 
 
   await _generateThumbnails(imgBuf, artDir, aaFile);
 
-  dbManager.commitTransaction();
   try {
     dbManager.updateFileArt(pathInfo.relativePath, pathInfo.vpath, aaFile, null, coverUrl ? 'deezer' : 'discogs', coverFile);
   } catch (artErr) {

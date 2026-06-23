@@ -639,17 +639,16 @@ export function setup(velvet) {
   velvet.post('/api/v1/admin/genre-enricher/apply-all-consensus', (req, res) => {
     try {
       const rawDb = db.getDB();
-      const r = rawDb.prepare(String.raw`
-        UPDATE files
-           SET genre = lower(trim(genre_lastfm)), genre_user_reviewed = 1
-         WHERE genre_lastfm  IS NOT NULL AND trim(genre_lastfm)  != ''
+      const WHERE_CONSENSUS = String.raw`
+           genre_lastfm  IS NOT NULL AND trim(genre_lastfm)  != ''
            AND genre_mb      IS NOT NULL AND trim(genre_mb)      != ''
            AND genre_discogs IS NOT NULL AND trim(genre_discogs) != ''
            AND lower(trim(genre_lastfm)) = lower(trim(genre_mb))
            AND lower(trim(genre_mb))     = lower(trim(genre_discogs))
-           AND (genre_user_reviewed IS NULL OR genre_user_reviewed = 0)
-      `).run();
-      res.json({ ok: true, updated: r.changes });
+           AND (genre_user_reviewed IS NULL OR genre_user_reviewed = 0)`;
+      const artistCount = rawDb.prepare(`SELECT COUNT(DISTINCT lower(trim(artist))) c FROM files WHERE ${WHERE_CONSENSUS}`).get()?.c ?? 0;
+      rawDb.prepare(`UPDATE files SET genre = lower(trim(genre_lastfm)), genre_user_reviewed = 1 WHERE ${WHERE_CONSENSUS}`).run();
+      res.json({ ok: true, updated: artistCount });
     } catch (e) { res.status(500).json({ error: e.message }); }
   });
 
@@ -659,7 +658,23 @@ export function setup(velvet) {
   velvet.post('/api/v1/admin/genre-enricher/apply-all-majority', (req, res) => {
     try {
       const rawDb = db.getDB();
-      const r = rawDb.prepare(String.raw`
+      const WHERE_MAJORITY = String.raw`(genre_user_reviewed IS NULL OR genre_user_reviewed = 0)
+           AND (
+             (lower(trim(genre_lastfm)) = lower(trim(genre_mb))
+               AND genre_lastfm IS NOT NULL AND trim(genre_lastfm) != ''
+               AND genre_mb     IS NOT NULL AND trim(genre_mb)     != ''
+               AND (genre_discogs IS NULL OR trim(genre_discogs) = '')) OR
+             (lower(trim(genre_lastfm)) = lower(trim(genre_discogs))
+               AND genre_lastfm  IS NOT NULL AND trim(genre_lastfm)  != ''
+               AND genre_discogs IS NOT NULL AND trim(genre_discogs) != ''
+               AND (genre_mb IS NULL OR trim(genre_mb) = '')) OR
+             (lower(trim(genre_mb)) = lower(trim(genre_discogs))
+               AND genre_mb      IS NOT NULL AND trim(genre_mb)      != ''
+               AND genre_discogs IS NOT NULL AND trim(genre_discogs) != ''
+               AND (genre_lastfm IS NULL OR trim(genre_lastfm) = ''))
+           )`;
+      const artistCount = rawDb.prepare(`SELECT COUNT(DISTINCT lower(trim(artist))) c FROM files WHERE ${WHERE_MAJORITY}`).get()?.c ?? 0;
+      rawDb.prepare(String.raw`
         UPDATE files
            SET genre = lower(trim(
              CASE
@@ -681,23 +696,9 @@ export function setup(velvet) {
              END
            )),
                genre_user_reviewed = 1
-         WHERE (genre_user_reviewed IS NULL OR genre_user_reviewed = 0)
-           AND (
-             (lower(trim(genre_lastfm)) = lower(trim(genre_mb))
-               AND genre_lastfm IS NOT NULL AND trim(genre_lastfm) != ''
-               AND genre_mb     IS NOT NULL AND trim(genre_mb)     != ''
-               AND (genre_discogs IS NULL OR trim(genre_discogs) = '')) OR
-             (lower(trim(genre_lastfm)) = lower(trim(genre_discogs))
-               AND genre_lastfm  IS NOT NULL AND trim(genre_lastfm)  != ''
-               AND genre_discogs IS NOT NULL AND trim(genre_discogs) != ''
-               AND (genre_mb IS NULL OR trim(genre_mb) = '')) OR
-             (lower(trim(genre_mb)) = lower(trim(genre_discogs))
-               AND genre_mb      IS NOT NULL AND trim(genre_mb)      != ''
-               AND genre_discogs IS NOT NULL AND trim(genre_discogs) != ''
-               AND (genre_lastfm IS NULL OR trim(genre_lastfm) = ''))
-           )
+         WHERE ${WHERE_MAJORITY}
       `).run();
-      res.json({ ok: true, updated: r.changes });
+      res.json({ ok: true, updated: artistCount });
     } catch (e) { res.status(500).json({ error: e.message }); }
   });
 
@@ -720,8 +721,12 @@ export function setup(velvet) {
         const col = _COL_GENRE[source];
         sql = `UPDATE files SET genre = lower(${col}) WHERE (genre IS NULL OR trim(genre) = '') AND ${col} IS NOT NULL AND trim(${col}) != ''`;
       }
-      const r = rawDb.prepare(sql).run();
-      res.json({ ok: true, updated: r.changes, source });
+      const countSql = source === 'preferred'
+        ? "SELECT COUNT(DISTINCT lower(trim(artist))) c FROM files WHERE (genre IS NULL OR trim(genre) = '') AND COALESCE(genre_mb, genre_discogs, genre_lastfm) IS NOT NULL"
+        : `SELECT COUNT(DISTINCT lower(trim(artist))) c FROM files WHERE (genre IS NULL OR trim(genre) = '') AND ${_COL_GENRE[source]} IS NOT NULL AND trim(${_COL_GENRE[source]}) != ''`;
+      const artistCount = rawDb.prepare(countSql).get()?.c ?? 0;
+      rawDb.prepare(sql).run();
+      res.json({ ok: true, updated: artistCount, source });
     } catch (e) { res.status(500).json({ error: e.message }); }
   });
 

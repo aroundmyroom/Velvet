@@ -464,28 +464,6 @@ async function run() {
   // Last.fm/MB/Discogs as the clean canonical name ("Abba") instead.
   _loadArtistCleanMap();
 
-  // ── Consistency pass ───────────────────────────────────────────────────────
-  // Every artist must have all three sources from the SAME enrichment run, so
-  // the comparison table is meaningful. Any artist where one or two sources
-  // are filled but the third is NULL gets reset entirely so the loop below
-  // will re-fetch all three together. Fully-enriched artists (all 3 non-NULL)
-  // and untouched artists (all 3 NULL) are left alone.
-  try {
-    const reset = db.prepare(`
-      UPDATE files
-         SET genre_lastfm = NULL, genre_enrich_lastfm = NULL,
-             genre_mb = NULL,     genre_enrich_mb = NULL,
-             genre_discogs = NULL, genre_enrich_discogs = NULL
-       WHERE artist IS NOT NULL AND trim(artist) != ''
-         AND (genre_enrich_lastfm IS NULL OR genre_enrich_mb IS NULL OR genre_enrich_discogs IS NULL)
-         AND (genre_enrich_lastfm IS NOT NULL OR genre_enrich_mb IS NOT NULL OR genre_enrich_discogs IS NOT NULL)
-    `).run();
-    if (reset.changes > 0) {
-      parentPort.postMessage({ type: 'fileError', message: `Consistency pass: reset ${reset.changes} partially-enriched rows so all 3 sources are re-fetched together.` });
-    }
-  } catch (e) {
-    parentPort.postMessage({ type: 'fileError', message: 'Consistency pass failed: ' + e.message });
-  }
 
   parentPort.postMessage({ type: 'ready' });
   postStats();

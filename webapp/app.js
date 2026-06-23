@@ -1,5 +1,5 @@
 'use strict';
-const VELVET_VERSION = '0.3.2';
+const VELVET_VERSION = '0.3.3';
 // ── SERVER IDENTITY GUARD ────────────────────────────────────────────────────
 // Detects when this browser's localStorage belongs to a different Velvet
 // instance (fresh install, IP change, reverse-proxy swap, second server).
@@ -11654,24 +11654,22 @@ async function _pnowLoadArtistData(artist, forFp, skipImg = false) {
       });
     }
 
-    // Load songs + album library in parallel.
+    // Album library (579 KB) starts loading in the background; the fast DB query
+    // for songs is awaited first so the Songs panel renders without waiting for it.
     // NOTE: do NOT apply _songsOnlyFilter() here — in the Now Playing context we
     // want to show ALL songs by this artist, including those in albumsOnly paths
     // (e.g. a track from the Disco vpath would otherwise be invisible even though
     // it is actively playing).
-    const [songsRes, albRes] = await Promise.allSettled([
-      api('POST', 'api/v1/db/artist-folder-songs', {
-        artists: artistsArg,
-      }),
-      _loadAlbLib(),
-    ]);
+    const albLibPromise = _loadAlbLib();
+    let songsRes = null;
+    try { songsRes = await api('POST', 'api/v1/db/artist-folder-songs', { artists: artistsArg }); } catch (_e) { /* network error */ }
     if (_pnowSongFp !== forFp || S.view !== 'playing-now') return;
 
     const goBack = () => viewPlayingNow();
 
     // ── Songs panel ──────────────────────────────────────────────────────
     const songsEl2 = document.getElementById('pnow-lib-songs');
-    const rawSongs = (songsRes.status === 'fulfilled' ? (songsRes.value || []) : []).map(s => norm(s));
+    const rawSongs = (songsRes || []).map(s => norm(s));
     if (rawSongs.length && songsEl2) {
       const grouped = new Map();
       for (const s of rawSongs) {
@@ -11732,7 +11730,9 @@ async function _pnowLoadArtistData(artist, forFp, skipImg = false) {
       songsEl2.innerHTML = `<p style="color:var(--t3);font-size:13px;">${t('player.pnow.noSongs')}</p>`;
     }
 
-    // ── Albums panel ─────────────────────────────────────────────────────
+    // ── Albums panel — now await the library (may already be cached) ─────
+    await albLibPromise;
+    if (_pnowSongFp !== forFp || S.view !== 'playing-now') return;
     const albumsEl2 = document.getElementById('pnow-lib-albums');
     if (albumsEl2 && _albLib) {
       // Reuse exact same matching logic as viewArtistProfile2
@@ -21412,6 +21412,9 @@ function showApp() {
   // home-view / ping when the audio GET fires, the audio waits in Chrome's
   // queue for 10+ seconds.
   setTimeout(() => { loadPlaylists(); loadSmartPlaylists(); }, 2000);
+  // Prefetch album library 4 s after boot so "Playing Now" and artist profiles
+  // load instantly instead of waiting for 579 KB on first navigation.
+  setTimeout(() => { _loadAlbLib(); }, 4000);
   // restoreQueue FIRST so the audio media request gets connection slots before
   // the home-view API calls.  Chrome allows max 6 HTTP/1.1 connections per host;
   // firing the home view first filled all slots and delayed audio by 10+ s.
@@ -24679,6 +24682,297 @@ window.EGG = (() => {
   });
 
   return { toggle() { active ? hide() : show(); } };
+})();
+
+(() => {
+  const BALL_SIZE = 480;
+  const BALL_R    = BALL_SIZE / 2;
+  const BEAMS     = 12;
+  const MAX_SP    = 65;
+  const MAX_WALL  = 20;
+  const MAX_LASER = 10;
+  const FADE_MS   = 1000;
+  const PLAYER_H  = 210;
+
+  let raf = null, active = false;
+  let beamAngle = 0;
+  let spots = [], wallSpots = [], lasers = [];
+  let _cv = null, _bx = 0, _by = 0;
+  let _rawBuf = null;
+  let _logo = null;
+
+  function _amp() {
+    if (!analyserL) return 0;
+    const n = analyserL.frequencyBinCount;
+    if (!_rawBuf || _rawBuf.length !== n) _rawBuf = new Uint8Array(n);
+    analyserL.getByteFrequencyData(_rawBuf);
+    let s = 0;
+    const end = Math.min(Math.floor(n * 0.45), n);
+    for (let i = 0; i < end; i++) s += _rawBuf[i];
+    return s / (end * 255);
+  }
+
+  function _ensureLogo() {
+    if (_logo) return;
+    _logo = new Image();
+    _logo.src = '/assets/img/velvet-logo.svg';
+  }
+
+  // Small glitter spots — spawn near ball, drift outward along beam angles
+  function _spawnSpots(amp, W, H) {
+    if (spots.length >= MAX_SP) return;
+    const rate = 1 + Math.floor(amp * 5);
+    for (let k = 0; k < rate && spots.length < MAX_SP; k++) {
+      const b = Math.floor(Math.random() * BEAMS);
+      const a = beamAngle + (b / BEAMS) * Math.PI * 2 + (Math.random() - 0.5) * 0.45;
+      const start = BALL_R * 1.04 + Math.random() * 25;
+      const range = 260 + Math.random() * 550;
+      spots.push({
+        x: _bx + Math.cos(a) * start,
+        y: _by + Math.sin(a) * start * 0.55,
+        tx: _bx + Math.cos(a) * range,
+        ty: _by + Math.sin(a) * range * 0.55,
+        hue: ((b / BEAMS * 360 + beamAngle * 55) % 360 + 360) % 360,
+        sz: 2.5 + Math.random() * 6 * (0.4 + amp),
+        age: 0,
+        life: 55 + Math.floor(Math.random() * 80),
+      });
+    }
+  }
+
+  // Large soft blobs — simulate ball light hitting walls, ceiling, floor
+  function _spawnWallSpot(amp, W, H) {
+    if (wallSpots.length >= MAX_WALL || Math.random() > 0.05 + amp * 0.14) return;
+    const roomH = H - PLAYER_H;
+    const zone  = Math.random();
+    let x, y;
+    if (zone < 0.30) {                              // ceiling
+      x = _bx + (Math.random() - 0.5) * W * 0.9;
+      y = 10 + Math.random() * roomH * 0.28;
+    } else if (zone < 0.52) {                       // left wall
+      x = 15 + Math.random() * W * 0.22;
+      y = Math.random() * roomH * 0.9;
+    } else if (zone < 0.74) {                       // right wall
+      x = W * 0.78 + Math.random() * W * 0.22 - 15;
+      y = Math.random() * roomH * 0.9;
+    } else if (zone < 0.88) {                       // floor
+      x = _bx + (Math.random() - 0.5) * W * 0.85;
+      y = roomH * 0.72 + Math.random() * roomH * 0.22;
+    } else {                                        // back wall (general scatter)
+      x = Math.random() * W;
+      y = Math.random() * roomH;
+    }
+    wallSpots.push({
+      x, y,
+      hue: ((beamAngle * 38 + Math.random() * 130) % 360 + 360) % 360,
+      sz: 55 + Math.random() * 95,
+      age: 0,
+      life: 80 + Math.floor(Math.random() * 110),
+    });
+  }
+
+  // Laser beams from ball to screen edges
+  function _spawnLaser(amp, W, H) {
+    if (lasers.length >= MAX_LASER || Math.random() > amp * 0.38) return;
+    const a  = beamAngle + (Math.floor(Math.random() * BEAMS) / BEAMS) * Math.PI * 2;
+    const dx = Math.cos(a), dy = Math.sin(a);
+    const roomH = H - PLAYER_H;
+    const ts = [];
+    if (dx > 1e-9)  ts.push((W - _bx) / dx);
+    if (dx < -1e-9) ts.push(-_bx / dx);
+    if (dy > 1e-9)  ts.push((roomH - _by) / dy);
+    if (dy < -1e-9) ts.push(-_by / dy);
+    const t = Math.min(...ts.filter(v => v > 0));
+    if (!isFinite(t) || t <= 0) return;
+    lasers.push({
+      x1: _bx, y1: _by,
+      x2: _bx + dx * t * 0.97,
+      y2: _by + dy * t * 0.97,
+      hue: ((beamAngle * 88 + Math.random() * 70) % 360 + 360) % 360,
+      age: 0,
+      life: 7 + Math.floor(Math.random() * 11),
+    });
+  }
+
+  function draw() {
+    if (!active) return;
+    raf = requestAnimationFrame(draw);
+    const cv = _cv;
+    if (!cv) return;
+    const W = cv.width, H = cv.height;
+    const cx = cv.getContext('2d');
+    const amp = _amp();
+
+    cx.fillStyle = 'rgba(0,0,0,0.11)';
+    cx.fillRect(0, 0, W, H);
+
+    beamAngle += 0.018 + amp * 0.03;
+    _spawnSpots(amp, W, H);
+    _spawnWallSpot(amp, W, H);
+    _spawnLaser(amp, W, H);
+
+    cx.save();
+    for (let i = wallSpots.length - 1; i >= 0; i--) {
+      const s = wallSpots[i];
+      s.age++;
+      if (s.age >= s.life) { wallSpots.splice(i, 1); continue; }
+      const t  = s.age / s.life;
+      const fa = t < 0.18 ? t / 0.18 : Math.max(0, 1 - (t - 0.18) / 0.82);
+      const a  = fa * (0.20 + amp * 0.18);
+      const r  = s.sz * (1 + amp * 0.28);
+      const g  = cx.createRadialGradient(s.x, s.y, 0, s.x, s.y, r);
+      g.addColorStop(0,   `hsla(${s.hue},100%,80%,${a})`);
+      g.addColorStop(0.45, `hsla(${s.hue},100%,60%,${a * 0.35})`);
+      g.addColorStop(1,   'rgba(0,0,0,0)');
+      cx.fillStyle = g;
+      cx.beginPath();
+      cx.arc(s.x, s.y, r * 1.1, 0, Math.PI * 2);
+      cx.fill();
+    }
+    cx.restore();
+
+    cx.save();
+    for (let i = lasers.length - 1; i >= 0; i--) {
+      const l = lasers[i];
+      l.age++;
+      if (l.age >= l.life) { lasers.splice(i, 1); continue; }
+      const a = (1 - l.age / l.life) * (0.55 + amp * 0.45);
+      cx.globalAlpha  = a;
+      cx.lineWidth    = 1 + amp * 1.8;
+      cx.strokeStyle  = `hsl(${l.hue},100%,82%)`;
+      cx.shadowBlur   = 10 + amp * 12;
+      cx.shadowColor  = `hsl(${l.hue},100%,65%)`;
+      cx.beginPath();
+      cx.moveTo(l.x1, l.y1);
+      cx.lineTo(l.x2, l.y2);
+      cx.stroke();
+    }
+    cx.shadowBlur = 0; cx.globalAlpha = 1;
+    cx.restore();
+
+    cx.save();
+    for (let i = spots.length - 1; i >= 0; i--) {
+      const s = spots[i];
+      s.age++;
+      if (s.age >= s.life) { spots.splice(i, 1); continue; }
+      const t  = s.age / s.life;
+      const a  = t < 0.10 ? t / 0.10 : Math.max(0, 1 - (t - 0.10) / 0.90);
+      s.x += (s.tx - s.x) * 0.013;
+      s.y += (s.ty - s.y) * 0.013;
+      const sz = Math.max(1, s.sz * (1 + amp * 0.65) * (1 - t * 0.38));
+      cx.shadowBlur  = sz * 4.5;
+      cx.shadowColor = `hsla(${s.hue},100%,65%,${a})`;
+      cx.beginPath();
+      cx.arc(s.x, s.y, sz * 0.58, 0, Math.PI * 2);
+      cx.fillStyle = `hsla(${s.hue},100%,88%,${a})`;
+      cx.fill();
+    }
+    cx.shadowBlur = 0;
+    cx.restore();
+
+    const ballEl = document.getElementById('particle-orb');
+    if (ballEl) {
+      const hueShift = ((beamAngle * 28) % 360 + 360) % 360;
+      ballEl.style.transform = `translate(-50%,-50%) scale(${1 + amp * 0.09})`;
+      ballEl.style.filter    = `hue-rotate(${hueShift.toFixed(1)}deg) saturate(${(1.3 + amp * 0.7).toFixed(2)}) brightness(${(0.88 + amp * 0.28).toFixed(2)})`;
+    }
+
+    const brandY  = _by + BALL_R + 48;
+    const logoSz  = 52;
+    const nameGap = 12;
+    const glowHue = ((beamAngle * 22) % 360 + 360) % 360;
+    cx.save();
+    cx.globalAlpha  = 0.55 + amp * 0.38;
+    cx.shadowBlur   = 14 + amp * 22;
+    cx.shadowColor  = `hsla(${glowHue},100%,70%,0.95)`;
+    cx.font         = '700 28px "Helvetica Neue",Arial,sans-serif';
+    cx.textBaseline = 'middle';
+    const hasLogo = _logo && _logo.complete && _logo.naturalWidth > 0;
+    const nameW   = cx.measureText('VELVET').width;
+    const totalW  = (hasLogo ? logoSz + nameGap : 0) + nameW;
+    const startX  = _bx - totalW / 2;
+    if (hasLogo) {
+      cx.drawImage(_logo, startX, brandY - logoSz / 2, logoSz, logoSz);
+      cx.textAlign = 'left';
+      cx.fillStyle = '#ffffff';
+      cx.fillText('VELVET', startX + logoSz + nameGap, brandY);
+    } else {
+      cx.textAlign = 'center';
+      cx.fillStyle = '#ffffff';
+      cx.fillText('VELVET', _bx, brandY);
+    }
+    cx.shadowBlur = 0; cx.globalAlpha = 1;
+    cx.restore();
+  }
+
+  function _updateBallPos() {
+    _bx = Math.round(window.innerWidth / 2);
+    _by = Math.round((window.innerHeight - PLAYER_H) / 2);
+  }
+
+  function show() {
+    const wrap = document.getElementById('particle-layer');
+    _cv = document.getElementById('particle-canvas');
+    const cv = _cv;
+    if (!wrap || !cv) return;
+
+    spots = []; wallSpots = []; lasers = [];
+    beamAngle = 0;
+    _ensureLogo();
+    _updateBallPos();
+
+    cv.width  = window.innerWidth;
+    cv.height = window.innerHeight;
+    const cx = cv.getContext('2d');
+    cx.fillStyle = 'rgba(0,0,0,0.95)';
+    cx.fillRect(0, 0, cv.width, cv.height);
+
+    const ballEl = document.getElementById('particle-orb');
+    if (ballEl) {
+      ballEl.style.left = _bx + 'px';
+      ballEl.style.top  = _by + 'px';
+      ballEl.style.transform = 'translate(-50%,-50%) scale(1)';
+    }
+
+    wrap.style.transition = '';
+    wrap.style.opacity    = '0';
+    wrap.style.display    = 'block';
+    requestAnimationFrame(() => {
+      wrap.style.transition = `opacity ${FADE_MS}ms ease`;
+      wrap.style.opacity    = '1';
+    });
+
+    active = true;
+    cancelAnimationFrame(raf);
+    draw();
+  }
+
+  function hide() {
+    active = false;
+    cancelAnimationFrame(raf);
+    const wrap = document.getElementById('particle-layer');
+    if (!wrap) return;
+    wrap.style.transition = 'opacity 0.45s ease';
+    wrap.style.opacity    = '0';
+    setTimeout(() => { if (!active) wrap.style.display = 'none'; }, 470);
+  }
+
+  const _dpx = document.getElementById('particle-ctrl');
+  if (_dpx) {
+    _dpx.addEventListener('click', e => { e.stopPropagation(); active ? hide() : show(); });
+    const _pinTrigger = () => {
+      const sideEl  = document.querySelector('.sidebar');
+      const hdrEl   = document.querySelector('.content-header');
+      if (!sideEl || !hdrEl) return;
+      const sideR = sideEl.getBoundingClientRect().right;
+      const hdrR  = hdrEl.getBoundingClientRect();
+      _dpx.style.left = sideR + 'px';
+      _dpx.style.top  = Math.round(hdrR.bottom + 2) + 'px';
+    };
+    setTimeout(_pinTrigger, 400);
+    window.addEventListener('resize', _pinTrigger);
+  }
+  document.addEventListener('mousemove', () => { if (active) hide(); });
 })();
 
 // Keyboard shortcuts

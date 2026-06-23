@@ -1,8 +1,22 @@
-## v0.3.3 (unreleased)
+## v0.3.3 (2026-06-23)
+
+Genre Enricher fixes, Playing Now performance, per-disc cover art, and BM25 search.
+
+### Genre Enricher
+- **Apply Consensus and Apply Majority now report distinct artists updated** instead of the raw row count, giving a more meaningful number in the confirmation toast.
+- **Majority apply now handles all three two-source combinations** (Last.fm + MB, Last.fm + Discogs, MB + Discogs) correctly — previously only fully-enriched rows were candidates.
+- **Removed the consistency reset pass** that was resetting partially-enriched artists on every run and forcing unnecessary re-fetches from Last.fm, MusicBrainz, and Discogs.
+
+### Playing Now
+- **Artist songs now appear immediately** on the Playing Now page; the album library panel fills in progressively while songs are already visible.
+- **Album library pre-fetched at boot** (4-second delay) so repeat visits to Playing Now are instant — no waiting for the 500 KB library download.
 
 ### Enhancements
 - **Per-disc cover art**: Multi-disc albums (CD1/CD2/etc.) now carry per-disc `aaFile` in the album detail response. In the album detail view, switching disc tabs updates the main cover image to that disc's art (when it differs from the album cover), and each disc tab button shows a small thumbnail of its own cover when available.
 - **BM25 column weighting for search**: FTS5 search now boosts title matches (weight 10) over artist/album_artist (5), album (3), album_version (2), and filepath (1). Searching "bohemian" will now rank a song literally titled "Bohemian Rhapsody" above results that only match the word in a folder path.
+
+### Discogs
+- **Fixed: "cannot commit — no transaction is active"** error logged during Discogs/Deezer art updates — a spurious `commitTransaction()` call was removed from `_updateArtRecord`.
 
 ## v0.3.2 (2026-06-22)
 
