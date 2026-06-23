@@ -2635,6 +2635,7 @@ body.vu-needle-mode .eq-panel{bottom:calc(var(--player) + 8px);}
   transition:background .12s,color .12s;touch-action:manipulation;
 }
 .disc-tab-add:hover{background:var(--raised);color:var(--t1);}
+.disc-tab-art{width:20px;height:20px;border-radius:3px;object-fit:cover;vertical-align:middle;margin-right:5px;}
 
 /* Album detail track list */
 .alb-track-row{

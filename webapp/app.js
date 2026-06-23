@@ -10147,8 +10147,9 @@ async function viewAlbumDetail(albumId, activeDiscIdx, opts = {}) {
       <div class="disc-tabs" id="albd-disc-tabs" style="display:flex;gap:6px;padding:16px 0 8px;flex-wrap:wrap;align-items:center;">
         ${discs.map((d, i) => {
           const lbl = esc(d.label || ('Disc ' + (i+1)));
+          const discThumb = (d.aaFile && d.aaFile !== album.aaFile) ? `<img class="disc-tab-art" src="${esc(artUrl(d.aaFile,'s'))}" alt="">` : '';
           return `<div class="disc-tab-group">
-            <button class="disc-tab-btn${i === discIdx ? ' active' : ''}" data-disc="${i}">${lbl}</button><button class="disc-tab-add" data-disc="${i}" title="${t('player.ctrl.addDiscToQueue', {disc: lbl})}">+</button>
+            <button class="disc-tab-btn${i === discIdx ? ' active' : ''}" data-disc="${i}">${discThumb}${lbl}</button><button class="disc-tab-add" data-disc="${i}" title="${t('player.ctrl.addDiscToQueue', {disc: lbl})}">+</button>
           </div>`;
         }).join('')}
       </div>` : ''}
@@ -10218,6 +10219,11 @@ async function viewAlbumDetail(albumId, activeDiscIdx, opts = {}) {
         if (!btn) return;
         curDiscIdx = Number.parseInt(btn.dataset.disc, 10);
         body.querySelectorAll('.disc-tab-btn').forEach(b => b.classList.toggle('active', b.dataset.disc == curDiscIdx));
+        const activeDiscAaFile = discs[curDiscIdx]?.aaFile;
+        if (activeDiscAaFile) {
+          const artImg = body.querySelector('.alb-detail-art');
+          if (artImg?.tagName === 'IMG') artImg.src = artUrl(activeDiscAaFile, 'l');
+        }
         renderTracks(curDiscIdx);
       });
     }

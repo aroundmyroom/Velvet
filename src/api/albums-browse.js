@@ -353,17 +353,17 @@ function _buildDiscList(directEntries, discEntries, source) {
         _collNumeric.compare(a.parts.at(-1), b.parts.at(-1))
       );
       for (const entry of sorted) {
-        discs.push({ label: null, discIndex: discs.length + 1, tracks: buildTrackListFromEntries([entry], source) });
+        discs.push({ label: null, discIndex: discs.length + 1, tracks: buildTrackListFromEntries([entry], source), aaFile: entry.row.aaFile || null });
       }
     } else {
-      discs.push({ label: null, discIndex: 1, tracks: buildTrackListFromEntries(directEntries, source) });
+      discs.push({ label: null, discIndex: 1, tracks: buildTrackListFromEntries(directEntries, source), aaFile: directEntries.find(e => e.row.aaFile)?.row.aaFile || null });
     }
   }
   if (discEntries.size > 0) {
     const sorted = [...discEntries.entries()].sort((a, b) => _collNumeric.compare(a[0], b[0]));
     let discIdx = discs.length + 1; // continues after any virtual CUE discs
     for (const [discLabel, entries] of sorted) {
-      discs.push({ label: discLabel, discIndex: discIdx++, tracks: buildTrackListFromEntries(entries, source) });
+      discs.push({ label: discLabel, discIndex: discIdx++, tracks: buildTrackListFromEntries(entries, source), aaFile: entries.find(e => e.row.aaFile)?.row.aaFile || null });
     }
   }
   return discs;

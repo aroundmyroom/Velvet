@@ -2383,7 +2383,7 @@ export function searchFiles(searchCol, searchTerm, vpaths, ignoreVPaths, filepat
     sql += String.raw` AND f.filepath LIKE ? ESCAPE '\'`;
     params.push(filepathPrefix.replaceAll(/[%_\\]/g, String.raw`\$&`) + '%');
   }
-  if (!shortTerm) sql += ' ORDER BY rank';
+  if (!shortTerm) sql += ' ORDER BY bm25(fts_files, 10.0, 5.0, 5.0, 3.0, 2.0, 1.0)';
   sql += ' LIMIT ?';
   params.push(rowLimit);
   const rows = _prepare(sql).all(...params);
@@ -2460,7 +2460,7 @@ export function searchFilesAllWords(tokens, vpaths, ignoreVPaths, filepathPrefix
     sql += String.raw` AND f.filepath LIKE ? ESCAPE '\'`;
     params.push(filepathPrefix.replaceAll(/[%_\\]/g, String.raw`\$&`) + '%');
   }
-  sql += ' ORDER BY rank';
+  sql += ' ORDER BY bm25(fts_files, 10.0, 5.0, 5.0, 3.0, 2.0, 1.0)';
   sql += ' LIMIT ?';
   params.push(rowLimit);
   const rows = _prepare(sql).all(...params);
