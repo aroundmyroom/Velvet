@@ -1,3 +1,9 @@
+## v0.3.3 (unreleased)
+
+### Enhancements
+- **Per-disc cover art**: Multi-disc albums (CD1/CD2/etc.) now carry per-disc `aaFile` in the album detail response. In the album detail view, switching disc tabs updates the main cover image to that disc's art (when it differs from the album cover), and each disc tab button shows a small thumbnail of its own cover when available.
+- **BM25 column weighting for search**: FTS5 search now boosts title matches (weight 10) over artist/album_artist (5), album (3), album_version (2), and filepath (1). Searching "bohemian" will now rank a song literally titled "Bohemian Rhapsody" above results that only match the word in a folder path.
+
 ## v0.3.2 (2026-06-22)
 
 Small bugfixes.
