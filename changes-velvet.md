@@ -1,5 +1,8 @@
 ## v0.3.4 (unreleased)
 
+### Album Art
+- **Save as folder cover**: after embedding art from Discogs, Deezer, iTunes, or a URL in the Now Playing modal, the art image shows a 📁 badge. Clicking it prompts "Save as cover.jpg in the album folder?" — writing a properly sized JPEG and updating the folder-cover DB record for all tracks in that album.
+
 ### Performance & Storage
 - **DB-first queue**: localStorage queue window reduced from 600 songs to 25 songs (current ±12). The full queue (up to 5 000 songs, up from 2 000) lives in the database and is lazy-loaded into memory 3 seconds after boot — the player is immediately usable while the rest expands silently.
 - **New `GET /api/v1/queue` endpoint**: dedicated lightweight fetch for the full saved queue. The client calls this for the lazy-load expansion and cross-browser restore (Subsonic play-queue API is unchanged).

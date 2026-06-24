@@ -3762,19 +3762,29 @@ function hideRatePanel() {
 }
 
 // ── NOW PLAYING MODAL ──────────────────────────────────────────
-let _npArtistKey     = '';   // "filepath:artist" — last artist-image request; stale guard for both fetch paths
-let _npLastCueArtist = '';   // last CUE chapter artist shown — avoids redundant API calls
+let _npArtistKey          = '';   // "filepath:artist" — last artist-image request; stale guard for both fetch paths
+let _npLastCueArtist      = '';   // last CUE chapter artist shown — avoids redundant API calls
+let _npSaveFolderCoverFp  = null; // filepath for which folder-cover save is on offer (after art embed)
 function renderNPModal() {
   const s = S.queue[S.idx];
   if (!s) return;
   const isRadio = !!s.isRadio;
   _npLastCueArtist = ''; // reset so next chapter change re-fetches for the new song
+  // Clear folder-cover offer if the song changed since it was set
+  if (_npSaveFolderCoverFp && s.filepath !== _npSaveFolderCoverFp) {
+    _npSaveFolderCoverFp = null;
+  }
   const u = artUrl(s['album-art'], 'l');
   // Blurred glow background
   const blurEl = document.getElementById('np-art-blur');
   if (blurEl) blurEl.style.backgroundImage = u ? `url(${u})` : '';
   // Square art
-  document.getElementById('np-art').innerHTML = u
+  const npArtDiv = document.getElementById('np-art');
+  if (_npSaveFolderCoverFp !== s.filepath) {
+    npArtDiv.classList.remove('np-art--saveable');
+    npArtDiv.removeAttribute('title');
+  }
+  npArtDiv.innerHTML = u
     ? `<img src="${u}" alt="" onerror="this.parentNode.innerHTML=noArtHtml()">`
     : noArtHtml();
   document.getElementById('np-title').textContent  = s.title  || s.filepath?.split('/').pop() || '—';
@@ -3927,6 +3937,26 @@ function renderNPModal() {
     }
   }
 }
+function _clearNpSaveFolderCover() {
+  _npSaveFolderCoverFp = null;
+  const el = document.getElementById('np-art');
+  if (el) { el.classList.remove('np-art--saveable'); el.removeAttribute('title'); }
+}
+function _npOfferFolderCover(filepath) {
+  _npSaveFolderCoverFp = filepath;
+  const el = document.getElementById('np-art');
+  if (el) { el.classList.add('np-art--saveable'); el.title = t('player.npArt.saveFolderCoverHint'); }
+}
+function _npShowFolderCoverPrompt(filepath) {
+  const dsEl = document.getElementById('np-discogs-section');
+  if (!dsEl) return;
+  dsEl.classList.remove('hidden');
+  dsEl.dataset.folderCoverFp = filepath;
+  dsEl.innerHTML =
+    `<span class="np-discogs-pick-title" style="display:block;text-align:center;margin-bottom:10px;">${t('player.npArt.saveFolderCoverPrompt')}</span>` +
+    `<button class="np-discogs-btn" id="np-save-folder-cover-yes-btn">${t('player.npArt.saveFolderCoverYes')}</button>` +
+    `<button class="np-discogs-cancel" id="np-save-folder-cover-no-btn" style="margin-top:6px">${t('player.npArt.saveFolderCoverNo')}</button>`;
+}
 function showNPModal() {
   if (!S.queue[S.idx]) return;
   renderNPModal();
@@ -3942,6 +3972,7 @@ function hideNPModal() {
   // Force the Discogs section to re-render its initial button state on next open
   const _dsEl = document.getElementById('np-discogs-section');
   if (_dsEl) _dsEl.dataset.songFp = '';
+  _clearNpSaveFolderCover();
 }
 
 // ── ITUNES ART IN NP MODAL ──────────────────────────────────
@@ -23936,9 +23967,37 @@ document.getElementById('np-left').addEventListener('click', async e => {
     renderNPModal();
     return;
   }
-  // Click on missing-art placeholder — auto-open search
-  if (e.target.closest('#np-art') && !S.queue[S.idx]?.['album-art']) {
-    _npDiscogsSearch(S.queue[S.idx]);
+  // Folder cover prompt — Yes
+  if (e.target.closest('#np-save-folder-cover-yes-btn')) {
+    const dsElFc = document.getElementById('np-discogs-section');
+    const fp = dsElFc?.dataset.folderCoverFp;
+    if (!fp) return;
+    if (dsElFc) dsElFc.innerHTML = `<span class="np-discogs-status">${t('player.npArt.savingFolderCover')}</span>`;
+    _clearNpSaveFolderCover();
+    try {
+      const r = await api('POST', 'api/v1/discogs/save-folder-cover', { filepath: fp });
+      if (r.alreadyExists) toast(t('player.npArt.folderCoverAlreadyExists'));
+      else toast(t('player.toast.folderCoverSaved'));
+    } catch(fcErr) {
+      toast(t('player.npArt.saveFolderCoverFailed', { msg: esc(fcErr?.message || 'error') }));
+    }
+    renderNPModal();
+    return;
+  }
+  // Folder cover prompt — No
+  if (e.target.closest('#np-save-folder-cover-no-btn')) {
+    _clearNpSaveFolderCover();
+    renderNPModal();
+    return;
+  }
+  // Click on art area: open search (no art) or show folder-cover prompt (art just applied)
+  if (e.target.closest('#np-art')) {
+    const _npClickSong = S.queue[S.idx];
+    if (!_npClickSong?.['album-art']) {
+      _npDiscogsSearch(_npClickSong);
+    } else if (_npSaveFolderCoverFp && _npSaveFolderCoverFp === _npClickSong?.filepath) {
+      _npShowFolderCoverPrompt(_npSaveFolderCoverFp);
+    }
     return;
   }
   // Search button — Discogs
@@ -23999,6 +24058,7 @@ document.getElementById('np-left').addEventListener('click', async e => {
       npLeft?.classList.remove('np-left--picking');
       if (dsEl) dsEl.dataset.songFp = '';
       renderNPModal();
+      if (!result.cacheOnly && !result.coverFile) _npOfferFolderCover(filepath);
       if (S.queue[S.idx]?.filepath === filepath) Player.updateBar();
       refreshQueueUI();
       if (_isCurrentSong) {
@@ -24086,6 +24146,7 @@ document.getElementById('np-left').addEventListener('click', async e => {
       npLeft?.classList.remove('np-left--picking');
       if (dsEl) dsEl.dataset.songFp = '';
       renderNPModal();
+      if (!result.cacheOnly && !result.coverFile) _npOfferFolderCover(filepath);
       if (S.queue[S.idx]?.filepath === filepath) Player.updateBar();
       refreshQueueUI();
       if (_isCurrentSong) {
@@ -24142,6 +24203,7 @@ document.getElementById('np-left').addEventListener('click', async e => {
     if (dsEl) dsEl.dataset.songFp = '';
     // Re-render modal (shows new art + resets discogs section)
     renderNPModal();
+    if (!result.cacheOnly && !result.coverFile) _npOfferFolderCover(filepath);
     // Refresh player bar thumbnail + queue panel
     if (S.queue[S.idx]?.filepath === filepath) Player.updateBar();
     refreshQueueUI();

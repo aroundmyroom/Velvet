@@ -112,6 +112,7 @@ export function getCasingOnlyCandidates() { return backend.getCasingOnlyCandidat
 
 // Metadata Queries
 export function updateFileArt(filepath, vpath, aaFile, scanId, artSource) { return backend.updateFileArt(filepath, vpath, aaFile, scanId, artSource); }
+export function updateAlbumCoverFile(vpath, albumId, coverFile) { return backend.updateAlbumCoverFile(vpath, albumId, coverFile); }
 export function countArtUsage(aaFile) { return backend.countArtUsage(aaFile); }
 export function updateFileCue(filepath, vpath, cuepoints) { return backend.updateFileCue(filepath, vpath, cuepoints); }
 export function updateFileDuration(filepath, vpath, duration) { return backend.updateFileDuration(filepath, vpath, duration); }

@@ -416,6 +416,56 @@ export function setup(velvet) {
     }
   });
 
+  // ── POST /api/v1/discogs/save-folder-cover ───────────────────────────────
+  // Admin only. Writes the song's already-cached art as cover.jpg in its folder.
+  // Used after embedding art to optionally propagate it as a folder-level cover.
+  velvet.post('/api/v1/discogs/save-folder-cover', async (req, res) => {
+    if (req.user.admin !== true) return res.status(403).json({ error: 'Admin only' });
+
+    const schema = Joi.object({ filepath: Joi.string().required() });
+    let pathInfo;
+    try {
+      joiValidate(schema, req.body);
+      pathInfo = getVPathInfo(req.body.filepath, req.user);
+    } catch (e) {
+      return res.status(400).json({ error: e.message });
+    }
+
+    const absPath = pathInfo.fullPath;
+    if (!fs.existsSync(absPath)) return res.status(404).json({ error: 'File not found' });
+
+    const row = dbManager.findFileByPath(pathInfo.relativePath, pathInfo.vpath);
+    if (!row?.aaFile) return res.status(404).json({ error: 'No art cached for this song' });
+
+    const artDir  = config.program.storage.albumArtDirectory;
+    const artPath = path.join(artDir, row.aaFile);
+    if (!fs.existsSync(artPath)) return res.status(404).json({ error: 'Cached art file not found' });
+
+    const folderAbs = path.dirname(absPath);
+    const coverPath = resolvePathWithinRoot(folderAbs, 'cover.jpg');
+
+    if (fs.existsSync(coverPath)) return res.json({ ok: true, alreadyExists: true });
+
+    try {
+      const imgBuf = fs.readFileSync(artPath);
+      const { default: sharp } = await import('sharp');
+      const jpeg = await sharp(imgBuf)
+        .resize(1200, 1200, { fit: 'inside', withoutEnlargement: true })
+        .jpeg({ quality: 90 })
+        .toBuffer();
+      fs.writeFileSync(coverPath, jpeg);
+
+      if (row.album_id) {
+        dbManager.updateAlbumCoverFile(pathInfo.vpath, row.album_id, 'cover.jpg');
+      }
+
+      res.json({ ok: true });
+    } catch (e) {
+      console.error('[discogs/save-folder-cover] ERROR:', e);
+      res.status(500).json({ error: e.message });
+    }
+  });
+
   // ── GET /api/v1/discogs/release-images?id=X&type=release|master ──────────
   // Admin only. Returns thumbnails for a specific Discogs release/master ID.
   velvet.get('/api/v1/discogs/release-images', async (req, res) => {

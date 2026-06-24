@@ -726,6 +726,7 @@ export function init(dbDirectory) {
     findFile:       db.prepare('SELECT rowid AS id, * FROM files WHERE filepath = ? AND vpath = ?'),
     updateScanId:   db.prepare('UPDATE files SET sID = ? WHERE filepath = ? AND vpath = ?'),
     updateArt:      db.prepare('UPDATE files SET aaFile = ?, sID = ?, art_source = ?, cover_file = ? WHERE filepath = ? AND vpath = ?'),
+    updateAlbumCoverFile: db.prepare('UPDATE files SET cover_file = ? WHERE vpath = ? AND album_id = ?'),
     countArtUsage:  db.prepare('SELECT COUNT(*) AS cnt FROM files WHERE aaFile = ?'),
     updateCue:      db.prepare('UPDATE files SET cuepoints = ? WHERE filepath = ? AND vpath = ?'),
     updateDuration: db.prepare('UPDATE files SET duration = ? WHERE filepath = ? AND vpath = ?'),
@@ -1118,6 +1119,10 @@ export function batchUpdateScanIds(filepaths, vpath, scanId) {
 
 export function updateFileArt(filepath, vpath, aaFile, scanId, artSource = null, coverFile = null) {
   _s.updateArt.run(aaFile, scanId, artSource, coverFile, filepath, vpath);
+}
+
+export function updateAlbumCoverFile(vpath, albumId, coverFile) {
+  _s.updateAlbumCoverFile.run(coverFile, vpath, albumId);
 }
 
 export function countArtUsage(aaFile) {

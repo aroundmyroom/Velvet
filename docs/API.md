@@ -344,6 +344,7 @@ GET /media/<vpath>/<path/to/song.mp3>?token=<jwt>
 |---|---|---|---|
 | `GET` | `/api/v1/discogs/coverart` | `?artist=&title=&album=&year=` | Search Discogs for cover art options. Returns `{ choices[] }`. |
 | `POST` | `/api/v1/discogs/embed` | `{ filepath, releaseId?, coverUrl? }` | Embed art from Discogs or a direct URL. Returns `{ ok, aaFile, cacheOnly }`; on rewrite paths, file mtime is synced in DB to avoid stale scan flags. |
+| `POST` | `/api/v1/discogs/save-folder-cover` | `{ filepath }` | Admin only. Writes the song's already-cached art as `cover.jpg` in its album folder (no re-download). Updates `cover_file` for all tracks in the album. Returns `{ ok, alreadyExists? }`. |
 | `GET` | `/api/v1/discogs/release-images` | `?id=&type=release\|master` | Admin only. Fetch thumbnail choices for a specific Discogs release/master ID. Returns `{ choices[] }`. *(Velvet)* |
 | `GET` | `/api/v1/deezer/search` | `?q=` | Search Deezer (part of the Discogs art-lookup flow). |
 | `GET` | `/api/v1/itunes/search` | `?artist=&album=` | Server-side proxy for the iTunes Search API. Returns structured results. *(Velvet)* |
