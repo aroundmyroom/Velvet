@@ -383,6 +383,19 @@ Admin only. Finds albums (folders) with no cover art, fetches suggestions, and w
 
 ---
 
+## Queue *(Velvet)*
+
+Dedicated queue persistence endpoints — separate from the Subsonic play-queue API.
+The full queue (up to 5 000 songs) is stored server-side; the browser caches a
+small local window for instant boot, then lazy-loads the rest from here.
+
+| Method | Endpoint | Body | Description |
+|---|---|---|---|
+| `GET` | `/api/v1/queue` | — | Return the full saved queue for the authenticated user. Returns the queue object `{ queue[], idx, currentFilepath, time, playing, savedAt, browserId }` or `null`. |
+| `POST` | `/api/v1/queue` | queue object | Overwrite the saved queue. Body is the same shape as the GET response. |
+
+---
+
 ## Scrobbling — Last.fm
 
 | Method | Endpoint | Body | Description |

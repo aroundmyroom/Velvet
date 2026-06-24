@@ -1,3 +1,13 @@
+## v0.3.4 (unreleased)
+
+### Performance & Storage
+- **DB-first queue**: localStorage queue window reduced from 600 songs to 25 songs (current ±12). The full queue (up to 5 000 songs, up from 2 000) lives in the database and is lazy-loaded into memory 3 seconds after boot — the player is immediately usable while the rest expands silently.
+- **New `GET /api/v1/queue` endpoint**: dedicated lightweight fetch for the full saved queue. The client calls this for the lazy-load expansion and cross-browser restore (Subsonic play-queue API is unchanged).
+- **Cross-browser queue continuity**: when opening Velvet in a new browser with no localStorage, the full queue is fetched from the DB on first load instead of starting empty.
+- **Audiobook resume positions synced to DB**: `_saveBookPosition` now pushes positions to `user_settings.prefs` so resume positions survive across devices and browsers.
+
+---
+
 ## v0.3.3 (2026-06-23)
 
 Genre Enricher fixes, Playing Now performance, per-disc cover art, and BM25 search.
