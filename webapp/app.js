@@ -1,5 +1,5 @@
 'use strict';
-const VELVET_VERSION = '0.3.3';
+const VELVET_VERSION = '0.3.4';
 // ── SERVER IDENTITY GUARD ────────────────────────────────────────────────────
 // Detects when this browser's localStorage belongs to a different Velvet
 // instance (fresh install, IP change, reverse-proxy swap, second server).
@@ -23975,16 +23975,15 @@ document.getElementById('np-left').addEventListener('click', async e => {
     if (dsElFc) dsElFc.innerHTML = `<span class="np-discogs-status">${t('player.npArt.savingFolderCover')}</span>`;
     _clearNpSaveFolderCover();
     try {
-      const r = await api('POST', 'api/v1/discogs/save-folder-cover', { filepath: fp });
-      const msg = r.alreadyExists ? t('player.npArt.folderCoverAlreadyExists') : t('player.toast.folderCoverSaved');
+      await api('POST', 'api/v1/discogs/save-folder-cover', { filepath: fp });
       const _dsAfter = document.getElementById('np-discogs-section');
-      if (_dsAfter) { _dsAfter.classList.remove('hidden'); _dsAfter.innerHTML = `<span class="np-discogs-status" style="color:rgba(110,230,110,.85)">${esc(msg)}</span>`; }
-      setTimeout(() => renderNPModal(), 1800);
+      if (_dsAfter) { _dsAfter.classList.remove('hidden'); _dsAfter.dataset.songFp = ''; _dsAfter.innerHTML = `<span class="np-discogs-status" style="color:rgba(110,230,110,.85)">${esc(t('player.toast.folderCoverSaved'))}</span>`; }
+      setTimeout(() => { const _d = document.getElementById('np-discogs-section'); if (_d) _d.dataset.songFp = ''; renderNPModal(); }, 1800);
     } catch(fcErr) {
       const errMsg = t('player.npArt.saveFolderCoverFailed', { msg: esc(fcErr?.message || 'error') });
       const _dsAfter = document.getElementById('np-discogs-section');
-      if (_dsAfter) { _dsAfter.classList.remove('hidden'); _dsAfter.innerHTML = `<span class="np-discogs-status" style="color:rgba(255,100,100,.8)">${esc(errMsg)}</span>`; }
-      setTimeout(() => renderNPModal(), 2500);
+      if (_dsAfter) { _dsAfter.classList.remove('hidden'); _dsAfter.dataset.songFp = ''; _dsAfter.innerHTML = `<span class="np-discogs-status" style="color:rgba(255,100,100,.8)">${esc(errMsg)}</span>`; }
+      setTimeout(() => { const _d = document.getElementById('np-discogs-section'); if (_d) _d.dataset.songFp = ''; renderNPModal(); }, 2500);
     }
     return;
   }

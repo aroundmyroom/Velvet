@@ -444,8 +444,6 @@ export function setup(velvet) {
     const folderAbs = path.dirname(absPath);
     const coverPath = resolvePathWithinRoot(folderAbs, 'cover.jpg');
 
-    if (fs.existsSync(coverPath)) return res.json({ ok: true, alreadyExists: true });
-
     try {
       const imgBuf = fs.readFileSync(artPath);
       const { default: sharp } = await import('sharp');

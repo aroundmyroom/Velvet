@@ -1,4 +1,4 @@
-## v0.3.4 (unreleased)
+## v0.3.4 (2026-06-24)
 
 ### Album Art
 - **Save as folder cover**: after embedding art from Discogs, Deezer, iTunes, or a URL in the Now Playing modal, the art image shows a 📁 badge. Clicking it prompts "Save as cover.jpg in the album folder?" — writing a properly sized JPEG and updating the folder-cover DB record for all tracks in that album.
