@@ -57,6 +57,7 @@ import * as genreEnricherApi from './api/genre-enricher.js';
 import * as dupWorkshopApi from './api/duplicate-workshop.js';
 import * as dlnaApi from './api/dlna.js';
 import * as sonosApi from './api/sonos.js';
+import * as queueApi from './api/queue.js';
 import * as smartPlaylistMlApi from './smartplaylist/routes.js';
 import WebError from './util/web-error.js';
 import { sanitizeFilename } from './util/validation.js';
@@ -298,6 +299,7 @@ export async function serveIt(configFile) {
   discogsApi.setup(velvet);
   waveformApi.setup(velvet);
   userSettingsApi.setup(velvet);
+  queueApi.setup(velvet);
   lyricsApi.setup(velvet);
   radioApi.setup(velvet);
   radioRecorderApi.setup(velvet);

@@ -852,8 +852,8 @@ function _playingKey() { return `ms2_playing_${S.username}`; }
 function _djKey(k)    { return `ms2_dj_${k}_${S.username || ''}`; }
 function _uKey(k)     { return `ms2_${k}_${S.username || ''}`; }
 // Queue persistence payload controls
-const _QUEUE_LOCAL_MAX = 600;
-const _QUEUE_LOCAL_BEFORE = 120;
+const _QUEUE_LOCAL_MAX = 25;
+const _QUEUE_LOCAL_BEFORE = 12;
 let _lastQueueDbFallback = 0;
 const _QUEUE_COMPACT_FIELDS = [
   'filepath', 'title', 'artist', 'album', 'album-artist',
@@ -970,7 +970,18 @@ function persistQueue() {
 }
 // Sync queue to DB: call only on meaningful structural changes (song change,
 // add/remove/reorder, shuffle). NOT called from the 5-second position tick.
-const _QUEUE_SYNC_MAX = 2000; // max songs stored server-side per user (~800KB at ~400B/track)
+const _QUEUE_SYNC_MAX = 5000; // max songs stored server-side per user
+// Shrink a full queue snapshot to the local window before writing to localStorage.
+// Preserves queueTotal so restoreQueue knows the real size and can trigger a lazy DB load.
+function _windowSnapshotForLocal(snap) {
+  if (!snap || !Array.isArray(snap.queue) || snap.queue.length <= _QUEUE_LOCAL_MAX) return snap;
+  const total = snap.queueTotal || snap.queue.length;
+  const idx   = (snap.idx >= 0 ? snap.idx : 0);
+  const start = Math.max(0, Math.min(idx - _QUEUE_LOCAL_BEFORE, total - _QUEUE_LOCAL_MAX));
+  const slice = snap.queue.slice(start, start + _QUEUE_LOCAL_MAX);
+  const localIdx = Math.max(0, Math.min(idx - start, slice.length - 1));
+  return { ...snap, queue: slice, idx: localIdx, queueWindowStart: start, queueTotal: total };
+}
 function _syncQueueToDb() {
   if (!S.token || !S.username) return;
   // Never write to the cross-device DB queue during boot restore. A spurious
@@ -1026,6 +1037,24 @@ function _syncQueueToDbNow(playingOverride) {
   }})
     .then(() => localStorage.setItem('ms2_settings_pushed_' + S.username, new Date().toISOString()))
     .catch(() => {});
+}
+// Expand the in-memory queue from the DB when the local snapshot is a windowed
+// subset. Called 3 s after boot so the audio media request gets connection priority.
+async function _lazyLoadQueueFromDb() {
+  if (!S.token || !S.username || _bootRestoring) return;
+  try {
+    const r = await api('GET', 'api/v1/queue');
+    if (!r || !Array.isArray(r.queue) || r.queue.length <= S.queue.length) return;
+    const curFp = S.queue[S.idx]?.filepath || r.currentFilepath;
+    S.queue = r.queue;
+    _qvsVersion++;
+    if (curFp) {
+      const newIdx = S.queue.findIndex(q => q?.filepath === curFp);
+      if (newIdx >= 0) S.idx = newIdx;
+    }
+    refreshQueueUI();
+    _syncQueueLabel();
+  } catch (_) {}
 }
 function restoreQueue(silent = false) {
   const key = _queueKey();
@@ -1102,6 +1131,11 @@ function restoreQueue(silent = false) {
     _showInfoStrip('✓',
       `<span class="dj-strip-label">${t('player.autodj.stripQueueRestored')}</span><span class="dj-strip-sep">·</span><span class="dj-strip-queued">${S.queue.length}</span><span class="dj-strip-title">&nbsp;${t('label.getLastSongs', {count: S.queue.length})}</span>`,
       5000);
+  }
+  // If the local snapshot is a windowed subset of the full queue, expand from DB
+  // after a short delay so the audio media request gets connection priority.
+  if ((data.queueTotal || 0) > data.queue.length) {
+    setTimeout(_lazyLoadQueueFromDb, 3000);
   }
 
   // Set up audio element — failures here must NOT break queue display
@@ -20966,9 +21000,10 @@ function _collectPrefs() {
     show_decades: localStorage.getItem('ms2_show_decades_' + u),
     home_order:   localStorage.getItem('ms2_home_order_'   + u),
     home_hidden:  localStorage.getItem('ms2_home_hidden_'  + u),
-    mute:         localStorage.getItem('ms2_mute_'          + u),
-    shuffle:      localStorage.getItem('ms2_shuffle_'       + u),
-    pinned_view:  localStorage.getItem('ms2_pinned_view_'   + u),
+    mute:              localStorage.getItem('ms2_mute_'          + u),
+    shuffle:           localStorage.getItem('ms2_shuffle_'       + u),
+    pinned_view:       localStorage.getItem('ms2_pinned_view_'   + u),
+    audiobook_positions: localStorage.getItem('ms2_book_positions_' + u),
   };
 }
 
@@ -21105,6 +21140,9 @@ function _applyServerSettings(data) {
   _syncGaplessButton();
   _syncGaplessWaveformNote();
   _applyNavVisibility();
+  if (prefs.audiobook_positions != null) {
+    ls('ms2_book_positions_' + u, prefs.audiobook_positions);
+  }
   // Queue sync: always write DB queue to localStorage so the correct queue/position
   // is available for the next restoreQueue() call. The actual autoplay decision is
   // driven by ms2_playing_<user> (set by play/pause actions), NOT by data.queue.playing.
@@ -21139,7 +21177,7 @@ function _applyServerSettings(data) {
       else if (_sameBrowser) _takeDb = _dbTs >= _localTs;
       else                   _takeDb = audioEl.paused;
       if (_takeDb) {
-        localStorage.setItem(queueKey, JSON.stringify(data.queue));
+        localStorage.setItem(queueKey, JSON.stringify(_windowSnapshotForLocal(data.queue)));
       }
       // Always initialise ms2_playing_<user> from the DB record when it is not
       // yet set on this device (fresh login, cleared localStorage, new browser).
@@ -23110,6 +23148,7 @@ function _saveBookPosition(filepath, t) {
       for (let i = 0; i < keys.length - AB_POS_LIMIT; i++) delete map[keys[i]];
     }
     localStorage.setItem(_abPosKey(), JSON.stringify(map));
+    _syncPrefs();
   } catch (_e) {}
 }
 function _loadBookPosition(filepath) {
@@ -23129,6 +23168,7 @@ function _clearBookPosition(filepath) {
     const map = JSON.parse(raw);
     delete map[filepath];
     localStorage.setItem(_abPosKey(), JSON.stringify(map));
+    _syncPrefs();
   } catch (_e) {}
 }
 
