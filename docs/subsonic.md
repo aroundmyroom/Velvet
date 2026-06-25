@@ -33,17 +33,24 @@ All endpoints are available both with and without the `.view` extension, e.g.:
 
 ## Authentication
 
-Subsonic uses a **separate password** from your Velvet login. This is necessary because Velvet stores passwords as PBKDF2-SHA512 hashes, which are incompatible with Subsonic's MD5 token scheme.
+Velvet supports three authentication methods for Subsonic clients.
 
-### Setting your Subsonic password
+### Method 1 — API Key (recommended, OpenSubsonic `apiKeyAuth` extension)
 
-**As admin (for any user):**
-- Admin UI → Users → Password button → "New Subsonic Password" field
+Generate a key in Admin UI → Users → Password button → "Subsonic API Keys" section.
 
-**As a regular user:**
-- Player → "Subsonic API" nav item → enter new password → Save
+```
+?apiKey=<key>&v=1.16.1&c=<client-name>
+```
 
-### MD5 token auth (recommended)
+- No `u` (username) parameter needed — the key encodes the identity.
+- Passing `u` together with `apiKey` is a protocol error and returns error 43.
+- Keys do not expire; they can be revoked individually from the admin UI.
+- Supported by Feishin ≥ 0.12, Symfonium ≥ 7, and other modern clients.
+
+### Method 2 — MD5 token auth
+
+Requires a **Subsonic password** (separate from Velvet login — set in Admin UI).
 
 ```
 ?u=<username>&t=<MD5(password+salt)>&s=<salt>&v=1.16.1&c=<client-name>
@@ -54,16 +61,22 @@ Example (salt = `abc123`, password = `sesame`):
 t = MD5("sesameabc123")
 ```
 
-### Plaintext auth
+### Method 3 — Plaintext
 
 ```
 ?u=<username>&p=<password>&v=1.16.1&c=<client-name>
 ```
 
-Hex-encoded plaintext is also accepted:
-```
-?p=enc:<hex-encoded-password>
-```
+Hex-encoded plaintext is also accepted: `?p=enc:<hex-encoded-password>`
+
+### Auth error codes
+
+| Code | Meaning |
+|---|---|
+| 40 | Wrong username or password |
+| 41 | Token auth not supported (LDAP placeholder) |
+| 42 | Credentials not supported (future: API key only mode) |
+| 43 | Conflicting auth parameters — use exactly one method |
 
 ---
 
@@ -87,7 +100,7 @@ Every response includes:
 {
   "openSubsonic": true,
   "type": "velvet",
-  "serverVersion": "5.16.18-velvet"
+  "serverVersion": "0.3.4"
 }
 ```
 
@@ -95,8 +108,11 @@ Supported extensions returned by `getOpenSubsonicExtensions`:
 - `formPost` — auth parameters may be sent via HTTP POST body
 - `noAuth` — server accepts requests with no authentication when no users are configured
 - `albumArtist` — `albumArtist` field on song/album objects
+- `apiKeyAuth` — API key authentication via `?apiKey=` parameter
+- `songLyrics` — structured lyrics via `getLyricsBySongId` (reads embedded file tags)
+- `playbackReport` — `reportPlayback` endpoint for timeline state updates
 
-Extensions **not** advertised (not implemented): `transcoding`, `songLyrics`, `indexBasedQueue`.
+Extensions **not** advertised: `transcoding` (future PR), `indexBasedQueue`.
 
 ---
 
@@ -107,8 +123,10 @@ Extensions **not** advertised (not implemented): `transcoding`, `songLyrics`, `i
 |---|---|---|
 | `ping` | ✅ | Always returns `status: ok` |
 | `getLicense` | ✅ | Returns `valid: true`, expires 2099 |
-| `getScanStatus` | ✅ | Returns `scanning` bool and `count` |
-| `getOpenSubsonicExtensions` | ✅ | Lists `formPost`, `noAuth`, `albumArtist` |
+| `getScanStatus` | ✅ | Live data from task queue — real `scanning` bool and scanned `count` |
+| `startScan` | ✅ | Admin only — triggers a full library rescan |
+| `getOpenSubsonicExtensions` | ✅ | Lists `formPost`, `noAuth`, `albumArtist`, `apiKeyAuth`, `songLyrics`, `playbackReport` |
+| `tokenInfo` | ✅ | Returns `{ username, authMethod }` for the current session |
 
 ### Library — Folder browsing
 | Endpoint | Status | Notes |
@@ -128,6 +146,7 @@ Extensions **not** advertised (not implemented): `transcoding`, `songLyrics`, `i
 ### Search
 | Endpoint | Status | Notes |
 |---|---|---|
+| `search` | ✅ | Legacy v1 — delegates to search2 logic |
 | `search2` | ✅ | Folder-based; returns artists, albums, songs |
 | `search3` | ✅ | ID3-based (same data, different wrapper) |
 
@@ -141,7 +160,7 @@ Song results in `search2`/`search3` match the query against **title, artist, or 
 | `getRandomSongs` | ✅ | Optional genre/year/folder/size filter |
 | `getSongsByGenre` | ✅ | Filtered by exact genre string |
 | `getGenres` | ✅ | All genres with song and album counts |
-| `getNowPlaying` | ✅ | Always empty (no server-side playback tracking) |
+| `getNowPlaying` | ✅ | Updated by `scrobble` (submission=false) and `reportPlayback` |
 
 ### Starred
 | Endpoint | Status | Notes |
@@ -154,12 +173,15 @@ Song results in `search2`/`search3` match the query against **title, artist, or 
 ### Playback
 | Endpoint | Status | Notes |
 |---|---|---|
-| `stream` | ✅ | Serves original file via `res.sendFile`; CUE virtual tracks (`cue:<hash>:<index>`) are sliced with ffmpeg into a **temp file** then streamed — writing to a file (not a pipe) allows ffmpeg to patch `STREAMINFO.total_samples` correctly, so Feishin and Symfonium both show accurate per-track duration; re-encoded at `-compression_level 0` (~350× realtime) for minimal latency |
+| `stream` | ✅ | Serves original file; CUE tracks sliced via ffmpeg with correct STREAMINFO |
 | `download` | ✅ | Same as stream |
-| `getCoverArt` | ✅ | Serves from albumArtDirectory; resolves folder IDs (`d:…`, vpath integers) to real art; bare album/song hashes via `getAaFileById`; **artist IDs** (`ar-<artist_id>`) resolve to portrait from `image-cache/artists/`; SVG folder icon fallback |
-| `getLyrics` | ✅ | Returns lyrics from file tags if present |
-| `scrobble` | ✅ | Updates `playCount` and `lastPlayed` in user_metadata; supports multiple `id` params in one call (batch scrobble per OpenSubsonic spec); forwards to Last.fm / ListenBrainz if enabled |
-| `setRating` | ✅ | Stores 1–5 rating in user_metadata; returns error for out-of-range values |
+| `getCoverArt` | ✅ | Serves from albumArtDirectory; supports arbitrary `?size=` parameter (snapped to cache-friendly tiers); artist IDs (`ar-<id>`); SVG folder icon fallback |
+| `getLyrics` | ✅ | Legacy v1 stub (returns empty) |
+| `getLyricsBySongId` | ✅ | OpenSubsonic `songLyrics` extension — reads embedded lyrics (USLT/plain) from file tags on demand via music-metadata; cached per content hash |
+| `scrobble` | ✅ | Updates play count + last played; forwards to Last.fm / ListenBrainz |
+| `reportPlayback` | ✅ | OpenSubsonic `playbackReport` extension — `state: started/playing/paused/completed`; updates now-playing; triggers scrobble on completion unless `ignoreScrobble=true` |
+| `setRating` | ✅ | Stores 1–5 rating in user_metadata |
+| `getAvatar` | ✅ | Returns 404 (no avatar storage) |
 
 ### Queue persistence
 | Endpoint | Status | Notes |
@@ -190,9 +212,9 @@ Song results in `search2`/`search3` match the query against **title, artist, or 
 | `getArtistInfo2` | ✅ | Same |
 | `getAlbumInfo` | ⚠️ | Returns empty notes/URL |
 | `getAlbumInfo2` | ⚠️ | Same |
-| `getSimilarSongs` | ⚠️ | Returns empty list |
-| `getSimilarSongs2` | ⚠️ | Returns empty list |
-| `getTopSongs` | ⚠️ | Returns empty list |
+| `getSimilarSongs` | ✅ | Last.fm `track.getSimilar` → matched against local library; falls back to empty if no Last.fm API key |
+| `getSimilarSongs2` | ✅ | Same |
+| `getTopSongs` | ✅ | Last.fm `artist.getTopTracks` → matched against local library; falls back to empty |
 
 ### Users (admin only)
 | Endpoint | Status | Notes |

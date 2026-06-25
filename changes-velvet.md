@@ -1,3 +1,23 @@
+## v0.3.5 (unreleased)
+
+### OpenSubsonic API — Full Compliance
+
+- **API Key authentication** (`apiKeyAuth` extension): generate per-user API keys in Admin → Users → Password modal. Keys authenticate via `?apiKey=<key>` — no username or password needed. Keys do not expire; admins can list and revoke them individually. New DB table `subsonic_api_keys`.
+- **`tokenInfo` endpoint**: returns `{ username, authMethod }` for the current session (OpenSubsonic `apiKeyAuth` extension).
+- **`startScan` endpoint**: admin-only; triggers a full library rescan via the existing task queue.
+- **`getScanStatus`**: now returns live data — real `scanning` boolean and total files scanned across active jobs.
+- **`reportPlayback`** (`playbackReport` extension): accepts `state: started/playing/paused/completed` + `positionMs`. Updates now-playing; triggers scrobble on `completed` (unless `ignoreScrobble=true`).
+- **`getLyricsBySongId`** (`songLyrics` extension): reads embedded lyrics from file tags on demand using `music-metadata` — supports plain lyrics (ID3 USLT, Vorbis `LYRICS`) and synced lyrics (ID3 SYLT). Results cached per content hash.
+- **`getSimilarSongs` / `getSimilarSongs2`**: wired to Last.fm `track.getSimilar` — results matched against local library. Falls back to empty list when no Last.fm API key is configured.
+- **`getTopSongs`**: wired to Last.fm `artist.getTopTracks` — matched against local library.
+- **`search` (v1)**: legacy endpoint now registered; delegates to search2 logic.
+- **`getAvatar`**: registered (returns 404 — no avatar storage).
+- **`getCoverArt ?size=`**: now scales to any requested size (snapped to cache-friendly tiers — 92, 256, or rounded-up custom). Both standard tiers are pre-warmed on first access.
+- **Auth error codes 41/42/43**: conflicting/unsupported auth combinations now return proper OpenSubsonic error codes instead of generic auth failure.
+- **`getOpenSubsonicExtensions`**: updated to advertise `apiKeyAuth`, `songLyrics`, and `playbackReport`.
+
+---
+
 ## v0.3.4 (2026-06-24)
 
 ### Album Art

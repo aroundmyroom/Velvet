@@ -10926,9 +10926,16 @@ const userPasswordView = Vue.component('user-password-view', {
       showResetPassword: false,
       subsonicPassword: '',
       showSubsonicPassword: false,
-      submitPending: false
+      submitPending: false,
+      apiKeys: [],
+      apiKeysLoading: false,
+      newKeyLabel: '',
+      newlyGeneratedKey: null,
     };
-  }, 
+  },
+  mounted() {
+    this.loadApiKeys();
+  },
   template: `
     <form @submit.prevent="updatePassword">
       ${mHead("{{ t('admin.modal.resetPasswordTitle') }}", '{{"User: " + currentUser.value}}')}
@@ -10952,6 +10959,37 @@ const userPasswordView = Vue.component('user-password-view', {
               <svg v-if="!showSubsonicPassword" xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
               <svg v-else xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>
             </button>
+          </div>
+        </div>
+
+        <div class="field-group" style="margin-top:1.4rem;">
+          <label>{{ t('admin.users.apiKeysTitle') }}</label>
+          <div style="font-size:.78rem;color:var(--t2);margin-bottom:.5rem;">{{ t('admin.users.apiKeysDesc') }}</div>
+          <div v-if="apiKeysLoading" style="font-size:.82rem;color:var(--t2)">Loading…</div>
+          <table v-else-if="apiKeys.length" style="width:100%;border-collapse:collapse;font-size:.82rem;margin-bottom:.5rem;">
+            <thead><tr style="color:var(--t2)">
+              <th style="text-align:left;padding:2px 8px 2px 0">{{ t('admin.users.apiKeysColLabel') }}</th>
+              <th style="text-align:left;padding:2px 8px 2px 0">{{ t('admin.users.apiKeysColKey') }}</th>
+              <th style="text-align:left;padding:2px 8px 2px 0">{{ t('admin.users.apiKeysColCreated') }}</th>
+              <th></th>
+            </tr></thead>
+            <tbody>
+              <tr v-for="k in apiKeys" :key="k.id" style="border-top:1px solid var(--border,#333)">
+                <td style="padding:3px 8px 3px 0">{{ k.label || '—' }}</td>
+                <td style="padding:3px 8px 3px 0;font-family:monospace;font-size:.78rem;word-break:break-all">{{ k.apiKey }}</td>
+                <td style="padding:3px 8px 3px 0;white-space:nowrap">{{ new Date(k.created).toLocaleDateString() }}</td>
+                <td style="padding:3px 0"><button type="button" @click="revokeKey(k.id)" style="font-size:.78rem;padding:1px 8px;background:var(--red,#c33);color:#fff;border:none;border-radius:4px;cursor:pointer">{{ t('admin.users.apiKeysRevoke') }}</button></td>
+              </tr>
+            </tbody>
+          </table>
+          <div v-else style="font-size:.82rem;color:var(--t2);margin-bottom:.5rem;">{{ t('admin.users.apiKeysNone') }}</div>
+          <div style="display:flex;gap:.5rem;align-items:center">
+            <input v-model="newKeyLabel" type="text" :placeholder="t('admin.users.apiKeysLabelPlaceholder')" style="flex:1;padding:4px 8px;font-size:.82rem" autocomplete="off" />
+            <button type="button" @click="generateKey" style="padding:4px 12px;font-size:.82rem;white-space:nowrap">{{ t('admin.users.apiKeysGenerate') }}</button>
+          </div>
+          <div v-if="newlyGeneratedKey" style="margin-top:.5rem;padding:.4rem .6rem;background:var(--bg2,#1a1a1a);border-radius:4px;font-size:.78rem">
+            <b>{{ t('admin.users.apiKeysNewKey') }}</b><br>
+            <span style="font-family:monospace;word-break:break-all">{{ newlyGeneratedKey }}</span>
           </div>
         </div>
       </div>
@@ -11011,6 +11049,43 @@ const userPasswordView = Vue.component('user-password-view', {
         });
       }finally {
         this.submitPending = false;
+      }
+    },
+    loadApiKeys: async function() {
+      this.apiKeysLoading = true;
+      try {
+        const res = await API.axios({
+          method: 'GET',
+          url: `${API.url()}/api/v1/admin/users/subsonic-apikeys?username=${encodeURIComponent(this.currentUser.value)}`
+        });
+        this.apiKeys = res.data.keys || [];
+      } catch { this.apiKeys = []; }
+      finally { this.apiKeysLoading = false; }
+    },
+    generateKey: async function() {
+      try {
+        const res = await API.axios({
+          method: 'POST',
+          url: `${API.url()}/api/v1/admin/users/subsonic-apikeys`,
+          data: { username: this.currentUser.value, label: this.newKeyLabel.trim() || null }
+        });
+        this.newlyGeneratedKey = res.data.apiKey;
+        this.newKeyLabel = '';
+        await this.loadApiKeys();
+      } catch {
+        iziToast.error({ title: 'Failed to generate API key', position: 'topCenter', timeout: 3000 });
+      }
+    },
+    revokeKey: async function(id) {
+      try {
+        await API.axios({
+          method: 'DELETE',
+          url: `${API.url()}/api/v1/admin/users/subsonic-apikeys/${id}?username=${encodeURIComponent(this.currentUser.value)}`
+        });
+        await this.loadApiKeys();
+        if (this.newlyGeneratedKey) this.newlyGeneratedKey = null;
+      } catch {
+        iziToast.error({ title: 'Failed to revoke API key', position: 'topCenter', timeout: 3000 });
       }
     }
   }
