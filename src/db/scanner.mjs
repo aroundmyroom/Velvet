@@ -259,6 +259,7 @@ import http from 'node:http';
 import https from 'node:https';
 import { execFile } from 'node:child_process';
 import { resolvePathWithinRoot } from '../util/path-security.js';
+import { chooseEmbeddedAlbumArt } from './album-art-select.js';
 
 // Disable keep-alive on both agents: between batch flushes the server-side
 // keep-alive timeout can expire, leaving a stale socket in the pool. When
@@ -1347,10 +1348,11 @@ async function getAlbumArt(songInfo) {
 
   // picture is stored in song metadata
   if (songInfo.picture?.[0]) {
-    // Prefer the Front Cover (type 3 / 'Cover (front)') over whatever [0] happens to be.
-    // FLAC files with both ID3 and Vorbis tag blocks can have multiple picture entries
-    // in arbitrary order; picking by type avoids using a back cover or artist photo.
-    const frontCover = songInfo.picture.find(p => p.type === 'Cover (front)') || songInfo.picture[0];
+    const frontCover = chooseEmbeddedAlbumArt(songInfo.picture);
+    if (!frontCover) {
+      originalFileBuffer = await checkDirectoryForAlbumArt(songInfo);
+      if (songInfo.aaFile) { songInfo._artSource = 'directory'; }
+    } else {
     // Generate unique name based off hash of album art and metadata
     const picHashString = crypto.createHash('md5').update(frontCover.data).digest('hex'); // NOSONAR: MD5 used as album-art cache filename, not for security
     // mime-types returns 'jpeg' for image/jpeg — normalise to 'jpg' so filenames
@@ -1364,6 +1366,7 @@ async function getAlbumArt(songInfo) {
       // Save file sync
       fs.writeFileSync(resolvePathWithinRoot(loadJson.albumArtDirectory, songInfo.aaFile), frontCover.data);
       originalFileBuffer = Buffer.from(frontCover.data);
+    }
     }
   } else {
     originalFileBuffer = await checkDirectoryForAlbumArt(songInfo);

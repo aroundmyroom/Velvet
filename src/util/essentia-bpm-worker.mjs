@@ -235,11 +235,13 @@ function decodeAudioPcm(absolutePath, timeoutMs, sampleRate = SAMPLE_RATE) {
 function analyseWithEssentia(pcm) {
   const essentia = getEssentia();
   const vec = essentia.arrayToVector(pcm);
+  const free = x => { try { x?.delete?.(); } catch (e) { console.debug('[velvet]', e?.message ?? e); } };
 
   // BPM
   let bpm = null;
+  let rhythmResult = null;
   try {
-    const rhythmResult = essentia.RhythmExtractor2013(vec);
+    rhythmResult = essentia.RhythmExtractor2013(vec);
     if (rhythmResult.bpm > 0) {
       const rawBpm  = rhythmResult.bpm;
       const halfBpm = rawBpm / 2;
@@ -269,22 +271,31 @@ function analyseWithEssentia(pcm) {
     }
   } catch {
     // BPM extraction failed — leave as null
+  } finally {
+    if (rhythmResult) {
+      free(rhythmResult.ticks);
+      free(rhythmResult.estimates);
+      free(rhythmResult.bpmIntervals);
+    }
   }
 
   // Key + scale
   let key = null;
+  let keyResult = null;
   try {
-    const keyResult = essentia.KeyExtractor(vec);
+    keyResult = essentia.KeyExtractor(vec);
     if (keyResult.key && keyResult.scale) {
       // Normalise to match AcousticBrainz / tag format: e.g. "C major" → "C major"
       key = `${keyResult.key} ${keyResult.scale}`;
     }
   } catch {
     // Key extraction failed — leave as null
+  } finally {
+    free(keyResult);
   }
 
-  // Free WASM vector to avoid memory leak across files
-  try { vec.delete(); } catch (e) { console.debug('[velvet]', e?.message ?? e); }
+  // Free input vector last
+  free(vec);
 
   return { bpm, key };
 }
