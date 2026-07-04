@@ -1,3 +1,8 @@
+## v0.3.6 (2026-07-04)
+
+### Player — Lyrics Button
+- **New: Lyrics button in the player control bar** — a dedicated lyrics icon sits between the visualizer (eye) and queue buttons. Clicking it opens the lyrics view directly, without having to go through the Now Playing modal first.
+
 ## v0.3.5 (2026-06-28)
 
 ### Album Art — Scanner

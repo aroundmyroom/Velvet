@@ -1,5 +1,5 @@
 'use strict';
-const VELVET_VERSION = '0.3.5';
+const VELVET_VERSION = '0.3.6';
 // ── SERVER IDENTITY GUARD ────────────────────────────────────────────────────
 // Detects when this browser's localStorage belongs to a different Velvet
 // instance (fresh install, IP change, reverse-proxy swap, second server).
@@ -7429,6 +7429,10 @@ const VIZ = (() => {
     toggleMode() {
       vizTopMode = (vizTopMode + 1) % 4;
       applyMode();
+    },
+    openLyrics() {
+      vizTopMode = 3;
+      this.open();
     },
     lyricTick(t) {
       lyricTick(t);
@@ -24315,6 +24319,7 @@ document.getElementById('np-time-cur').addEventListener('click',   _toggleTimeFl
 document.getElementById('np-time-total').addEventListener('click', _toggleTimeFlipped);
 
 document.getElementById('np-viz-btn').addEventListener('click', () => { hideNPModal(); VIZ.open(); });
+document.getElementById('lyrics-btn')?.addEventListener('click', () => VIZ.openLyrics());
 
 // Visualizer
 document.getElementById('viz-open-btn').addEventListener('click', () => VIZ.open());
