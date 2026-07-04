@@ -114,6 +114,7 @@ Dynamic filter-based playlists that re-evaluate every time you open them:
 | **Sonos** | Auto-discovery, cast current track, queue mirroring, bidirectional pause/resume, hi-res transcoding, favourites playback (Spotify, Apple Music, TuneIn). [Docs →](docs/audio-output.md) |
 | **DLNA / UPnP** | Browse and stream over LAN to Smart TVs, Kodi, BubbleUPnP, AV receivers. [Docs →](docs/dlna.md) |
 | **Subsonic API** | Full 1.16.1 + Open Subsonic compatibility. Works with Symfonium, DSub, Ultrasonic, and more. [Docs →](docs/subsonic.md) |
+| **Sharesonic (Android)** | Community Android app for Velvet. [GitHub →](https://github.com/Tiritibambix/Sharesonic) |
 
 ### Audio Content
 
