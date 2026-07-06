@@ -484,6 +484,9 @@ export function init(dbDirectory) {
       db.exec("UPDATE files SET acoustid_status = NULL, acoustid_ts = NULL WHERE acoustid_status = 'found' AND mbid IS NULL");
     }
   } catch (e) { console.debug('[velvet]', e?.message ?? e); }
+  // Reset any rows stuck as 'pending' from a previous server crash.
+  // Workers also reset these at startup, but this covers users who never re-start the worker.
+  try { db.exec("UPDATE files SET acoustid_status = NULL WHERE acoustid_status = 'pending'"); } catch { /* noop */ }
   // Ensure indexes exist (IF NOT EXISTS is idempotent — safe on every startup)
   db.exec('CREATE INDEX IF NOT EXISTS idx_files_artist_id ON files(artist_id)');
   db.exec('CREATE INDEX IF NOT EXISTS idx_files_album_id ON files(album_id)');

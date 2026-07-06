@@ -1262,7 +1262,7 @@
   "admin.modal.dirTestFailed": "Toegangstest mislukt",
   "admin.genreGroups.dropHintNoDelete": "Groepen kunnen niet worden verwijderd — verplaats ongewenste genres naar Overige.",
   "player.langPicker.label": "Taal",
-  "player.login.tagline": "a music server — evolved with AI slop.",
+  "player.login.tagline": "a music server — evolved.",
   "player.login.tagline2": "Enter the danger zone.",
   "player.login.username": "Gebruikersnaam",
   "player.login.password": "Wachtwoord",

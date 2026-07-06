@@ -1262,7 +1262,7 @@
   "admin.modal.dirTestFailed": "Access test failed",
   "admin.genreGroups.dropHintNoDelete": "Groups cannot be deleted — move unwanted genres to Other.",
   "player.langPicker.label": "Language",
-  "player.login.tagline": "a music server — evolved with AI slop.",
+  "player.login.tagline": "a music server — evolved.",
   "player.login.tagline2": "Enter the danger zone.",
   "player.login.username": "Username",
   "player.login.password": "Password",

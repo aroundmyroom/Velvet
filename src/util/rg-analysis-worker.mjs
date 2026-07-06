@@ -35,7 +35,6 @@ const { dbPath, folders, rsgainBin, ffmpegBin } = workerData;
 // ── Tuning constants ──────────────────────────────────────────────────────────
 const BATCH_SIZE          = 50;
 const YIELD_BETWEEN_MS    = 250;  // ms between files — gives OS room to breathe alongside other workers
-const IDLE_SLEEP_MS       = 60_000;
 
 let _stopRequested = false;
 
@@ -320,10 +319,11 @@ async function run() {
     const batch = _getQueue.all(BATCH_SIZE);
 
     if (!batch.length) {
+      // Queue is empty — send final stats and exit cleanly.
+      // The server's onEveryScanEnd hook will restart this worker when new files are added.
       const stats = _getStats.get();
       parentPort.postMessage({ type: 'status', stats: { ...stats, tool: _rsgainAvail ? 'rsgain' : 'ffmpeg' }, processedCount: _processedCount });
-      await sleep(IDLE_SLEEP_MS);
-      continue;
+      break;
     }
 
     for (const row of batch) {

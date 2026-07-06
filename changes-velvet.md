@@ -1,3 +1,12 @@
+## v0.3.7 (2026-07-06)
+
+### AcoustID & Normalisation — Worker lifecycle fix
+- **Fixed: AcoustID and ReplayGain workers now stop automatically** when all files have been processed. Previously both workers would idle indefinitely in a 60-second poll loop even after completing their queue, causing them to appear perpetually "running" in the Admin panel.
+- **Fixed: stuck-at-99% progress** — AcoustID rows left as `pending` by a previous server crash were never cleared for users who did not manually restart the worker. The DB startup migration now resets these on every server start, unlocking the remaining percentage.
+
+### UI
+- Removed "AI slop" wording from the login page tagline across all 12 locale files.
+
 ## v0.3.6 (2026-07-04)
 
 ### Player — Lyrics Button

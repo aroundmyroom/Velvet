@@ -44,8 +44,6 @@ const REQUEST_DELAY_MS  = 500;
 const RETRY_AFTER_SEC   = 7 * 24 * 60 * 60; // 7 days
 // Batch size: how many files to pull from DB per iteration
 const BATCH_SIZE        = 50;
-// Idle sleep when nothing is left to process
-const IDLE_SLEEP_MS     = 60_000;
 // HTTP timeout for AcoustID requests
 const HTTP_TIMEOUT_MS   = 15_000;
 
@@ -336,15 +334,11 @@ async function run() {
     const batch = _getQueue.all(cutoff, BATCH_SIZE);
 
     if (batch.length === 0) {
-      // Nothing left — send final stats and idle
+      // Queue is empty — send final stats and exit cleanly.
+      // The server's onEveryScanEnd hook will restart this worker when new files are added.
       const stats = _getStats.get();
       parentPort.postMessage({ type: 'status', stats });
-
-      // Sleep IDLE_SLEEP_MS but check for stop signal every second
-      for (let i = 0; i < IDLE_SLEEP_MS / 1000 && !_stopRequested; i++) {
-        await sleep(1000);
-      }
-      continue;
+      break;
     }
 
     for (const row of batch) {
