@@ -1,4 +1,5 @@
 import { promisify } from 'node:util';
+import { randomBytes } from 'node:crypto';
 import WebError from '../util/web-error.js';
 import path from 'node:path';
 import child from 'node:child_process';
@@ -878,6 +879,45 @@ export function setup(velvet) {
     joiValidate(schema, req.body);
 
     await admin.editSubsonicPassword(req.body.username, req.body.password);
+    res.json({});
+  });
+
+  // ── Subsonic API Key management ───────────────────────────────────────────────
+  // GET  /api/v1/admin/users/subsonic-apikeys          list keys for caller (or ?username= for admins)
+  // POST /api/v1/admin/users/subsonic-apikeys          generate a new key
+  // DELETE /api/v1/admin/users/subsonic-apikeys/:id    revoke a key
+
+  velvet.get("/api/v1/admin/users/subsonic-apikeys", (req, res) => {
+    const targetUser = (req.user.admin === true && req.query.username)
+      ? req.query.username
+      : req.user.username;
+    const keys = db.getApiKeysByUsername(targetUser).map(k => ({
+      id:      k.id,
+      label:   k.label ?? '',
+      created: new Date(k.created).toISOString(),
+      apiKey:  k.api_key,
+    }));
+    res.json({ keys });
+  });
+
+  velvet.post("/api/v1/admin/users/subsonic-apikeys", (req, res) => {
+    const targetUser = (req.user.admin === true && req.body?.username)
+      ? req.body.username
+      : req.user.username;
+    const label  = req.body?.label ?? null;
+    const apiKey = randomBytes(32).toString('hex');
+    db.insertApiKey(targetUser, apiKey, label);
+    res.json({ apiKey, label: label ?? '', created: new Date().toISOString() });
+  });
+
+  velvet.delete("/api/v1/admin/users/subsonic-apikeys/:id", (req, res) => {
+    const id         = Number.parseInt(req.params.id, 10);
+    const targetUser = (req.user.admin === true && req.query.username)
+      ? req.query.username
+      : req.user.username;
+    if (Number.isNaN(id)) return res.status(400).json({ error: 'Invalid id' });
+    const deleted = db.deleteApiKeyById(id, targetUser);
+    if (!deleted) return res.status(404).json({ error: 'Key not found' });
     res.json({});
   });
 

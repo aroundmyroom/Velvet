@@ -341,3 +341,13 @@ export function savePlayQueue(username, currentId, positionMs, changedBy, songId
 
 export function getUnplayedGems(username, vpaths, ignoreVPaths, limit) { return backend.getUnplayedGems(username, vpaths, ignoreVPaths, limit); }
 export function countUnplayedGems(username, vpaths, ignoreVPaths) { return backend.countUnplayedGems(username, vpaths, ignoreVPaths); }
+
+// Similar songs / top songs DB lookup
+export function findSongByTitleArtist(title, artist, vpaths, username) { return backend.findSongByTitleArtist(title, artist, vpaths, username); }
+
+// Subsonic API keys
+export function getApiKeysByUsername(username) { return backend.getApiKeysByUsername(username); }
+export function getUsernameByApiKey(apiKey) { return backend.getUsernameByApiKey(apiKey); }
+export function insertApiKey(username, apiKey, label) { return backend.insertApiKey(username, apiKey, label); }
+export function deleteApiKeyById(id, username) { return backend.deleteApiKeyById(id, username); }
+export function deleteAllApiKeysByUsername(username) { return backend.deleteAllApiKeysByUsername(username); }

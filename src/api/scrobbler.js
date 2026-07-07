@@ -286,6 +286,9 @@ export function updateApiKeys(apiKey, apiSecret) {
   Scrobbler.setKeys(apiKey, apiSecret);
 }
 
+// Expose the shared Scrobbler instance for Last.fm API calls from other modules
+export { Scrobbler };
+
 /**
  * Submit a Last.fm scrobble on behalf of a user object from config.program.users.
  * No-op if the user hasn't linked Last.fm or the API key is missing.

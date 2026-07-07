@@ -1,3 +1,20 @@
+## v0.3.10 (2026-07-07)
+
+### OpenSubsonic API — Full Compliance
+- **API Key authentication** (`apiKeyAuth` extension): generate per-user API keys in Admin → Users → Password modal. Keys authenticate via `?apiKey=<key>` — no username or password needed. Keys do not expire; admins can list and revoke them individually. New DB table `subsonic_api_keys`.
+- **`tokenInfo` endpoint**: returns `{ username, authMethod }` for the current session.
+- **`startScan` / `getScanStatus`**: admin-only rescan trigger; `getScanStatus` now returns live data — real `scanning` boolean and total files scanned.
+- **`reportPlayback`** (`playbackReport` extension): accepts `state: started/playing/paused/completed` + `positionMs`. Triggers scrobble on `completed`.
+- **`getLyricsBySongId`** (`songLyrics` extension): reads embedded lyrics on demand — USLT, Vorbis `LYRICS`, synced SYLT. Results cached per content hash.
+- **`getSimilarSongs` / `getSimilarSongs2` / `getTopSongs`**: wired to Last.fm, matched against local library.
+- **`search` v1**: legacy endpoint now registered (delegates to search2).
+- **`getCoverArt ?size=`**: now scales to any requested size (92 / 256 / custom tiers).
+- **Auth error codes 41/42/43**: conflicting/unsupported auth combinations return proper OpenSubsonic codes.
+- **`getOpenSubsonicExtensions`**: now advertises `apiKeyAuth`, `songLyrics`, `playbackReport`.
+
+### Dependencies
+- Bumped `nanoid` 5.1.11 → 5.1.16 (random pool corruption fix, forever-loop fix).
+
 ## v0.3.9 (2026-07-07)
 
 ### Navigation

@@ -2,14 +2,14 @@
  * Subsonic REST API — 1.16.1 + Open Subsonic extensions
  *
  * All endpoints live under /rest/{action}(.view)?
- * Auth: both ?p=plaintext and ?t=md5token&s=salt are supported.
+ * Auth: ?p=plaintext, ?t=md5token&s=salt, or ?apiKey=<key> (OpenSubsonic apiKeyAuth)
  * Response format: JSON (f=json) or XML (default).
  *
  * Open Subsonic extras included in every response:
  *   openSubsonic: true, type: "velvet", serverVersion: <pkg version>
  */
 
-import { createHash, timingSafeEqual } from 'node:crypto';
+import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -20,6 +20,9 @@ import sharp from 'sharp';
 import * as config from '../state/config.js';
 import * as db from '../db/manager.js';
 import * as scrobblerApi from './scrobbler.js';
+import { Scrobbler } from './scrobbler.js';
+import * as dbQueue from '../db/task-queue.js';
+import * as scanProgress from '../state/scan-progress.js';
 import { ffmpegBin, ensureFfmpeg } from '../util/ffmpeg-bootstrap.js';
 import { resolveChildPath, resolvePathWithinRoot } from '../util/path-security.js';
 
@@ -46,39 +49,64 @@ function _constantTimeEqual(a, b) {
   return timingSafeEqual(ba, bb);
 }
 
+/**
+ * Returns { username, authMethod } on success, or { error: ERRORS.XXX } on failure.
+ * authMethod: 'token' | 'password' | 'apiKey' | 'noAuth'
+ */
 function authenticate(req) {
-  const u = req.query.u || req.body?.u;
-  if (!u) return null;
+  const u      = req.query.u       || req.body?.u;
+  const t      = req.query.t       || req.body?.t;
+  const s      = req.query.s       || req.body?.s;
+  const p      = req.query.p       || req.body?.p;
+  const apiKey = req.query.apiKey  || req.body?.apiKey;
 
-  const userObj = config.program.users[u];
-  // In no-auth mode (no users configured) we accept any username with any password
-  if (Object.keys(config.program.users).length === 0) {
-    return u || 'velvet-user';
+  // Detect conflicting auth methods: apiKey + any credential param → error 43
+  const hasCredentialAuth = !!(u || t || s || p);
+  if (apiKey && hasCredentialAuth) {
+    return { error: ERRORS.CONFLICTING_AUTH };
   }
-  if (!userObj) return null;
+
+  // ── API Key auth ─────────────────────────────────────────────────────────────
+  if (apiKey) {
+    const username = db.getUsernameByApiKey(String(apiKey));
+    if (!username) return { error: ERRORS.AUTH };
+    // Verify the user still exists (keys survive user config changes, but must be valid)
+    if (Object.keys(config.program.users).length > 0 && !config.program.users[username]) {
+      return { error: ERRORS.AUTH };
+    }
+    return { username, authMethod: 'apiKey' };
+  }
+
+  // ── No-auth mode ──────────────────────────────────────────────────────────────
+  if (Object.keys(config.program.users).length === 0) {
+    return { username: u || 'velvet-user', authMethod: 'noAuth' };
+  }
+
+  if (!u) return { error: ERRORS.AUTH };
+  const userObj = config.program.users[u];
+  if (!userObj) return { error: ERRORS.AUTH };
 
   const storedPw = userObj['subsonic-password'];
-  if (!storedPw) return null;
+  if (!storedPw) return { error: ERRORS.AUTH };
 
   // ?t=md5(password+nonce) &s=nonce
-  const t = req.query.t || req.body?.t;
-  const s = req.query.s || req.body?.s;
   if (t && s) {
     const expected = createHash('md5').update(storedPw + s).digest('hex'); // NOSONAR: Subsonic token authentication requires MD5 per protocol spec
-    return _constantTimeEqual(expected, t) ? u : null;
+    if (!_constantTimeEqual(expected, t)) return { error: ERRORS.AUTH };
+    return { username: u, authMethod: 'token' };
   }
 
   // ?p=plaintext  or  ?p=enc:hex
-  const p = req.query.p || req.body?.p;
   if (p) {
     let plain = p;
     if (plain.startsWith('enc:')) {
       plain = Buffer.from(plain.slice(4), 'hex').toString('utf8');
     }
-    return _constantTimeEqual(plain, storedPw) ? u : null;
+    if (!_constantTimeEqual(plain, storedPw)) return { error: ERRORS.AUTH };
+    return { username: u, authMethod: 'password' };
   }
 
-  return null;
+  return { error: ERRORS.AUTH };
 }
 
 /** Build the common response wrapper */
@@ -101,12 +129,15 @@ function makeError(code, message) {
 }
 
 const ERRORS = {
-  GENERIC:       { code: 0,  message: 'A generic error.' },
-  MISSING_PARAM: { code: 10, message: 'Required parameter is missing.' },
-  BAD_VERSION:   { code: 20, message: 'Incompatible Subsonic REST protocol version. Client must upgrade.' },
-  AUTH:          { code: 40, message: 'Wrong username or password.' },
-  UNAUTH:        { code: 50, message: 'User is not authorized for the given operation.' },
-  NOT_FOUND:     { code: 70, message: 'The requested data was not found.' },
+  GENERIC:           { code: 0,  message: 'A generic error.' },
+  MISSING_PARAM:     { code: 10, message: 'Required parameter is missing.' },
+  BAD_VERSION:       { code: 20, message: 'Incompatible Subsonic REST protocol version. Client must upgrade.' },
+  AUTH:              { code: 40, message: 'Wrong username or password.' },
+  TOKEN_NOT_SUPPORT: { code: 41, message: 'Token authentication is not supported for LDAP users.' },
+  CRED_NOT_SUPPORT:  { code: 42, message: 'Credentials-based authentication is not supported. Use API key.' },
+  CONFLICTING_AUTH:  { code: 43, message: 'Conflicting authentication parameters. Provide only one method.' },
+  UNAUTH:            { code: 50, message: 'User is not authorized for the given operation.' },
+  NOT_FOUND:         { code: 70, message: 'The requested data was not found.' },
 };
 
 /** Send response in XML or JSON based on ?f= query param */
@@ -562,13 +593,14 @@ function buildArtist(artistRow, albums) {
 // ── Middleware: parse auth + attach user to req ──────────────────────────────
 
 function subsonicAuth(req, res, next) {
-  const username = authenticate(req);
-  if (!username) {
-    return sendResponse(req, res, makeError(ERRORS.AUTH.code, ERRORS.AUTH.message));
+  const result = authenticate(req);
+  if (result.error) {
+    return sendResponse(req, res, makeError(result.error.code, result.error.message));
   }
-  req.subsonicUser = username;
-  req.subsonicVpaths = getUserVpaths(username);
-  req.subsonicVpathMeta = getVpathMeta(username);
+  req.subsonicUser       = result.username;
+  req.subsonicAuthMethod = result.authMethod;
+  req.subsonicVpaths     = getUserVpaths(result.username);
+  req.subsonicVpathMeta  = getVpathMeta(result.username);
   next();
 }
 
@@ -620,6 +652,49 @@ function _buildRadioStation(s) {
   if (s.link_b) obj.homePageUrl = s.link_b;
   if (s.img && !s.img.startsWith('http')) obj.coverArt = s.img;
   return obj;
+}
+
+// ── Lyrics helpers ────────────────────────────────────────────────────────────
+
+const _lyricsCache = new Map();
+
+async function _readFileLyrics(fullPath) {
+  try {
+    const { parseFile } = await import('music-metadata');
+    const meta = await parseFile(fullPath, { skipCovers: true });
+    const results = [];
+
+    // Plain (unsynced) lyrics — common.lyrics is string[]
+    const plain = meta?.common?.lyrics;
+    if (plain?.length) {
+      for (const text of plain) {
+        if (!text?.trim()) continue;
+        const lines = String(text).split(/\r?\n/).map(v => ({ value: v }));
+        results.push({ displayTitle: null, lang: 'xxx', synced: false, line: lines });
+      }
+    }
+
+    // Synced lyrics from native ID3 SYLT tags (music-metadata < v8 exposes as native)
+    const nativeAll = meta?.native ?? {};
+    for (const [tagType, tags] of Object.entries(nativeAll)) {
+      if (!tagType.toLowerCase().startsWith('id3')) continue;
+      for (const tag of tags) {
+        if (tag.id !== 'SYLT') continue;
+        const entries = Array.isArray(tag.value) ? tag.value : [];
+        const lines = entries.map(e => ({
+          value: e.text ?? '',
+          start: typeof e.timestamp === 'number' ? e.timestamp : undefined,
+        })).filter(l => l.value);
+        if (lines.length) {
+          results.push({ displayTitle: null, lang: 'xxx', synced: true, line: lines });
+        }
+      }
+    }
+
+    return results.length ? results : null;
+  } catch {
+    return null;
+  }
 }
 
 // ── Route handler factory ────────────────────────────────────────────────────
@@ -684,6 +759,17 @@ export function setup(velvet) {
     const quip = LICENSE_QUIPS[Math.floor(Math.random() * LICENSE_QUIPS.length)]; // NOSONAR: non-security random selection
     sendResponse(req, res, makeResponse('ok', {
       license: { valid: true, email: quip, licenseExpires: '2099-12-31T00:00:00' }
+    }));
+  });
+
+  // ── tokenInfo ───────────────────────────────────────────────────────────────
+  // OpenSubsonic apiKeyAuth extension: returns info about the current auth token.
+  router('tokenInfo', (req, res) => {
+    sendResponse(req, res, makeResponse('ok', {
+      tokenInfo: {
+        username:   req.subsonicUser,
+        authMethod: req.subsonicAuthMethod ?? 'unknown',
+      }
     }));
   });
 
@@ -1478,11 +1564,41 @@ export function setup(velvet) {
   });
 
   // ── getLyrics / getLyricsBySongId ────────────────────────────────────────────
+  // getLyrics (v1): simple text lyrics from title+artist lookup
   router('getLyrics', (req, res) => {
     sendResponse(req, res, makeResponse('ok', { lyrics: {} }));
   });
-  router('getLyricsBySongId', (req, res) => {
-    sendResponse(req, res, makeResponse('ok', { lyricsList: { structuredLyrics: [] } }));
+
+  // getLyricsBySongId (OpenSubsonic songLyrics extension): reads embedded lyrics
+  // from the file on-demand using music-metadata.
+  router('getLyricsBySongId', async (req, res) => {
+    const id = req.query.id || req.body?.id;
+    if (!id) return sendResponse(req, res, makeError(ERRORS.MISSING_PARAM.code, 'id required'));
+
+    const row = resolveSongRow(id, req.subsonicUser);
+    if (!row || !req.subsonicVpaths.includes(row.vpath)) {
+      return sendResponse(req, res, makeResponse('ok', { lyricsList: { structuredLyrics: [] } }));
+    }
+
+    const folder = config.program.folders[row.vpath];
+    if (!folder) return sendResponse(req, res, makeResponse('ok', { lyricsList: { structuredLyrics: [] } }));
+
+    let fullPath;
+    try {
+      fullPath = resolvePathWithinRoot(folder.root, row.filepath);
+    } catch {
+      return sendResponse(req, res, makeResponse('ok', { lyricsList: { structuredLyrics: [] } }));
+    }
+
+    const cacheKey = row.hash;
+    let cached = _cacheGet(_lyricsCache, cacheKey);
+    if (cached === undefined) {
+      cached = await _readFileLyrics(fullPath);
+      _cacheSet(_lyricsCache, cacheKey, cached ?? null);
+    }
+
+    const structuredLyrics = cached ?? [];
+    sendResponse(req, res, makeResponse('ok', { lyricsList: { structuredLyrics } }));
   });
 
   // ── getUser ───────────────────────────────────────────────────────────────────
@@ -1721,11 +1837,66 @@ export function setup(velvet) {
   router('getAlbumInfo',   (req, res) => sendResponse(req, res, makeResponse('ok', { albumInfo:   { notes: '' } })));
   router('getAlbumInfo2',  (req, res) => sendResponse(req, res, makeResponse('ok', { albumInfo2:  { notes: '' } })));
 
-  // ── getSimilarSongs / getTopSongs ─────────────────────────────────────────────
-  // Stubs — no audio-analysis/MusicBrainz lookup yet; return empty song lists
-  router('getSimilarSongs',  (req, res) => sendResponse(req, res, makeResponse('ok', { similarSongs:  { song: [] } })));
-  router('getSimilarSongs2', (req, res) => sendResponse(req, res, makeResponse('ok', { similarSongs2: { song: [] } })));
-  router('getTopSongs',      (req, res) => sendResponse(req, res, makeResponse('ok', { topSongs:      { song: [] } })));
+  // ── getSimilarSongs / getSimilarSongs2 ───────────────────────────────────────
+  // Uses Last.fm track.getSimilar if an API key is configured. Falls back to empty.
+  const handleSimilarSongs = (req, res, keyName) => {
+    const id    = req.query.id    || req.body?.id;
+    const count = Math.min(Number.parseInt(req.query.count || req.body?.count || '50', 10), 200);
+    if (!id) return sendResponse(req, res, makeError(ERRORS.MISSING_PARAM.code, 'id required'));
+
+    const row = resolveSongRow(id, req.subsonicUser);
+    if (!row || !req.subsonicVpaths.includes(row.vpath)) {
+      return sendResponse(req, res, makeResponse('ok', { [keyName]: { song: [] } }));
+    }
+
+    if (!Scrobbler.apiKey || !row.artist || !row.title) {
+      return sendResponse(req, res, makeResponse('ok', { [keyName]: { song: [] } }));
+    }
+
+    Scrobbler.GetSimilarSongs({ artist: row.artist, track: row.title }, (data) => {
+      try {
+        const tracks = (data?.similartracks?.track || []).slice(0, count);
+        const songs = [];
+        for (const t of tracks) {
+          if (!t.name || !t.artist?.name) continue;
+          const found = db.findSongByTitleArtist(t.name, t.artist.name, req.subsonicVpaths, req.subsonicUser);
+          if (found) songs.push(buildSong(found));
+        }
+        sendResponse(req, res, makeResponse('ok', { [keyName]: { song: songs } }));
+      } catch {
+        sendResponse(req, res, makeResponse('ok', { [keyName]: { song: [] } }));
+      }
+    }, count);
+  };
+  router('getSimilarSongs',  (req, res) => handleSimilarSongs(req, res, 'similarSongs'));
+  router('getSimilarSongs2', (req, res) => handleSimilarSongs(req, res, 'similarSongs2'));
+
+  // ── getTopSongs ───────────────────────────────────────────────────────────────
+  // Uses Last.fm artist.getTopTracks if an API key is configured.
+  router('getTopSongs', (req, res) => {
+    const artistName = req.query.artist || req.body?.artist;
+    const count      = Math.min(Number.parseInt(req.query.count || req.body?.count || '50', 10), 200);
+    if (!artistName) return sendResponse(req, res, makeError(ERRORS.MISSING_PARAM.code, 'artist required'));
+
+    if (!Scrobbler.apiKey) {
+      return sendResponse(req, res, makeResponse('ok', { topSongs: { song: [] } }));
+    }
+
+    Scrobbler.GetArtistTopTracks(artistName, (data) => {
+      try {
+        const tracks = (data?.toptracks?.track || []).slice(0, count);
+        const songs = [];
+        for (const t of tracks) {
+          if (!t.name || !t.artist?.name) continue;
+          const found = db.findSongByTitleArtist(t.name, t.artist.name, req.subsonicVpaths, req.subsonicUser);
+          if (found) songs.push(buildSong(found));
+        }
+        sendResponse(req, res, makeResponse('ok', { topSongs: { song: songs } }));
+      } catch {
+        sendResponse(req, res, makeResponse('ok', { topSongs: { song: [] } }));
+      }
+    }, count);
+  });
 
   // ── getBookmarks / saveBookmark / deleteBookmark ─────────────────────────────
   router('getBookmarks', (req, res) => {
@@ -1904,18 +2075,84 @@ export function setup(velvet) {
 
   // ── getScanStatus ─────────────────────────────────────────────────────────────
   router('getScanStatus', (req, res) => {
-    sendResponse(req, res, makeResponse('ok', { scanStatus: { scanning: false, count: 0 } }));
+    const scanning = dbQueue.isScanning();
+    const scans    = scanProgress.getAll();
+    const count    = scans.reduce((sum, s) => sum + (s.scanned || 0), 0);
+    sendResponse(req, res, makeResponse('ok', { scanStatus: { scanning, count } }));
+  });
+
+  // ── startScan ─────────────────────────────────────────────────────────────────
+  router('startScan', (req, res) => {
+    const userIsAdmin = config.program.users[req.subsonicUser]?.admin === true
+      || Object.keys(config.program.users).length === 0;
+    if (!userIsAdmin) {
+      return sendResponse(req, res, makeError(ERRORS.UNAUTH.code, ERRORS.UNAUTH.message));
+    }
+    dbQueue.scanAll();
+    sendResponse(req, res, makeResponse('ok', { scanStatus: { scanning: true, count: 0 } }));
   });
 
   // ── getOpenSubsonicExtensions ─────────────────────────────────────────────────
   router('getOpenSubsonicExtensions', (req, res) => {
     sendResponse(req, res, makeResponse('ok', {
       openSubsonicExtensions: [
-        { name: 'formPost',    versions: [1] },
-        { name: 'noAuth',      versions: [1] },
-        { name: 'albumArtist', versions: [1] },
+        { name: 'formPost',       versions: [1] },
+        { name: 'noAuth',         versions: [1] },
+        { name: 'albumArtist',    versions: [1] },
+        { name: 'apiKeyAuth',     versions: [1] },
+        { name: 'songLyrics',     versions: [1] },
+        { name: 'playbackReport', versions: [1] },
       ]
     }));
+  });
+
+  // ── reportPlayback (OpenSubsonic playbackReport extension) ───────────────────
+  // Accepts playback timeline events from clients (started / playing / paused /
+  // completed). Updates now-playing state; triggers scrobble on completion.
+  router('reportPlayback', (req, res) => {
+    const id           = req.query.mediaId      || req.body?.mediaId      || req.query.id    || req.body?.id;
+    const positionMs   = Number(req.query.positionMs   ?? req.body?.positionMs   ?? 0);
+    const state        = req.query.state        || req.body?.state        || 'playing';
+    const ignoreScrobble = String(req.query.ignoreScrobble ?? req.body?.ignoreScrobble ?? 'false') !== 'false';
+    const playerName   = req.query.c            || req.body?.c            || 'Unknown';
+
+    if (!id) return sendResponse(req, res, makeError(ERRORS.MISSING_PARAM.code, 'mediaId required'));
+
+    if (state === 'started' || state === 'playing' || state === 'paused') {
+      nowPlayingStore.set(req.subsonicUser, { id, playerName, playerId: playerName, startedAt: Date.now() - positionMs });
+    } else if (state === 'completed') {
+      nowPlayingStore.delete(req.subsonicUser);
+      if (!ignoreScrobble) {
+        _processScrobble(db, [id], req.subsonicUser, nowPlayingStore);
+      }
+    }
+
+    sendResponse(req, res, makeResponse());
+  });
+
+  // ── search (v1 legacy) ────────────────────────────────────────────────────────
+  // Original Subsonic search endpoint — delegates to the search2 logic.
+  router('search', (req, res) => {
+    req.query.query    = req.query.any    || req.body?.any    || '';
+    req.query.songCount   = req.query.count || req.body?.count || '20';
+    req.query.artistCount = '20';
+    req.query.albumCount  = '20';
+    const rawQuery = (req.query.query || '').replaceAll(/^["']+|["']+$/g, '');
+    const songCount = Math.min(Number.parseInt(req.query.songCount || '20', 10), 500);
+    const offset    = Number.parseInt(req.query.offset || req.body?.offset || '0', 10);
+    const vp  = resolveVpaths(req);
+    const { artists, albums, songs } = rawQuery.trim()
+      ? _searchQuery(db, vp, rawQuery, 20, 20, songCount)
+      : _searchEmpty(db, vp, null, null, { artistCount: 20, albumCount: 20, songCount, artistOffset: 0, albumOffset: 0, songOffset: offset });
+    sendResponse(req, res, makeResponse('ok', {
+      searchResult: { artist: artists, album: albums, song: songs }
+    }));
+  });
+
+  // ── getAvatar ─────────────────────────────────────────────────────────────────
+  // Returns the user's avatar image. We don't store avatars; return 404.
+  router('getAvatar', (req, res) => {
+    res.status(404).end();
   });
 
   // ── createUser / updateUser / deleteUser ──────────────────────────────────────
@@ -2161,11 +2398,22 @@ function _cacheSet(map, key, value) {
   map.set(key, { ts: Date.now(), value });
 }
 
+// Snap a requested size to the nearest standard tier to maximise cache hits.
+// Sizes ≤ 160 → 92 px (zs- prefix)
+// Sizes ≤ 320 → 256 px (zl- prefix)
+// Larger exact sizes stored as "zX<N>-" to avoid an unbounded cache.
+// Sizes divisible by 32 are used as-is (clients like Feishin use 300, 600…).
+function _snapThumbSize(reqSize) {
+  if (reqSize <= 160) return { prefix: 'zs-', px: 92 };
+  if (reqSize <= 320) return { prefix: 'zl-', px: 256 };
+  // Round to nearest 32 to cluster arbitrary sizes
+  const snapped = Math.min(1200, Math.ceil(reqSize / 32) * 32);
+  return { prefix: `zx${snapped}-`, px: snapped };
+}
+
 async function _resolveThumb(artDir, filename, fullPath, reqSize, thumbInProgress) {
   if (reqSize <= 0) return fullPath;
-  const useZs     = reqSize <= 160;
-  const prefix    = useZs ? 'zs-' : 'zl-';
-  const px        = useZs ? 92 : 256;
+  const { prefix, px } = _snapThumbSize(reqSize);
   let thumbPath;
   try {
     thumbPath = resolveChildPath(artDir, prefix + filename);
@@ -2182,19 +2430,19 @@ async function _resolveThumb(artDir, filename, fullPath, reqSize, thumbInProgres
       .finally(() => thumbInProgress.delete(thumbPath));
     thumbInProgress.set(thumbPath, gen);
   }
-  let otherPath;
-  try {
-    otherPath = resolveChildPath(artDir, (useZs ? 'zl-' : 'zs-') + filename);
-  } catch {
-    otherPath = null;
-  }
-  if (otherPath && !fs.existsSync(otherPath) && !thumbInProgress.has(otherPath)) {
-    const gen = sharp(fullPath)
-      .resize(useZs ? 256 : 92, useZs ? 256 : 92, { fit: 'inside', withoutEnlargement: true })
-      .toFile(otherPath)
-      .catch(() => {})
-      .finally(() => thumbInProgress.delete(otherPath));
-    thumbInProgress.set(otherPath, gen);
+  // Pre-warm the two standard tiers on first access — high hit rate for any client
+  for (const [stdPrefix, stdPx] of [['zs-', 92], ['zl-', 256]]) {
+    if (stdPrefix === prefix) continue;
+    let stdPath;
+    try { stdPath = resolveChildPath(artDir, stdPrefix + filename); } catch { continue; }
+    if (!fs.existsSync(stdPath) && !thumbInProgress.has(stdPath)) {
+      const gen = sharp(fullPath)
+        .resize(stdPx, stdPx, { fit: 'inside', withoutEnlargement: true })
+        .toFile(stdPath)
+        .catch(() => {})
+        .finally(() => thumbInProgress.delete(stdPath));
+      thumbInProgress.set(stdPath, gen);
+    }
   }
   try {
     await thumbInProgress.get(thumbPath);

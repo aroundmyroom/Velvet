@@ -394,6 +394,16 @@ export function init(dbDirectory) {
       changed  INTEGER NOT NULL,
       PRIMARY KEY (username, song_id)
     );
+
+    CREATE TABLE IF NOT EXISTS subsonic_api_keys (
+      id         INTEGER PRIMARY KEY AUTOINCREMENT,
+      username   TEXT NOT NULL,
+      api_key    TEXT NOT NULL UNIQUE,
+      label      TEXT,
+      created    INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_subsonic_api_keys_key ON subsonic_api_keys(api_key);
+    CREATE INDEX IF NOT EXISTS idx_subsonic_api_keys_user ON subsonic_api_keys(username);
   `);
   // Migration: add cuepoints column for databases created before this feature
   try { db.exec('ALTER TABLE files ADD COLUMN cuepoints TEXT'); } catch { /* already exists */ }
@@ -5390,10 +5400,63 @@ export function getOrphanedVpaths(knownVpaths) {
   return rows.map(r => r.vpath).filter(v => !knownVpaths.has(v));
 }
 
+/**
+ * Find a single song matching a title + artist (case-insensitive) across the
+ * given vpaths. Used by getSimilarSongs / getTopSongs to map Last.fm results
+ * to local tracks. Returns the first matching file row or null.
+ */
+export function findSongByTitleArtist(title, artist, vpaths, username) {
+  if (!vpaths?.length || !title || !artist) return null;
+  const placeholders = vpaths.map(() => '?').join(',');
+  const row = db.prepare(`
+    SELECT f.*, um.pc AS playCount, um.lp AS lastPlayed, um.starred, um.rating,
+           f.replaygainTrackDb, f.rg_tag_track_gain
+    FROM files f
+    LEFT JOIN user_metadata um ON um.hash = f.hash AND um.user = ?
+    WHERE f.vpath IN (${placeholders})
+      AND LOWER(f.title) = LOWER(?)
+      AND LOWER(COALESCE(f.album_artist, f.artist, '')) = LOWER(?)
+    LIMIT 1
+  `).get(username, ...vpaths, title, artist);
+  return row ?? null;
+}
+
 /** Delete all rows from `files` whose vpath is in the supplied array. Returns number deleted. */
 export function deleteOrphanedVpathRows(vpaths) {
   if (!vpaths.length) return 0;
   const placeholders = vpaths.map(() => '?').join(',');
   const result = db.prepare(`DELETE FROM files WHERE vpath IN (${placeholders})`).run(...vpaths);
   return result.changes;
+}
+
+// ── Subsonic API Keys ─────────────────────────────────────────────────────────
+
+export function getApiKeysByUsername(username) {
+  return db.prepare(
+    'SELECT id, username, api_key, label, created FROM subsonic_api_keys WHERE username = ? ORDER BY created DESC'
+  ).all(username);
+}
+
+export function getUsernameByApiKey(apiKey) {
+  const row = db.prepare(
+    'SELECT username FROM subsonic_api_keys WHERE api_key = ?'
+  ).get(apiKey);
+  return row?.username ?? null;
+}
+
+export function insertApiKey(username, apiKey, label) {
+  db.prepare(
+    'INSERT INTO subsonic_api_keys (username, api_key, label, created) VALUES (?, ?, ?, ?)'
+  ).run(username, apiKey, label ?? null, Date.now());
+}
+
+export function deleteApiKeyById(id, username) {
+  const result = db.prepare(
+    'DELETE FROM subsonic_api_keys WHERE id = ? AND username = ?'
+  ).run(id, username);
+  return result.changes > 0;
+}
+
+export function deleteAllApiKeysByUsername(username) {
+  db.prepare('DELETE FROM subsonic_api_keys WHERE username = ?').run(username);
 }

@@ -1096,6 +1096,9 @@ Base URL: `/rest/`
 |---|---|---|---|
 | `GET` | `/api/v1/subsonic/scrobble-settings` | — | Get the user's Subsonic scrobble settings. |
 | `POST` | `/api/v1/admin/users/subsonic-scrobble` | `{ username, scrobbleLastfm?, scrobbleLb? }` | Enable/disable scrobble forwarding per-user for Subsonic clients. |
+| `GET` | `/api/v1/admin/users/subsonic-apikeys` | — | List API keys for the caller (or `?username=` for admins). |
+| `POST` | `/api/v1/admin/users/subsonic-apikeys` | `{ username?, label? }` | Generate a new Subsonic API key. Returns `{ apiKey, label, created }`. |
+| `DELETE` | `/api/v1/admin/users/subsonic-apikeys/:id` | — | Revoke an API key by ID (`?username=` for admins). |
 
 **Subsonic server-side play queue persistence**:
 

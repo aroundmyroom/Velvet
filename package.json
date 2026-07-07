@@ -1,6 +1,6 @@
 {
   "name": "velvet",
-  "version": "0.3.9",
+  "version": "0.3.10",
   "description": "Velvet — your personal music server",
   "type": "module",
   "main": "cli-boot-wrapper.js",
@@ -49,7 +49,7 @@
     "make-dir": "^5.0.0",
     "mime-types": "^3.0.2",
     "music-metadata": "^11.13.0",
-    "nanoid": "^5.1.11",
+    "nanoid": "^5.1.16",
     "sharp": "^0.35.3",
     "tree-kill": "^1.2.2",
     "winston": "^3.19.0",
