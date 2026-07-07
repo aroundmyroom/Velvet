@@ -6176,7 +6176,7 @@ const acoustidView = Vue.component('acoustid-view', {
             <div class="card-content">
               <span class="card-title">{{ t('admin.acoustid.title') }}</span>
               <p style="margin-bottom:0.5rem;">{{ t('admin.acoustid.desc1') }}</p>
-              <p style="margin-bottom:0.5rem; font-size:0.85rem; color:#999;">{{ t('admin.acoustid.secretHint') }}</p>
+              <p style="margin-bottom:0.5rem; font-size:0.85rem; color:#999;" v-html="t('admin.acoustid.secretHint')"></p>
               <div v-if="!fpcalcAvailable" style="background:#3a2a00;border-left:3px solid #e57373;padding:8px 12px;border-radius:4px;margin-bottom:1rem;font-size:0.85rem;color:#ef9a9a;">
                 ⚠ {{ t('admin.acoustid.warnNoFpcalc') }}
               </div>

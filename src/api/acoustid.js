@@ -77,6 +77,13 @@ function _spawnWorker() {
     if (msg.type === 'status' || msg.type === 'ready') {
       if (msg.stats) _lastStats = msg.stats;
     }
+    if (msg.type === 'fileError') {
+      winston.warn(`[acoustid] File error: ${msg.message}`);
+    }
+    if (msg.type === 'log') {
+      if (msg.level === 'warn') winston.warn(msg.message);
+      else winston.debug(msg.message);
+    }
     if (msg.type === 'stopped') {
       _running   = false;
       _stopping  = false;

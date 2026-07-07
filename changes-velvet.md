@@ -1,3 +1,16 @@
+## v0.3.8 (2026-07-07)
+
+### AcoustID — diagnostics & error handling
+- **Fixed: invalid API key now aborts the worker immediately** with a clear log message instead of silently marking every file as `error` (previously caused 138k error rows for users with a wrong key).
+- **Improved logging**: per-file outcomes (found/not_found/API errors/fpcalc failures) are now written to the server log, making it possible to diagnose connectivity and key issues from `docker logs`.
+- **API link added to Admin UI**: the "register a free key" hint in the AcoustID settings panel is now a clickable link to `acoustid.org/new-application`.
+
+### Player — Now Playing modal
+- **New: technical metadata line** above the star rating — shows format, bitrate, sample rate, and channel count (e.g. `FLAC · 1 411 kbps · 44.1 kHz · Stereo`).
+
+### UI
+- Removed "AI slop" wording from the login page tagline across all 12 locale files.
+
 ## v0.3.7 (2026-07-06)
 
 ### AcoustID & Normalisation — Worker lifecycle fix

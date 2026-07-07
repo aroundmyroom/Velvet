@@ -1421,6 +1421,8 @@
   "player.modal.rename": "Rename",
   "player.modal.confirm": "Confirm",
   "player.modal.close": "Close",
+  "player.modal.techMono": "Mono",
+  "player.modal.techStereo": "Stereo",
   "player.modal.upload": "Upload",
   "player.modal.savePlTitle": "Save Queue as Playlist",
   "player.modal.savePlName": "Playlist name…",

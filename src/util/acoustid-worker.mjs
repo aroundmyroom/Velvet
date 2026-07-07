@@ -175,8 +175,16 @@ function acoustidLookup(duration, fingerprint) {
     const req = https.get(url, { headers: { 'User-Agent': 'Velvet/dev +https://github.com/aroundmyroom/Velvet' } }, res => {
       clearTimeout(timer);
       if (res.statusCode !== 200) {
-        res.resume();
-        return reject(new Error(`AcoustID HTTP ${res.statusCode}`));
+        // Read body so we can include the error message (especially for 400 invalid key)
+        let errBody = '';
+        res.on('data', d => { errBody += d; });
+        res.on('end', () => {
+          let detail = '';
+          try { detail = JSON.parse(errBody)?.error?.message || ''; } catch { /* noop */ }
+          const msg = detail ? `AcoustID HTTP ${res.statusCode}: ${detail}` : `AcoustID HTTP ${res.statusCode}`;
+          reject(Object.assign(new Error(msg), { statusCode: res.statusCode }));
+        });
+        return;
       }
       let body = '';
       res.on('data', d => { body += d; });
@@ -228,6 +236,8 @@ async function dbWriteWithRetry(fn) {
 async function _setResultNull(status, row) {
   await dbWriteWithRetry(() => _setResult.run(null, null, null, status, Math.floor(Date.now() / 1000),
     null, null, null, row.filepath, row.vpath));
+  parentPort.postMessage({ type: 'log', level: status === 'error' ? 'warn' : 'debug',
+    message: `[acoustid] ${status}: ${row.vpath}/${row.filepath}` });
 }
 
 async function processFile(row) {
@@ -262,9 +272,11 @@ async function processFile(row) {
     const fp = await runFpcalc(absolutePath);
     duration    = fp.duration;
     fingerprint = fp.fingerprint;
-  } catch {
+  } catch (err) {
     // fpcalc failed: corrupt file, unsupported encoding, or decode error.
     // These are permanent failures — mark not_found so they are never retried.
+    parentPort.postMessage({ type: 'log', level: 'warn',
+      message: `[acoustid] fpcalc failed for ${row.vpath}/${row.filepath}: ${err.message}` });
     await _setResultNull('not_found', row);
     return;
   }
@@ -279,7 +291,17 @@ async function processFile(row) {
   let apiData;
   try {
     apiData = await acoustidLookup(duration, fingerprint);
-  } catch {
+  } catch (err) {
+    // HTTP 400/401 = invalid API key — abort the entire worker immediately so
+    // the user sees one clear error instead of every file being marked 'error'.
+    if (err.statusCode === 400 || err.statusCode === 401) {
+      parentPort.postMessage({ type: 'error',
+        message: `Invalid AcoustID API key (HTTP ${err.statusCode}). Check your key at https://acoustid.org/new-application` });
+      _stopRequested = true;
+      return;
+    }
+    parentPort.postMessage({ type: 'log', level: 'warn',
+      message: `[acoustid] API error for ${row.vpath}/${row.filepath}: ${err.message}` });
     await _setResultNull('error', row);
     return;
   }
@@ -313,6 +335,8 @@ async function processFile(row) {
     best.id || null, mbid, best.score, finalStatus, Math.floor(Date.now() / 1000),
     mbTitle, mbArtist, mbArtistId,
     row.filepath, row.vpath));
+  parentPort.postMessage({ type: 'log', level: 'debug',
+    message: `[acoustid] ${finalStatus} (score ${best.score?.toFixed(2)}): ${row.vpath}/${row.filepath}` });
 }
 
 // ── Main loop ─────────────────────────────────────────────────────────────────

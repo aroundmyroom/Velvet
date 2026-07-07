@@ -1,5 +1,5 @@
 'use strict';
-const VELVET_VERSION = '0.3.7';
+const VELVET_VERSION = '0.3.8';
 // ── SERVER IDENTITY GUARD ────────────────────────────────────────────────────
 // Detects when this browser's localStorage belongs to a different Velvet
 // instance (fresh install, IP change, reverse-proxy swap, second server).
@@ -3793,6 +3793,18 @@ function renderNPModal() {
   const albumEl = document.getElementById('np-album');
   albumEl.textContent = sub;
   albumEl.classList.toggle('hidden', !sub);
+  const techEl = document.getElementById('np-tech');
+  if (techEl) {
+    if (!isRadio && (s.bitrate != null || s['sample-rate'] != null || s.channels != null || s.filepath)) {
+      const ext = s.filepath ? s.filepath.split('.').pop().toUpperCase() : null;
+      const kbps = s.bitrate ? s.bitrate + '\u202fkbps' : null;
+      const khz  = s['sample-rate'] ? (s['sample-rate'] / 1000).toFixed(1).replace(/\.0$/, '') + '\u202fkHz' : null;
+      const ch   = s.channels === 1 ? t('player.modal.techMono') : s.channels === 2 ? t('player.modal.techStereo') : (s.channels != null ? s.channels + 'ch' : null);
+      techEl.textContent = [ext, kbps, khz, ch].filter(Boolean).join(' \u00b7 ');
+    } else {
+      techEl.textContent = '';
+    }
+  }
   const filled = Math.round((s.rating || 0) / 2);
   document.querySelectorAll('#np-rate-stars span').forEach((star, i) => {
     star.classList.toggle('lit', i < filled);
