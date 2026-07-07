@@ -1,3 +1,8 @@
+## v0.3.9 (2026-07-07)
+
+### Navigation
+- **Fixed: "Your Stats" missing from the sidebar** — the listening-habits view (top artists, total play time, fun facts, unplayed gems) was fully implemented but had no nav button. It now appears under **History & Stats** in the left sidebar.
+
 ## v0.3.8 (2026-07-07)
 
 ### AcoustID — diagnostics & error handling
