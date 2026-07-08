@@ -1814,6 +1814,8 @@
   "player.intro.dismiss": "Sluiten",
   "player.search.failed": "Zoeken mislukt: {{error}}",
   "player.search.noStarred": "Nog geen favorieten. Beoordeel nummers met ★",
+  "player.starred.appendLabel": "Nummers toevoegen",
+  "player.starred.noneMatch": "Geen overeenkomende nummers",
   "player.starred.emptyHint": "Geef nummers die je mooi vindt een ster en ze verschijnen hier.",
   "player.search.noHistory": "Nog geen afspeelgeschiedenis",
   "player.search.tabAll": "Alles",

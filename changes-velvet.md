@@ -1,3 +1,10 @@
+## v0.3.11 (2026-07-08)
+
+### Starred — smart queue append
+- **New: "Append songs" bar in the Starred view** — a compact row of star-threshold buttons (★ through ★★★★★) sits above the song list. Click any button to append all songs matching the selected rating filter to the queue instantly.
+- **Hidden operator toggle**: the operator symbol (≥ by default) is clickable and cycles through three modes — **≥** (at or above), **=** (exactly), **≤** (at or below). The symbol highlights in the accent colour when a non-default mode is active.
+- Fully localised across all 12 languages.
+
 ## v0.3.10 (2026-07-07)
 
 ### OpenSubsonic API — Full Compliance

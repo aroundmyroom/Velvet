@@ -1815,6 +1815,8 @@
   "player.search.failed": "Search failed: {{error}}",
   "player.search.noStarred": "No starred songs yet. Rate songs with ★",
   "player.starred.emptyHint": "Star songs you love and they'll appear here.",
+  "player.starred.appendLabel": "Append songs",
+  "player.starred.noneMatch": "No matching songs",
   "player.search.noHistory": "No play history yet",
   "player.search.tabAll": "All",
   "player.search.tabTracks": "Tracks",

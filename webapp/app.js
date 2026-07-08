@@ -1,5 +1,5 @@
 'use strict';
-const VELVET_VERSION = '0.3.10';
+const VELVET_VERSION = '0.3.11';
 // ── SERVER IDENTITY GUARD ────────────────────────────────────────────────────
 // Detects when this browser's localStorage belongs to a different Velvet
 // instance (fresh install, IP change, reverse-proxy swap, second server).
@@ -11100,7 +11100,36 @@ async function viewRated() {
       ...(abEx.excludeFilepathPrefixes.length ? { excludeFilepathPrefixes: abEx.excludeFilepathPrefixes } : {}),
     });
     if (!d.length) { setBody(emptyState({ icon: 'star', title: t('player.search.noStarred'), msg: t('player.starred.emptyHint'), cta: { label: t('player.queue.emptyCta'), view: 'album-library' } })); return; }
-    showSongs(d.map(norm), null, null, { appendOnly: true });
+    const songs = d.map(norm);
+    showSongs(songs, null, null, { appendOnly: true });
+    const body = document.getElementById('content-body');
+    const _sabOps = ['>=', '=', '<='];
+    const _sabSymbols = { '>=': '≥', '=': '=', '<=': '≤' };
+    let _sabOpIdx = 0;
+    const bar = document.createElement('div');
+    bar.className = 'starred-append-bar';
+    bar.innerHTML = `<span class="sab-label">${t('player.starred.appendLabel')} <span class="sab-op" title="">≥</span></span><div class="sab-btns">${[1,2,3,4,5].map(n => `<button class="sab-btn" data-stars="${n}">${'★'.repeat(n)}</button>`).join('')}</div>`;
+    bar.querySelector('.sab-op').addEventListener('click', () => {
+      _sabOpIdx = (_sabOpIdx + 1) % 3;
+      const sym = _sabSymbols[_sabOps[_sabOpIdx]];
+      bar.querySelector('.sab-op').textContent = sym;
+      bar.querySelector('.sab-op').classList.toggle('sab-op--alt', _sabOps[_sabOpIdx] !== '>=');
+    });
+    bar.querySelectorAll('.sab-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const n = Number(btn.dataset.stars);
+        const op = _sabOps[_sabOpIdx];
+        const filtered = songs.filter(s => {
+          const r = Math.round((s.rating ?? 0) / 2);
+          if (op === '>=') return r >= n;
+          if (op === '=')  return r === n;
+          return r > 0 && r <= n;
+        });
+        if (!filtered.length) { toast(t('player.starred.noneMatch')); return; }
+        Player.addAll(filtered);
+      });
+    });
+    body.prepend(bar);
   } catch(e) { setBody(`<div class="empty-state">${t('player.search.failed', { error: esc(e.message) })}</div>`); }
 }
 
