@@ -1,5 +1,5 @@
 'use strict';
-const VELVET_VERSION = '0.3.11';
+const VELVET_VERSION = '0.3.12';
 // ── SERVER IDENTITY GUARD ────────────────────────────────────────────────────
 // Detects when this browser's localStorage belongs to a different Velvet
 // instance (fresh install, IP change, reverse-proxy swap, second server).
@@ -10771,6 +10771,25 @@ async function viewAlbumSongs(albumName, artist, backFn, opts = {}) {
   } catch(e) { if (e.name === 'AbortError') return; setBody(`<div class="empty-state">Error: ${esc(e.message)}</div>`); }
 }
 
+async function viewArtistTracks(displayName, variants, backFn) {
+  const back = backFn || (() => viewSearch());
+  setTitle(displayName); setBack(back); S.view = 'artist-tracks';
+  setBody('<div class="loading-state"></div>');
+  const soFilter = _songsOnlyFilter();
+  const abEx = _audioBookExclusions();
+  const ignoreVPaths = [...new Set([...(soFilter.ignoreVPaths || []), ...(abEx.ignoreVPaths || [])])];
+  const excludePrefixes = [...(soFilter.excludeFilepathPrefixes || []), ...(abEx.excludeFilepathPrefixes || [])];
+  try {
+    const songs = await api('POST', 'api/v1/db/artist-folder-songs', {
+      artists: variants?.length ? variants : [displayName],
+      ...(ignoreVPaths.length ? { ignoreVPaths } : {}),
+      ...(excludePrefixes.length ? { excludeFilepathPrefixes: excludePrefixes } : {}),
+    });
+    if (!songs?.length) { setBody(`<div class="empty-state">${t('player.search.noResults', { query: displayName })}</div>`); return; }
+    showSongs(songs.map(norm));
+  } catch(e) { setBody(`<div class="empty-state">${t('player.search.failed', { error: esc(e.message) })}</div>`); }
+}
+
 function viewSearch() {
   setTitle(t('player.title.search')); setBack(null); setNavActive('search'); S.view = 'search';
   document.getElementById('play-all-btn').onclick = null;
@@ -10909,6 +10928,7 @@ async function doSearch(q) {
         d.artists.map(a => `<div class="artist-row" data-artist-disp="${esc(a.name)}" data-artist-variants="${esc(JSON.stringify(a.variants))}">
           <div class="artist-av">${esc(a.name.charAt(0)).toUpperCase()}</div>
           <div class="artist-name">${esc(a.name)}</div>
+          <button class="search-artist-tracks-btn" data-artist-disp="${esc(a.name)}" data-artist-variants="${esc(JSON.stringify(a.variants))}" title="${t('player.search.showTracks')}"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><circle cx="3" cy="6" r="1" fill="currentColor" stroke="none"/><circle cx="3" cy="12" r="1" fill="currentColor" stroke="none"/><circle cx="3" cy="18" r="1" fill="currentColor" stroke="none"/></svg></button>
         </div>`).join('')
       }</div></div>`;
     }
@@ -10999,6 +11019,13 @@ async function doSearch(q) {
     res.querySelectorAll('.artist-row[data-artist-disp]').forEach(r => {
       let vars; try { vars = JSON.parse(r.dataset.artistVariants); } catch { vars = [r.dataset.artistDisp]; }
       r.addEventListener('click', () => viewArtistProfile(r.dataset.artistDisp.toLowerCase(), r.dataset.artistDisp, vars, () => viewSearch()));
+    });
+    res.querySelectorAll('.search-artist-tracks-btn').forEach(btn => {
+      btn.addEventListener('click', e => {
+        e.stopPropagation();
+        let vars; try { vars = JSON.parse(btn.dataset.artistVariants); } catch { vars = [btn.dataset.artistDisp]; }
+        viewArtistTracks(btn.dataset.artistDisp, vars, () => viewSearch());
+      });
     });
     res.querySelectorAll('.artist-row[data-browse-path]').forEach(r => r.addEventListener('click', () => {
       S.feSearchReturn = () => viewSearch();

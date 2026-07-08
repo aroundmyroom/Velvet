@@ -1,3 +1,10 @@
+## v0.3.12 (2026-07-08)
+
+### Search — artist tracks shortcut
+- **New: tracks icon on artist search results** — each artist row in the Search view shows a hover-reveal list icon on the right. Clicking it opens a flat track list (all songs by that artist, matched by metadata tags) with Play All and Append All. Back returns to search.
+- Clicking the artist name itself still opens the full artist profile (albums, bio) — no existing behaviour changed.
+- Track list uses `POST /api/v1/db/artist-folder-songs` with all artist name variants from the search response, respecting audiobook and albums-only vpath filters.
+
 ## v0.3.11 (2026-07-08)
 
 ### Starred — smart queue append

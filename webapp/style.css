@@ -733,6 +733,9 @@ button, a, .song-row, .artist-row, .album-card, .album-row,
 .artist-av-fallback{position:relative;z-index:1;}
 .artist-wrong-btn{margin-left:auto;flex-shrink:0;width:24px;height:24px;border-radius:999px;border:1px solid var(--border2);background:var(--raised);color:var(--t2);display:flex;align-items:center;justify-content:center;font-size:11px;cursor:pointer;transition:background .12s,color .12s,border-color .12s,opacity .12s;}
 .artist-wrong-btn:hover{background:var(--warn,#b45309);border-color:var(--warn,#b45309);color:#fff;}
+.search-artist-tracks-btn{margin-left:auto;flex-shrink:0;width:28px;height:28px;border-radius:var(--r);border:1px solid var(--border);background:transparent;color:var(--t3);display:flex;align-items:center;justify-content:center;cursor:pointer;transition:background .12s,color .12s,opacity .12s;opacity:0;}
+.artist-row:hover .search-artist-tracks-btn{opacity:1;}
+.search-artist-tracks-btn:hover{background:var(--raised);color:var(--t1);}
 .artist-name{font-size:14px;font-weight:600;}
 .artist-var{font-size:11px;font-weight:500;color:var(--t3);margin-left:3px;}
 .artist-col{display:flex;flex-direction:column;gap:2px;min-width:0;}

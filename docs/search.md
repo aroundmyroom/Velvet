@@ -93,6 +93,14 @@ The index is kept in sync automatically:
 | Tag edited via admin panel | old entry deleted, new entry inserted |
 | First start after upgrade | full rebuild if index is empty |
 
+## Artist results — tracks shortcut
+
+Each artist row in the **Artists** section has a small list icon that appears on hover (right side of the row). Clicking the icon opens a flat track list for that artist — all their songs matched by metadata tags — with **Play All** and **Append All** controls. The **back button** returns to the search results.
+
+Clicking the artist *name* (anywhere except the icon) still opens the full artist profile (albums, bio) as before. The tracks shortcut is an additive path that skips the profile.
+
+The track list is fetched via `POST /api/v1/db/artist-folder-songs` using the artist name and all name variants returned by the search response (e.g. `"Bob Marley"` and `"Bob Marley & The Wailers"`). Audiobook and albums-only vpath filters are applied automatically.
+
 ## Excluding words from results
 
 Prefix a word with `-` or precede it with `NOT` to exclude results that
