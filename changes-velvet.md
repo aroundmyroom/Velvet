@@ -1,3 +1,9 @@
+## v0.3.14 (2026-07-10)
+
+### Cross-device queue sync — always-visible tab fix
+- **Fixed: returning to a paused device after playing on another machine kept the stale queue** instead of pulling the updated one from the server. The queue sync relied entirely on the `visibilitychange` event (tab hidden → visible), but if the Velvet tab was always visible (desktop that was never minimised or locked), that event never fired — leaving the old queue in place indefinitely.
+- **Fix:** added a 2-minute background interval that runs only while audio is paused. It fetches the server settings, applies the same cross-device browser-identity check (`browserId`) as the existing `visibilitychange` handler, and calls `restoreQueue` if the DB queue was saved by a different device and differs from localStorage. The interval shares the `_lastVisRefresh` throttle so the two code paths never double-sync.
+
 ## v0.3.13 (2026-07-10)
 
 ### Admin panel — non-admin users blocked from HTML page

@@ -1,5 +1,5 @@
 'use strict';
-const VELVET_VERSION = '0.3.13';
+const VELVET_VERSION = '0.3.14';
 // ── SERVER IDENTITY GUARD ────────────────────────────────────────────────────
 // Detects when this browser's localStorage belongs to a different Velvet
 // instance (fresh install, IP change, reverse-proxy swap, second server).
@@ -21779,6 +21779,30 @@ function showApp() {
       api('POST', 'api/v1/server-playback/heartbeat').catch(() => {});
     }
   });
+  // Periodic idle queue sync — catches the cross-device case where this
+  // device is paused and the Velvet tab was never hidden.  visibilitychange
+  // only fires when a tab goes hidden and returns visible; if the user simply
+  // walks to another machine without minimising or locking this one, the tab
+  // stays 'visible' and visibilitychange never fires.  This interval fills
+  // that gap: every 2 minutes while paused, check whether the DB queue was
+  // saved by a different device and, if so, pull it in (same logic as the
+  // visibilitychange handler — reuses _lastVisRefresh so they never double-sync).
+  setInterval(async () => {
+    if (!S.token || !S.username || !audioEl.paused) return;
+    const _now = Date.now();
+    if (_now - _lastVisRefresh < 120000) return;
+    _lastVisRefresh = _now;
+    try {
+      const _settings = await api('GET', 'api/v1/user/settings');
+      const _qk = _queueKey();
+      const _before = _qk ? localStorage.getItem(_qk) : null;
+      _applyServerSettings(_settings);
+      if (_qk && _settings?.queue && Array.isArray(_settings.queue.queue)) {
+        const _after = localStorage.getItem(_qk);
+        if (_after && _after !== _before) restoreQueue(true);
+      }
+    } catch (_) {}
+  }, 120000);
   // Fetch ping to get transcode server info + vpath metadata
   api('GET', 'api/v1/ping').then(d => {
     if (d.transcode) {
