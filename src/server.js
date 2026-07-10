@@ -682,13 +682,19 @@ function _setupExpressMiddleware(app) {
     if (config.program.lockAdmin === true) return res.send('<p>Admin Page Disabled</p>');
     if (Object.keys(config.program.users).length === 0) return next();
     try {
-      jwt.verify(req.cookies['x-access-token'], config.program.secret);
+      const decoded = jwt.verify(req.cookies['x-access-token'], config.program.secret);
+      if (config.program.users[decoded.username]?.admin !== true) return res.redirect(302, '/');
       next();
     } catch { return res.redirect(302, '/'); }
   });
 
   app.get('/admin/index.html', (req, res, next) => {
     if (config.program.lockAdmin === true) return res.send('<p>Admin Page Disabled</p>');
-    next();
+    if (Object.keys(config.program.users).length === 0) return next();
+    try {
+      const decoded = jwt.verify(req.cookies['x-access-token'], config.program.secret);
+      if (config.program.users[decoded.username]?.admin !== true) return res.redirect(302, '/');
+      next();
+    } catch { return res.redirect(302, '/'); }
   });
 }

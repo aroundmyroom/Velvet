@@ -48,6 +48,27 @@ function computeChildExclusions(userVpaths) {
   return exclusions;
 }
 
+// For child-only users (e.g. only "12-inches", not "Music"), returns
+// includeFilepathPrefixes restricting DB queries to their allowed sub-folders.
+// When a user has direct access to a root vpath, returns [] (no restriction).
+function computeChildInclusions(user) {
+  const allFolders = config.program.folders || {};
+  const userVpaths = user.vpaths || [];
+  const userSet = new Set(userVpaths);
+  const inclusions = [];
+  for (const childName of userVpaths) {
+    const childRoot = allFolders[childName]?.root?.replace(/\/?$/, '/');
+    if (!childRoot) continue;
+    for (const [parentName, parentCfg] of Object.entries(allFolders)) {
+      if (userSet.has(parentName)) continue; // user has direct access — no restriction needed
+      const parentRoot = parentCfg.root?.replace(/\/?$/, '/');
+      if (!parentRoot || !childRoot.startsWith(parentRoot) || childRoot === parentRoot) continue;
+      inclusions.push({ vpath: parentName, prefix: childRoot.slice(parentRoot.length) });
+    }
+  }
+  return inclusions;
+}
+
 function renderMetadataObj(row) {
   // Build rg object: trackGain uses full priority chain; albumGain is the raw
   // measured album value only (null = no album measurement, client falls back).
@@ -91,6 +112,14 @@ function renderMetadataObj(row) {
   };
 }
 
+// Returns the DB-query vpaths for a user.
+// For child-only users (e.g. vpath "12-inches" with no direct "Music" access),
+// auth middleware pre-computes dbVpaths = [child, ...parentRoots].  Using this
+// for DB queries ensures files (indexed under the root vpath) are found.
+function userDbVpaths(user) {
+  return user.dbVpaths ?? user.vpaths;
+}
+
 // Resolve a file by its child-vpath filepath, falling back to the parent vpath
 // if the file is stored in the DB under the parent (scanned before the child
 // vpath was added, or vice-versa).  Returns the DB row or null.
@@ -102,7 +131,8 @@ function resolveFile(pathInfo, user) {
     if (myRoot) {
       for (const [parentKey, parentFolder] of Object.entries(folders)) {
         if (parentKey === pathInfo.vpath) continue;
-        if (user && !user.vpaths.includes(parentKey)) continue;
+        const _allowedVpaths = user?.dbVpaths ?? user?.vpaths;
+        if (user && !_allowedVpaths?.includes(parentKey)) continue;
         const parentRoot = parentFolder.root.replace(/\/?$/, '/');
         if (myRoot.startsWith(parentRoot) && myRoot !== parentRoot) {
           const prefix = myRoot.slice(parentRoot.length);
@@ -150,7 +180,7 @@ export function pullMetaData(filepath, user) {
     if (myRoot) {
       for (const [parentKey, parentFolder] of Object.entries(folders)) {
         if (parentKey === pathInfo.vpath) continue;
-        if (!user.vpaths.includes(parentKey)) continue;
+        if (!(user.dbVpaths ?? user.vpaths).includes(parentKey)) continue;
         const parentRoot = parentFolder.root.replace(/\/?$/, '/');
         if (myRoot.startsWith(parentRoot) && myRoot !== parentRoot) {
           const prefix = myRoot.slice(parentRoot.length);
@@ -222,7 +252,7 @@ function _augmentAlbumsByArtist(req, albums, posSearch, negativeTerms) {
   if (needed === 0) return;
   const byArtist = db.searchAlbumsByArtist(
     posSearch,
-    req.user.vpaths,
+    userDbVpaths(req.user),
     req.body.ignoreVPaths,
     req.body.filepathPrefix || null,
     req.body.excludeFilepathPrefixes,
@@ -247,7 +277,7 @@ function _crossFieldSearch(req, title, positiveTerms, negativeTerms) {
   const seenPaths = new Set(title.map(t => t.filepath));
   const crossRows = db.searchFilesAllWords(
     positiveTerms,
-    req.user.vpaths,
+    userDbVpaths(req.user),
     req.body.ignoreVPaths,
     req.body.filepathPrefix || null,
     req.body.excludeFilepathPrefixes,
@@ -280,7 +310,7 @@ function searchByX(req, searchCol, resCol, posSearch, negativeTerms = [], maxRes
   const results = db.searchFiles(
     searchCol,
     posSearch,
-    req.user.vpaths,
+    userDbVpaths(req.user),
     req.body.ignoreVPaths,
     req.body.filepathPrefix || null,
     req.body.excludeFilepathPrefixes,
@@ -485,7 +515,7 @@ async function _extractCueOnDemand(filePath) {
 
 export function setup(velvet) {
   velvet.get('/api/v1/db/status', (req, res) => {
-    const total = db.countFilesByVpaths(req.user.vpaths);
+    const total = db.countFilesByVpaths(userDbVpaths(req.user));
 
     res.json({
       totalFileCount: total,
@@ -505,15 +535,18 @@ export function setup(velvet) {
 
   // legacy enpoint, moved to POST
   velvet.get('/api/v1/db/artists', (req, res) => {
-    res.json({ artists: db.getArtists(req.user.vpaths) });
+    const _ci = computeChildInclusions(req.user);
+    res.json({ artists: db.getArtists(userDbVpaths(req.user), undefined, undefined, _ci.length ? _ci : undefined) });
   });
 
   velvet.post('/api/v1/db/artists', (req, res) => {
-    res.json({ artists: db.getArtists(req.user.vpaths, req.body.ignoreVPaths, req.body.excludeFilepathPrefixes) });
+    const _ci = computeChildInclusions(req.user);
+    const _incl = [..._ci, ...(req.body.includeFilepathPrefixes || [])];
+    res.json({ artists: db.getArtists(userDbVpaths(req.user), req.body.ignoreVPaths, req.body.excludeFilepathPrefixes, _incl.length ? _incl : undefined) });
   });
 
   velvet.post('/api/v1/db/artists-albums', (req, res) => {
-    const albums = db.getArtistAlbums(req.body.artist, req.user.vpaths, req.body.ignoreVPaths, req.body.excludeFilepathPrefixes, req.body.includeFilepathPrefixes);
+    const albums = db.getArtistAlbums(req.body.artist, userDbVpaths(req.user), req.body.ignoreVPaths, req.body.excludeFilepathPrefixes, req.body.includeFilepathPrefixes);
     res.json({ albums });
   });
 
@@ -525,9 +558,9 @@ export function setup(velvet) {
       includeFilepathPrefixes: Joi.array().items(Joi.object({ vpath: Joi.string().required(), prefix: Joi.string().required() })).optional(),
     });
     joiValidate(schema, req.body);
-    const _childExcl = computeChildExclusions(req.user.vpaths);
+    const _childExcl = computeChildExclusions(userDbVpaths(req.user));
     const _excl = [...(req.body.excludeFilepathPrefixes || []), ..._childExcl];
-    const albums = db.getArtistAlbumsMulti(req.body.artists, req.user.vpaths, req.body.ignoreVPaths, _excl.length ? _excl : undefined, req.body.includeFilepathPrefixes);
+    const albums = db.getArtistAlbumsMulti(req.body.artists, userDbVpaths(req.user), req.body.ignoreVPaths, _excl.length ? _excl : undefined, req.body.includeFilepathPrefixes);
     res.json({ albums });
   });
 
@@ -540,26 +573,29 @@ export function setup(velvet) {
       excludeFilepathPrefixes: Joi.array().items(Joi.object({ vpath: Joi.string().required(), prefix: Joi.string().required() })).optional(),
     });
     joiValidate(schema, req.body);
-    const _childExcl = computeChildExclusions(req.user.vpaths);
+    const _childExcl = computeChildExclusions(userDbVpaths(req.user));
     const _excl = [...(req.body.excludeFilepathPrefixes || []), ..._childExcl];
-    const rows = db.getArtistFolderSongs(req.body.artists, req.user.vpaths, req.user.username, req.body.ignoreVPaths, _excl.length ? _excl : undefined);
+    const rows = db.getArtistFolderSongs(req.body.artists, userDbVpaths(req.user), req.user.username, req.body.ignoreVPaths, _excl.length ? _excl : undefined);
     res.json(rows.map(r => renderMetadataObj(r)));
   });
 
   velvet.get('/api/v1/db/albums', (req, res) => {
-    res.json({ albums: db.getAlbums(req.user.vpaths) });
+    const _ci = computeChildInclusions(req.user);
+    res.json({ albums: db.getAlbums(userDbVpaths(req.user), undefined, undefined, _ci.length ? _ci : undefined) });
   });
 
   velvet.post('/api/v1/db/albums', (req, res) => {
-    res.json({ albums: db.getAlbums(req.user.vpaths, req.body.ignoreVPaths, req.body.excludeFilepathPrefixes, req.body.includeFilepathPrefixes) });
+    const _ci = computeChildInclusions(req.user);
+    const _incl = [..._ci, ...(req.body.includeFilepathPrefixes || [])];
+    res.json({ albums: db.getAlbums(userDbVpaths(req.user), req.body.ignoreVPaths, req.body.excludeFilepathPrefixes, _incl.length ? _incl : undefined) });
   });
 
   velvet.post('/api/v1/db/album-songs', (req, res) => {
-    const _childExcl = computeChildExclusions(req.user.vpaths);
+    const _childExcl = computeChildExclusions(userDbVpaths(req.user));
     const _excl = [...(req.body.excludeFilepathPrefixes || []), ..._childExcl];
     const results = db.getAlbumSongs(
       req.body.album ? String(req.body.album) : null,
-      req.user.vpaths,
+      userDbVpaths(req.user),
       req.user.username,
       { ignoreVPaths: req.body.ignoreVPaths, artist: req.body.artist, artists: req.body.artists, year: req.body.year, albumDir: req.body.albumDir || null, folderOnly: req.body.folderOnly === true, excludeFilepathPrefixes: _excl.length ? _excl : undefined, includeFilepathPrefixes: req.body.includeFilepathPrefixes }
     );
@@ -590,11 +626,11 @@ export function setup(velvet) {
     const posSearch = positiveTerms.join(' ');
 
     // ── Artists: use normalized index (groups "01 Ben Liebrand" → "Ben Liebrand")
-    const artists = req.body.noArtists === true ? [] : db.searchArtistsNormalized(posSearch, req.user.vpaths, req.body.ignoreVPaths);
+    const artists = req.body.noArtists === true ? [] : db.searchArtistsNormalized(posSearch, userDbVpaths(req.user), req.body.ignoreVPaths);
 
     // ── Folders: search folder names via trigram FTS
     const folders = req.body.noFolders === true ? [] :
-      db.searchFolders(posSearch, req.user.vpaths, req.body.ignoreVPaths).map(f => ({
+      db.searchFolders(posSearch, userDbVpaths(req.user), req.body.ignoreVPaths).map(f => ({
         vpath:       f.vpath,
         dirpath:     f.dirpath,
         folder_name: f.folder_name,
@@ -616,7 +652,7 @@ export function setup(velvet) {
 
   // legacy endpoint, moved to POST
   velvet.get('/api/v1/db/rated', (req, res) => {
-    const results = db.getRatedSongs(req.user.vpaths, req.user.username);
+    const results = db.getRatedSongs(userDbVpaths(req.user), req.user.username);
     const songs = [];
     for (const row of results) {
       songs.push(renderMetadataObj(row));
@@ -625,7 +661,7 @@ export function setup(velvet) {
   });
 
   velvet.post('/api/v1/db/rated', (req, res) => {
-    const results = db.getRatedSongs(req.user.vpaths, req.user.username, req.body.ignoreVPaths, req.body.excludeFilepathPrefixes);
+    const results = db.getRatedSongs(userDbVpaths(req.user), req.user.username, req.body.ignoreVPaths, req.body.excludeFilepathPrefixes);
     const songs = [];
     for (const row of results) {
       songs.push(renderMetadataObj(row));
@@ -669,7 +705,7 @@ export function setup(velvet) {
     });
     joiValidate(schema, req.body);
 
-    const results = db.getRecentlyAdded(req.user.vpaths, req.user.username, req.body.limit, req.body.ignoreVPaths, { excludeFilepathPrefixes: req.body.excludeFilepathPrefixes });
+    const results = db.getRecentlyAdded(userDbVpaths(req.user), req.user.username, req.body.limit, req.body.ignoreVPaths, { excludeFilepathPrefixes: req.body.excludeFilepathPrefixes });
     const songs = [];
     for (const row of results) {
       const s = renderMetadataObj(row);
@@ -697,7 +733,7 @@ export function setup(velvet) {
     // Fetch enough raw rows to fill maxFolders even with large multi-track albums.
     // getRecentlyAdded returns mapFileRow results (ts included, in seconds).
     const rawRows = db.getRecentlyAdded(
-      req.user.vpaths, req.user.username,
+      userDbVpaths(req.user), req.user.username,
       maxFolders * 20,
       ignoreVPaths,
       { excludeFilepathPrefixes, maxDays }
@@ -805,7 +841,7 @@ export function setup(velvet) {
       { key: 'lastYearSameDay',  from: lastYearStart,  to: lastYearEnd,   minDays: 365 },
     ];
 
-    const summary = db.getHomeSummary(req.user.username, req.user.vpaths, todayStart, weekStart, timeWindows);
+    const summary = db.getHomeSummary(req.user.username, userDbVpaths(req.user), todayStart, weekStart, timeWindows);
 
     // Enrich section songs with renderMetadataObj shape
     summary.sections = summary.sections.map(sec => ({
@@ -850,7 +886,7 @@ export function setup(velvet) {
     });
     joiValidate(schema, req.body);
 
-    const results = db.getRecentlyPlayed(req.user.vpaths, req.user.username, req.body.limit, req.body.ignoreVPaths, { excludeFilepathPrefixes: req.body.excludeFilepathPrefixes });
+    const results = db.getRecentlyPlayed(userDbVpaths(req.user), req.user.username, req.body.limit, req.body.ignoreVPaths, { excludeFilepathPrefixes: req.body.excludeFilepathPrefixes });
     const songs = [];
     for (const row of results) {
       songs.push(renderMetadataObj(row));
@@ -866,7 +902,7 @@ export function setup(velvet) {
     });
     joiValidate(schema, req.body);
 
-    const results = db.getMostPlayed(req.user.vpaths, req.user.username, req.body.limit, req.body.ignoreVPaths, { excludeFilepathPrefixes: req.body.excludeFilepathPrefixes });
+    const results = db.getMostPlayed(userDbVpaths(req.user), req.user.username, req.body.limit, req.body.ignoreVPaths, { excludeFilepathPrefixes: req.body.excludeFilepathPrefixes });
     const songs = [];
     for (const row of results) {
       songs.push(renderMetadataObj(row));
@@ -881,8 +917,8 @@ export function setup(velvet) {
     });
     joiValidate(schema, req.body);
     const { artists, limit } = req.body;
-    const _childExcl = computeChildExclusions(req.user.vpaths);
-    const results = db.getAllFilesWithMetadata(req.user.vpaths, req.user.username, { artists, excludeFilepathPrefixes: _childExcl.length ? _childExcl : undefined });
+    const _childExcl = computeChildExclusions(userDbVpaths(req.user));
+    const results = db.getAllFilesWithMetadata(userDbVpaths(req.user), req.user.username, { artists, excludeFilepathPrefixes: _childExcl.length ? _childExcl : undefined });
     if (!results.length) return res.json([]);
     // Fisher-Yates shuffle
     for (let i = results.length - 1; i > 0; i--) {
@@ -921,7 +957,7 @@ export function setup(velvet) {
     if (error) return res.status(400).json({ error: error.message });
 
     try {
-      const vpaths = req.user.vpaths;
+      const vpaths = userDbVpaths(req.user);
       const songs  = db.getUnplayedGems(req.user.username, vpaths, value.ignoreVPaths, value.limit);
       const count  = db.countUnplayedGems(req.user.username, vpaths, value.ignoreVPaths);
       res.json({ songs: songs.map(s => renderMetadataObj(s)), count });
@@ -942,7 +978,8 @@ export function setup(velvet) {
 
     // ── Genre filter: resolve display names → raw DB genre strings ──────────
     if (Array.isArray(req.body.genres) && req.body.genres.length > 0) {
-      const { rawMap } = mergeGenreRows(db.getGenres(req.user.vpaths, req.body.ignoreVPaths));
+      const _ci = computeChildInclusions(req.user);
+      const { rawMap } = mergeGenreRows(db.getGenres(userDbVpaths(req.user), req.body.ignoreVPaths, _ci.length ? { includeFilepathPrefixes: _ci } : {}));
       const rawStrings = [];
       for (const displayName of req.body.genres) {
         let rawSet = rawMap.get(displayName);
@@ -966,7 +1003,7 @@ export function setup(velvet) {
     }
 
     // ── Full-load path: artist filter active, or Loki backend ────────────────
-    let finalResults = db.getAllFilesWithMetadata(req.user.vpaths, req.user.username, {
+    let finalResults = db.getAllFilesWithMetadata(userDbVpaths(req.user), req.user.username, {
       ignoreVPaths: req.body.ignoreVPaths,
       minRating: req.body.minRating,
       filepathPrefix: req.body.filepathPrefix || null,
@@ -1066,20 +1103,24 @@ export function setup(velvet) {
 
   // ── GENRE BROWSING ────────────────────────────────────────────
   velvet.get('/api/v1/db/genres', (req, res) => {
-    const { genres } = mergeGenreRows(db.getGenres(req.user.vpaths));
+    const _ci = computeChildInclusions(req.user);
+    const { genres } = mergeGenreRows(db.getGenres(userDbVpaths(req.user), undefined, _ci.length ? { includeFilepathPrefixes: _ci } : {}));
     res.json({ genres });
   });
 
   velvet.post('/api/v1/db/genres', (req, res) => {
-    const { genres } = mergeGenreRows(db.getGenres(req.user.vpaths, req.body.ignoreVPaths));
+    const _ci = computeChildInclusions(req.user);
+    const { genres } = mergeGenreRows(db.getGenres(userDbVpaths(req.user), req.body.ignoreVPaths, _ci.length ? { includeFilepathPrefixes: _ci } : {}));
     res.json({ genres });
   });
 
   // ── GENRE GROUPS (custom display groupings configured by admin) ───────────
   velvet.get('/api/v1/db/genre-groups', (req, res) => {
     try {
+      const _ci = computeChildInclusions(req.user);
+      const _ciOpts = _ci.length ? { includeFilepathPrefixes: _ci } : {};
       const savedGroups = db.getGenreGroups();
-      const { genres: merged, rawMap } = mergeGenreRows(db.getGenres(req.user.vpaths));
+      const { genres: merged, rawMap } = mergeGenreRows(db.getGenres(userDbVpaths(req.user), undefined, _ciOpts));
       const cntMap = new Map(merged.map(g => [g.genre, g.cnt]));
       if (!savedGroups || savedGroups.length === 0) {
         return res.json({ groups: null, genres: merged });
@@ -1116,9 +1157,9 @@ export function setup(velvet) {
       ignoreVPaths: Joi.array().items(Joi.string()).optional()
     });
     joiValidate(schema, req.body);
-    // Re-derive the rawMap so we know which DB genre strings belong to this
-    // merged display genre (handles "House, Trance, Chillout" multi-values).
-    const { rawMap } = mergeGenreRows(db.getGenres(req.user.vpaths, req.body.ignoreVPaths));
+    const _ci = computeChildInclusions(req.user);
+    const _ciOpts = _ci.length ? { includeFilepathPrefixes: _ci } : {};
+    const { rawMap } = mergeGenreRows(db.getGenres(userDbVpaths(req.user), req.body.ignoreVPaths, _ciOpts));
     // Exact lookup first; case-insensitive fallback in case capitalisation drifts.
     let rawSet = rawMap.get(req.body.genre);
     if (!rawSet) {
@@ -1128,17 +1169,19 @@ export function setup(velvet) {
       }
     }
     if (!rawSet || rawSet.size === 0) return res.json([]);
-    const results = db.getSongsByGenreRaw(rawSet, req.user.vpaths, req.user.username, req.body.ignoreVPaths);
+    const results = db.getSongsByGenreRaw(rawSet, userDbVpaths(req.user), req.user.username, req.body.ignoreVPaths, _ci.length ? _ci : undefined);
     res.json(results.map(renderMetadataObj));
   });
 
   // ── DECADE BROWSING ───────────────────────────────────────────
   velvet.get('/api/v1/db/decades', (req, res) => {
-    res.json({ decades: db.getDecades(req.user.vpaths) });
+    const _ci = computeChildInclusions(req.user);
+    res.json({ decades: db.getDecades(userDbVpaths(req.user), undefined, _ci.length ? _ci : undefined) });
   });
 
   velvet.post('/api/v1/db/decades', (req, res) => {
-    res.json({ decades: db.getDecades(req.user.vpaths, req.body.ignoreVPaths) });
+    const _ci = computeChildInclusions(req.user);
+    res.json({ decades: db.getDecades(userDbVpaths(req.user), req.body.ignoreVPaths, _ci.length ? _ci : undefined) });
   });
 
   velvet.post('/api/v1/db/decade/albums', (req, res) => {
@@ -1148,7 +1191,8 @@ export function setup(velvet) {
       excludeFilepathPrefixes: Joi.array().items(Joi.object({ vpath: Joi.string().required(), prefix: Joi.string().required() })).optional()
     });
     joiValidate(schema, req.body);
-    const albums = db.getAlbumsByDecade(Number(req.body.decade), req.user.vpaths, req.body.ignoreVPaths, req.body.excludeFilepathPrefixes);
+    const _ci = computeChildInclusions(req.user);
+    const albums = db.getAlbumsByDecade(Number(req.body.decade), userDbVpaths(req.user), req.body.ignoreVPaths, req.body.excludeFilepathPrefixes, _ci.length ? _ci : undefined);
     res.json({ albums });
   });
 
@@ -1158,7 +1202,8 @@ export function setup(velvet) {
       ignoreVPaths: Joi.array().items(Joi.string()).optional()
     });
     joiValidate(schema, req.body);
-    const songs = db.getSongsByDecade(Number(req.body.decade), req.user.vpaths, req.user.username, req.body.ignoreVPaths);
+    const _ci = computeChildInclusions(req.user);
+    const songs = db.getSongsByDecade(Number(req.body.decade), userDbVpaths(req.user), req.user.username, req.body.ignoreVPaths, _ci.length ? _ci : undefined);
     res.json(songs.map(renderMetadataObj));
   });
 
@@ -1169,7 +1214,8 @@ export function setup(velvet) {
       excludeFilepathPrefixes: Joi.array().items(Joi.object({ vpath: Joi.string().required(), prefix: Joi.string().required() })).optional()
     });
     joiValidate(schema, req.body);
-    const { rawMap } = mergeGenreRows(db.getGenres(req.user.vpaths, req.body.ignoreVPaths));
+    const _ci = computeChildInclusions(req.user);
+    const { rawMap } = mergeGenreRows(db.getGenres(userDbVpaths(req.user), req.body.ignoreVPaths, _ci.length ? { includeFilepathPrefixes: _ci } : {}));
     let rawSet = rawMap.get(req.body.genre);
     if (!rawSet) {
       const needle = req.body.genre.toLowerCase();
@@ -1178,7 +1224,7 @@ export function setup(velvet) {
       }
     }
     if (!rawSet || rawSet.size === 0) return res.json({ albums: [] });
-    const albums = db.getAlbumsByGenre(rawSet, req.user.vpaths, req.body.ignoreVPaths, req.body.excludeFilepathPrefixes);
+    const albums = db.getAlbumsByGenre(rawSet, userDbVpaths(req.user), req.body.ignoreVPaths, req.body.excludeFilepathPrefixes, _ci.length ? _ci : undefined);
     res.json({ albums });
   });
 
@@ -1195,7 +1241,7 @@ export function setup(velvet) {
     try {
       const songs = db.getSimilarSongs(hash, limit);
       // Filter to user's accessible vpaths
-      const filtered = songs.filter(s => req.user.vpaths.includes(s.vpath));
+      const filtered = songs.filter(s => userDbVpaths(req.user).includes(s.vpath));
       res.json(filtered.map(s => renderMetadataObj(s)));
     } catch (err) {
       res.status(500).json({ error: err.message });
@@ -1232,7 +1278,9 @@ export function setup(velvet) {
       const vpathName = filepath.slice(0, slashIdx);
       const rel       = filepath.slice(slashIdx + 1);
       if (!rel) return res.status(400).json({ error: 'Invalid filepath' });
-      if (!req.user.vpaths.includes(vpathName)) return res.status(403).json({ error: 'Access denied' });
+      // Use getVPathInfo for the access check — enforces child-vpath prefix for
+      // child-only users (e.g. user with "12-inches" only cannot report Disco files).
+      try { vpath.getVPathInfo(filepath, req.user); } catch { return res.status(403).json({ error: 'Access denied' }); }
       const guid = crypto.createHash('md5').update(`${rel}|parse`).digest('hex'); // NOSONAR: MD5 used as collision-free error-dedup key, not for security
       db.insertScanError(guid, rel, vpathName, 'parse', errorMsg || '', 'reported by player');
       res.json({ ok: true, guid });
@@ -1293,14 +1341,14 @@ function _parseBpmParams(body) {
 // Pick a song from the primary options, respecting the ignore list.
 // Returns { songs, ignoreList } on success, null if count is 0.
 function _leanPrimaryPick(db, user, primaryOpts, ignoreList, ignorePercentage) {
-  const count = db.countFilesForRandom(user.vpaths, user.username, primaryOpts);
+  const count = db.countFilesForRandom(userDbVpaths(user), user.username, primaryOpts);
   if (count <= 0) return null;
   while (ignoreList.length > count * ignorePercentage) ignoreList.shift();
   const ignoredSet = new Set(ignoreList);
   if (count - ignoredSet.size <= 0) { ignoreList.length = 0; ignoredSet.clear(); }
   let attempts = 0, offset;
   do { offset = Math.floor(Math.random() * count); attempts++; } while (ignoredSet.has(offset) && attempts < count); // NOSONAR: non-security random music selection
-  const row = db.pickFileAtOffset(user.vpaths, user.username, primaryOpts, offset);
+  const row = db.pickFileAtOffset(userDbVpaths(user), user.username, primaryOpts, offset);
   if (!row) throw new WebError('No songs that match criteria', 400);
   ignoreList.push(offset);
   return { songs: [renderMetadataObj(row)], ignoreList };
@@ -1310,10 +1358,10 @@ function _leanPrimaryPick(db, user, primaryOpts, ignoreList, ignorePercentage) {
 function _leanFallbackPick(db, user, fallbacks) {
   for (const [condition, opts] of fallbacks) {
     if (!condition) continue;
-    const count = db.countFilesForRandom(user.vpaths, user.username, opts);
+    const count = db.countFilesForRandom(userDbVpaths(user), user.username, opts);
     if (count > 0) {
       const offset = Math.floor(Math.random() * count); // NOSONAR: non-security random music selection
-      const row = db.pickFileAtOffset(user.vpaths, user.username, opts, offset);
+      const row = db.pickFileAtOffset(userDbVpaths(user), user.username, opts, offset);
       if (!row) throw new WebError('No songs that match criteria', 400);
       return { songs: [renderMetadataObj(row)], ignoreList: [offset] };
     }
@@ -1439,7 +1487,7 @@ function _fullLoadFallbackChain(db, user, body, bp, hasArtistFilter, initial) {
   const base = { ignoreVPaths: body.ignoreVPaths, minRating: body.minRating, filepathPrefix: body.filepathPrefix || null, excludeFilepathPrefixes: body.excludeFilepathPrefixes, genreRawStrings: body._genreRawStrings, genreMode: body._genreMode };
   const ignoreArtists = Array.isArray(body.ignoreArtists) ? body.ignoreArtists : undefined;
   const artists = body.artists;
-  const query = (extra) => db.getAllFilesWithMetadata(user.vpaths, user.username, { ...base, ...extra });
+  const query = (extra) => db.getAllFilesWithMetadata(userDbVpaths(user), user.username, { ...base, ...extra });
 
   let r = initial;
   if (hasArtistFilter) r = _similarArtistFallbacks(query, bp, artists, ignoreArtists, r);

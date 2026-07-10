@@ -695,6 +695,19 @@ function _applyLiveCueFixes(album) {
 
 // ── Setup ──────────────────────────────────────────────────────────────────────
 
+// Filter the browse cache to only the albums/series the user is allowed to see.
+// A user may access an album source if the source's vpathName is in their strict
+// vpaths list.  Child-only users (e.g. only "12-inches", no albumsOnly flag) get
+// an empty response.
+function _filterCacheForUser(cache, user) {
+  if (!user?.vpaths) return cache;
+  const allowed = new Set(user.vpaths);
+  const albums  = cache.albums.filter(a => !a.sourceVpath || allowed.has(a.sourceVpath));
+  const series  = cache.series.filter(s => !s.sourceVpath || allowed.has(s.sourceVpath));
+  if (albums.length === cache.albums.length && series.length === cache.series.length) return cache;
+  return { albums, series };
+}
+
 export function setup(velvet) {
   // ── GET /api/v1/albums/browse ──────────────────────────────────────────────
   // Returns slim album objects (no track lists) for fast initial load.
@@ -703,7 +716,7 @@ export function setup(velvet) {
     try {
       const now = Date.now();
       if (_cache && now - _cacheTs < CACHE_TTL) {
-        return res.json(_cache);
+        return res.json(_filterCacheForUser(_cache, req.user));
       }
 
       const sources = await resolveAlbumsSources();
@@ -740,7 +753,7 @@ export function setup(velvet) {
       _cache   = { albums, series };
       _cacheTs = Date.now();
 
-      res.json(_cache);
+      res.json(_filterCacheForUser(_cache, req.user));
     } catch (err) {
       res.status(500).json({ error: err.message });
     }

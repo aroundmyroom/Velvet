@@ -1524,12 +1524,13 @@ function mapFileRow(row) {
   };
 }
 
-export function getArtists(vpaths, ignoreVPaths, excludeFilepathPrefixes) {
+export function getArtists(vpaths, ignoreVPaths, excludeFilepathPrefixes, includeFilepathPrefixes) {
   const filtered = vpathFilter(vpaths, ignoreVPaths);
   if (filtered.length === 0) { return []; }
   const vIn = inClause('vpath', filtered);
   const ep = excludePrefixClauses(excludeFilepathPrefixes);
-  const rows = db.prepare(`SELECT DISTINCT artist FROM files WHERE ${vIn.sql}${ep.sql} AND artist IS NOT NULL ORDER BY artist COLLATE NOCASE`).all(...vIn.params, ...ep.params);
+  const ip = includePrefixClauses(includeFilepathPrefixes);
+  const rows = db.prepare(`SELECT DISTINCT artist FROM files WHERE ${vIn.sql}${ep.sql}${ip.sql} AND artist IS NOT NULL ORDER BY artist COLLATE NOCASE`).all(...vIn.params, ...ep.params, ...ip.params);
   return rows.map(r => r.artist);
 }
 
@@ -1863,12 +1864,50 @@ export function searchArtistsNormalized(query, vpaths, ignoreVPaths) {
 
 // ── Artist browse / profile ───────────────────────────────────────────────
 
+// Returns a Set of lowercase artist_clean values that have at least one file
+// within the given includeFilepathPrefixes, or null if no filter is needed.
+// Used to restrict Artists menu for child-only users.
+function _artistsInPrefixes(includeFilepathPrefixes) {
+  if (!Array.isArray(includeFilepathPrefixes) || includeFilepathPrefixes.length === 0) return null;
+
+  // Step 1: collect raw artist/album_artist strings from files in the allowed prefixes.
+  // This query uses the files index and is fast.
+  const rawArtists = new Set();
+  for (const { vpath, prefix } of includeFilepathPrefixes) {
+    const escaped = prefix.replaceAll(/[%_\\]/g, String.raw`\$&`) + '%';
+    const rows = db.prepare(String.raw`
+      SELECT DISTINCT artist AS a FROM files WHERE vpath = ? AND filepath LIKE ? ESCAPE '\'
+        AND artist IS NOT NULL
+      UNION
+      SELECT DISTINCT album_artist AS a FROM files WHERE vpath = ? AND filepath LIKE ? ESCAPE '\'
+        AND album_artist IS NOT NULL
+    `).all(vpath, escaped, vpath, escaped);
+    for (const r of rows) if (r.a) rawArtists.add(r.a.toLowerCase());
+  }
+  if (rawArtists.size === 0) return new Set();
+
+  // Step 2: map raw artist strings to artist_clean via artists_normalized in JS.
+  // Avoids a slow json_each JOIN; each artist row has ~2-3 variants → O(n) JS set lookups.
+  const anRows = db.prepare(
+    "SELECT artist_clean, artist_raw_variants FROM artists_normalized WHERE artist_clean != ''"
+  ).all();
+  const allowed = new Set();
+  for (const row of anRows) {
+    try {
+      const variants = JSON.parse(row.artist_raw_variants);
+      if (variants.some(v => rawArtists.has(String(v).toLowerCase()))) {
+        allowed.add(row.artist_clean.toLowerCase());
+      }
+    } catch { /* malformed JSON — skip */ }
+  }
+  return allowed;
+}
+
 // Returns artists starting with a given letter (or '0' for all digit-starting names).
 // Uses precomputed song_count — no join with files needed.
-export function getArtistsByLetter(letter) {
+export function getArtistsByLetter(letter, includeFilepathPrefixes) {
   let rows;
   if (letter === '0') {
-    // Digits: artist_clean starts with 0-9
     rows = db.prepare(
       "SELECT * FROM artists_normalized WHERE artist_clean != '' AND artist_clean GLOB '[0-9]*' ORDER BY artist_clean COLLATE NOCASE"
     ).all();
@@ -1878,36 +1917,47 @@ export function getArtistsByLetter(letter) {
       "SELECT * FROM artists_normalized WHERE artist_clean != '' AND upper(substr(artist_clean,1,1)) = ? ORDER BY artist_clean COLLATE NOCASE"
     ).all(l);
   }
-  return rows.map(r => ({
-    artistKey:    r.artist_clean.toLowerCase(),
-    canonicalName: r.artist_clean,
-    imageFile:    r.image_file || null,
-    hasBio:       !!r.bio,
-    songCount:    r.song_count || 0,
-    rawVariants:  (() => { try { return JSON.parse(r.artist_raw_variants); } catch { return [r.artist_clean]; } })(),
-  }));
+  // For child-only users restrict to artists that have files in the allowed prefix.
+  const allowed = _artistsInPrefixes(includeFilepathPrefixes);
+  return rows
+    .filter(r => !allowed || allowed.has(r.artist_clean.toLowerCase()))
+    .map(r => ({
+      artistKey:    r.artist_clean.toLowerCase(),
+      canonicalName: r.artist_clean,
+      imageFile:    r.image_file || null,
+      hasBio:       !!r.bio,
+      songCount:    r.song_count || 0,
+      rawVariants:  (() => { try { return JSON.parse(r.artist_raw_variants); } catch { return [r.artist_clean]; } })(),
+    }));
 }
 
 // Returns home-page artist stats:
 //   topArtists  — top 20 by song_count
 //   recentArtists — up to 10 most recently played (from play_events + files join)
 //   totalCount  — total number of distinct artists
-export function getArtistHomeStats() {
-  const totalRow = db.prepare("SELECT COUNT(*) AS c FROM artists_normalized WHERE artist_clean != ''").get();
+export function getArtistHomeStats(includeFilepathPrefixes) {
+  // For child-only users, compute the allowed artist set once and apply everywhere.
+  const allowed = _artistsInPrefixes(includeFilepathPrefixes);
+
+  const totalRow = allowed
+    ? { c: allowed.size }
+    : db.prepare("SELECT COUNT(*) AS c FROM artists_normalized WHERE artist_clean != ''").get();
   const totalCount = totalRow ? totalRow.c : 0;
 
   const topRows = db.prepare(
     "SELECT artist_clean, image_file, bio, song_count, artist_raw_variants FROM artists_normalized WHERE artist_clean != '' ORDER BY song_count DESC LIMIT 20"
   ).all();
 
-  const topArtists = topRows.map(r => ({
-    artistKey:    r.artist_clean.toLowerCase(),
-    canonicalName: r.artist_clean,
-    imageFile:    r.image_file || null,
-    hasBio:       !!r.bio,
-    songCount:    r.song_count || 0,
-    rawVariants:  (() => { try { return JSON.parse(r.artist_raw_variants); } catch { return [r.artist_clean]; } })(),
-  }));
+  const topArtists = topRows
+    .filter(r => !allowed || allowed.has(r.artist_clean.toLowerCase()))
+    .map(r => ({
+      artistKey:    r.artist_clean.toLowerCase(),
+      canonicalName: r.artist_clean,
+      imageFile:    r.image_file || null,
+      hasBio:       !!r.bio,
+      songCount:    r.song_count || 0,
+      rawVariants:  (() => { try { return JSON.parse(r.artist_raw_variants); } catch { return [r.artist_clean]; } })(),
+    }));
 
   // Most played: aggregate play_events by raw file artist first, then map to canonical groups.
   const playedRawRows = db.prepare(`
@@ -1964,6 +2014,7 @@ export function getArtistHomeStats() {
     const anRow = variantMap.get(row.raw_artist);
     if (!anRow) continue;
     const key = anRow.artist_clean.toLowerCase();
+    if (allowed && !allowed.has(key)) continue;
     const prev = playByCanonical.get(key);
     if (prev) {
       prev.playCount += Number(row.plays || 0);
@@ -1992,6 +2043,7 @@ export function getArtistHomeStats() {
     if (!anRow) continue;
     const key = anRow.artist_clean.toLowerCase();
     if (seen.has(key)) continue;
+    if (allowed && !allowed.has(key)) continue;
     seen.add(key);
     recentArtists.push({
       artistKey:    key,
@@ -2782,9 +2834,10 @@ export function getGenres(vpaths, ignoreVPaths, opts = {}) {
   if (filtered.length === 0) return [];
   const vIn = inClause('vpath', filtered);
   const pf = prefixClause(opts.filepathPrefix);
+  const ip = includePrefixClauses(opts.includeFilepathPrefixes);
   return db.prepare(
-    `SELECT genre, COUNT(*) AS cnt FROM files WHERE ${vIn.sql}${pf.sql} AND genre IS NOT NULL AND genre != '' GROUP BY genre ORDER BY genre COLLATE NOCASE`
-  ).all(...vIn.params, ...pf.params);
+    `SELECT genre, COUNT(*) AS cnt FROM files WHERE ${vIn.sql}${pf.sql}${ip.sql} AND genre IS NOT NULL AND genre != '' GROUP BY genre ORDER BY genre COLLATE NOCASE`
+  ).all(...vIn.params, ...pf.params, ...ip.params);
 }
 
 export function getSongsByGenre(genre, vpaths, username, ignoreVPaths, opts = {}) {
@@ -2808,62 +2861,64 @@ export function getSongsByGenre(genre, vpaths, username, ignoreVPaths, opts = {}
  * the original multi-value strings (e.g. "House, Trance, Chillout") as well
  * as single-tag values so an exact IN clause is sufficient.
  */
-export function getSongsByGenreRaw(rawGenres, vpaths, username, ignoreVPaths) {
+export function getSongsByGenreRaw(rawGenres, vpaths, username, ignoreVPaths, includeFilepathPrefixes) {
   const filtered = vpathFilter(vpaths, ignoreVPaths);
   if (filtered.length === 0) return [];
   const genreList = [...rawGenres];
   if (genreList.length === 0) return [];
   const vIn    = inClause('f.vpath', filtered);
   const gIn    = inClause('f.genre', genreList);
+  const ip     = includePrefixClauses(includeFilepathPrefixes, 'f.vpath', 'f.filepath');
   const rows = db.prepare(`
     SELECT f.rowid AS id, f.*, um.rating
     FROM files f
     LEFT JOIN user_metadata um ON f.hash = um.hash AND um.user = ?
-    WHERE ${vIn.sql} AND ${gIn.sql}
+    WHERE ${vIn.sql} AND ${gIn.sql}${ip.sql}
     ORDER BY f.artist COLLATE NOCASE, f.album COLLATE NOCASE, f.disk, f.track
-  `).all(username, ...vIn.params, ...gIn.params);
+  `).all(username, ...vIn.params, ...gIn.params, ...ip.params);
   return rows.map(mapFileRow);
 }
 
-export function getDecades(vpaths, ignoreVPaths) {
+export function getDecades(vpaths, ignoreVPaths, includeFilepathPrefixes) {
   const filtered = vpathFilter(vpaths, ignoreVPaths);
   if (filtered.length === 0) return [];
   const vIn = inClause('vpath', filtered);
+  const ip  = includePrefixClauses(includeFilepathPrefixes);
   return db.prepare(
-    `SELECT (year / 10 * 10) AS decade, COUNT(*) AS cnt, COUNT(DISTINCT album) AS albums FROM files WHERE ${vIn.sql} AND year >= 1900 AND year <= 2030 GROUP BY decade ORDER BY decade`
-  ).all(...vIn.params);
+    `SELECT (year / 10 * 10) AS decade, COUNT(*) AS cnt, COUNT(DISTINCT album) AS albums FROM files WHERE ${vIn.sql}${ip.sql} AND year >= 1900 AND year <= 2030 GROUP BY decade ORDER BY decade`
+  ).all(...vIn.params, ...ip.params);
 }
 
-export function getAlbumsByDecade(decade, vpaths, ignoreVPaths, excludeFilepathPrefixes) {
+export function getAlbumsByDecade(decade, vpaths, ignoreVPaths, excludeFilepathPrefixes, includeFilepathPrefixes) {
   const filtered = vpathFilter(vpaths, ignoreVPaths);
   if (filtered.length === 0) return [];
   const vIn = inClause('vpath', filtered);
   const ep  = excludePrefixClauses(excludeFilepathPrefixes);
-  // GROUP BY album+artist so SQLite deduplicates — no JS loop needed.
-  // MIN(year) picks a representative year; MAX(aaFile) prefers a non-null art file.
+  const ip  = includePrefixClauses(includeFilepathPrefixes);
   return db.prepare(`
     SELECT album AS name,
            MAX(aaFile) AS album_art_file,
            MIN(year)   AS year,
            artist
     FROM files
-    WHERE ${vIn.sql}${ep.sql} AND album IS NOT NULL AND year >= ? AND year <= ?
+    WHERE ${vIn.sql}${ep.sql}${ip.sql} AND album IS NOT NULL AND year >= ? AND year <= ?
     GROUP BY album, artist
     ORDER BY MIN(year), album COLLATE NOCASE
-  `).all(...vIn.params, ...ep.params, decade, decade + 9);
+  `).all(...vIn.params, ...ep.params, ...ip.params, decade, decade + 9);
 }
 
-export function getSongsByDecade(decade, vpaths, username, ignoreVPaths) {
+export function getSongsByDecade(decade, vpaths, username, ignoreVPaths, includeFilepathPrefixes) {
   const filtered = vpathFilter(vpaths, ignoreVPaths);
   if (filtered.length === 0) return [];
   const vIn = inClause('f.vpath', filtered);
+  const ip  = includePrefixClauses(includeFilepathPrefixes, 'f.vpath', 'f.filepath');
   const rows = db.prepare(`
     SELECT f.rowid AS id, f.*, um.rating
     FROM files f
     LEFT JOIN user_metadata um ON f.hash = um.hash AND um.user = ?
-    WHERE ${vIn.sql} AND f.year >= ? AND f.year <= ?
+    WHERE ${vIn.sql}${ip.sql} AND f.year >= ? AND f.year <= ?
     ORDER BY f.artist COLLATE NOCASE, f.album COLLATE NOCASE, f.disk, f.track
-  `).all(username, ...vIn.params, decade, decade + 9);
+  `).all(username, ...vIn.params, ...ip.params, decade, decade + 9);
   return rows.map(mapFileRow);
 }
 
@@ -2895,7 +2950,7 @@ export function countUnplayedGems(username, vpaths, ignoreVPaths) {
   return row?.cnt ?? 0;
 }
 
-export function getAlbumsByGenre(rawGenres, vpaths, ignoreVPaths, excludeFilepathPrefixes) {
+export function getAlbumsByGenre(rawGenres, vpaths, ignoreVPaths, excludeFilepathPrefixes, includeFilepathPrefixes) {
   const filtered = vpathFilter(vpaths, ignoreVPaths);
   if (filtered.length === 0) return [];
   const genreList = [...rawGenres];
@@ -2903,16 +2958,17 @@ export function getAlbumsByGenre(rawGenres, vpaths, ignoreVPaths, excludeFilepat
   const vIn = inClause('vpath', filtered);
   const gIn = inClause('genre', genreList);
   const ep  = excludePrefixClauses(excludeFilepathPrefixes);
+  const ip  = includePrefixClauses(includeFilepathPrefixes);
   return db.prepare(`
     SELECT album AS name,
            MAX(aaFile) AS album_art_file,
            MIN(year)   AS year,
            artist
     FROM files
-    WHERE ${vIn.sql} AND ${gIn.sql}${ep.sql} AND album IS NOT NULL
+    WHERE ${vIn.sql} AND ${gIn.sql}${ep.sql}${ip.sql} AND album IS NOT NULL
     GROUP BY album, artist
     ORDER BY artist COLLATE NOCASE, album COLLATE NOCASE
-  `).all(...vIn.params, ...gIn.params, ...ep.params);
+  `).all(...vIn.params, ...gIn.params, ...ep.params, ...ip.params);
 }
 
 

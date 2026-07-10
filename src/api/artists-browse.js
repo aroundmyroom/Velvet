@@ -122,6 +122,28 @@ await (async () => {
   console.log(`[artists-browse] Migration done: ${moved} moved, ${skipped} already present`);
 })();
 
+// ── Child-only user helpers ───────────────────────────────────────────────────
+
+// Returns includeFilepathPrefixes for child-only users so artist/home and
+// artist/letter queries are restricted to the user's allowed sub-folders.
+// Returns [] (no restriction) when the user has direct root vpath access.
+function _childInclusionsForUser(user) {
+  const allFolders = config.program?.folders || {};
+  const userSet = new Set(user?.vpaths || []);
+  const inclusions = [];
+  for (const childName of (user?.vpaths || [])) {
+    const childRoot = allFolders[childName]?.root?.replace(/\/?$/, '/');
+    if (!childRoot) continue;
+    for (const [parentName, parentCfg] of Object.entries(allFolders)) {
+      if (userSet.has(parentName)) continue;
+      const parentRoot = parentCfg.root?.replace(/\/?$/, '/');
+      if (!parentRoot || !childRoot.startsWith(parentRoot) || childRoot === parentRoot) continue;
+      inclusions.push({ vpath: parentName, prefix: childRoot.slice(parentRoot.length) });
+    }
+  }
+  return inclusions;
+}
+
 // ── Profile builder ───────────────────────────────────────────────────────────
 // Builds the artist profile (release categories) from raw file rows.
 // Release categories are keyed by L1 folder name — fully generic.
@@ -878,6 +900,13 @@ export function setup(velvet) {
   // Fully precomputed — no file table join.
   velvet.get('/api/v1/artists/home', (req, res) => {
     try {
+      const ci = _childInclusionsForUser(req.user);
+      if (ci.length > 0) {
+        // Child-only user: bypass shared cache, compute filtered stats on the fly.
+        const stats = db.getArtistHomeStats(ci);
+        _queueHomeImageHydration(stats);
+        return res.json(stats);
+      }
       const now = Date.now();
       if (_homeCache && now - _homeCacheTs < CACHE_TTL) {
         _queueHomeImageHydration(_homeCache);
@@ -901,7 +930,8 @@ export function setup(velvet) {
       if (!l || typeof l !== 'string' || !/^[0-9A-Za-z]$/.test(l)) {
         return res.status(400).json({ error: 'Invalid letter. Use A-Z or 0 for digits.' });
       }
-      const artists = db.getArtistsByLetter(l);
+      const ci = _childInclusionsForUser(req.user);
+      const artists = db.getArtistsByLetter(l, ci.length ? ci : undefined);
       _queueListImageHydration(artists, 200);
       res.json({ artists });
     } catch (err) {

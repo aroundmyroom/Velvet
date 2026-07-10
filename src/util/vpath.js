@@ -11,12 +11,26 @@ export function getVPathInfo(url, user) {
 
   // Get vpath from url
   const vpath = url.split('/').shift();
-  // Verify user has access to this vpath
+  const folders = config.program.folders;
+
+  if (!folders[vpath]) throw new Error(`Unknown vpath: ${vpath}`);
+
+  // Verify user has access to this vpath (direct or via a child vpath).
   if (user && !user.vpaths.includes(vpath)) {
-    throw new Error(`User does not have access to path ${vpath}`);
+    // Allow if the user has a child vpath whose root is a subdirectory of this
+    // vpath's root AND the relative path falls within that child's prefix.
+    const parentRoot = folders[vpath].root.replace(/\/?$/, '/');
+    const relativePath = url.slice(vpath.length + 1);
+    const allowed = (user.vpaths || []).some(childName => {
+      const childRoot = folders[childName]?.root?.replace(/\/?$/, '/');
+      if (!childRoot || !childRoot.startsWith(parentRoot) || childRoot === parentRoot) return false;
+      const childPrefix = childRoot.slice(parentRoot.length);
+      return relativePath === childPrefix.replace(/\/$/, '') || relativePath.startsWith(childPrefix);
+    });
+    if (!allowed) throw new Error(`User does not have access to path ${vpath}`);
   }
 
-  const baseDir = config.program.folders[vpath].root;
+  const baseDir = folders[vpath].root;
   const result = {
     vpath: vpath,
     basePath: baseDir,

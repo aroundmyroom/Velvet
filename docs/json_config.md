@@ -178,6 +178,32 @@ Multiple users with multiple directories
 }
 ```
 
+### Child vpath access
+
+A user's `vpaths` list may contain **child vpaths** — folders that are sub-directories
+of a root vpath. For example, if `12-inches` is configured with `root: /media/music/12 inches A-Z`
+and `Music` has `root: /media/music`, then `12-inches` is a child of `Music`.
+
+Giving a user only `"vpaths": ["12-inches"]` restricts them to that sub-folder:
+they see only artists, albums, genres and decades from files in that directory.
+They cannot access any other content from the parent `Music` root.
+
+```json
+{
+  "folders": {
+    "Music":      { "root": "/media/music" },
+    "12-inches":  { "root": "/media/music/12 inches A-Z" }
+  },
+  "users": {
+    "alice": {
+      "password": "<hash>",
+      "salt": "<salt>",
+      "vpaths": ["12-inches"]
+    }
+  }
+}
+```
+
 ## Transcoding
 
 | Key | Default | Description |

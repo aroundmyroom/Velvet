@@ -23,18 +23,22 @@ export function setup(velvet) {
 
     const returnThis = {
       vpaths: req.user.vpaths,
-      transcode,
       noUpload: config.program.noUpload === true,
       supportedAudioFiles: config.program.supportedAudioFiles,
       vpathMetaData: {}
     };
 
     const allFolders = config.program.folders;
+    // Use the expanded vpath set (includes implicit parent roots) when looking up
+    // parentVpath, so child-only users get the correct parent relationship.
+    const _lookupVpaths = req.user.dbVpaths ?? req.user.vpaths;
     req.user.vpaths.forEach(p => {
       if (!allFolders[p]) { return; }
       const myRoot = allFolders[p].root.replace(/\/?$/, '/');
-      // Find if this vpath's root sits inside another vpath the user has access to
-      const parentVpath = req.user.vpaths.find(other =>
+      // Find if this vpath's root sits inside another vpath the user has access to.
+      // Search the expanded set so child-only users (e.g. user with only "12-inches"
+      // but not "Music") still get their parentVpath populated correctly.
+      const parentVpath = _lookupVpaths.find(other =>
         other !== p &&
         allFolders[other] &&
         myRoot.startsWith(allFolders[other].root.replace(/\/?$/, '/')) &&

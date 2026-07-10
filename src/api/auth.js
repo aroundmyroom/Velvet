@@ -96,6 +96,24 @@ export function setup(velvet) {
     req.user = config.program.users[decoded.username];
     req.user.username = decoded.username;
 
+    // Expand child-only vpaths to include their root parent vpaths for DB queries.
+    // Files are always indexed under the ROOT vpath (e.g. "Music"), not child names
+    // (e.g. "12-inches"). Without expansion, DB queries for child-only users return
+    // zero results. The expanded set is stored in req.user.dbVpaths; the original
+    // strict list stays in req.user.vpaths for access-control checks.
+    const _af = config.program?.folders || {};
+    const _expanded = new Set(req.user.vpaths || []);
+    for (const v of (req.user.vpaths || [])) {
+      const childRoot = _af[v]?.root?.replace(/\/?$/, '/');
+      if (!childRoot) continue;
+      for (const [pName, pCfg] of Object.entries(_af)) {
+        if (_expanded.has(pName)) continue;
+        const pRoot = pCfg.root?.replace(/\/?$/, '/');
+        if (pRoot && childRoot.startsWith(pRoot) && childRoot !== pRoot) _expanded.add(pName);
+      }
+    }
+    if (_expanded.size > (req.user.vpaths?.length ?? 0)) req.user.dbVpaths = [..._expanded];
+
     // Handle Shared Tokens
     if (decoded.shareToken && decoded.shareToken === true) {
       _validateSharedTokenAccess(req, decoded);

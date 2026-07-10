@@ -122,7 +122,7 @@ export function getFileDuration(filepath) { return backend.getFileDuration(filep
 export function updateFileTags(filepath, vpath, tags) { return backend.updateFileTags(filepath, vpath, tags); }
 export function updateFileModified(filepath, vpath, modifiedMs) { return backend.updateFileModified(filepath, vpath, modifiedMs); }
 export function getFileWithMetadata(filepath, vpath, username) { return backend.getFileWithMetadata(filepath, vpath, username); }
-export function getArtists(vpaths, ignoreVPaths, excludeFilepathPrefixes) { return backend.getArtists(vpaths, ignoreVPaths, excludeFilepathPrefixes); }
+export function getArtists(vpaths, ignoreVPaths, excludeFilepathPrefixes, includeFilepathPrefixes) { return backend.getArtists(vpaths, ignoreVPaths, excludeFilepathPrefixes, includeFilepathPrefixes); }
 export function getArtistAlbums(artist, vpaths, ignoreVPaths, excludeFilepathPrefixes, includeFilepathPrefixes) { return backend.getArtistAlbums(artist, vpaths, ignoreVPaths, excludeFilepathPrefixes, includeFilepathPrefixes); }
 export function getArtistAlbumsMulti(artists, vpaths, ignoreVPaths, excludeFilepathPrefixes, includeFilepathPrefixes) { return backend.getArtistAlbumsMulti(artists, vpaths, ignoreVPaths, excludeFilepathPrefixes, includeFilepathPrefixes); }
 export function getArtistFolderSongs(artists, vpaths, username, ignoreVPaths, excludeFilepathPrefixes) { return backend.getArtistFolderSongs(artists, vpaths, username, ignoreVPaths, excludeFilepathPrefixes); }
@@ -138,8 +138,8 @@ export function searchFilesAllWords(tokens, vpaths, ignoreVPaths, filepathPrefix
 export function searchFolders(query, vpaths, ignoreVPaths) { return backend.searchFolders(query, vpaths, ignoreVPaths); }
 export function searchArtistsNormalized(query, vpaths, ignoreVPaths) { return backend.searchArtistsNormalized(query, vpaths, ignoreVPaths); }
 export function getArtistsForBrowse(vpaths, ignoreVPaths) { return backend.getArtistsForBrowse(vpaths, ignoreVPaths); }
-export function getArtistsByLetter(letter) { return backend.getArtistsByLetter(letter); }
-export function getArtistHomeStats() { return backend.getArtistHomeStats(); }
+export function getArtistsByLetter(letter, includeFilepathPrefixes) { return backend.getArtistsByLetter(letter, includeFilepathPrefixes); }
+export function getArtistHomeStats(includeFilepathPrefixes) { return backend.getArtistHomeStats(includeFilepathPrefixes); }
 export function getArtistRow(artistClean) { return backend.getArtistRow(artistClean); }
 export function getArtistRowByName(name) { return backend.getArtistRowByName(name); }
 export function getArtistFiles(rawVariants, vpaths, ignoreVPaths) { return backend.getArtistFiles(rawVariants, vpaths, ignoreVPaths); }
@@ -166,11 +166,11 @@ export function countFilesForRandom(vpaths, username, opts) { return backend.cou
 export function pickFileAtOffset(vpaths, username, opts, offset) { return backend.pickFileAtOffset(vpaths, username, opts, offset); }
 export function getGenres(vpaths, ignoreVPaths, opts) { return backend.getGenres(vpaths, ignoreVPaths, opts); }
 export function getSongsByGenre(genre, vpaths, username, ignoreVPaths, opts) { return backend.getSongsByGenre(genre, vpaths, username, ignoreVPaths, opts); }
-export function getSongsByGenreRaw(rawGenres, vpaths, username, ignoreVPaths) { return backend.getSongsByGenreRaw(rawGenres, vpaths, username, ignoreVPaths); }
-export function getDecades(vpaths, ignoreVPaths) { return backend.getDecades(vpaths, ignoreVPaths); }
-export function getAlbumsByDecade(decade, vpaths, ignoreVPaths, excludeFilepathPrefixes) { return backend.getAlbumsByDecade(decade, vpaths, ignoreVPaths, excludeFilepathPrefixes); }
-export function getSongsByDecade(decade, vpaths, username, ignoreVPaths) { return backend.getSongsByDecade(decade, vpaths, username, ignoreVPaths); }
-export function getAlbumsByGenre(rawGenres, vpaths, ignoreVPaths, excludeFilepathPrefixes) { return backend.getAlbumsByGenre(rawGenres, vpaths, ignoreVPaths, excludeFilepathPrefixes); }
+export function getSongsByGenreRaw(rawGenres, vpaths, username, ignoreVPaths, includeFilepathPrefixes) { return backend.getSongsByGenreRaw(rawGenres, vpaths, username, ignoreVPaths, includeFilepathPrefixes); }
+export function getDecades(vpaths, ignoreVPaths, includeFilepathPrefixes) { return backend.getDecades(vpaths, ignoreVPaths, includeFilepathPrefixes); }
+export function getAlbumsByDecade(decade, vpaths, ignoreVPaths, excludeFilepathPrefixes, includeFilepathPrefixes) { return backend.getAlbumsByDecade(decade, vpaths, ignoreVPaths, excludeFilepathPrefixes, includeFilepathPrefixes); }
+export function getSongsByDecade(decade, vpaths, username, ignoreVPaths, includeFilepathPrefixes) { return backend.getSongsByDecade(decade, vpaths, username, ignoreVPaths, includeFilepathPrefixes); }
+export function getAlbumsByGenre(rawGenres, vpaths, ignoreVPaths, excludeFilepathPrefixes, includeFilepathPrefixes) { return backend.getAlbumsByGenre(rawGenres, vpaths, ignoreVPaths, excludeFilepathPrefixes, includeFilepathPrefixes); }
 
 // User Metadata
 export function findUserMetadata(hash, username) { return backend.findUserMetadata(hash, username); }

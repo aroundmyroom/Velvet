@@ -1,3 +1,21 @@
+## v0.3.13 (2026-07-10)
+
+### Admin panel — non-admin users blocked from HTML page
+- **Fixed: any authenticated user could load the admin panel HTML page** (`/admin`, `/admin/index.html`) even without `admin: true` in their config. The route guard in `server.js` only verified the JWT was valid (user logged in) but never checked the admin flag. Non-admin users are now redirected to `/` immediately — they never see the admin UI.
+- Admin API endpoints already required `admin: true` and were unaffected; this closes the HTML-access gap.
+
+### Child-only vpath access fix
+- **Fixed: users restricted to a child vpath (e.g. "12-inches") can now browse and play music.** Previously, any user whose `vpaths` list contained only child vpaths — sub-folders of a root vpath — received empty results everywhere and could not play files at all.
+- **Root cause:** files are indexed in the database under the ROOT vpath (e.g. `Music`). All DB queries, media access checks, and metadata lookups used the user's strict vpath list, so queries for `WHERE vpath IN ('12-inches')` returned zero rows.
+- **Auth layer:** middleware now computes `req.user.dbVpaths` — the user's strict list expanded with any parent root vpaths needed for DB queries. The original `req.user.vpaths` is unchanged and still used for all access-control checks.
+- **playlist/getall (`/api/v1/ping`):** `vpathMetaData` now correctly reports `parentVpath` and `filepathPrefix` for child-only users, so the client knows to query the parent root.
+- **Media access:** child-only users can stream files via the parent root's Express static mount, but only within their allowed filesystem prefix.
+- **vpath.js:** `getVPathInfo` now permits access to parent-root filepaths that fall within a user's child vpath prefix, instead of always throwing.
+- **DB queries (`db.js`):** all ~25 query endpoints (artists, albums, songs, search, random, home, rated, recently played, etc.) use `userDbVpaths(req.user)` which returns `dbVpaths` when present.
+- **Artists menu:** `getArtists`, `getArtistHomeStats`, `getArtistsByLetter` accept `includeFilepathPrefixes` and filter to only artists with files in the user's allowed sub-folder prefix.
+- **Albums menu:** `/api/v1/albums/browse` filters its shared cache per-user so child-only users with no `albumsOnly` vpath see zero albums (correct — they have no albums folder configured).
+- **Genres and Decades menus:** `getGenres`, `getDecades`, `getSongsByDecade`, `getAlbumsByDecade`, `getSongsByGenreRaw`, `getAlbumsByGenre` all accept `includeFilepathPrefixes`; every endpoint in db.js passes `computeChildInclusions(req.user)`.
+
 ## v0.3.12 (2026-07-08)
 
 ### Search — artist tracks shortcut
