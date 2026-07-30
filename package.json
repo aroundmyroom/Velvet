@@ -60,7 +60,7 @@
     "@eslint/js": "^10.0.1",
     "eslint": "^10.6.0",
     "eslint-plugin-sonarjs": "^4.0.3",
-    "globals": "^17.7.0"
+    "globals": "^17.8.0"
   },
   "overrides": {
     "qs": "6.15.2"
