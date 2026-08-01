@@ -1,5 +1,5 @@
 'use strict';
-const VELVET_VERSION = '0.3.14';
+const VELVET_VERSION = '0.3.15';
 // ── SERVER IDENTITY GUARD ────────────────────────────────────────────────────
 // Detects when this browser's localStorage belongs to a different Velvet
 // instance (fresh install, IP change, reverse-proxy swap, second server).
@@ -7844,6 +7844,72 @@ async function openPlaylist(name) {
       } catch(e) { toast(t('player.toast.saveFailed')); }
     };
     attachSongListEvents(body, songs);
+
+    // ── Drag-to-reorder ───────────────────────────────────────
+    const _plSongList = body.querySelector('.song-list');
+    if (_plSongList) {
+      _plSongList.classList.add('song-list--reorderable');
+      const _DRAG_ICON = `<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><circle cx="9" cy="5" r="1.5"/><circle cx="15" cy="5" r="1.5"/><circle cx="9" cy="12" r="1.5"/><circle cx="15" cy="12" r="1.5"/><circle cx="9" cy="19" r="1.5"/><circle cx="15" cy="19" r="1.5"/></svg>`;
+      let _plDragSrc = null;
+
+      _plSongList.querySelectorAll('.song-row').forEach(row => {
+        const acts = row.querySelector('.row-actions');
+        if (acts) acts.insertAdjacentHTML('beforeend', `<span class="pl-drag-handle" title="Drag to reorder">${_DRAG_ICON}</span>`);
+        row.draggable = true;
+
+        row.addEventListener('dragstart', e => {
+          _plDragSrc = Number(row.dataset.ci);
+          row.classList.add('pl-dragging');
+          e.dataTransfer.effectAllowed = 'move';
+          e.dataTransfer.setData('text/plain', String(_plDragSrc));
+        });
+        row.addEventListener('dragend', () => {
+          row.classList.remove('pl-dragging');
+          _plSongList.querySelectorAll('.pl-drag-over').forEach(r => r.classList.remove('pl-drag-over'));
+        });
+        row.addEventListener('dragover', e => {
+          e.preventDefault();
+          e.dataTransfer.dropEffect = 'move';
+          _plSongList.querySelectorAll('.pl-drag-over').forEach(r => r.classList.remove('pl-drag-over'));
+          row.classList.add('pl-drag-over');
+        });
+        row.addEventListener('dragleave', e => {
+          if (!row.contains(e.relatedTarget)) row.classList.remove('pl-drag-over');
+        });
+        row.addEventListener('drop', async e => {
+          e.preventDefault();
+          row.classList.remove('pl-drag-over');
+          const srcIdx = _plDragSrc;
+          const dstIdx = Number(row.dataset.ci);
+          _plDragSrc = null;
+          if (srcIdx === null || srcIdx === dstIdx) return;
+
+          // Move the DOM node in-place — no full re-render
+          const rows = [..._plSongList.querySelectorAll('.song-row')];
+          if (srcIdx < dstIdx) _plSongList.insertBefore(rows[srcIdx], row.nextSibling);
+          else _plSongList.insertBefore(rows[srcIdx], row);
+
+          // Re-index every data-ci attribute (row itself + all children with data-ci)
+          [..._plSongList.querySelectorAll('.song-row')].forEach((r, newI) => {
+            r.dataset.ci = newI;
+            r.querySelectorAll('[data-ci]').forEach(el => { el.dataset.ci = newI; });
+            const numEl = r.querySelector('.num-val');
+            if (numEl) numEl.textContent = newI + 1;
+          });
+
+          // Mirror in-memory song list so click events stay correct
+          const moved = S.curSongs.splice(srcIdx, 1)[0];
+          S.curSongs.splice(dstIdx, 0, moved);
+
+          // Persist new order to server
+          const ids = S.curSongs.map(s => s._plid);
+          try {
+            await api('POST', 'api/v1/playlist/reorder', { playlistname: name, ids });
+          } catch(_) { toast(t('player.toast.saveFailed')); }
+        });
+      });
+    }
+
     highlightRow();
   } catch(e) { setBody(`<div class="empty-state">Error: ${esc(e.message)}</div>`); }
 }

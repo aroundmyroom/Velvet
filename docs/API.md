@@ -232,6 +232,7 @@ GET /media/<vpath>/<path/to/song.mp3>?token=<jwt>
 | `POST` | `/api/v1/playlist/remove-song` | `{ id }` | Remove a track by its row `id` (from `/playlist/load`). |
 | `POST` | `/api/v1/playlist/delete` | `{ playlistname }` | Delete a playlist. |
 | `POST` | `/api/v1/playlist/rename` | `{ oldName, newName }` | Rename a playlist. 400 if new name already exists. |
+| `POST` | `/api/v1/playlist/reorder` | `{ playlistname, ids: number[] }` | Persist a new song order. `ids` is the full list of row IDs (from `/playlist/load`) in the desired sequence. |
 
 ---
 

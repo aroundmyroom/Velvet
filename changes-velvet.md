@@ -1,3 +1,17 @@
+## v0.3.15 (2026-08-01)
+
+### Playlist drag-to-reorder
+- **New:** songs in a saved playlist can now be dragged to a new position. Hover over a song to reveal the grip handle (⠿) on the right side — drag it up or down to reorder. The new order is saved to the server immediately.
+- A `sort_order` column is added to the playlist database table on first start (silent migration, no data loss). Existing playlists keep their current insertion order until a reorder is performed.
+- New API endpoint: `POST /api/v1/playlist/reorder` — accepts `{ playlistname, ids[] }`.
+
+### Scrolling song title fix
+- **Fixed:** long song titles that use the marquee animation were showing a truncated version (ending in "…") while scrolling, because the title container had `overflow: hidden; text-overflow: ellipsis` applied before the scroll happened. The full title now scrolls correctly.
+
+### Dependencies
+- Bumped all 12 pending Dependabot PRs: helmet 8.3.0, nanoid 6.0.0, ws 8.21.1, eslint-plugin-sonarjs 4.2.0, brace-expansion 5.0.7→5.0.9, fast-xml-parser 5.10.1, axios 1.19.0, music-metadata 11.14.0, eslint 10.8.0, globals 17.8.0, actions/setup-node v7, trivy-action (latest).
+- **Security:** `npm audit fix` resolved a high-severity brace-expansion DoS (unbounded expansion → OOM) and a low-severity body-parser DoS (invalid limit silently disabling size enforcement). Zero vulnerabilities.
+
 ## v0.3.14 (2026-07-10)
 
 ### Cross-device queue sync — always-visible tab fix

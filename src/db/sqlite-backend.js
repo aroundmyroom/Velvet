@@ -206,6 +206,10 @@ export function init(dbDirectory) {
       user TEXT NOT NULL, live INTEGER DEFAULT 0
     );
     CREATE INDEX IF NOT EXISTS idx_pl_user_name ON playlists(user, name);
+  `);
+  // Silent migration: add sort_order column if it doesn't exist yet
+  try { db.exec('ALTER TABLE playlists ADD COLUMN sort_order INTEGER'); } catch { /* already exists */ }
+  db.exec(`
 
     CREATE TABLE IF NOT EXISTS shared_playlists (
       playlistId TEXT NOT NULL UNIQUE,
@@ -3050,7 +3054,20 @@ export function removePlaylistEntryById(id) {
 }
 
 export function loadPlaylistEntries(username, playlistName) {
-  return db.prepare('SELECT rowid AS id, * FROM playlists WHERE user = ? AND name = ? AND filepath IS NOT NULL').all(username, playlistName);
+  return db.prepare('SELECT rowid AS id, * FROM playlists WHERE user = ? AND name = ? AND filepath IS NOT NULL ORDER BY sort_order ASC, rowid ASC').all(username, playlistName);
+}
+
+export function reorderPlaylistEntries(username, playlistName, ids) {
+  // ids: array of rowids in the desired new order
+  const update = db.prepare('UPDATE playlists SET sort_order = ? WHERE rowid = ? AND user = ? AND name = ?');
+  db.prepare('BEGIN').run();
+  try {
+    ids.forEach((id, idx) => update.run(idx, id, username, playlistName));
+    db.prepare('COMMIT').run();
+  } catch (e) {
+    db.prepare('ROLLBACK').run();
+    throw e;
+  }
 }
 
 export function removePlaylistsByUser(username) {

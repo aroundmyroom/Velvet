@@ -205,6 +205,17 @@ export function setup(velvet) {
     res.json({});
   });
 
+  velvet.post('/api/v1/playlist/reorder', (req, res) => {
+    const schema = Joi.object({
+      playlistname: Joi.string().required(),
+      ids: Joi.array().items(Joi.number().integer()).min(1).required(),
+    });
+    joiValidate(schema, req.body);
+    db.reorderPlaylistEntries(req.user.username, req.body.playlistname, req.body.ids);
+    db.saveUserDB();
+    res.json({ ok: true });
+  });
+
   velvet.get('/api/v1/playlist/getall', (req, res) => {
     res.json(db.getUserPlaylists(req.user.username));
   });

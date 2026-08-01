@@ -189,6 +189,7 @@ export function renamePlaylist(username, oldName, newName) { return backend.rena
 export function getPlaylistEntryById(id) { return backend.getPlaylistEntryById(id); }
 export function removePlaylistEntryById(id) { return backend.removePlaylistEntryById(id); }
 export function loadPlaylistEntries(username, playlistName) { return backend.loadPlaylistEntries(username, playlistName); }
+export function reorderPlaylistEntries(username, playlistName, ids) { return backend.reorderPlaylistEntries(username, playlistName, ids); }
 export function removePlaylistsByUser(username) { return backend.removePlaylistsByUser(username); }
 
 // Shared Playlists
