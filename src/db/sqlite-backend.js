@@ -2763,7 +2763,7 @@ function _appendBpmRangeFilter(sql, params, opts) {
 function _appendMusicalKeyFilter(sql, params, opts) {
   if (opts.requireMusicalKey) { sql += ' AND f.musical_key IS NOT NULL'; }
   if (Array.isArray(opts.musicalKeys) && opts.musicalKeys.length > 0) {
-    const rawKeys = [...new Set(opts.musicalKeys.flatMap(c => _CAMELOT_TO_KEYS[c] || []))];
+    const rawKeys = [...new Set(opts.musicalKeys.flatMap(c => _CAMELOT_TO_KEYS[c?.toUpperCase() ?? c] || []))];
     if (rawKeys.length > 0) {
       const kIn = rawKeys.map(() => '?').join(',');
       sql += ` AND f.musical_key IS NOT NULL AND f.musical_key IN (${kIn})`;

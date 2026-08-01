@@ -416,26 +416,38 @@ function _extractSidecarCueSync(filePath) {
       }
     }
 
-    const content = fs.readFileSync(cuePath, 'utf8');
+    const content = fs.readFileSync(cuePath, 'utf8').replace(/^\uFEFF/, '');
     const fileLines = [...content.matchAll(/^FILE\s+"([^"]+)"/gim)];
     if (fileLines.length !== 1) return null;
-    if (path.basename(fileLines[0][1]).toLowerCase() !== audioFilename.toLowerCase()) return null;
+    const cueFileRef = path.basename(fileLines[0][1]);
+    if (cueFileRef.toLowerCase() !== audioFilename.toLowerCase() &&
+        path.basename(cueFileRef, path.extname(cueFileRef)).toLowerCase() !== base.toLowerCase()) return null;
 
     const tracks = [];
     let cur = null;
+    let idx00 = null;
     for (const line of content.split(/\r?\n/)) {
       const trackM = line.match(/^\s*TRACK\s+(\d+)\s+AUDIO/i);
-      if (trackM) { cur = { no: Number.parseInt(trackM[1], 10), title: null }; continue; }
+      if (trackM) {
+        if (cur && idx00 !== null) tracks.push({ no: cur.no, title: cur.title, t: idx00 });
+        cur = { no: Number.parseInt(trackM[1], 10), title: null }; idx00 = null; continue;
+      }
       if (!cur) continue;
       const titleM = line.match(/^\s*TITLE\s+"(.*)"/i);
       if (titleM) { cur.title = titleM[1]; continue; }
+      const idx0M = line.match(/^\s*INDEX\s+00\s+(\d+):(\d+):(\d+)/i);
+      if (idx0M) {
+        idx00 = Math.round((Number.parseInt(idx0M[1], 10) * 60 + Number.parseInt(idx0M[2], 10) + Number.parseInt(idx0M[3], 10) / 75) * 100) / 100;
+        continue;
+      }
       const idxM = line.match(/^\s*INDEX\s+01\s+(\d+):(\d+):(\d+)/i);
       if (idxM) {
         const t = Number.parseInt(idxM[1], 10) * 60 + Number.parseInt(idxM[2], 10) + Number.parseInt(idxM[3], 10) / 75;
         tracks.push({ no: cur.no, title: cur.title, t: Math.round(t * 100) / 100 });
-        cur = null;
+        cur = null; idx00 = null;
       }
     }
+    if (cur && idx00 !== null) tracks.push({ no: cur.no, title: cur.title, t: idx00 });
     return tracks.length > 1 ? tracks : null;
   } catch { return null; }
 }
@@ -483,30 +495,41 @@ async function _extractCueOnDemand(filePath) {
       }
     }
 
-    const content = fs.readFileSync(cuePath, 'utf8');
+    const content = fs.readFileSync(cuePath, 'utf8').replace(/^\uFEFF/, '');
 
     // Only handle single-FILE sheets whose FILE line references this audio file
     const fileLines = [...content.matchAll(/^FILE\s+"([^"]+)"/gim)];
     if (fileLines.length !== 1) return null;
     const cueRef = path.basename(fileLines[0][1]);
-    if (cueRef.toLowerCase() !== path.basename(filePath).toLowerCase()) return null;
+    if (cueRef.toLowerCase() !== path.basename(filePath).toLowerCase() &&
+        path.basename(cueRef, path.extname(cueRef)).toLowerCase() !== base.toLowerCase()) return null;
 
-    // Parse TRACK / TITLE / INDEX 01 MM:SS:FF
+    // Parse TRACK / TITLE / INDEX 01 MM:SS:FF (INDEX 00 as pregap fallback)
     const tracks = [];
     let cur = null;
+    let idx00 = null;
     for (const line of content.split(/\r?\n/)) {
       const trackM = line.match(/^\s*TRACK\s+(\d+)\s+AUDIO/i);
-      if (trackM) { cur = { no: Number.parseInt(trackM[1], 10), title: null }; continue; }
+      if (trackM) {
+        if (cur && idx00 !== null) tracks.push({ no: cur.no, title: cur.title, t: idx00 });
+        cur = { no: Number.parseInt(trackM[1], 10), title: null }; idx00 = null; continue;
+      }
       if (!cur) continue;
       const titleM = line.match(/^\s*TITLE\s+"(.*)"/i);
       if (titleM) { cur.title = titleM[1]; continue; }
+      const idx0M = line.match(/^\s*INDEX\s+00\s+(\d+):(\d+):(\d+)/i);
+      if (idx0M) {
+        idx00 = Math.round((Number.parseInt(idx0M[1], 10) * 60 + Number.parseInt(idx0M[2], 10) + Number.parseInt(idx0M[3], 10) / 75) * 100) / 100;
+        continue;
+      }
       const idxM = line.match(/^\s*INDEX\s+01\s+(\d+):(\d+):(\d+)/i);
       if (idxM) {
         const t = Number.parseInt(idxM[1], 10) * 60 + Number.parseInt(idxM[2], 10) + Number.parseInt(idxM[3], 10) / 75;
         tracks.push({ no: cur.no, title: cur.title, t: Math.round(t * 100) / 100 });
-        cur = null;
+        cur = null; idx00 = null;
       }
     }
+    if (cur && idx00 !== null) tracks.push({ no: cur.no, title: cur.title, t: idx00 });
     if (tracks.length > 1) return tracks;
   } catch (e) { console.debug('[velvet]', e?.message ?? e); }
 

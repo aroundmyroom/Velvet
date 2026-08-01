@@ -1,3 +1,7 @@
+## v0.3.18 (2026-08-01)
+
+- Added performance improvements.
+
 ## v0.3.17 (2026-08-01)
 
 - Added optimalisations.

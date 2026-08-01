@@ -1,3 +1,6 @@
+// Escape a string for safe use in iziToast message/title (rendered via innerHTML)
+const _esc = s => String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+
 // ── i18n Vue-reactivity bridge ───────────────────────────────────────────────
 // I18NSTATE.tick increments each time a language loads.  Vue templates that
 // call this.t('key') read the tick value, making them automatically re-render.
@@ -402,7 +405,7 @@ const wrappedAdminView = Vue.component('wrapped-admin-view', {
             iziToast.success({ title: this.t('admin.playStats.toastDeletedEvents', { count: r.data.deleted }), position: 'topCenter', timeout: 3000 });
             this.load();
           } catch (e) {
-            iziToast.error({ title: this.t('admin.playStats.toastDeleteFailed'), message: e.message, position: 'topCenter', timeout: 4000 });
+            iziToast.error({ title: this.t('admin.playStats.toastDeleteFailed'), message: _esc(e.message), position: 'topCenter', timeout: 4000 });
           } finally {
             this.purging = false;
           }
@@ -427,7 +430,7 @@ const wrappedAdminView = Vue.component('wrapped-admin-view', {
             iziToast.success({ title: this.t('admin.playStats.toastUpdatedFiles', { count: r.data.updated }), position: 'topCenter', timeout: 4000 });
             this.loadPreview(); // refresh count after apply
           } catch (e) {
-            iziToast.error({ title: this.t('admin.playStats.toastBackfillFailed'), message: e.message, position: 'topCenter', timeout: 4000 });
+            iziToast.error({ title: this.t('admin.playStats.toastBackfillFailed'), message: _esc(e.message), position: 'topCenter', timeout: 4000 });
           } finally {
             this.backfilling = false;
           }
@@ -976,14 +979,14 @@ const scanErrorsView = Vue.component('scan-errors-view', {
         if (r.data.action === 'unrecoverable') {
           iziToast.error({ title: this.t('admin.scanErrors.toastFileUnrecoverable'), message: this.t('admin.scanErrors.toastFileUnrecoverableMsg'), position: 'topCenter', timeout: 0, close: true });
         } else {
-          const msg = (labels[r.data.action] || this.t('admin.scanErrors.toastFixed')) + (r.data.note ? ' — ' + r.data.note : '');
+          const msg = (labels[r.data.action] || this.t('admin.scanErrors.toastFixed')) + (r.data.note ? ' — ' + _esc(r.data.note) : '');
           iziToast.success({ title: this.t('admin.scanErrors.toastFixed'), message: msg, position: 'topCenter', timeout: 4000 });
         }
         // Sync fix_action from server response into the local row so the badge
         // reflects the correct state immediately (before page reload).
         if (idx >= 0) this.errors[idx].fix_action = r.data.action;
       } catch (e) {
-        iziToast.error({ title: this.t('admin.scanErrors.toastFixFailed'), message: e?.response?.data?.error || this.t('admin.scanErrors.typeOther'), position: 'topCenter', timeout: 0, close: true });
+        iziToast.error({ title: this.t('admin.scanErrors.toastFixFailed'), message: _esc(e?.response?.data?.error) || this.t('admin.scanErrors.typeOther'), position: 'topCenter', timeout: 0, close: true });
       } finally {
         Vue.delete(this.fixing, err.guid);
       }
@@ -3138,7 +3141,7 @@ const dbView = Vue.component('db-view', {
           if (st.data?.running === false) {
             done = true;
             if (st.data.lastError) {
-              iziToast.error({ title: this.t('admin.db.toastRebuildFailed'), message: st.data.lastError, position: 'topCenter', timeout: 7000 });
+              iziToast.error({ title: this.t('admin.db.toastRebuildFailed'), message: _esc(st.data.lastError), position: 'topCenter', timeout: 7000 });
             } else {
               iziToast.success({ title: this.t('admin.db.toastArtistIndexRebuilt'), message: this.t('admin.db.toastReloadArtistLibrary'), position: 'topCenter', timeout: 4000 });
             }
@@ -3161,7 +3164,7 @@ const dbView = Vue.component('db-view', {
               const st = await API.axios({ method: 'GET', url: `${API.url()}/api/v1/admin/artists/rebuild-status` });
               if (st.data?.running === false) {
                 done = true;
-                if (st.data.lastError) iziToast.error({ title: this.t('admin.db.toastRebuildFailed'), message: st.data.lastError, position: 'topCenter', timeout: 7000 });
+                if (st.data.lastError) iziToast.error({ title: this.t('admin.db.toastRebuildFailed'), message: _esc(st.data.lastError), position: 'topCenter', timeout: 7000 });
                 else iziToast.success({ title: this.t('admin.db.toastArtistIndexRebuilt'), message: this.t('admin.db.toastReloadArtistLibrary'), position: 'topCenter', timeout: 4000 });
                 break;
               }
@@ -3169,10 +3172,10 @@ const dbView = Vue.component('db-view', {
             if (!done) iziToast.error({ title: this.t('admin.db.toastRebuildTimedOut'), message: this.t('admin.db.toastRebuildTimedOutMsg'), position: 'topCenter', timeout: 7000 });
           } catch (pollErr) {
             const pmsg = pollErr?.message ?? msg;
-            iziToast.error({ title: this.t('admin.db.toastRebuildStatusCheckFailed'), message: pmsg, position: 'topCenter', timeout: 7000 });
+            iziToast.error({ title: this.t('admin.db.toastRebuildStatusCheckFailed'), message: _esc(pmsg), position: 'topCenter', timeout: 7000 });
           }
         } else {
-          iziToast.error({ title: this.t('admin.db.toastRebuildFailed'), message: msg, position: 'topCenter', timeout: 7000 });
+          iziToast.error({ title: this.t('admin.db.toastRebuildFailed'), message: _esc(msg), position: 'topCenter', timeout: 7000 });
         }
       } finally {
         this.rebuildingArtists = false;

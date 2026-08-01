@@ -47,29 +47,41 @@ function _findCuePath(dir, base, audioFilename) {
     try {
       const content = fs.readFileSync(resolvePathWithinRoot(dir, cue), 'utf8');
       const m = content.match(/^FILE\s+"([^"]+)"/im);
-      if (m && path.basename(m[1]).toLowerCase() === audio) return resolvePathWithinRoot(dir, cue);
+      if (m && (path.basename(m[1]).toLowerCase() === audio ||
+          path.basename(m[1], path.extname(m[1])).toLowerCase() === path.basename(audio, path.extname(audio))))
+        return resolvePathWithinRoot(dir, cue);
     } catch { /* unreadable CUE — skip */ }
   }
   return null;
 }
 
-/** Parse TRACK/TITLE/INDEX 01 entries from a CUE sheet string */
+/** Parse TRACK/TITLE/INDEX 01 entries from a CUE sheet string (INDEX 00 as pregap fallback) */
 function _parseCueTracks(content) {
   const tracks = [];
   let cur = null;
+  let idx00 = null;
   for (const line of content.split(/\r?\n/)) {
     const trackM = line.match(/^\s*TRACK\s+(\d+)\s+AUDIO/i);
-    if (trackM) { cur = { no: Number.parseInt(trackM[1], 10), title: null }; continue; }
+    if (trackM) {
+      if (cur && idx00 !== null) tracks.push({ no: cur.no, title: cur.title, t: idx00 });
+      cur = { no: Number.parseInt(trackM[1], 10), title: null }; idx00 = null; continue;
+    }
     if (!cur) continue;
     const titleM = line.match(/^\s*TITLE\s+"(.*)"/i);
     if (titleM) { cur.title = titleM[1]; continue; }
+    const idx0M = line.match(/^\s*INDEX\s+00\s+(\d+):(\d+):(\d+)/i);
+    if (idx0M) {
+      idx00 = Math.round((Number.parseInt(idx0M[1], 10) * 60 + Number.parseInt(idx0M[2], 10) + Number.parseInt(idx0M[3], 10) / 75) * 100) / 100;
+      continue;
+    }
     const idxM = line.match(/^\s*INDEX\s+01\s+(\d+):(\d+):(\d+)/i);
     if (idxM) {
       const t = Number.parseInt(idxM[1], 10) * 60 + Number.parseInt(idxM[2], 10) + Number.parseInt(idxM[3], 10) / 75;
       tracks.push({ no: cur.no, title: cur.title, t: Math.round(t * 100) / 100 });
-      cur = null;
+      cur = null; idx00 = null;
     }
   }
+  if (cur && idx00 !== null) tracks.push({ no: cur.no, title: cur.title, t: idx00 });
   return tracks;
 }
 
@@ -91,12 +103,14 @@ function _checkSidecarCue(fullPath) {
 
   // File exists — try to parse it
   try {
-    const content = fs.readFileSync(cuePath, 'utf8');
+    const content = fs.readFileSync(cuePath, 'utf8').replace(/^\uFEFF/, '');
     // Only handle single-FILE sheets whose FILE line references this audio file
     const fileLines = [...content.matchAll(/^FILE\s+"([^"]+)"/gim)];
     if (fileLines.length !== 1) return { cuepoints: [], hasCueFile: true };
     const cueRef = path.basename(fileLines[0][1]);
-    if (cueRef.toLowerCase() !== audioFilename.toLowerCase()) return { cuepoints: [], hasCueFile: true };
+    if (cueRef.toLowerCase() !== audioFilename.toLowerCase() &&
+        path.basename(cueRef, path.extname(cueRef)).toLowerCase() !== base.toLowerCase())
+      return { cuepoints: [], hasCueFile: true };
     const tracks = _parseCueTracks(content);
     return { cuepoints: tracks.length > 1 ? tracks : [], hasCueFile: true };
   } catch {

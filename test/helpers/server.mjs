@@ -134,7 +134,12 @@ export async function startServer(opts = {}) {
 
   if (!captureLogs) {
     proc.stdout.on('data', () => {});
-    proc.stderr.on('data', () => {});
+    const stderrChunks = [];
+    proc.stderr.on('data', chunk => {
+      stderrChunks.push(chunk);
+      if (stderrChunks.reduce((n, c) => n + c.length, 0) > 2048) stderrChunks.shift();
+    });
+    proc._stderrTail = () => Buffer.concat(stderrChunks).toString('utf8').trim().slice(-2048);
   }
 
   const baseUrl = `http://127.0.0.1:${port}`;
@@ -146,7 +151,9 @@ export async function startServer(opts = {}) {
   } catch (err) {
     try { proc.kill('SIGKILL'); } catch { /* already gone */ }
     await fs.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
-    throw exitedEarly ? new Error(exitedEarly) : err;
+    const tail = proc._stderrTail?.();
+    const base = exitedEarly ?? err.message;
+    throw new Error(tail ? `${base}\n--- stderr ---\n${tail}` : base);
   }
 
   if (waitForScan) {
