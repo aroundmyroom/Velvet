@@ -2107,8 +2107,11 @@ export function setup(velvet) {
   });
 
   // ── reportPlayback (OpenSubsonic playbackReport extension) ───────────────────
-  // Accepts playback timeline events from clients (started / playing / paused /
-  // completed). Updates now-playing state; triggers scrobble on completion.
+  // Spec states: starting, playing, paused, stopped (OpenSubsonic v1, 2026-03).
+  // Also accepts 'started'/'completed' for backward-compat with older clients.
+  // Scrobble fires on 'stopped' (terminal state per spec) when the user has
+  // listened to ≥50% of the track or ≥4 minutes (Last.fm threshold), and on
+  // 'completed' unconditionally for clients that still send that state.
   router('reportPlayback', (req, res) => {
     const id           = req.query.mediaId      || req.body?.mediaId      || req.query.id    || req.body?.id;
     const positionMs   = Number(req.query.positionMs   ?? req.body?.positionMs   ?? 0);
@@ -2118,12 +2121,30 @@ export function setup(velvet) {
 
     if (!id) return sendResponse(req, res, makeError(ERRORS.MISSING_PARAM.code, 'mediaId required'));
 
-    if (state === 'started' || state === 'playing' || state === 'paused') {
+    if (state === 'starting' || state === 'started' || state === 'playing' || state === 'paused') {
       nowPlayingStore.set(req.subsonicUser, { id, playerName, playerId: playerName, startedAt: Date.now() - positionMs });
-    } else if (state === 'completed') {
-      nowPlayingStore.delete(req.subsonicUser);
+    } else if (state === 'stopped' || state === 'completed') {
       if (!ignoreScrobble) {
-        _processScrobble(db, [id], req.subsonicUser, nowPlayingStore);
+        if (state === 'completed') {
+          _processScrobble(db, [id], req.subsonicUser, nowPlayingStore);
+        } else {
+          // 'stopped': check listen threshold before scrobbling
+          let listenedMs = positionMs;
+          if (listenedMs <= 0 && nowPlayingStore.has(req.subsonicUser)) {
+            listenedMs = Date.now() - nowPlayingStore.get(req.subsonicUser).startedAt;
+          }
+          const dec = decodeSongId(id);
+          let shouldScrobble = listenedMs >= 30000;
+          if (dec.hash) {
+            const songMap = db.getSongsByHashes([dec.hash], req.subsonicUser);
+            const row = songMap.get(dec.hash);
+            if (row?.duration) shouldScrobble = listenedMs >= Math.min(row.duration * 500, 240000);
+          }
+          if (shouldScrobble) _processScrobble(db, [id], req.subsonicUser, nowPlayingStore);
+          else nowPlayingStore.delete(req.subsonicUser);
+        }
+      } else {
+        nowPlayingStore.delete(req.subsonicUser);
       }
     }
 

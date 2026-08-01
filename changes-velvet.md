@@ -1,3 +1,13 @@
+## v0.3.16 (2026-08-01)
+
+### OpenSubsonic `reportPlayback` scrobble fix
+- **Fixed: scrobbles from OpenSubsonic clients (e.g. Naviamp) were silently discarded.** The `reportPlayback` extension (OpenSubsonic v1, finalised March 2026) uses `state=stopped` as the terminal playback event that servers should use to trigger a scrobble. Our implementation only fired on `state=completed`, a value that does not exist in the spec — so every track played via a compliant client was counted as not-scrobbled.
+- **Fix:** the handler now correctly treats `stopped` as the scrobble trigger. Before scrobbling, a listen-threshold check is applied: the user must have listened to at least 50% of the track **or** 4 minutes, whichever is shorter (matching the Last.fm / ListenBrainz minimum). Position is taken from the `positionMs` parameter; if zero, elapsed time is estimated from the internal now-playing store.
+- The `starting` state (spec-correct name) is now also accepted alongside the old `started` alias for now-playing tracking.
+- Clients that still send `state=completed` (older behaviour) continue to work unchanged — scrobble fires unconditionally as before.
+- `ignoreScrobble=true` is honoured on `stopped` just as it was on `completed`.
+- Tracks skipped in under 30 seconds are never scrobbled regardless of position.
+
 ## v0.3.15 (2026-08-01)
 
 ### Playlist drag-to-reorder
