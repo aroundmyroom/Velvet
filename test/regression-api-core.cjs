@@ -9,7 +9,7 @@
  *  4. POST /api/v1/db/artist-folder-songs — artist songs (ESCAPE SQL bug fixed)
  *  5. GET  /api/v1/playlist/getall        — playlists + vpath meta
  *
- * Run from: /home/mStream
+ * Run from: /home/velvet
  *   node test/regression-api-core.cjs
  */
 
@@ -18,7 +18,7 @@ const jwt   = require('jsonwebtoken');
 const https = require('https');
 const fs    = require('fs');
 
-const cfg   = JSON.parse(fs.readFileSync('/home/mStream/save/conf/default.json', 'utf8'));
+const cfg   = JSON.parse(fs.readFileSync('/home/velvet/save/conf/default.json', 'utf8'));
 const token = jwt.sign({ username: Object.keys(cfg.users)[0] }, cfg.secret);
 const HOST  = 'music.aroundtheworld.net';
 const PORT  = 3000;

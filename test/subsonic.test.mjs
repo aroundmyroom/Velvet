@@ -23,7 +23,7 @@ import { ensureFixtures } from './helpers/fixtures.mjs';
  * Defaults to the test user created by startServer with users=[ALICE].
  */
 function qs(extra = {}, { u = 'alice', p = 'alice123' } = {}) {
-  const params = new URLSearchParams({ u, p, v: '1.16.1', c: 'mstream-test', f: 'json', ...extra });
+  const params = new URLSearchParams({ u, p, v: '1.16.1', c: 'velvet-test', f: 'json', ...extra });
   return '?' + params.toString();
 }
 

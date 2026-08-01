@@ -1,3 +1,7 @@
+## v0.3.17 (2026-08-01)
+
+- Added optimalisations.
+
 ## v0.3.16 (2026-08-01)
 
 ### OpenSubsonic `reportPlayback` scrobble fix

@@ -5,7 +5,7 @@
  * the expected functions and that computeFileChecksum works correctly
  * against a known file.
  *
- * Run: node /home/mStream/test/regression-bootstrap-helpers.cjs
+ * Run: node /home/velvet/test/regression-bootstrap-helpers.cjs
  */
 'use strict';
 
@@ -39,7 +39,7 @@ async function main() {
 
   console.log('\n── computeFileChecksum ──────────────────────────────────────────────');
   // Write a temp file with known content, verify the checksum
-  const tmpDir  = await fsp.mkdtemp(path.join(os.tmpdir(), 'mstream-test-'));
+  const tmpDir  = await fsp.mkdtemp(path.join(os.tmpdir(), 'velvet-test-'));
   const tmpFile = path.join(tmpDir, 'test.txt');
   const content = 'Hello, mStream Velvet!';
 
@@ -62,7 +62,7 @@ async function main() {
     'src/util/rsgain-bootstrap.js',
   ];
   for (const f of bootstrapFiles) {
-    const src = fs.readFileSync(path.join('/home/mStream', f), 'utf8');
+    const src = fs.readFileSync(path.join('/home/velvet', f), 'utf8');
     const hasLocalDef = /^function downloadToFile\b/.test(src) || /^function downloadToBuffer\b/.test(src);
     check(`${f} has no local downloadToFile/Buffer`, hasLocalDef, false);
     const hasImport = src.includes("from './bootstrap-helpers.js'");
@@ -71,7 +71,7 @@ async function main() {
 
   console.log('\n── BUNDLED_*_DIR not exported ──────────────────────────────────────');
   for (const f of bootstrapFiles) {
-    const src = fs.readFileSync(path.join('/home/mStream', f), 'utf8');
+    const src = fs.readFileSync(path.join('/home/velvet', f), 'utf8');
     const hasExport = /^export const BUNDLED_/m.test(src);
     check(`${f} does not export BUNDLED_*_DIR`, hasExport, false);
   }

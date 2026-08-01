@@ -1,5 +1,5 @@
 /**
- * Spawns an mStream server in a child process for integration tests.
+ * Spawns a Velvet server in a child process for integration tests.
  *
  * Each test run gets a fresh temp directory (config, DB, logs, image cache)
  * and a free TCP port — so tests don't collide with a dev server running on
@@ -60,7 +60,7 @@ async function waitForScanComplete(baseUrl, timeoutMs = 30_000) {
 }
 
 /**
- * Start an mStream instance. Returns { baseUrl, port, tmpDir, musicDir,
+ * Start a Velvet instance. Returns { baseUrl, port, tmpDir, musicDir,
  * subsonicBaseUrl, subsonicPort, stop }.
  *
  * @param {Object}   opts
@@ -86,7 +86,7 @@ export async function startServer(opts = {}) {
   } = opts;
 
   const musicDir = await ensureFixtures();
-  const tmpDir   = await fs.mkdtemp(path.join(os.tmpdir(), 'mstream-test-'));
+  const tmpDir   = await fs.mkdtemp(path.join(os.tmpdir(), 'velvet-test-'));
   const port     = await findFreePort();
 
   const sPort = subsonicMode === 'separate-port'
@@ -97,7 +97,7 @@ export async function startServer(opts = {}) {
     port,
     address: '127.0.0.1',
     ui: 'velvet',
-    dlna: { mode: dlnaMode, name: 'mStream Test' },
+    dlna: { mode: dlnaMode, name: 'Velvet Test' },
     subsonic: { mode: subsonicMode, port: sPort },
     scanOptions: { bootScanEnabled: true, bootScanDelay: 0 },
     folders: {
@@ -189,8 +189,8 @@ export async function startServer(opts = {}) {
       if (j?.token) adminToken = j.token;
     }
 
-    // Set the Subsonic password (separate from the mStream login password).
-    // Defaults to the same value as the mStream password for test convenience.
+    // Set the Subsonic password (separate from the Velvet login password).
+    // Defaults to the same value as the Velvet password for test convenience.
     const spw = u.subsonicPassword ?? u.password;
     const spwHeaders = { 'Content-Type': 'application/json' };
     if (adminToken) spwHeaders['x-access-token'] = adminToken;

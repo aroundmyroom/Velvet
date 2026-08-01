@@ -31,7 +31,7 @@ const require = createRequire(import.meta.url);
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
-const { dbPath, folders, ffmpegBin } = workerData;
+const { dbPath, folders, ffmpegBin, bpmWindowSec = 60 } = workerData;
 
 const SAMPLE_RATE     = 22050;  // Hz — sufficient for BPM & key; halved from CD quality
 const BATCH_SIZE      = 20;
@@ -174,14 +174,20 @@ function resolveAbsPath(vpath, filepath) {
  * Returns a Float32Array of PCM samples at the given sampleRate.
  * Throws on decode failure; rejects after timeoutMs.
  */
-function decodeAudioPcm(absolutePath, timeoutMs, sampleRate = SAMPLE_RATE) {
+function decodeAudioPcm(absolutePath, timeoutMs, sampleRate = SAMPLE_RATE, startSec = 0) {
   return new Promise((resolve, reject) => {
     const chunks = [];
     let stderr = '';
     let killed = false;
 
+    // Build args: optional seek + optional duration limit
+    const seekArgs  = startSec > 0   ? ['-ss', String(startSec)]  : [];
+    const limitArgs = bpmWindowSec > 0 ? ['-t', String(bpmWindowSec)] : [];
+
     const proc = spawn(ffmpegBin, [
+      ...seekArgs,
       '-i', absolutePath,
+      ...limitArgs,
       '-vn',               // drop video/art streams
       '-ac', '1',          // mono
       '-ar', String(sampleRate),
@@ -348,10 +354,17 @@ async function processFile(row) {
     return;
   }
 
-  const timeoutMs = Math.max(MIN_TIMEOUT_MS, durationSec * TIMEOUT_PER_AUDIO_SEC);
+  // Mid-track seek: start at the centre of the track so the window captures
+  // the most representative section rather than intros/outros.
+  // bpmWindowSec=0 means no windowing (decode the whole file).
+  const startSec = bpmWindowSec > 0 && durationSec > bpmWindowSec
+    ? Math.max(0, Math.round(durationSec / 2 - bpmWindowSec / 2))
+    : 0;
+
+  const timeoutMs = Math.max(MIN_TIMEOUT_MS, (bpmWindowSec > 0 ? bpmWindowSec : durationSec) * TIMEOUT_PER_AUDIO_SEC);
 
   try {
-    let pcm = await decodeAudioPcm(absPath, timeoutMs);
+    let pcm = await decodeAudioPcm(absPath, timeoutMs, SAMPLE_RATE, startSec);
 
     // Secondary PCM size guard: high-bitrate or long sources can produce buffers
     // that exceed the WASM heap limit (256 MB fixed Emscripten limit).
@@ -360,7 +373,7 @@ async function processFile(row) {
     // well below the 5512 Hz Nyquist.  This allows long 12" mixes (10-20 min) and
     // high-bitrate FLACs to be analysed where they were previously rejected.
     if (pcm.byteLength > MAX_PCM_BYTES) {
-      pcm = await decodeAudioPcm(absPath, timeoutMs, Math.floor(SAMPLE_RATE / 2));
+      pcm = await decodeAudioPcm(absPath, timeoutMs, Math.floor(SAMPLE_RATE / 2), startSec);
     }
 
     // If still too large after halving the sample rate, the file is genuinely too

@@ -110,10 +110,12 @@ let _esLastStats       = null;
 let _esPendingStart    = false;
 
 function _esWorkerData() {
+  const windowSec = Number(config.program.scanOptions?.analyzeBpmWindowSec ?? 60);
   return {
-    dbPath:    path.join(config.program.storage.dbDirectory, 'velvet.sqlite'),
-    folders:   config.program.folders || {},
-    ffmpegBin: ffmpegBin(),
+    dbPath:          path.join(config.program.storage.dbDirectory, 'velvet.sqlite'),
+    folders:         config.program.folders || {},
+    ffmpegBin:       ffmpegBin(),
+    bpmWindowSec:    Number.isFinite(windowSec) && windowSec > 0 ? windowSec : 0,
   };
 }
 

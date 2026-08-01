@@ -11,7 +11,7 @@ const fs = require('fs');
 
 describe('On-Demand Album Index', () => {
   let db;
-  const testDbPath = path.join('/tmp', 'mstream-test-album.sqlite');
+  const testDbPath = path.join('/tmp', 'velvet-test-album.sqlite');
 
   before(() => {
     if (fs.existsSync(testDbPath)) fs.unlinkSync(testDbPath);

@@ -8,7 +8,7 @@
  * root directory. Subsequent calls are fast (files already exist).
  *
  * Fixture layout:
- *   <tmproot>/mstream-fixtures/
+ *   <tmproot>/velvet-fixtures/
  *     Artist A/
  *       Album X/
  *         01 - Track One.mp3
@@ -29,7 +29,7 @@ import { promisify } from 'node:util';
 
 const execFileP = promisify(execFile);
 
-const FIXTURES_ROOT = path.join(os.tmpdir(), 'mstream-fixtures');
+const FIXTURES_ROOT = path.join(os.tmpdir(), 'velvet-fixtures');
 
 const TRACKS = [
   { dir: 'Artist A/Album X', file: '01 - Track One.mp3',   artist: 'Artist A', album: 'Album X', title: 'Track One',   track: 1 },

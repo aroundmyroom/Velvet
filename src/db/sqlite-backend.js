@@ -661,6 +661,9 @@ export function init(dbDirectory) {
   try { db.exec('ALTER TABLE files ADD COLUMN ab_status      TEXT'); }    catch { /* noop */ }
   try { db.exec('ALTER TABLE files ADD COLUMN bpm_status     TEXT'); }    catch { /* noop */ }
   try { db.exec('ALTER TABLE files ADD COLUMN bpm_raw        REAL'); }    catch { /* noop */ }
+  // Similar-songs performance: BPM range filter + musical-key equality — must be after the ADD COLUMN migrations above
+  db.exec('CREATE INDEX IF NOT EXISTS idx_files_bpm ON files(bpm)');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_files_musical_key ON files(musical_key)');
 
   // ── RG backup table — stores pre-reset snapshot for undo-reset-all ────────
   // One row per file (file_rowid = rowid in `files`). Replaced atomically on
@@ -5238,18 +5241,34 @@ export function getSimilarSongs(hash, limit = 50) {
     return false;
   }
 
-  // Query candidates: same musical key or close BPM — SQLite will do pre-filtering
+  const bpmRef = bpm || 0;
+  const BPM_WINDOW = Math.max(5, bpmRef * 0.1); // ±10% or ±5 BPM
+
+  // Build SQL to push BPM window and/or key filter into the DB so the index is
+  // used — avoids loading the full library into JS just to discard most rows.
+  const clauses = ['format IS NOT NULL', 'hash != ?'];
+  const params = [hash];
+
+  if (bpm) {
+    clauses.push('bpm BETWEEN ? AND ?');
+    params.push(bpmRef - BPM_WINDOW, bpmRef + BPM_WINDOW);
+  } else if (musical_key) {
+    // No BPM — filter to rows that have a key value at all
+    clauses.push('musical_key IS NOT NULL');
+  }
+
+  // Cap the candidate set to avoid JS-side OOM on very large libraries.
+  // Camelot scoring keeps the result quality the same — we just bound the walk.
+  const CANDIDATE_LIMIT = 2000;
   const sql = `
     SELECT filepath, vpath, title, artist, album, bpm, musical_key, hash, aaFile
     FROM files
-    WHERE format IS NOT NULL AND hash != ?
+    WHERE ${clauses.join(' AND ')}
+    LIMIT ${CANDIDATE_LIMIT}
   `;
-  const params = [hash];
 
-  // Build scored candidate list in JS (SQLite can't express Camelot wheel arithmetic)
+  // Score in JS: Camelot wheel arithmetic can't be expressed in SQLite
   const rows = db.prepare(sql).all(...params);
-  const bpmRef = bpm || 0;
-  const BPM_WINDOW = Math.max(5, bpmRef * 0.1); // ±10% or ±5 BPM
 
   const scored = [];
   for (const row of rows) {

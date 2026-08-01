@@ -2,7 +2,7 @@
  * regression-artist-placeholder.cjs
  *
  * Smoke tests for the artist placeholder feature.
- * Run: node /home/mStream/test/regression-artist-placeholder.cjs
+ * Run: node /home/velvet/test/regression-artist-placeholder.cjs
  *
  * Tests:
  *  1. GET /api/v1/artists/placeholder — public, no auth, returns 200 + image
@@ -27,7 +27,7 @@ const fs = require('fs');
 const path = require('path');
 const jwt = require('jsonwebtoken');
 
-const BASE = '/home/mStream';
+const BASE = '/home/velvet';
 const cfg = JSON.parse(fs.readFileSync(path.join(BASE, 'save/conf/default.json'), 'utf8'));
 const token = jwt.sign({ username: Object.keys(cfg.users)[0] }, cfg.secret);
 const HOST = 'music.aroundtheworld.net';
@@ -113,13 +113,13 @@ async function main() {
   browse.includes('ARTIST_PLACEHOLDER_FILE')
     ? pass('artists-browse.js: ARTIST_PLACEHOLDER_FILE constant present')
     : fail('artists-browse.js: ARTIST_PLACEHOLDER_FILE MISSING');
-  browse.includes("mstream.post('/api/v1/admin/artists/placeholder'")
+  browse.includes("velvet.post('/api/v1/admin/artists/placeholder'")
     ? pass('artists-browse.js: POST placeholder route registered')
     : fail('artists-browse.js: POST placeholder route MISSING');
-  browse.includes("mstream.delete('/api/v1/admin/artists/placeholder'")
+  browse.includes("velvet.delete('/api/v1/admin/artists/placeholder'")
     ? pass('artists-browse.js: DELETE placeholder route registered')
     : fail('artists-browse.js: DELETE placeholder route MISSING');
-  browse.includes("mstream.get('/api/v1/admin/artists/placeholder-info'")
+  browse.includes("velvet.get('/api/v1/admin/artists/placeholder-info'")
     ? pass('artists-browse.js: GET placeholder-info route registered')
     : fail('artists-browse.js: GET placeholder-info route MISSING');
   browse.includes('saveFanartImage')

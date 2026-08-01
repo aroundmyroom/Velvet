@@ -4,7 +4,7 @@
  * Verifies that isPrivateHost() in src/util/ssrf-check.js correctly blocks
  * private/loopback/link-local addresses and allows public ones.
  *
- * Run: node /home/mStream/test/regression-ssrf-check.cjs
+ * Run: node /home/velvet/test/regression-ssrf-check.cjs
  */
 'use strict';
 

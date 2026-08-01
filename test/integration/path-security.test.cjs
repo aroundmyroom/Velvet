@@ -11,8 +11,8 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
-const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'mstream-path-sec-'));
-const outsideRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'mstream-path-sec-out-'));
+const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'velvet-path-sec-'));
+const outsideRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'velvet-path-sec-out-'));
 const insideFile = path.join(tmpRoot, 'inside.pem');
 const outsideFile = path.join(outsideRoot, 'outside.pem');
 fs.writeFileSync(insideFile, 'inside');

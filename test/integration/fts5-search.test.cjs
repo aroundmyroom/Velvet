@@ -11,7 +11,7 @@ const fs = require('fs');
 
 describe('FTS5 Search Engine', () => {
   let db;
-  const testDbPath = path.join('/tmp', 'mstream-test-fts5.sqlite');
+  const testDbPath = path.join('/tmp', 'velvet-test-fts5.sqlite');
 
   before(() => {
     // Clean up any previous test DB
