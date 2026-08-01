@@ -41,7 +41,7 @@
     "express": "^5.0.1",
     "fast-xml-parser": "^5.9.3",
     "file-type": "22.0.1",
-    "helmet": "^8.2.0",
+    "helmet": "^8.3.0",
     "http-proxy": "^1.18.1",
     "joi": "^18.2.3",
     "jsonwebtoken": "^9.0.3",
