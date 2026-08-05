@@ -61,7 +61,8 @@ export default [
       'sonarjs/unverified-certificate': 'warn',
       'sonarjs/no-ignored-exceptions': 'warn',
       'sonarjs/no-identical-functions': 'warn',
-      'sonarjs/duplicates-in-character-class': 'warn'
+      'sonarjs/duplicates-in-character-class': 'warn',
+      'sonarjs/super-linear-regex': 'warn'
     }
   },
   {
