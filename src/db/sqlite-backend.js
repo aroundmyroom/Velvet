@@ -2699,7 +2699,7 @@ export function getAllFilesWithMetadata(vpaths, username, opts) {
 
   if (opts.ignoreArtists && Array.isArray(opts.ignoreArtists) && opts.ignoreArtists.length > 0) {
     const placeholders = opts.ignoreArtists.map(() => '?').join(',');
-    sql += ` AND (f.artist IS NULL OR REPLACE(LOWER(f.artist), '.', '') NOT IN (${placeholders}))`;
+    sql += ` AND REPLACE(LOWER(COALESCE(f.artist, '')), '.', '') NOT IN (${placeholders})`;
     params.push(...opts.ignoreArtists.map(a => String(a).toLowerCase().replaceAll('.', '')));
   }
 
@@ -2809,7 +2809,7 @@ function _buildRandomWhere(opts, filtered) {
   }
   if (opts.ignoreArtists && Array.isArray(opts.ignoreArtists) && opts.ignoreArtists.length > 0) {
     const placeholders = opts.ignoreArtists.map(() => '?').join(',');
-    sql += ` AND (f.artist IS NULL OR REPLACE(LOWER(f.artist), '.', '') NOT IN (${placeholders}))`;
+    sql += ` AND REPLACE(LOWER(COALESCE(f.artist, '')), '.', '') NOT IN (${placeholders})`;
     params.push(...opts.ignoreArtists.map(a => String(a).toLowerCase().replaceAll('.', '')));
   }
   sql = _appendBpmKeyFilters(sql, params, opts);

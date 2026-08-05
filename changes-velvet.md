@@ -1,3 +1,9 @@
+## v0.3.19 (2026-08-05)
+
+- Improved Auto-DJ: fixed a case where the DJ could get stuck repeating untagged tracks when the artist cooldown covered all artists in the active library.
+- Fixed: admin API returned the wrong HTTP status code when a non-admin user accessed admin routes.
+- Fixed: admin panel loaders no longer hang on a permanent spinner when a network request fails.
+
 ## v0.3.18 (2026-08-01)
 
 - Added performance improvements.

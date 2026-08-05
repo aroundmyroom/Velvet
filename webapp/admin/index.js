@@ -111,93 +111,99 @@ const ADMINDATA = (() => {
   };
 
   module.getFolders = async () => {
-    const res = await API.axios({
-      method: 'GET',
-      url: `${API.url()}/api/v1/admin/directories`
-    });
+    try {
+      const res = await API.axios({
+        method: 'GET',
+        url: `${API.url()}/api/v1/admin/directories`
+      });
 
-    Object.keys(res.data).forEach(key=>{
-      // Use Vue.set so each folder object enters Vue's reactive system immediately.
-      Vue.set(module.folders, key, res.data[key]);
-    });
-
+      Object.keys(res.data).forEach(key=>{
+        // Use Vue.set so each folder object enters Vue's reactive system immediately.
+        Vue.set(module.folders, key, res.data[key]);
+      });
+    } catch (e) { console.debug('[velvet]', e?.message ?? e); }
     module.foldersUpdated.ts = Date.now();
   };
 
   module.getUsers = async () => {
-    const res = await API.axios({
-      method: 'GET',
-      url: `${API.url()}/api/v1/admin/users`
-    });
+    try {
+      const res = await API.axios({
+        method: 'GET',
+        url: `${API.url()}/api/v1/admin/users`
+      });
 
-    Object.keys(res.data).forEach(key=>{
-      const u = res.data[key];
-      // Normalise permission flags so keys always exist as explicit booleans.
-      // Vue 2 cannot reactively track a property that was never defined on the object.
-      if (!Object.hasOwn(u, 'allow-upload')) u['allow-upload'] = true;
-      if (!Object.hasOwn(u, 'allow-radio-recording')) u['allow-radio-recording'] = false;
-      if (!Object.hasOwn(u, 'allow-youtube-download')) u['allow-youtube-download'] = false;
-      // MPV permissions: server-remote default true (matches historical open access), mpv-cast default false
-      if (!Object.hasOwn(u, 'allow-server-remote')) u['allow-server-remote'] = true;
-      if (!Object.hasOwn(u, 'allow-mpv-cast')) u['allow-mpv-cast'] = false;
-      // Use Vue.set so each user object enters Vue's reactive system.
-      // Plain assignment (module.users[key] = u) bypasses reactivity — subsequent
-      // Vue.set() calls on the child object would never trigger template updates.
-      Vue.set(module.users, key, u);
-    });
-
+      Object.keys(res.data).forEach(key=>{
+        const u = res.data[key];
+        // Normalise permission flags so keys always exist as explicit booleans.
+        // Vue 2 cannot reactively track a property that was never defined on the object.
+        if (!Object.hasOwn(u, 'allow-upload')) u['allow-upload'] = true;
+        if (!Object.hasOwn(u, 'allow-radio-recording')) u['allow-radio-recording'] = false;
+        if (!Object.hasOwn(u, 'allow-youtube-download')) u['allow-youtube-download'] = false;
+        // MPV permissions: server-remote default true (matches historical open access), mpv-cast default false
+        if (!Object.hasOwn(u, 'allow-server-remote')) u['allow-server-remote'] = true;
+        if (!Object.hasOwn(u, 'allow-mpv-cast')) u['allow-mpv-cast'] = false;
+        // Use Vue.set so each user object enters Vue's reactive system.
+        // Plain assignment (module.users[key] = u) bypasses reactivity — subsequent
+        // Vue.set() calls on the child object would never trigger template updates.
+        Vue.set(module.users, key, u);
+      });
+    } catch (e) { console.debug('[velvet]', e?.message ?? e); }
     module.usersUpdated.ts = Date.now();
   };
 
   module.getDbParams = async () => {
-    const res = await API.axios({
-      method: 'GET',
-      url: `${API.url()}/api/v1/admin/db/params`
-    });
+    try {
+      const res = await API.axios({
+        method: 'GET',
+        url: `${API.url()}/api/v1/admin/db/params`
+      });
 
-    Object.keys(res.data).forEach(key=>{
-      module.dbParams[key] = res.data[key];
-    });
-
+      Object.keys(res.data).forEach(key=>{
+        module.dbParams[key] = res.data[key];
+      });
+    } catch (e) { console.debug('[velvet]', e?.message ?? e); }
     module.dbParamsUpdated.ts = Date.now();
   }
 
   module.getServerParams = async () => {
-    const res = await API.axios({
-      method: 'GET',
-      url: `${API.url()}/api/v1/admin/config`
-    });
+    try {
+      const res = await API.axios({
+        method: 'GET',
+        url: `${API.url()}/api/v1/admin/config`
+      });
 
-    Object.keys(res.data).forEach(key=>{
-      module.serverParams[key] = res.data[key];
-    });
-
+      Object.keys(res.data).forEach(key=>{
+        module.serverParams[key] = res.data[key];
+      });
+    } catch (e) { console.debug('[velvet]', e?.message ?? e); }
     module.serverParamsUpdated.ts = Date.now();
   }
 
   module.getTranscodeParams = async () => {
-    const res = await API.axios({
-      method: 'GET',
-      url: `${API.url()}/api/v1/admin/transcode`
-    });
+    try {
+      const res = await API.axios({
+        method: 'GET',
+        url: `${API.url()}/api/v1/admin/transcode`
+      });
 
-    Object.keys(res.data).forEach(key=>{
-      module.transcodeParams[key] = res.data[key];
-    });
-
+      Object.keys(res.data).forEach(key=>{
+        module.transcodeParams[key] = res.data[key];
+      });
+    } catch (e) { console.debug('[velvet]', e?.message ?? e); }
     module.transcodeParamsUpdated.ts = Date.now();
   }
 
   module.getServerAudioParams = async () => {
-    const res = await API.axios({
-      method: 'GET',
-      url: `${API.url()}/api/v1/admin/server-audio`
-    });
+    try {
+      const res = await API.axios({
+        method: 'GET',
+        url: `${API.url()}/api/v1/admin/server-audio`
+      });
 
-    Object.keys(res.data).forEach(key=>{
-      module.serverAudioParams[key] = res.data[key];
-    });
-
+      Object.keys(res.data).forEach(key=>{
+        module.serverAudioParams[key] = res.data[key];
+      });
+    } catch (e) { console.debug('[velvet]', e?.message ?? e); }
     module.serverAudioParamsUpdated.ts = Date.now();
   }
 

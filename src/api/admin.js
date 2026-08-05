@@ -268,7 +268,7 @@ async function _testDirectoryAccess(root) {
 export function setup(velvet) {
   velvet.all('/api/v1/admin/{*path}', (req, res, next) => {
     if (config.program.lockAdmin === true) { return res.status(405).json({ error: 'Admin API Disabled' }); }
-    if (req.user.admin !== true) { return res.status(405).json({ error: 'Admin API Disabled' }); }
+    if (req.user.admin !== true) { return res.status(403).json({ error: 'Admin access required' }); }
     next();
   });
 
