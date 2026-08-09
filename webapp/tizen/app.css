@@ -59,6 +59,13 @@ html, body {
   border: 1px solid var(--bg3);
 }
 
+.login-logo-img {
+  width: 120px;
+  height: 120px;
+  margin-bottom: 20px;
+  border-radius: 24px;
+}
+
 .login-logo {
   font-size: 64px;
   font-weight: 800;
