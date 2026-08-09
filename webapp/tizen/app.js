@@ -534,7 +534,7 @@ function _renderAlbumDetail(album) {
       };
     });
     playQueue(queue, 0);
-    showView('albums');
+    // Stay on album-detail so user can see the track list
   };
 
   // Track list
@@ -824,20 +824,28 @@ function _trackUrl(filepath) {
 }
 
 function _loadAndPlay(track) {
+  // Update UI immediately — don't wait for play() promise
+  _updatePlayerBar(track);
+  showPlayerBar();
   _audio.src = _trackUrl(track.filepath);
   _audio.load();
-  _audio.play().then(function() {
+  var playResult = _audio.play();
+  if (playResult && typeof playResult.then === 'function') {
+    playResult.then(function() {
+      S.playing = true;
+      _updatePlayBtn();
+      if (S.autoDj) _autoDjPick();
+    }).catch(function() {
+      // Autoplay blocked — show as paused, user presses play
+      S.playing = false;
+      _updatePlayBtn();
+    });
+  } else {
+    // Older Chromium: play() returns undefined, just assume it works
     S.playing = true;
-    _updatePlayerBar(track);
     _updatePlayBtn();
-    showPlayerBar();
-    // Preload next in Auto-DJ
     if (S.autoDj) _autoDjPick();
-  }).catch(function(err) {
-    // Autoplay may be blocked on first interaction; that's OK
-    S.playing = false;
-    _updatePlayBtn();
-  });
+  }
 }
 
 function _onTrackEnd() {
