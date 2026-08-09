@@ -915,9 +915,8 @@ function initPlayerBar() {
   el('pb-prev').addEventListener('click', skipPrev);
   el('pb-play').addEventListener('click', togglePlay);
   el('pb-next').addEventListener('click', skipNext);
-  // Click anywhere on the bar area (except buttons) opens overlay
-  el('pb-info').addEventListener('click', openOverlay);
-  el('pb-art-wrap').addEventListener('click', openOverlay);
+  if (el('pb-info'))    el('pb-info').addEventListener('click', openOverlay);
+  if (el('pb-art-wrap')) el('pb-art-wrap').addEventListener('click', openOverlay);
 
   el('ov-prev').addEventListener('click', skipPrev);
   el('ov-play').addEventListener('click', togglePlay);
