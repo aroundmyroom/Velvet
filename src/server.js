@@ -661,9 +661,11 @@ function _setupExpressMiddleware(app) {
   app.use(cookieParser());
   app.use(express.json({ limit: config.program.maxRequestSize }));
   app.use(express.urlencoded({ extended: true }));
-  app.use((_req, res, next) => {
+  app.use((req, res, next) => {
     res.header('Access-Control-Allow-Origin', '*');
-    res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept');
+    res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, x-access-token');
+    res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS, PATCH');
+    if (req.method === 'OPTIONS') { return res.sendStatus(204); }
     next();
   });
 
