@@ -35,7 +35,7 @@ html, body {
 }
 
 /* ── Screens ───────────────────────────────────────────────────────────────── */
-.screen { position: fixed; inset: 0; }
+.screen { position: fixed; top: 0; right: 0; bottom: 0; left: 0; }
 .screen.active { display: flex; }
 .screen.hidden { display: none; }
 
@@ -132,7 +132,6 @@ html, body {
   border-bottom: 1px solid var(--bg3);
   padding: 0 50px;
   flex-shrink: 0;
-  gap: 0;
   z-index: 10;
 }
 
@@ -144,7 +143,8 @@ html, body {
   margin-right: 60px;
 }
 
-.nav-items { display: flex; gap: 8px; flex: 1; }
+.nav-items { display: flex; flex: 1; }
+.nav-item + .nav-item { margin-left: 8px; }
 
 .nav-item {
   background: none;
@@ -180,7 +180,7 @@ html, body {
 
 .view {
   position: absolute;
-  inset: 0;
+  top: 0; right: 0; bottom: 0; left: 0;
   padding: 40px 60px;
   overflow-y: auto;
   overflow-x: hidden;
@@ -199,7 +199,7 @@ html, body {
 .home-grid {
   display: grid;
   grid-template-columns: repeat(4, 1fr);
-  gap: 32px;
+  grid-gap: 32px;
   margin-top: 60px;
 }
 
@@ -231,7 +231,7 @@ html, body {
 .card-grid {
   display: grid;
   grid-template-columns: repeat(5, 1fr);
-  gap: 28px;
+  grid-gap: 28px;
 }
 
 .album-card {
@@ -250,17 +250,20 @@ html, body {
 
 .album-card-art {
   width: 100%;
-  aspect-ratio: 1;
+  height: 320px;
   object-fit: cover;
   background: var(--bg3);
   display: block;
 }
 .album-card-art-placeholder {
   width: 100%;
-  aspect-ratio: 1;
+  height: 320px;
   background: var(--bg3);
+  display: -webkit-box;
   display: flex;
+  -webkit-box-align: center;
   align-items: center;
+  -webkit-box-pack: center;
   justify-content: center;
   font-size: 48px;
   color: var(--text3);
@@ -289,10 +292,10 @@ html, body {
 /* ── Album detail ──────────────────────────────────────────────────────────── */
 .album-detail-header {
   display: flex;
-  gap: 50px;
   margin-bottom: 40px;
   align-items: flex-start;
 }
+.album-detail-art { margin-right: 50px; }
 
 .album-detail-art {
   width: 260px;
@@ -303,7 +306,8 @@ html, body {
   flex-shrink: 0;
 }
 
-.album-detail-meta { display: flex; flex-direction: column; gap: 12px; padding-top: 10px; }
+.album-detail-meta { display: flex; flex-direction: column; padding-top: 10px; }
+.album-detail-meta > * { margin-bottom: 12px; }
 .album-detail-title { font-size: 46px; font-weight: 800; color: var(--text); }
 .album-detail-artist { font-size: 32px; color: var(--accent2); }
 .album-detail-year { font-size: 26px; color: var(--text2); }
@@ -323,12 +327,12 @@ html, body {
 .play-all-btn.focused, .play-all-btn:focus { background: var(--accent2); outline: none; }
 
 /* ── Track list ─────────────────────────────────────────────────────────────── */
-.track-list { display: flex; flex-direction: column; gap: 4px; }
+.track-list { display: flex; flex-direction: column; }
+.track-row { margin-bottom: 4px; }
 
 .track-row {
   display: flex;
   align-items: center;
-  gap: 24px;
   padding: 16px 20px;
   border-radius: 8px;
   cursor: pointer;
@@ -351,21 +355,23 @@ html, body {
   color: var(--text3);
   font-size: 24px;
   flex-shrink: 0;
+  margin-right: 24px;
 }
 .track-title { flex: 1; font-size: 28px; font-weight: 500; }
 .track-dur {
   color: var(--text2);
   font-size: 24px;
   flex-shrink: 0;
+  margin-left: 24px;
 }
 
 /* ── Artist list ────────────────────────────────────────────────────────────── */
-.artist-list { display: flex; flex-direction: column; gap: 6px; }
+.artist-list { display: flex; flex-direction: column; }
+.artist-row { margin-bottom: 6px; }
 
 .artist-row {
   display: flex;
   align-items: center;
-  gap: 24px;
   padding: 18px 20px;
   border-radius: 8px;
   cursor: pointer;
@@ -385,6 +391,7 @@ html, body {
   object-fit: cover;
   background: var(--bg3);
   flex-shrink: 0;
+  margin-right: 24px;
 }
 .artist-name { font-size: 30px; font-weight: 600; flex: 1; }
 
@@ -392,7 +399,6 @@ html, body {
 .artist-profile-header {
   display: flex;
   align-items: center;
-  gap: 50px;
   margin-bottom: 40px;
 }
 .artist-profile-img {
@@ -402,16 +408,17 @@ html, body {
   object-fit: cover;
   background: var(--bg3);
   flex-shrink: 0;
+  margin-right: 50px;
 }
 .artist-profile-name { font-size: 52px; font-weight: 800; }
 
 /* ── Playlist list ───────────────────────────────────────────────────────────── */
-.playlist-list { display: flex; flex-direction: column; gap: 6px; }
+.playlist-list { display: flex; flex-direction: column; }
+.playlist-row { margin-bottom: 6px; }
 
 .playlist-row {
   display: flex;
   align-items: center;
-  gap: 24px;
   padding: 20px 24px;
   border-radius: 8px;
   cursor: pointer;
@@ -433,8 +440,8 @@ html, body {
   align-items: center;
   justify-content: center;
   height: 100%;
-  gap: 30px;
 }
+.autodj-center > * { margin-bottom: 30px; }
 .autodj-title { font-size: 72px; font-weight: 800; color: var(--accent2); }
 .autodj-desc { font-size: 30px; color: var(--text2); }
 .autodj-start-btn {
@@ -465,7 +472,6 @@ html, body {
   display: flex;
   align-items: center;
   padding: 0 50px;
-  gap: 30px;
   z-index: 20;
 }
 .player-bar:not(.hidden) { display: flex; }
@@ -475,14 +481,15 @@ html, body {
 .player-bar:not(.hidden) ~ #content-area,
 body.has-player #content-area { /* handled via JS class */ }
 
-.pb-art-wrap { width: 80px; height: 80px; flex-shrink: 0; }
+.pb-art-wrap { width: 80px; height: 80px; flex-shrink: 0; margin-right: 30px; }
 .pb-art { width: 80px; height: 80px; object-fit: cover; border-radius: 6px; background: var(--bg3); }
 
 .pb-info { flex: 1; min-width: 0; }
 .pb-title { font-size: 28px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .pb-artist { font-size: 24px; color: var(--text2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 4px; }
 
-.pb-controls { display: flex; align-items: center; gap: 16px; flex-shrink: 0; }
+.pb-controls { display: flex; align-items: center; flex-shrink: 0; margin-left: 30px; }
+.pb-btn { margin-right: 8px; }
 .pb-btn {
   background: none;
   border: none;
@@ -501,8 +508,8 @@ body.has-player #content-area { /* handled via JS class */ }
 .pb-play { font-size: 36px; background: var(--accent); border-radius: 50%; width: 72px; height: 72px; }
 .pb-play.focused, .pb-play:focus { background: var(--accent2); outline: none; }
 
-.pb-progress-wrap { display: flex; align-items: center; gap: 14px; flex-shrink: 0; width: 400px; }
-.pb-time { font-size: 22px; color: var(--text2); flex-shrink: 0; }
+.pb-progress-wrap { display: flex; align-items: center; flex-shrink: 0; width: 400px; margin-left: 30px; }
+.pb-time { font-size: 22px; color: var(--text2); flex-shrink: 0; margin-right: 10px; }
 .pb-progress { flex: 1; height: 6px; background: var(--bg3); border-radius: 3px; overflow: hidden; }
 .pb-fill { height: 100%; background: var(--accent); width: 0%; transition: width 1s linear; }
 
@@ -511,15 +518,17 @@ body.has-player #content-area { /* handled via JS class */ }
    ─────────────────────────────────────────────────────────────────────────── */
 .player-overlay {
   position: fixed;
-  inset: 0;
+  top: 0; right: 0; bottom: 0; left: 0;
   background: radial-gradient(ellipse at 40% 40%, #1a1040 0%, #08080e 70%);
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 40px;
   z-index: 100;
 }
+.overlay-art-wrap { margin-bottom: 40px; }
+.overlay-info { margin-bottom: 40px; }
+.overlay-controls { margin-bottom: 40px; }
 .player-overlay:not(.hidden) { display: flex; }
 
 .overlay-close {
@@ -555,7 +564,8 @@ body.has-player #content-area { /* handled via JS class */ }
 .overlay-artist { font-size: 34px; color: var(--accent2); margin-top: 10px; }
 .overlay-album { font-size: 26px; color: var(--text2); margin-top: 6px; }
 
-.overlay-controls { display: flex; align-items: center; gap: 30px; }
+.overlay-controls { display: flex; align-items: center; }
+.ov-btn { margin-right: 30px; }
 .ov-btn {
   background: var(--bg3);
   border: none;
@@ -581,10 +591,9 @@ body.has-player #content-area { /* handled via JS class */ }
 .overlay-progress-wrap {
   display: flex;
   align-items: center;
-  gap: 18px;
   width: 900px;
 }
-.ov-time { font-size: 26px; color: var(--text2); flex-shrink: 0; }
+.ov-time { font-size: 26px; color: var(--text2); flex-shrink: 0; margin-right: 14px; }
 .ov-progress { flex: 1; height: 8px; background: var(--bg3); border-radius: 4px; overflow: hidden; }
 .ov-fill { height: 100%; background: var(--accent); width: 0%; transition: width 1s linear; }
 
@@ -606,7 +615,7 @@ body.has-player #content-area { /* handled via JS class */ }
    ─────────────────────────────────────────────────────────────────────────── */
 .loading-overlay {
   position: fixed;
-  inset: 0;
+  top: 0; right: 0; bottom: 0; left: 0;
   background: rgba(0,0,0,0.7);
   display: flex;
   align-items: center;
