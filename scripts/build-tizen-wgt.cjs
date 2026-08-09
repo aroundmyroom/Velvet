@@ -4,19 +4,25 @@
  * A WGT file is a ZIP archive with .wgt extension.
  *
  * Usage:
- *   node scripts/build-tizen-wgt.cjs
+ *   node scripts/build-tizen-wgt.cjs           local build (bakes velvet-tv.config.json creds if present)
+ *   node scripts/build-tizen-wgt.cjs --dist    clean, credential-free build for public release
  *
  * Output:
- *   dist/velvet-tv.wgt
+ *   dist/velvet-tv.wgt                (local)
+ *   dist/velvet-tv-<version>.wgt      (--dist, shareable — no server URL / credentials)
  */
 'use strict';
 const fs   = require('fs');
 const path = require('path');
-const zlib = require('zlib');
+
+const pkg  = require(path.join(__dirname, '..', 'package.json'));
+const DIST_MODE = process.argv.includes('--dist') || process.argv.includes('--clean');
 
 const SRC  = path.join(__dirname, '..', 'webapp', 'tizen');
 const DIST = path.join(__dirname, '..', 'dist');
-const OUT  = path.join(DIST, 'velvet-tv.wgt');
+const OUT  = DIST_MODE
+  ? path.join(DIST, 'velvet-tv-' + pkg.version + '.wgt')
+  : path.join(DIST, 'velvet-tv.wgt');
 
 if (!fs.existsSync(DIST)) fs.mkdirSync(DIST, { recursive: true });
 
@@ -126,14 +132,30 @@ function collectFiles(dir, base) {
       entries.push(...collectFiles(full, rel));
     } else {
       let data = fs.readFileSync(full);
-      // Inject server URL into index.html meta tag
+      // Inject build-time config into index.html meta tags
       if (rel === 'index.html') {
-        let cfgUrl = '';
-        try {
-          const cfg = JSON.parse(fs.readFileSync(path.join(SRC, 'velvet-tv.config.json'), 'utf8'));
-          cfgUrl = (cfg.serverUrl || '').trim();
-        } catch (_) {}
-        data = Buffer.from(data.toString('utf8').replace('__VELVET_SERVER_URL__', cfgUrl), 'utf8');
+        let cfg = {};
+        // In --dist (clean) mode we NEVER read local credentials — the public
+        // WGT ships with empty meta tags so users configure the server on-device.
+        if (!DIST_MODE) {
+          try {
+            cfg = JSON.parse(fs.readFileSync(path.join(SRC, 'velvet-tv.config.json'), 'utf8'));
+          } catch (_) {}
+        }
+        const escAttr = (v) => String(v == null ? '' : v).trim()
+          .replace(/&/g, '&amp;').replace(/"/g, '&quot;')
+          .replace(/</g, '&lt;').replace(/>/g, '&gt;');
+        const hasCreds = Boolean((cfg.username || '').trim() && (cfg.password || '').trim());
+        const autoLogin = hasCreds && cfg.autoLogin === true ? '1' : '';
+        let html = data.toString('utf8')
+          .replace('__VELVET_SERVER_URL__', escAttr(cfg.serverUrl))
+          .replace('__VELVET_USERNAME__',   escAttr(cfg.username))
+          .replace('__VELVET_PASSWORD__',   escAttr(cfg.password))
+          .replace('__VELVET_AUTOLOGIN__',  autoLogin);
+        data = Buffer.from(html, 'utf8');
+        if (hasCreds) {
+          console.warn('  ! credentials baked into WGT from config — do NOT distribute this build');
+        }
       }
       entries.push({ name: rel, data });
     }
@@ -146,5 +168,10 @@ const zip = buildZip(entries);
 fs.writeFileSync(OUT, zip);
 
 const kbSize = (zip.length / 1024).toFixed(1);
-console.log('Built: dist/velvet-tv.wgt (' + kbSize + ' KB, ' + entries.length + ' files)');
+const relOut = path.relative(path.join(__dirname, '..'), OUT);
+console.log('Built: ' + relOut + ' (' + kbSize + ' KB, ' + entries.length + ' files)');
 for (const e of entries) console.log('  + ' + e.name + ' (' + e.data.length + ' B)');
+if (DIST_MODE) {
+  console.log('\n  \u2713 clean public build — no server URL or credentials baked in');
+  console.log('    Attach this file to the GitHub release; users side-load it with Apps2Samsung.');
+}

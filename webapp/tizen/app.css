@@ -59,10 +59,18 @@ html, body {
   border: 1px solid var(--bg3);
 }
 
+.login-brand {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  justify-content: center;
+  margin-bottom: 6px;
+}
+
 .login-logo-img {
-  width: 120px;
-  height: 120px;
-  margin-bottom: 20px;
+  width: 96px;
+  height: 96px;
+  margin-right: 24px;
   border-radius: 24px;
 }
 
@@ -71,7 +79,7 @@ html, body {
   font-weight: 800;
   letter-spacing: 0.18em;
   color: var(--accent2);
-  margin-bottom: 6px;
+  margin-bottom: 0;
 }
 
 .login-subtitle {
@@ -241,6 +249,43 @@ html, body {
   grid-gap: 28px;
 }
 
+/* Albums view: grid + right-hand A-Z quick-jump strip */
+.albums-body { padding-right: 70px; }
+
+.az-strip {
+  position: fixed;
+  top: 130px;
+  bottom: 130px;
+  right: 24px;
+  width: 54px;
+  display: -webkit-box;
+  display: flex;
+  -webkit-box-orient: vertical;
+  -webkit-box-direction: normal;
+  flex-direction: column;
+  -webkit-box-pack: center;
+  justify-content: center;
+  z-index: 5;
+}
+.az-btn {
+  background: none;
+  border: 2px solid transparent;
+  border-radius: 8px;
+  color: var(--text2);
+  font-size: 24px;
+  font-weight: 700;
+  padding: 2px 0;
+  margin: 1px 0;
+  cursor: pointer;
+  text-align: center;
+}
+.az-btn.focused, .az-btn:focus {
+  background: var(--accent);
+  color: #fff;
+  border-color: var(--accent2);
+  outline: none;
+}
+
 .album-card {
   background: var(--bg2);
   border: 2px solid transparent;
@@ -318,6 +363,31 @@ html, body {
 .album-detail-title { font-size: 46px; font-weight: 800; color: var(--text); }
 .album-detail-artist { font-size: 32px; color: var(--accent2); }
 .album-detail-year { font-size: 26px; color: var(--text2); }
+
+.album-detail-badges { display: -webkit-box; display: flex; }
+.alb-badge {
+  display: inline-block;
+  font-size: 20px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  padding: 4px 12px;
+  border-radius: 6px;
+  margin-right: 10px;
+}
+.alb-badge-cue { background: #1e5f3a; color: #7ff0b0; }
+
+/* ── Disc header (multi-disc albums) ───────────────────────────────────────── */
+.disc-header {
+  font-size: 24px;
+  font-weight: 700;
+  color: var(--accent2);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  margin: 22px 0 10px 20px;
+}
+.disc-header:first-child { margin-top: 0; }
+
+.track-feat { color: var(--text2); font-weight: 400; font-size: 24px; }
 
 .play-all-btn {
   margin-top: 12px;
@@ -491,7 +561,8 @@ body.has-player #content-area { /* handled via JS class */ }
 .pb-art-wrap { width: 80px; height: 80px; flex-shrink: 0; margin-right: 30px; }
 .pb-art { width: 80px; height: 80px; object-fit: cover; border-radius: 6px; background: var(--bg3); }
 
-.pb-info { flex: 1; min-width: 0; }
+.pb-info { flex: 1; min-width: 0; padding: 6px 12px; border-radius: 8px; border: 2px solid transparent; }
+.pb-info.focused, .pb-info:focus { border-color: var(--focus); background: var(--bg3); outline: none; }
 .pb-title { font-size: 28px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .pb-artist { font-size: 24px; color: var(--text2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 4px; }
 
@@ -637,6 +708,42 @@ body.has-player #content-area { /* handled via JS class */ }
   z-index: 200;
 }
 .loading-overlay:not(.hidden) { display: flex; }
+
+/* ────────────────────────────────────────────────────────────────────────────
+   MILKDROP VISUALIZER (full-screen screensaver)
+   ─────────────────────────────────────────────────────────────────────────── */
+.viz-overlay {
+  position: fixed;
+  top: 0; right: 0; bottom: 0; left: 0;
+  background: #000;
+  z-index: 300;
+}
+.viz-overlay.hidden { display: none; }
+.viz-canvas {
+  position: absolute;
+  top: 0; right: 0; bottom: 0; left: 0;
+  width: 1920px;
+  height: 1080px;
+  display: block;
+}
+.viz-nowplaying {
+  position: absolute;
+  left: 80px;
+  bottom: 80px;
+  z-index: 2;
+  text-shadow: 0 2px 12px rgba(0,0,0,0.9);
+}
+.viz-title  { font-size: 44px; font-weight: 700; color: #fff; }
+.viz-artist { font-size: 32px; color: #cfcfe0; margin-top: 6px; }
+.viz-hint {
+  position: absolute;
+  right: 60px;
+  bottom: 50px;
+  z-index: 2;
+  font-size: 24px;
+  color: rgba(255,255,255,0.4);
+  text-shadow: 0 2px 8px rgba(0,0,0,0.9);
+}
 
 .spinner {
   width: 80px;

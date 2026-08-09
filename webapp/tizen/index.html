@@ -4,6 +4,9 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=1920, initial-scale=1.0">
   <meta name="velvet-server-url" content="__VELVET_SERVER_URL__">
+  <meta name="velvet-username" content="__VELVET_USERNAME__">
+  <meta name="velvet-password" content="__VELVET_PASSWORD__">
+  <meta name="velvet-autologin" content="__VELVET_AUTOLOGIN__">
   <title>Velvet TV</title>
   <link rel="stylesheet" href="app.css">
 </head>
@@ -12,8 +15,10 @@
   <!-- ── Login screen ─────────────────────────────────────────────────────── -->
   <div id="screen-login" class="screen active">
     <div class="login-box">
-      <img src="icon.png" alt="Velvet" class="login-logo-img">
-      <div class="login-logo">VELVET</div>
+      <div class="login-brand">
+        <img src="icon.png" alt="Velvet" class="login-logo-img">
+        <div class="login-logo">VELVET</div>
+      </div>
       <div class="login-subtitle">Music Server</div>
       <div class="login-fields">
         <div class="field-group">
@@ -77,7 +82,10 @@
       <!-- Albums grid -->
       <div id="view-albums" class="view hidden">
         <div id="albums-header" class="view-header">Albums</div>
-        <div id="albums-grid" class="card-grid"></div>
+        <div class="albums-body">
+          <div id="albums-grid" class="card-grid"></div>
+        </div>
+        <div id="albums-az" class="az-strip"></div>
       </div>
 
       <!-- Album detail (track list) -->
@@ -88,6 +96,7 @@
             <div id="album-detail-title" class="album-detail-title"></div>
             <div id="album-detail-artist" class="album-detail-artist"></div>
             <div id="album-detail-year" class="album-detail-year"></div>
+            <div id="album-detail-badges" class="album-detail-badges"></div>
             <button id="album-play-all" class="play-all-btn focusable">&#9654; Play All</button>
           </div>
         </div>
@@ -140,7 +149,7 @@
       <div id="pb-art-wrap" class="pb-art-wrap">
         <img id="pb-art" class="pb-art" src="" alt="">
       </div>
-      <div id="pb-info" class="pb-info">
+      <div id="pb-info" class="pb-info focusable" tabindex="0" title="Now Playing">
         <div id="pb-title" class="pb-title"></div>
         <div id="pb-artist" class="pb-artist"></div>
       </div>
@@ -174,6 +183,7 @@
       <button id="ov-prev" class="ov-btn focusable">&#10094;&#10094;</button>
       <button id="ov-play" class="ov-btn ov-play focusable">&#9654;</button>
       <button id="ov-next" class="ov-btn focusable">&#10095;&#10095;</button>
+      <button id="ov-viz" class="ov-btn ov-viz focusable" title="Visualizer">&#9673;</button>
     </div>
     <div class="overlay-progress-wrap">
       <span id="ov-pos" class="ov-time">0:00</span>
@@ -181,6 +191,16 @@
       <span id="ov-dur" class="ov-time">0:00</span>
     </div>
     <div id="ov-autodj-badge" class="ov-autodj-badge hidden">AUTO-DJ</div>
+  </div>
+
+  <!-- Full-screen MilkDrop-style visualizer (screensaver after 30s of playback) -->
+  <div id="viz-overlay" class="viz-overlay hidden">
+    <canvas id="viz-canvas" class="viz-canvas"></canvas>
+    <div id="viz-nowplaying" class="viz-nowplaying">
+      <div id="viz-title" class="viz-title"></div>
+      <div id="viz-artist" class="viz-artist"></div>
+    </div>
+    <div class="viz-hint">Press any key to exit</div>
   </div>
 
   <!-- Hidden audio element -->

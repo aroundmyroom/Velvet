@@ -162,6 +162,24 @@ sh(`git push origin v${version}`);
 stepLog('GitHub release');
 sh(`gh release create v${version} --title ${JSON.stringify(`v${version} — ${title}`)} --notes-file releases/v${version}.md --repo ${REPO}`);
 
+stepLog('Tizen TV widget — clean build + attach (credential-free)');
+// ALWAYS the :dist (clean) build for a public release: it never reads
+// webapp/tizen/velvet-tv.config.json, so no server URL / login can leak.
+sh('npm run build:tizen:dist');
+const wgtRel = `dist/velvet-tv-${version}.wgt`;
+if (!DRY) {
+  const wgtPath = path.join(ROOT, wgtRel);
+  if (fs.existsSync(wgtPath)) {
+    const leak = /aroundtheworld|password" content="[^"]/.test(fs.readFileSync(wgtPath, 'latin1'));
+    if (leak) die(`Refusing to upload ${wgtRel} — it appears to contain credentials. Build with --dist only.`);
+    sh(`gh release upload v${version} ${wgtRel} --repo ${REPO}`);
+  } else {
+    console.log(C.y(`  ! ${wgtRel} not found — skipped TV widget upload`));
+  }
+} else {
+  sh(`gh release upload v${version} ${wgtRel} --repo ${REPO}`);
+}
+
 console.log(C.g(`\n✓ Released v${version}.`));
 if (!DRY) {
   console.log(`  ${C.dim('release:')} https://github.com/${REPO}/releases/tag/v${version}`);

@@ -107,6 +107,11 @@ function _allFocusable(container) {
   );
 }
 
+// Visible check that also works for position:fixed elements (offsetParent is null for those)
+function _isVisible(e) {
+  return !!e && e.getClientRects().length > 0;
+}
+
 function setFocus(el) {
   if (!el) return;
   if (_currentFocusEl) _currentFocusEl.classList.remove('focused');
@@ -151,22 +156,60 @@ function _focusZone(zone) {
     : null;
   if (zone === 'content') {
     // Restore previous content focus if still visible, else first item in active view
-    if (_lastContentFocus && _lastContentFocus.offsetParent !== null) { setFocus(_lastContentFocus); return true; }
+    if (_lastContentFocus && _isVisible(_lastContentFocus)) { setFocus(_lastContentFocus); return true; }
     var view = document.querySelector('.view.active');
     if (view) { var items = _allFocusable(view); if (items.length) { setFocus(items[0]); return true; } }
     return false;
   }
   if (!container) return false;
-  var list = _allFocusable(container).filter(function(e) { return e.offsetParent !== null; });
+  var list = _allFocusable(container).filter(function(e) { return _isVisible(e); });
   if (!list.length) return false;
   setFocus(list[0]);
   return true;
+}
+
+// Pure spatial focus move within a single container (no zone jumping).
+function _spatialMove(cur, dir, container) {
+  var all = _allFocusable(container).filter(function(e) {
+    return _isVisible(e);  // visible (works for fixed-position too)
+  });
+  var curRect = cur.getBoundingClientRect();
+  var curCX = curRect.left + curRect.width / 2;
+  var curCY = curRect.top + curRect.height / 2;
+  var best = null;
+  var bestScore = Infinity;
+  for (var i = 0; i < all.length; i++) {
+    var candidate = all[i];
+    if (candidate === cur) continue;
+    var r = candidate.getBoundingClientRect();
+    var cx = r.left + r.width / 2;
+    var cy = r.top + r.height / 2;
+    var dx = cx - curCX;
+    var dy = cy - curCY;
+    var inRange = false, primary = 0, secondary = 0;
+    if (dir === 'right' && dx > 0) { inRange = true; primary = dx; secondary = Math.abs(dy); }
+    else if (dir === 'left' && dx < 0) { inRange = true; primary = -dx; secondary = Math.abs(dy); }
+    else if (dir === 'down' && dy > 0) { inRange = true; primary = dy; secondary = Math.abs(dx); }
+    else if (dir === 'up' && dy < 0) { inRange = true; primary = -dy; secondary = Math.abs(dx); }
+    if (!inRange) continue;
+    var score = primary + secondary * 3;
+    if (score < bestScore) { bestScore = score; best = candidate; }
+  }
+  if (best) { setFocus(best); return true; }
+  return false;
 }
 
 function _moveFocus(dir) {
   var cur = _currentFocusEl;
   if (!cur) {
     focusFirst();
+    return;
+  }
+
+  // Login screen: scope the spatial search to the login fields only (no zones here)
+  var loginScreen = el('screen-login');
+  if (loginScreen && !loginScreen.classList.contains('hidden')) {
+    _spatialMove(cur, dir, loginScreen);
     return;
   }
 
@@ -180,7 +223,7 @@ function _moveFocus(dir) {
     : document.querySelector('.view.active') || document;
 
   var all = _allFocusable(container).filter(function(e) {
-    return e.offsetParent !== null;  // visible
+    return _isVisible(e);  // visible (works for fixed-position too)
   });
 
   var curRect = cur.getBoundingClientRect();
@@ -250,6 +293,19 @@ document.addEventListener('keydown', function(e) {
 
   var tag = document.activeElement && document.activeElement.tagName;
   var isInput = (tag === 'INPUT' || tag === 'TEXTAREA');
+
+  // Any remote activity resets the idle timer for the visualizer screensaver
+  _noteActivity();
+
+  // Visualizer active — any key exits and is consumed (media keys still control playback)
+  if (_vizActive()) {
+    stopViz();
+    if (key === KEY.PLAY || key === KEY.PAUSE) { togglePlay(); }
+    else if (key === KEY.FF) { skipNext(); }
+    else if (key === KEY.REWIND) { skipPrev(); }
+    e.preventDefault();
+    return;
+  }
 
   // Overlay active — no inputs there, block typing early
   if (!el('player-overlay').classList.contains('hidden')) {
@@ -375,17 +431,31 @@ function showView(name) {
 /* ─────────────────────────────────────────────────────────────────────────────
    LOGIN
    ────────────────────────────────────────────────────────────────────────── */
+function _metaVal(name) {
+  var m = document.querySelector('meta[name="' + name + '"]');
+  if (!m) return '';
+  var v = m.content || '';
+  // Unreplaced build placeholder → treat as empty
+  if (v.indexOf('__VELVET_') === 0) return '';
+  return v;
+}
+
 function initLogin() {
   _loadSettings();
   // Pre-fill URL from build-time config if nothing stored yet
   if (!S.baseUrl) {
-    var meta = document.querySelector('meta[name="velvet-server-url"]');
-    if (meta && meta.content && meta.content !== '__VELVET_SERVER_URL__') {
-      S.baseUrl = meta.content;
-    }
+    var cfgUrl = _metaVal('velvet-server-url');
+    if (cfgUrl) S.baseUrl = cfgUrl;
   }
+  var cfgUser = _metaVal('velvet-username');
+  var cfgPass = _metaVal('velvet-password');
+  var cfgAuto = _metaVal('velvet-autologin') === '1';
+
   if (S.baseUrl)  el('login-url').value  = S.baseUrl;
   if (S.username) el('login-user').value = S.username;
+  // Pre-fill credentials baked into the build config (testing convenience)
+  if (cfgUser && !el('login-user').value) el('login-user').value = cfgUser;
+  if (cfgPass) el('login-pass').value = cfgPass;
 
   el('login-btn').addEventListener('click', doLogin);
   el('login-pass').addEventListener('keydown', function(e) {
@@ -395,6 +465,9 @@ function initLogin() {
   // If we have a stored token, try it silently
   if (S.token && S.baseUrl) {
     _tryAutoLogin();
+  } else if (cfgAuto && S.baseUrl && el('login-user').value && el('login-pass').value) {
+    // Auto-login from baked-in config credentials (local testing builds only)
+    doLogin();
   } else {
     showScreen('login');
     setTimeout(function() { focusFirst(el('screen-login')); }, 100);
@@ -515,14 +588,18 @@ function renderAlbumGrid(albums) {
   var grid = el('albums-grid');
   if (!albums || !albums.length) {
     grid.innerHTML = '<div style="color:var(--text2);padding:30px">No albums found. Make sure an albumsOnly vpath is configured.</div>';
+    el('albums-az').innerHTML = '';
     return;
   }
 
   var html = '';
+  var present = {};
   for (var i = 0; i < albums.length; i++) {
     var a = albums[i];
     var artSrc = albumArtUrl(a.aaFile, a.artFile);
-    html += '<div class="album-card focusable" tabindex="0" data-id="' + _escAttr(a.id) + '">' +
+    var letter = _albumLetter(a);
+    present[letter] = true;
+    html += '<div class="album-card focusable" tabindex="0" data-id="' + _escAttr(a.id) + '" data-letter="' + _escAttr(letter) + '">' +
       (artSrc
         ? '<img class="album-card-art" src="' + _escAttr(artSrc) + '" alt="" loading="lazy" onerror="this.style.display=\'none\';">'
         : '<div class="album-card-art-placeholder">&#127925;</div>') +
@@ -543,11 +620,52 @@ function renderAlbumGrid(albums) {
     })(cards[j]);
   }
 
+  _renderAzStrip(present);
+
   // Restore focus to first card
   setTimeout(function() {
     var items = _allFocusable(grid);
     if (items.length) setFocus(items[0]);
   }, 50);
+}
+
+// First-letter bucket for an album: A-Z, or '#' for digits/symbols
+function _albumLetter(a) {
+  var name = (a.displayName || a.name || '').replace(/^\s+/, '');
+  var ch = name.charAt(0).toUpperCase();
+  return (ch >= 'A' && ch <= 'Z') ? ch : '#';
+}
+
+// Build the A-Z quick-jump sidebar (only letters that exist)
+function _renderAzStrip(present) {
+  var strip = el('albums-az');
+  if (!strip) return;
+  var letters = ['#','A','B','C','D','E','F','G','H','I','J','K','L','M','N','O','P','Q','R','S','T','U','V','W','X','Y','Z'];
+  var html = '';
+  for (var i = 0; i < letters.length; i++) {
+    var l = letters[i];
+    if (!present[l]) continue;
+    html += '<button class="az-btn focusable" tabindex="0" data-letter="' + _escAttr(l) + '">' + _esc(l) + '</button>';
+  }
+  strip.innerHTML = html;
+  var btns = strip.querySelectorAll('.az-btn');
+  for (var j = 0; j < btns.length; j++) {
+    (function(btn) {
+      btn.addEventListener('click', function() { _jumpToLetter(btn.getAttribute('data-letter')); });
+    })(btns[j]);
+  }
+}
+
+function _jumpToLetter(letter) {
+  var grid = el('albums-grid');
+  var cards = grid.querySelectorAll('.album-card');
+  for (var i = 0; i < cards.length; i++) {
+    if (cards[i].getAttribute('data-letter') === letter) {
+      try { cards[i].scrollIntoView(true); } catch (e) { /* older Chromium */ }
+      setFocus(cards[i]);
+      return;
+    }
+  }
 }
 
 function openAlbumDetail(albumId) {
@@ -561,6 +679,57 @@ function openAlbumDetail(albumId) {
   });
 }
 
+// A disc is a CUE sheet when it holds a single audio file split by >=2 cuepoints
+function _discIsCue(disc) {
+  var tr = (disc.tracks || [])[0];
+  return (disc.tracks || []).length === 1 && tr && tr.cuepoints && tr.cuepoints.length >= 2;
+}
+
+// Turn a disc into an array of playable queue entries (expands CUE sheets)
+function _expandDisc(disc, album, discLabel) {
+  var out = [];
+  var tracks = disc.tracks || [];
+  if (_discIsCue(disc)) {
+    var base = tracks[0];
+    var cps = base.cuepoints;
+    for (var i = 0; i < cps.length; i++) {
+      var cp = cps[i];
+      var next = cps[i + 1];
+      var dur = next ? Math.max(0, next.t - cp.t)
+        : (base.duration ? Math.max(0, base.duration - cp.t) : null);
+      out.push({
+        filepath: base.filepath,
+        title:    cp.title || base.title || base.filepath.split('/').pop(),
+        artist:   base.artist || album.artist || '',
+        album:    album.displayName || album.name || '',
+        year:     album.year || null,
+        track:    cp.no || (i + 1),
+        artFile:  base.aaFile || disc.aaFile || album.aaFile || null,
+        duration: dur,
+        cueOffset:    cp.t,
+        cueEndOffset: next ? next.t : null,
+        _discLabel:   discLabel
+      });
+    }
+    return out;
+  }
+  for (var t = 0; t < tracks.length; t++) {
+    var tr = tracks[t];
+    out.push({
+      filepath: tr.filepath,
+      title:    tr.title || tr.filepath.split('/').pop(),
+      artist:   tr.artist || album.artist || '',
+      album:    album.displayName || album.name || '',
+      year:     album.year || null,
+      track:    tr.number || (t + 1),
+      artFile:  tr.aaFile || disc.aaFile || album.aaFile || null,
+      duration: tr.duration,
+      _discLabel: discLabel
+    });
+  }
+  return out;
+}
+
 function _renderAlbumDetail(album) {
   var artSrc = albumArtUrl(album.aaFile, album.artFile);
   var artEl = el('album-detail-art');
@@ -571,62 +740,91 @@ function _renderAlbumDetail(album) {
   el('album-detail-artist').textContent = album.artist || '';
   el('album-detail-year').textContent   = album.year ? String(album.year) : '';
 
-  // Build flat track list from discs
-  var tracks = [];
   var discs = album.discs || [];
+  var multiDisc = discs.length > 1;
+  var anyCue = false;
+
+  // Build the ordered playable queue and remember where each disc starts
+  var playables = [];
+  var discBlocks = [];  // {label, startIdx, count}
   for (var d = 0; d < discs.length; d++) {
     var disc = discs[d];
-    var discTracks = disc.tracks || [];
-    for (var t = 0; t < discTracks.length; t++) {
-      tracks.push(discTracks[t]);
-    }
+    if (_discIsCue(disc)) anyCue = true;
+    var label = multiDisc ? (disc.label || ('Disc ' + (disc.discIndex || (d + 1)))) : null;
+    var expanded = _expandDisc(disc, album, label);
+    discBlocks.push({ label: label, startIdx: playables.length, count: expanded.length });
+    for (var e = 0; e < expanded.length; e++) playables.push(expanded[e]);
   }
+
+  // Badges (CUE indicator)
+  el('album-detail-badges').innerHTML = anyCue
+    ? '<span class="alb-badge alb-badge-cue">CUE</span>' : '';
+
+  // Total count + duration line reuses the year element's sibling styling
+  var totalDur = 0;
+  for (var p = 0; p < playables.length; p++) totalDur += (playables[p].duration || 0);
+  var yearTxt = album.year ? String(album.year) : '';
+  var metaBits = [];
+  if (yearTxt) metaBits.push(yearTxt);
+  metaBits.push(playables.length + (playables.length === 1 ? ' track' : ' tracks'));
+  if (totalDur > 0) metaBits.push(fmtTime(totalDur));
+  el('album-detail-year').textContent = metaBits.join('  •  ');
 
   // Play all
   el('album-play-all').onclick = function() {
-    var queue = tracks.map(function(tr) {
-      return {
-        filepath: tr.filepath,
-        title:    tr.title || tr.filepath.split('/').pop(),
-        artist:   tr.artist || album.artist || '',
-        album:    album.displayName || album.name || '',
-        artFile:  tr.aaFile || album.aaFile || null
-      };
-    });
-    playQueue(queue, 0);
-    // Stay on album-detail so user can see the track list
+    playQueue(playables.slice(), 0);
   };
 
-  // Track list
+  // Track rows grouped by disc
   var html = '';
-  for (var i = 0; i < tracks.length; i++) {
-    var tr = tracks[i];
-    html += '<div class="track-row focusable" tabindex="0" data-idx="' + i + '">' +
-      '<div class="track-num">' + _esc(tr.number ? String(tr.number) : String(i + 1)) + '</div>' +
-      '<div class="track-title">' + _esc(tr.title || tr.filepath.split('/').pop()) + '</div>' +
-      '<div class="track-dur">' + fmtTime(tr.duration) + '</div>' +
-    '</div>';
+  for (var b = 0; b < discBlocks.length; b++) {
+    var block = discBlocks[b];
+    if (block.label) {
+      html += '<div class="disc-header">' + _esc(block.label) + '</div>';
+    }
+    for (var r = 0; r < block.count; r++) {
+      var gi = block.startIdx + r;
+      var tr2 = playables[gi];
+      var cueAttr = tr2.cueOffset != null ? String(tr2.cueOffset) : '';
+      html += '<div class="track-row focusable" tabindex="0" data-idx="' + gi + '"' +
+        ' data-fp="' + _escAttr(tr2.filepath) + '" data-cue="' + _escAttr(cueAttr) + '">' +
+        '<div class="track-num">' + _esc(String(tr2.track || (gi + 1))) + '</div>' +
+        '<div class="track-title">' + _esc(tr2.title) +
+          (tr2.artist && tr2.artist !== (album.artist || '')
+            ? '<span class="track-feat"> — ' + _esc(tr2.artist) + '</span>' : '') +
+        '</div>' +
+        '<div class="track-dur">' + (tr2.duration ? fmtTime(tr2.duration) : '') + '</div>' +
+      '</div>';
+    }
   }
   el('album-track-list').innerHTML = html;
 
   var rows = el('album-track-list').querySelectorAll('.track-row');
-  var albumTracks = tracks;
-  var albumRef = album;
   for (var k = 0; k < rows.length; k++) {
-    (function(row, idx) {
+    (function(row) {
       row.addEventListener('click', function() {
-        var queue = albumTracks.map(function(tr) {
-          return {
-            filepath: tr.filepath,
-            title:    tr.title || tr.filepath.split('/').pop(),
-            artist:   tr.artist || albumRef.artist || '',
-            album:    albumRef.displayName || albumRef.name || '',
-            artFile:  tr.aaFile || albumRef.aaFile || null
-          };
-        });
-        playQueue(queue, idx);
+        playQueue(playables.slice(), parseInt(row.getAttribute('data-idx'), 10));
       });
-    })(rows[k], k);
+    })(rows[k]);
+  }
+
+  _markPlayingRows();
+}
+
+// Highlight the album-detail row matching the currently playing track
+function _markPlayingRows() {
+  var list = el('album-track-list');
+  if (!list) return;
+  var rows = list.querySelectorAll('.track-row');
+  if (!rows.length) return;
+  var cur = S.queue[S.queueIdx] || {};
+  var curCue = cur.cueOffset != null ? String(cur.cueOffset) : '';
+  for (var i = 0; i < rows.length; i++) {
+    var match = S.queueIdx >= 0 &&
+      rows[i].getAttribute('data-fp') === cur.filepath &&
+      (rows[i].getAttribute('data-cue') || '') === curCue;
+    if (match) rows[i].classList.add('playing');
+    else rows[i].classList.remove('playing');
   }
 }
 
@@ -910,6 +1108,14 @@ _audio.addEventListener('timeupdate', _onTimeUpdate);
 _audio.addEventListener('error', function() {
   skipNext();
 });
+// Apply a pending CUE seek once the media is ready
+var _pendingSeek = 0;
+_audio.addEventListener('loadedmetadata', function() {
+  if (_pendingSeek > 0) {
+    try { _audio.currentTime = _pendingSeek; } catch (e) { /* seek not ready yet */ }
+    _pendingSeek = 0;
+  }
+});
 
 function playQueue(queue, startIdx) {
   S.autoDj = false;
@@ -932,13 +1138,22 @@ function _loadAndPlay(track) {
   _updatePlayerBar(track);
   showPlayerBar();
   _fetchWaveform(track.filepath);
-  _audio.src = _trackUrl(track.filepath);
-  _audio.load();
+  var url = _trackUrl(track.filepath);
+  // Same file as a previous CUE track? Just seek instead of reloading
+  if (track.cueOffset != null && _audio.src === url && !isNaN(_audio.duration)) {
+    _pendingSeek = 0;
+    try { _audio.currentTime = track.cueOffset; } catch (e) { /* ignore */ }
+  } else {
+    _pendingSeek = track.cueOffset != null ? track.cueOffset : 0;
+    _audio.src = url;
+    _audio.load();
+  }
   var playResult = _audio.play();
   if (playResult && typeof playResult.then === 'function') {
     playResult.then(function() {
       S.playing = true;
       _updatePlayBtn();
+      _screenWake(true);
       if (S.autoDj) _autoDjPick();
     }).catch(function() {
       // Autoplay blocked — show as paused, user presses play
@@ -949,8 +1164,10 @@ function _loadAndPlay(track) {
     // Older Chromium: play() returns undefined, just assume it works
     S.playing = true;
     _updatePlayBtn();
+    _screenWake(true);
     if (S.autoDj) _autoDjPick();
   }
+  _markPlayingRows();
 }
 
 function _onTrackEnd() {
@@ -973,8 +1190,25 @@ function _onTrackEnd() {
 }
 
 function _onTimeUpdate() {
-  var dur = _audio.duration;
+  var track = S.queue[S.queueIdx] || {};
   var cur = _audio.currentTime;
+  var dur = _audio.duration;
+
+  // CUE segment: report position/duration relative to the segment and auto-advance
+  if (track.cueOffset != null) {
+    var segStart = track.cueOffset;
+    var segEnd = track.cueEndOffset != null ? track.cueEndOffset : dur;
+    if (segEnd && !isNaN(segEnd) && cur >= segEnd - 0.15) { _onTrackEnd(); return; }
+    var segCur = Math.max(0, cur - segStart);
+    var segDur = (segEnd && !isNaN(segEnd)) ? Math.max(0, segEnd - segStart) : 0;
+    el('pb-pos').textContent = fmtTime(segCur);
+    el('ov-pos').textContent = fmtTime(segCur);
+    el('pb-dur').textContent = fmtTime(segDur);
+    el('ov-dur').textContent = fmtTime(segDur);
+    _drawWaveforms();
+    return;
+  }
+
   if (!dur || isNaN(dur)) return;
   el('pb-pos').textContent   = fmtTime(cur);
   el('ov-pos').textContent   = fmtTime(cur);
@@ -990,6 +1224,8 @@ var VU_ACCENT  = '#7b5cf5';
 var VU_ACCENT2 = '#a07af7';
 
 function _fetchWaveform(filepath) {
+  // Consecutive CUE tracks share the same file — keep the waveform, don't reload/flicker
+  if (filepath && S.waveformFp === filepath && S.waveform) { _drawWaveforms(); return; }
   S.waveform = null;
   _drawWaveforms();
   if (!filepath) { S.waveformFp = null; return; }
@@ -1006,6 +1242,15 @@ function _fetchWaveform(filepath) {
 function _playPct() {
   var dur = _audio.duration;
   if (!dur || isNaN(dur)) return 0;
+  var track = S.queue[S.queueIdx] || {};
+  if (track.cueOffset != null) {
+    var segStart = track.cueOffset;
+    var segEnd = track.cueEndOffset != null ? track.cueEndOffset : dur;
+    var segDur = segEnd - segStart;
+    if (segDur <= 0) return 0;
+    var p = (_audio.currentTime - segStart) / segDur;
+    return p < 0 ? 0 : (p > 1 ? 1 : p);
+  }
   return _audio.currentTime / dur;
 }
 
@@ -1052,11 +1297,15 @@ function _drawWaveforms() {
    Bars react to the real waveform envelope at the current playback position. */
 var _vuRaf  = null;
 var _vuBars = [];
+var _vuNoise = [];
+var _vuAmp  = 0;
 var VU_BAR_COUNT = 40;
 
 function _startVU() {
   if (_vuRaf) return;
-  if (!_vuBars.length) { for (var i = 0; i < VU_BAR_COUNT; i++) _vuBars.push(0); }
+  if (!_vuBars.length) {
+    for (var i = 0; i < VU_BAR_COUNT; i++) { _vuBars.push(0); _vuNoise.push(0.5 + Math.random() * 0.5); }
+  }
   var loop = function() {
     _vuRaf = requestAnimationFrame(loop);
     _drawVU();
@@ -1088,6 +1337,9 @@ function _drawVU() {
   }
   var playing = S.playing && !_audio.paused;
 
+  // Smooth the driving amplitude — fast attack so it tracks the waveform, gentle release
+  _vuAmp += (amp - _vuAmp) * (amp > _vuAmp ? 0.6 : 0.12);
+
   var n = VU_BAR_COUNT;
   var gap = 4 * dpr;
   var barW = (W - gap * (n - 1)) / n;
@@ -1096,11 +1348,13 @@ function _drawVU() {
   for (var i = 0; i < n; i++) {
     var dist = Math.abs(i - center) / center;   // 0 centre .. 1 edges
     var shape = 1 - dist * 0.5;
-    var target = playing ? amp * shape * (0.55 + Math.random() * 0.75) : 0;
+    // Slowly drifting per-bar noise (not re-rolled every frame) keeps motion organic
+    _vuNoise[i] += ((0.55 + Math.random() * 0.55) - _vuNoise[i]) * 0.1;
+    var target = playing ? _vuAmp * shape * _vuNoise[i] : 0;
     if (target > 1) target = 1;
-    // ballistics: instant attack, exponential release
-    if (target > _vuBars[i]) _vuBars[i] = target;
-    else _vuBars[i] = _vuBars[i] * 0.86 + target * 0.14;
+    // Ballistics: snappy attack to match the waveform, slow analog release
+    if (target > _vuBars[i]) _vuBars[i] += (target - _vuBars[i]) * 0.7;
+    else _vuBars[i] += (target - _vuBars[i]) * 0.12;
     if (_vuBars[i] < 0.002) _vuBars[i] = 0;
 
     var barH = Math.max(2 * dpr, _vuBars[i] * H);
@@ -1119,12 +1373,159 @@ function _seekIfWave(delta) {
   var id = _currentFocusEl.id;
   if (id !== 'pb-wave' && id !== 'ov-wave') return false;
   if (!_audio.duration || isNaN(_audio.duration)) return false;
+  var track = S.queue[S.queueIdx] || {};
   var t = _audio.currentTime + delta;
-  if (t < 0) t = 0;
-  if (t > _audio.duration) t = _audio.duration;
+  if (track.cueOffset != null) {
+    // Clamp seeking within the CUE segment
+    var segStart = track.cueOffset;
+    var segEnd = track.cueEndOffset != null ? track.cueEndOffset : _audio.duration;
+    if (t < segStart) t = segStart;
+    if (t > segEnd) t = segEnd;
+  } else {
+    if (t < 0) t = 0;
+    if (t > _audio.duration) t = _audio.duration;
+  }
   _audio.currentTime = t;
   _drawWaveforms();
   return true;
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   MILKDROP-STYLE VISUALIZER (Canvas 2D feedback — 100% Tizen-safe, no Web Audio)
+   Manual only: launched from the Now Playing overlay. Any key exits.
+   ────────────────────────────────────────────────────────────────────────── */
+var _vizRaf = null;
+var _vizA = null, _vizAc = null;   // accumulator (feedback) buffer
+var _vizB = null, _vizBc = null;   // ping-pong buffer
+var _vizW = 0, _vizH = 0;
+var _vizHue = 0;
+var _vizPhase = 0;
+var _vizBeat = 0;
+var _vizAmpS = 0;
+
+function _vizActive() {
+  return !el('viz-overlay').classList.contains('hidden');
+}
+
+function _noteActivity() { /* no-op: retained for media-key callbacks */ }
+
+function startViz() {
+  if (_vizActive()) return;
+  var track = S.queue[S.queueIdx];
+  el('viz-title').textContent  = track ? (track.title || '') : '';
+  el('viz-artist').textContent = track ? (track.artist || '') : '';
+  el('viz-overlay').classList.remove('hidden');
+
+  var canvas = el('viz-canvas');
+  // Render at half resolution for TV performance, upscaled by CSS
+  _vizW = 960; _vizH = 540;
+  canvas.width = _vizW; canvas.height = _vizH;
+  if (!_vizA) {
+    _vizA = document.createElement('canvas'); _vizAc = _vizA.getContext('2d');
+    _vizB = document.createElement('canvas'); _vizBc = _vizB.getContext('2d');
+  }
+  _vizA.width = _vizW; _vizA.height = _vizH;
+  _vizB.width = _vizW; _vizB.height = _vizH;
+  _vizAc.fillStyle = '#000'; _vizAc.fillRect(0, 0, _vizW, _vizH);
+  _vizBc.fillStyle = '#000'; _vizBc.fillRect(0, 0, _vizW, _vizH);
+
+  if (_vizRaf) cancelAnimationFrame(_vizRaf);
+  var loop = function() {
+    _vizRaf = requestAnimationFrame(loop);
+    _drawViz(canvas);
+  };
+  _vizRaf = requestAnimationFrame(loop);
+}
+
+function stopViz() {
+  if (!_vizActive()) return;
+  el('viz-overlay').classList.add('hidden');
+  if (_vizRaf) { cancelAnimationFrame(_vizRaf); _vizRaf = null; }
+  _noteActivity();
+}
+
+function _drawViz(displayCanvas) {
+  var W = _vizW, H = _vizH;
+  var cx = W / 2, cy = H / 2;
+
+  // Current amplitude from the waveform envelope at the playback position
+  var amp = 0;
+  if (S.waveform && S.waveform.length && _audio.duration && !isNaN(_audio.duration)) {
+    var idx = Math.floor((_audio.currentTime / _audio.duration) * S.waveform.length);
+    if (idx < 0) idx = 0;
+    if (idx >= S.waveform.length) idx = S.waveform.length - 1;
+    amp = S.waveform[idx] / 255;
+  }
+  // Beat detection: rising amplitude edge
+  var prevAmp = _vizAmpS;
+  _vizAmpS += (amp - _vizAmpS) * (amp > _vizAmpS ? 0.5 : 0.1);
+  var rise = _vizAmpS - prevAmp;
+  if (rise > 0.03) _vizBeat = Math.min(1, _vizBeat + rise * 4);
+  _vizBeat *= 0.92;
+
+  _vizPhase += 0.012 + _vizAmpS * 0.03;
+  _vizHue = (_vizHue + 0.6 + _vizBeat * 3) % 360;
+
+  // ── Feedback warp: draw previous frame (B) into accumulator (A), zoomed+rotated
+  var ac = _vizAc;
+  var zoom = 1.012 + _vizBeat * 0.05 + _vizAmpS * 0.02;
+  var rot = 0.004 + Math.sin(_vizPhase * 0.5) * 0.006;
+  ac.save();
+  ac.globalAlpha = 1;
+  ac.translate(cx, cy);
+  ac.rotate(rot);
+  ac.scale(zoom, zoom);
+  ac.translate(-cx, -cy);
+  ac.drawImage(_vizB, 0, 0);
+  ac.restore();
+  // Fade slightly toward black so trails don't saturate
+  ac.fillStyle = 'rgba(0,0,0,0.10)';
+  ac.fillRect(0, 0, W, H);
+
+  // ── New bright layer: radial oscilloscope curves driven by the waveform
+  var wave = S.waveform || [];
+  var n = wave.length || 64;
+  var baseR = 60 + _vizAmpS * 90 + _vizBeat * 60;
+  ac.lineWidth = 2 + _vizBeat * 3;
+  ac.globalCompositeOperation = 'lighter';
+
+  for (var layer = 0; layer < 3; layer++) {
+    var hue = (_vizHue + layer * 60) % 360;
+    ac.strokeStyle = 'hsl(' + hue.toFixed(0) + ',90%,' + (55 + layer * 8) + '%)';
+    ac.beginPath();
+    var lobes = 3 + layer;
+    var spin = _vizPhase * (layer % 2 === 0 ? 1 : -1) + layer;
+    var steps = 96;
+    for (var s = 0; s <= steps; s++) {
+      var a = (s / steps) * Math.PI * 2;
+      var wi = Math.floor((s / steps) * (n - 1));
+      var wv = (wave.length ? wave[wi] / 255 : 0.4);
+      var r = baseR + Math.sin(a * lobes + spin) * (40 + wv * 120) * (0.6 + _vizAmpS);
+      var px = cx + Math.cos(a) * r * 1.6;
+      var py = cy + Math.sin(a) * r;
+      if (s === 0) ac.moveTo(px, py); else ac.lineTo(px, py);
+    }
+    ac.closePath();
+    ac.stroke();
+  }
+
+  // Central pulse
+  var pr = 8 + _vizBeat * 60 + _vizAmpS * 30;
+  var grd = ac.createRadialGradient(cx, cy, 0, cx, cy, pr);
+  grd.addColorStop(0, 'hsla(' + _vizHue.toFixed(0) + ',95%,70%,0.9)');
+  grd.addColorStop(1, 'hsla(' + _vizHue.toFixed(0) + ',95%,50%,0)');
+  ac.fillStyle = grd;
+  ac.beginPath();
+  ac.arc(cx, cy, pr, 0, Math.PI * 2);
+  ac.fill();
+  ac.globalCompositeOperation = 'source-over';
+
+  // Blit accumulator → visible canvas, then ping-pong (A becomes next B)
+  var dctx = displayCanvas.getContext('2d');
+  dctx.drawImage(_vizA, 0, 0);
+  var tmpCanvas = _vizB, tmpCtx = _vizBc;
+  _vizB = _vizA; _vizBc = _vizAc;
+  _vizA = tmpCanvas; _vizAc = tmpCtx;
 }
 
 function togglePlay() {
@@ -1134,6 +1535,7 @@ function togglePlay() {
     _audio.play().then(function() {
       S.playing = true;
       _updatePlayBtn();
+      _screenWake(true);
     }).catch(function() {});
   }
 }
@@ -1142,6 +1544,7 @@ function pauseAudio() {
   _audio.pause();
   S.playing = false;
   _updatePlayBtn();
+  _screenWake(false);
 }
 
 function skipNext() {
@@ -1183,6 +1586,7 @@ function initPlayerBar() {
   el('ov-prev').addEventListener('click', skipPrev);
   el('ov-play').addEventListener('click', togglePlay);
   el('ov-next').addEventListener('click', skipNext);
+  if (el('ov-viz')) el('ov-viz').addEventListener('click', startViz);
   el('overlay-close').addEventListener('click', closeOverlay);
 }
 
@@ -1262,8 +1666,75 @@ function _escAttr(str) {
 }
 
 /* ─────────────────────────────────────────────────────────────────────────────
+   TIZEN PLATFORM INTEGRATION (all feature-detected — safe on non-Tizen too)
+   ────────────────────────────────────────────────────────────────────────── */
+var _screenLockOn = false;
+
+// Keep the TV screen awake while audio plays / visualizer runs
+function _screenWake(on) {
+  try {
+    if (!window.tizen || !tizen.power) return;
+    if (on && !_screenLockOn) {
+      tizen.power.request('SCREEN', 'SCREEN_NORMAL');
+      _screenLockOn = true;
+    } else if (!on && _screenLockOn) {
+      tizen.power.release('SCREEN');
+      _screenLockOn = false;
+    }
+  } catch (ex) { /* power privilege unavailable — ignore */ }
+}
+
+// Register the remote's dedicated media keys via the Media Key API
+function _initMediaKeys() {
+  try {
+    if (!window.tizen || !tizen.mediakey) return;
+    tizen.mediakey.setMediaKeyEventListener({
+      onpressed: function(key) {
+        if (key === 'MEDIA_PLAY_PAUSE' || key === 'MEDIA_PLAY' || key === 'MEDIA_PAUSE') {
+          _noteActivity(); togglePlay();
+        } else if (key === 'MEDIA_NEXT' || key === 'MEDIA_FAST_FORWARD') {
+          _noteActivity(); skipNext();
+        } else if (key === 'MEDIA_PREVIOUS' || key === 'MEDIA_REWIND') {
+          _noteActivity(); skipPrev();
+        } else if (key === 'MEDIA_STOP') {
+          _noteActivity(); pauseAudio();
+        }
+      },
+      onreleased: function() { /* no-op: press handles actions */ }
+    });
+  } catch (ex) { /* mediakey privilege unavailable — ignore */ }
+}
+
+// Register the extra TV remote colour/arrow keys so keydown receives them
+function _initTvKeys() {
+  try {
+    if (!window.tizen || !tizen.tvinputdevice) return;
+    var keys = ['MediaPlayPause', 'MediaPlay', 'MediaPause', 'MediaStop',
+                'MediaFastForward', 'MediaRewind', 'MediaTrackNext', 'MediaTrackPrevious'];
+    for (var i = 0; i < keys.length; i++) {
+      try { tizen.tvinputdevice.registerKey(keys[i]); } catch (e) { /* key not supported */ }
+    }
+  } catch (ex) { /* tvinputdevice unavailable — ignore */ }
+}
+
+function _initTizen() {
+  _initMediaKeys();
+  _initTvKeys();
+  // Clean shutdown on app exit
+  try {
+    if (window.tizen && tizen.application) {
+      document.addEventListener('visibilitychange', function() {
+        if (document.hidden) _screenWake(false);
+        else if (S.playing) _screenWake(true);
+      });
+    }
+  } catch (ex) { /* ignore */ }
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
    BOOT
    ────────────────────────────────────────────────────────────────────────── */
 window.addEventListener('load', function() {
+  _initTizen();
   initLogin();
 });

@@ -1,3 +1,11 @@
+## v0.3.20 (2026-08-09)
+
+### Velvet TV — Samsung Tizen app: album feature parity + shareable build
+- **Albums on the TV now match the web UI.** CUE-sheet albums (single-file FLAC+CUE) are split into their individual tracks — selecting a track seeks to its start and stops cleanly at the track boundary, auto-advancing to the next. Multi-disc sets are grouped under disc headers ("CD 1", "Disc 2", …), each album shows year • track count • total duration, and the currently playing track is highlighted.
+- **A–Z quick-jump strip** added to the Albums view: press Right from the grid, pick a letter with Up/Down, press OK to jump straight to the first album for that letter. Only letters that have albums are shown (digits/symbols group under `#`). Fixed the D-pad visibility check so `position: fixed` controls are reachable by the remote.
+- **New public, credential-free widget build** — `npm run build:tizen:dist` produces `dist/velvet-tv-<version>.wgt` with no server URL or login baked in, safe to attach to a GitHub release. `npm run release` now builds and uploads this clean widget automatically, with a safety net that aborts if the package ever appears to contain credentials.
+- **Docs:** added `docs/tizen-tv.md` (install via Apps2Samsung, remote/media-key reference, album features, build modes, troubleshooting) and a dedicated TV-app release note.
+
 ## v0.3.19 (2026-08-05)
 
 - Improved Auto-DJ: fixed a case where the DJ could get stuck repeating untagged tracks when the artist cooldown covered all artists in the active library.

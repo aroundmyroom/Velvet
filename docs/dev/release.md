@@ -40,6 +40,8 @@ The script (`scripts/release.cjs`) does, in order:
 9. `git tag vX.Y.Z` → `git push origin vX.Y.Z` (this triggers the multi-arch
    Docker build + publish to `ghcr.io/aroundmyroom/velvet`).
 10. `gh release create` with `releases/vX.Y.Z.md` as the body.
+11. **Tizen TV widget** — `npm run build:tizen:dist` (clean, credential-free) and
+    `gh release upload` the resulting `dist/velvet-tv-X.Y.Z.wgt` onto the release.
 
 ## Flags
 
@@ -57,3 +59,46 @@ The script (`scripts/release.cjs`) does, in order:
   script refuses to run anywhere but `main`.
 - Commit messages never mention Claude/AI and carry no `Co-Authored-By` trailer.
 - After the run, check the Docker build: `gh run list --repo aroundmyroom/Velvet --limit 1`.
+
+## Tizen TV app (`.wgt`) — attach a CLEAN build
+
+The Samsung TV widget ships as a GitHub **release asset**, not in the repo
+(`dist/*` is git-ignored). `npm run release` now builds and attaches it
+**automatically** as its final step, always using the **clean, credential-free
+approach** — so every new version (e.g. `0.3.20`) gets a shareable widget with no
+server URL or login baked in.
+
+The release script runs:
+
+```shell
+npm run build:tizen:dist                                  # → dist/velvet-tv-<version>.wgt
+gh release upload v<version> dist/velvet-tv-<version>.wgt  # attach to the release
+```
+
+Before uploading it aborts if the built `.wgt` looks like it contains credentials
+(a safety net — the `:dist` build never reads
+`webapp/tizen/velvet-tv.config.json` in the first place).
+
+**Never attach `dist/velvet-tv.wgt`** (the plain `npm run build:tizen` output) —
+that one bakes in whatever is in the git-ignored config and prints a
+"do NOT distribute this build" warning.
+
+### Manual / re-upload
+
+If you need to (re)build and attach the widget by hand:
+
+```shell
+npm run build:tizen:dist          # clean, credential-free build
+gh release upload v<version> dist/velvet-tv-<version>.wgt --repo aroundmyroom/Velvet
+```
+
+Verify the asset carries no secrets before uploading:
+
+```shell
+node -e "const s=require('fs').readFileSync('dist/velvet-tv-<version>.wgt','latin1');console.log('leak:', /aroundtheworld|password\" content=\"[^\"]/.test(s))"
+# expect: leak: false
+```
+
+Release-note tip: the TV app has its own note file
+(`releases/velvet-tv-<major.minor>.md`) suitable for the `--notes-file` body when
+you want a dedicated TV-app release; see [`docs/tizen-tv.md`](../tizen-tv.md).

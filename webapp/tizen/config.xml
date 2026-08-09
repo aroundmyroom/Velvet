@@ -16,6 +16,12 @@
   <feature name="http://tizen.org/feature/network.internet"/>
   <tizen:privilege name="http://tizen.org/privilege/internet"/>
 
+  <!-- Keep the screen awake during playback / visualizer -->
+  <tizen:privilege name="http://tizen.org/privilege/power"/>
+
+  <!-- Remote media keys (Play/Pause/FF/Rewind) -->
+  <tizen:privilege name="http://tizen.org/privilege/mediakey"/>
+
   <!-- Allow connections to any origin (the user's Velvet server) -->
   <access origin="*" subdomains="true"/>
 

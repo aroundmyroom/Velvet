@@ -1,6 +1,6 @@
 {
   "name": "velvet",
-  "version": "0.3.19",
+  "version": "0.3.20",
   "description": "Velvet — your personal music server",
   "type": "module",
   "main": "cli-boot-wrapper.js",
@@ -17,6 +17,7 @@
     "lint:fix": "eslint . --fix",
     "sync-version": "node scripts/sync-webapp-version.cjs",
     "build:tizen": "node scripts/build-tizen-wgt.cjs",
+    "build:tizen:dist": "node scripts/build-tizen-wgt.cjs --dist",
     "release": "node scripts/release.cjs",
     "version": "node scripts/sync-webapp-version.cjs && git add -A",
     "test": "node --test test/integration/*.test.cjs test/*.test.mjs"
