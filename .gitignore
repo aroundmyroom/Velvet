@@ -49,6 +49,9 @@ check-*.cjs
 check-*.mjs
 testsonos/
 
+# Tizen TV build config — contains private server URL, never commit
+webapp/tizen/velvet-tv.config.json
+
 # stray test runtime artefacts — keep test suites, drop logs/loose assets
 test/debug.log
 test/*.svg
