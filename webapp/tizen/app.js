@@ -577,7 +577,8 @@ function loadArtists() {
   showLoading();
   api('GET', '/api/v1/artists/home').then(function(data) {
     hideLoading();
-    S.artistCache = data.artists || [];
+    // API returns topArtists/recentArtists — use topArtists as the list
+    S.artistCache = data.topArtists || data.recentArtists || [];
     _renderArtistList(S.artistCache);
   }).catch(function() {
     hideLoading();
@@ -598,9 +599,11 @@ function _renderArtistList(artists) {
     var imgSrc = (a.imageFile)
       ? S.baseUrl + '/api/v1/artists/images/' + encodeURIComponent(a.imageFile)
       : '';
-    html += '<div class="artist-row focusable" tabindex="0" data-key="' + _escAttr(a.key || a.name) + '" data-name="' + _escAttr(a.name) + '">' +
+    var displayName = a.canonicalName || a.name || a.artistKey || '';
+    var key = a.artistKey || a.key || displayName;
+    html += '<div class="artist-row focusable" tabindex="0" data-key="' + _escAttr(key) + '" data-name="' + _escAttr(displayName) + '">' +
       (imgSrc ? '<img class="artist-img" src="' + _escAttr(imgSrc) + '" alt="" loading="lazy">' : '<div class="artist-img" style="background:var(--bg3)"></div>') +
-      '<div class="artist-name">' + _esc(a.name) + '</div>' +
+      '<div class="artist-name">' + _esc(displayName) + '</div>' +
     '</div>';
   }
   list.innerHTML = html;
@@ -632,32 +635,62 @@ function openArtistProfile(key, name) {
     } else {
       img.style.display = 'none';
     }
-    // Show albums in album grid
-    var albums = (data.albums || []);
+
+    // releaseCategories is an object of {category, releases[]}
+    // Flatten all releases into a list of albums
     var grid = el('artist-albums');
     var html = '';
-    for (var i = 0; i < albums.length; i++) {
-      var a = albums[i];
-      var artSrc = albumArtUrl(a.aaFile, a.artFile);
-      html += '<div class="album-card focusable" tabindex="0" data-id="' + _escAttr(a.id) + '">' +
-        (artSrc ? '<img class="album-card-art" src="' + _escAttr(artSrc) + '" alt="" loading="lazy" onerror="this.style.display=\'none\'">' : '<div class="album-card-art-placeholder">&#127925;</div>') +
-        '<div class="album-card-info">' +
-          '<div class="album-card-title">' + _esc(a.displayName || a.name || '') + '</div>' +
-          '<div class="album-card-artist">' + _esc(a.year ? String(a.year) : '') + '</div>' +
-        '</div>' +
-      '</div>';
+    var releaseCategories = data.releaseCategories || {};
+    var catKeys = Object.keys(releaseCategories);
+    for (var c = 0; c < catKeys.length; c++) {
+      var cat = releaseCategories[catKeys[c]];
+      var releases = cat.releases || [];
+      for (var r = 0; r < releases.length; r++) {
+        var rel = releases[r];
+        var artSrc = rel.aaFile ? artUrl(rel.aaFile, 'm') : '';
+        var folderName = rel.folder || '';
+        var catName = cat.category || '';
+        // Use folder as display name, category as subtitle
+        html += '<div class="album-card focusable" tabindex="0"' +
+          ' data-cat="' + _escAttr(catName) + '"' +
+          ' data-folder="' + _escAttr(folderName) + '">' +
+          (artSrc ? '<img class="album-card-art" src="' + _escAttr(artSrc) + '" alt="" loading="lazy" onerror="this.style.display=\'none\'">' : '<div class="album-card-art-placeholder">&#127925;</div>') +
+          '<div class="album-card-info">' +
+            '<div class="album-card-title">' + _esc(folderName) + '</div>' +
+            '<div class="album-card-artist">' + _esc(rel.year ? String(rel.year) : '') + '</div>' +
+          '</div>' +
+        '</div>';
+      }
     }
-    grid.innerHTML = html;
+    grid.innerHTML = html || '<div style="color:var(--text2);padding:20px">No releases found.</div>';
 
+    // Clicking an artist release plays its tracks directly (no album detail API needed)
     var cards = grid.querySelectorAll('.album-card');
     for (var j = 0; j < cards.length; j++) {
-      (function(card) {
+      (function(card, catName2) {
+        var cat2 = releaseCategories[catKeys.filter(function(k){ return (releaseCategories[k].category || '') === catName2; })[0]] || {};
+        var rel2 = (cat2.releases || []).filter(function(rr){ return rr.folder === card.getAttribute('data-folder'); })[0] || {};
         card.addEventListener('click', function() {
-          openAlbumDetail(card.getAttribute('data-id'));
+          var tracks = rel2.tracks || [];
+          if (!tracks.length) return;
+          var queue = tracks.map(function(tr) {
+            return {
+              filepath: tr.filepath,
+              title:    tr.title || tr.filepath.split('/').pop(),
+              artist:   tr.artist || name,
+              album:    rel2.folder || '',
+              artFile:  rel2.aaFile || null
+            };
+          });
+          playQueue(queue, 0);
         });
-      })(cards[j]);
+      })(cards[j], cards[j].getAttribute('data-cat'));
     }
 
+    setTimeout(function() {
+      var items = _allFocusable(grid);
+      if (items.length) setFocus(items[0]);
+    }, 50);
     showView('artist-profile');
   }).catch(function() {
     hideLoading();
