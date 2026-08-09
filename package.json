@@ -16,6 +16,7 @@
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
     "sync-version": "node scripts/sync-webapp-version.cjs",
+    "build:tizen": "node scripts/build-tizen-wgt.cjs",
     "release": "node scripts/release.cjs",
     "version": "node scripts/sync-webapp-version.cjs && git add -A",
     "test": "node --test test/integration/*.test.cjs test/*.test.mjs"

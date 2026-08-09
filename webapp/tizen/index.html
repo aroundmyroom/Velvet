@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=1920, initial-scale=1.0">
+  <title>Velvet TV</title>
+  <link rel="stylesheet" href="app.css">
+</head>
+<body>
+
+  <!-- ── Login screen ─────────────────────────────────────────────────────── -->
+  <div id="screen-login" class="screen active">
+    <div class="login-box">
+      <div class="login-logo">VELVET</div>
+      <div class="login-subtitle">Music Server</div>
+      <div class="login-fields">
+        <div class="field-group">
+          <label class="field-label">Server URL</label>
+          <input id="login-url" class="field-input focusable" type="url"
+                 placeholder="https://music.example.com:3000" autocomplete="off">
+        </div>
+        <div class="field-group">
+          <label class="field-label">Username</label>
+          <input id="login-user" class="field-input focusable" type="text"
+                 autocomplete="username">
+        </div>
+        <div class="field-group">
+          <label class="field-label">Password</label>
+          <input id="login-pass" class="field-input focusable" type="password"
+                 autocomplete="current-password">
+        </div>
+        <button id="login-btn" class="login-btn focusable">Connect</button>
+        <div id="login-error" class="login-error hidden"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Main layout (home / browse screens) ──────────────────────────────── -->
+  <div id="screen-main" class="screen hidden">
+
+    <!-- Top navigation bar -->
+    <nav id="nav-bar">
+      <div class="nav-brand">VELVET</div>
+      <div id="nav-items" class="nav-items">
+        <button class="nav-item focusable" data-screen="home">Home</button>
+        <button class="nav-item focusable" data-screen="albums">Albums</button>
+        <button class="nav-item focusable" data-screen="artists">Artists</button>
+        <button class="nav-item focusable" data-screen="playlists">Playlists</button>
+        <button class="nav-item focusable" data-screen="autodj">Auto-DJ</button>
+      </div>
+      <button id="nav-logout" class="nav-logout focusable">Sign out</button>
+    </nav>
+
+    <!-- Content area — screens swap here -->
+    <div id="content-area">
+
+      <!-- Home -->
+      <div id="view-home" class="view active">
+        <div class="home-grid">
+          <div class="home-tile focusable" data-screen="albums">
+            <div class="home-tile-icon">&#9654; Albums</div>
+          </div>
+          <div class="home-tile focusable" data-screen="artists">
+            <div class="home-tile-icon">&#9835; Artists</div>
+          </div>
+          <div class="home-tile focusable" data-screen="playlists">
+            <div class="home-tile-icon">&#9776; Playlists</div>
+          </div>
+          <div class="home-tile focusable" data-screen="autodj">
+            <div class="home-tile-icon">&#8734; Auto-DJ</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Albums grid -->
+      <div id="view-albums" class="view hidden">
+        <div id="albums-header" class="view-header">Albums</div>
+        <div id="albums-grid" class="card-grid"></div>
+      </div>
+
+      <!-- Album detail (track list) -->
+      <div id="view-album-detail" class="view hidden">
+        <div id="album-detail-header" class="album-detail-header">
+          <img id="album-detail-art" class="album-detail-art" src="" alt="">
+          <div class="album-detail-meta">
+            <div id="album-detail-title" class="album-detail-title"></div>
+            <div id="album-detail-artist" class="album-detail-artist"></div>
+            <div id="album-detail-year" class="album-detail-year"></div>
+            <button id="album-play-all" class="play-all-btn focusable">&#9654; Play All</button>
+          </div>
+        </div>
+        <div id="album-track-list" class="track-list"></div>
+      </div>
+
+      <!-- Artists list -->
+      <div id="view-artists" class="view hidden">
+        <div class="view-header">Artists</div>
+        <div id="artists-list" class="artist-list"></div>
+      </div>
+
+      <!-- Artist profile -->
+      <div id="view-artist-profile" class="view hidden">
+        <div id="artist-profile-header" class="artist-profile-header">
+          <img id="artist-profile-img" class="artist-profile-img" src="" alt="">
+          <div class="artist-profile-meta">
+            <div id="artist-profile-name" class="artist-profile-name"></div>
+          </div>
+        </div>
+        <div id="artist-albums" class="card-grid"></div>
+      </div>
+
+      <!-- Playlists list -->
+      <div id="view-playlists" class="view hidden">
+        <div class="view-header">Playlists</div>
+        <div id="playlists-list" class="playlist-list"></div>
+      </div>
+
+      <!-- Playlist detail (track list) -->
+      <div id="view-playlist-detail" class="view hidden">
+        <div id="playlist-detail-title" class="view-header"></div>
+        <div id="playlist-track-list" class="track-list"></div>
+      </div>
+
+      <!-- Auto-DJ -->
+      <div id="view-autodj" class="view hidden">
+        <div class="autodj-center">
+          <div class="autodj-title">Auto-DJ</div>
+          <div class="autodj-desc">Continuously picks music for you.</div>
+          <button id="autodj-start-btn" class="autodj-start-btn focusable">&#9654; Start Auto-DJ</button>
+          <div id="autodj-status" class="autodj-status hidden"></div>
+        </div>
+      </div>
+
+    </div><!-- /content-area -->
+
+    <!-- Bottom player bar (always visible once music starts) -->
+    <div id="player-bar" class="player-bar hidden">
+      <div class="pb-art-wrap">
+        <img id="pb-art" class="pb-art" src="" alt="">
+      </div>
+      <div class="pb-info">
+        <div id="pb-title" class="pb-title"></div>
+        <div id="pb-artist" class="pb-artist"></div>
+      </div>
+      <div class="pb-controls">
+        <button id="pb-prev" class="pb-btn focusable" title="Previous">&#10094;&#10094;</button>
+        <button id="pb-play" class="pb-btn pb-play focusable" title="Play/Pause">&#9654;</button>
+        <button id="pb-next" class="pb-btn focusable" title="Next">&#10095;&#10095;</button>
+      </div>
+      <div class="pb-progress-wrap">
+        <span id="pb-pos" class="pb-time">0:00</span>
+        <div id="pb-progress" class="pb-progress">
+          <div id="pb-fill" class="pb-fill"></div>
+        </div>
+        <span id="pb-dur" class="pb-time">0:00</span>
+      </div>
+    </div>
+
+  </div><!-- /screen-main -->
+
+  <!-- Full-screen player overlay (triggered from player bar or Now Playing) -->
+  <div id="player-overlay" class="player-overlay hidden">
+    <button id="overlay-close" class="overlay-close focusable">&#10005;</button>
+    <div class="overlay-art-wrap">
+      <img id="overlay-art" class="overlay-art" src="" alt="">
+    </div>
+    <div class="overlay-info">
+      <div id="overlay-title" class="overlay-title"></div>
+      <div id="overlay-artist" class="overlay-artist"></div>
+      <div id="overlay-album" class="overlay-album"></div>
+    </div>
+    <div class="overlay-controls">
+      <button id="ov-prev" class="ov-btn focusable">&#10094;&#10094;</button>
+      <button id="ov-play" class="ov-btn ov-play focusable">&#9654;</button>
+      <button id="ov-next" class="ov-btn focusable">&#10095;&#10095;</button>
+    </div>
+    <div class="overlay-progress-wrap">
+      <span id="ov-pos" class="ov-time">0:00</span>
+      <div id="ov-progress" class="ov-progress focusable" tabindex="-1">
+        <div id="ov-fill" class="ov-fill"></div>
+      </div>
+      <span id="ov-dur" class="ov-time">0:00</span>
+    </div>
+    <div id="ov-autodj-badge" class="ov-autodj-badge hidden">AUTO-DJ</div>
+  </div>
+
+  <!-- Hidden audio element -->
+  <audio id="audio" preload="auto"></audio>
+
+  <!-- Loading spinner overlay -->
+  <div id="loading-overlay" class="loading-overlay hidden">
+    <div class="spinner"></div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
