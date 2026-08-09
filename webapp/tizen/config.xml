@@ -6,7 +6,7 @@
 
   <tizen:application id="aroundmyroom.VelvetTV"
                      package="aroundmyroom"
-                     required_version="6.0"/>
+                     required_version="5.5"/>
 
   <name>Velvet TV</name>
   <icon src="icon.png"/>
