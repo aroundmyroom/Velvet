@@ -317,6 +317,13 @@ function showView(name) {
    ────────────────────────────────────────────────────────────────────────── */
 function initLogin() {
   _loadSettings();
+  // Pre-fill URL from build-time config if nothing stored yet
+  if (!S.baseUrl) {
+    var meta = document.querySelector('meta[name="velvet-server-url"]');
+    if (meta && meta.content && meta.content !== '__VELVET_SERVER_URL__') {
+      S.baseUrl = meta.content;
+    }
+  }
   if (S.baseUrl)  el('login-url').value  = S.baseUrl;
   if (S.username) el('login-user').value = S.username;
 

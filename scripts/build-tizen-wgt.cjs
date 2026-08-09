@@ -115,16 +115,27 @@ function crc32(buf) {
   return (crc ^ 0xffffffff) >>> 0;
 }
 
-// Collect files
+// Collect files (skip velvet-tv.config.json — build-time only)
 function collectFiles(dir, base) {
   const entries = [];
   for (const name of fs.readdirSync(dir)) {
+    if (name === 'velvet-tv.config.json') continue;
     const full = path.join(dir, name);
     const rel  = base ? base + '/' + name : name;
     if (fs.statSync(full).isDirectory()) {
       entries.push(...collectFiles(full, rel));
     } else {
-      entries.push({ name: rel, data: fs.readFileSync(full) });
+      let data = fs.readFileSync(full);
+      // Inject server URL into index.html meta tag
+      if (rel === 'index.html') {
+        let cfgUrl = '';
+        try {
+          const cfg = JSON.parse(fs.readFileSync(path.join(SRC, 'velvet-tv.config.json'), 'utf8'));
+          cfgUrl = (cfg.serverUrl || '').trim();
+        } catch (_) {}
+        data = Buffer.from(data.toString('utf8').replace('__VELVET_SERVER_URL__', cfgUrl), 'utf8');
+      }
+      entries.push({ name: rel, data });
     }
   }
   return entries;
