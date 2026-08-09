@@ -860,7 +860,11 @@ function playQueue(queue, startIdx) {
 }
 
 function _trackUrl(filepath) {
-  return S.baseUrl + '/media/' + filepath.split('/').slice(1).join('/') + '?token=' + encodeURIComponent(S.token);
+  // filepath is always "VpathName/relative/path.mp3"
+  // Server mounts at /media/VpathName/ so keep the full filepath as-is
+  var parts = filepath.split('/');
+  var encoded = parts.map(function(p) { return encodeURIComponent(p); }).join('/');
+  return S.baseUrl + '/media/' + encoded + '?token=' + encodeURIComponent(S.token);
 }
 
 function _loadAndPlay(track) {
