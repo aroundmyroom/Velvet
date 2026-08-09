@@ -517,8 +517,8 @@ body.has-player #content-area { /* handled via JS class */ }
 
 .pb-progress-wrap { display: flex; align-items: center; flex-shrink: 0; width: 400px; margin-left: 30px; }
 .pb-time { font-size: 22px; color: var(--text2); flex-shrink: 0; margin-right: 10px; }
-.pb-progress { flex: 1; height: 6px; background: var(--bg3); border-radius: 3px; overflow: hidden; }
-.pb-fill { height: 100%; background: var(--accent); width: 0%; transition: width 1s linear; }
+.pb-wave { flex: 1; height: 56px; margin: 0 6px; display: block; border-radius: 4px; }
+.pb-wave.focused, .pb-wave:focus { outline: 3px solid var(--focus); outline-offset: 2px; }
 
 /* ────────────────────────────────────────────────────────────────────────────
    FULL-SCREEN PLAYER OVERLAY
@@ -601,8 +601,15 @@ body.has-player #content-area { /* handled via JS class */ }
   width: 900px;
 }
 .ov-time { font-size: 26px; color: var(--text2); flex-shrink: 0; margin-right: 14px; }
-.ov-progress { flex: 1; height: 8px; background: var(--bg3); border-radius: 4px; overflow: hidden; }
-.ov-fill { height: 100%; background: var(--accent); width: 0%; transition: width 1s linear; }
+.ov-wave { flex: 1; height: 90px; margin: 0 8px; display: block; border-radius: 6px; }
+.ov-wave.focused, .ov-wave:focus { outline: 4px solid var(--focus); outline-offset: 3px; }
+
+.ov-vu {
+  width: 900px;
+  height: 120px;
+  display: block;
+  margin-bottom: 40px;
+}
 
 .ov-autodj-badge {
   position: absolute;

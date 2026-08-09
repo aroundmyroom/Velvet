@@ -151,9 +151,7 @@
       </div>
       <div class="pb-progress-wrap">
         <span id="pb-pos" class="pb-time">0:00</span>
-        <div id="pb-progress" class="pb-progress">
-          <div id="pb-fill" class="pb-fill"></div>
-        </div>
+        <canvas id="pb-wave" class="pb-wave focusable" tabindex="0"></canvas>
         <span id="pb-dur" class="pb-time">0:00</span>
       </div>
     </div>
@@ -171,6 +169,7 @@
       <div id="overlay-artist" class="overlay-artist"></div>
       <div id="overlay-album" class="overlay-album"></div>
     </div>
+    <canvas id="ov-vu" class="ov-vu"></canvas>
     <div class="overlay-controls">
       <button id="ov-prev" class="ov-btn focusable">&#10094;&#10094;</button>
       <button id="ov-play" class="ov-btn ov-play focusable">&#9654;</button>
@@ -178,9 +177,7 @@
     </div>
     <div class="overlay-progress-wrap">
       <span id="ov-pos" class="ov-time">0:00</span>
-      <div id="ov-progress" class="ov-progress focusable" tabindex="-1">
-        <div id="ov-fill" class="ov-fill"></div>
-      </div>
+      <canvas id="ov-wave" class="ov-wave focusable" tabindex="0"></canvas>
       <span id="ov-dur" class="ov-time">0:00</span>
     </div>
     <div id="ov-autodj-badge" class="ov-autodj-badge hidden">AUTO-DJ</div>

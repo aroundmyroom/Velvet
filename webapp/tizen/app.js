@@ -17,6 +17,8 @@ var S = {
   currentView: 'home',
   albumCache:  null,
   artistCache: null,
+  waveform:    null,   // decoded waveform array [0..255] for current track
+  waveformFp:  null,   // filepath matching S.waveform (avoids double-fetch)
   // Focus management
   focusArea:   'nav',   // 'login' | 'nav' | 'content' | 'player' | 'overlay'
 };
@@ -193,8 +195,8 @@ document.addEventListener('keydown', function(e) {
 
   // Overlay active — no inputs there, block typing early
   if (!el('player-overlay').classList.contains('hidden')) {
-    if (key === KEY.LEFT)  { _moveFocus('left'); e.preventDefault(); return; }
-    if (key === KEY.RIGHT) { _moveFocus('right'); e.preventDefault(); return; }
+    if (key === KEY.LEFT)  { if (_seekIfWave(-10)) { e.preventDefault(); return; } _moveFocus('left'); e.preventDefault(); return; }
+    if (key === KEY.RIGHT) { if (_seekIfWave(10))  { e.preventDefault(); return; } _moveFocus('right'); e.preventDefault(); return; }
     if (key === KEY.UP)    { _moveFocus('up'); e.preventDefault(); return; }
     if (key === KEY.DOWN)  { _moveFocus('down'); e.preventDefault(); return; }
     if (key === KEY.ENTER) { _activateFocused(e); return; }
@@ -224,8 +226,8 @@ document.addEventListener('keydown', function(e) {
   if (isInput && key !== KEY.BACK && key !== 27) return;
 
   // Main screen
-  if (key === KEY.LEFT)  { _moveFocus('left'); e.preventDefault(); }
-  else if (key === KEY.RIGHT) { _moveFocus('right'); e.preventDefault(); }
+  if (key === KEY.LEFT)  { if (_seekIfWave(-10)) { e.preventDefault(); return; } _moveFocus('left'); e.preventDefault(); }
+  else if (key === KEY.RIGHT) { if (_seekIfWave(10)) { e.preventDefault(); return; } _moveFocus('right'); e.preventDefault(); }
   else if (key === KEY.UP)    { _moveFocus('up'); e.preventDefault(); }
   else if (key === KEY.DOWN)  { _moveFocus('down'); e.preventDefault(); }
   else if (key === KEY.ENTER) { _activateFocused(e); }
@@ -871,6 +873,7 @@ function _loadAndPlay(track) {
   // Update UI immediately — don't wait for play() promise
   _updatePlayerBar(track);
   showPlayerBar();
+  _fetchWaveform(track.filepath);
   _audio.src = _trackUrl(track.filepath);
   _audio.load();
   var playResult = _audio.play();
@@ -915,13 +918,155 @@ function _onTimeUpdate() {
   var dur = _audio.duration;
   var cur = _audio.currentTime;
   if (!dur || isNaN(dur)) return;
-  var pct = (cur / dur * 100).toFixed(1) + '%';
-  el('pb-fill').style.width  = pct;
-  el('ov-fill').style.width  = pct;
   el('pb-pos').textContent   = fmtTime(cur);
   el('ov-pos').textContent   = fmtTime(cur);
   el('pb-dur').textContent   = fmtTime(dur);
   el('ov-dur').textContent   = fmtTime(dur);
+  _drawWaveforms();
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   WAVEFORM  (real data from /api/v1/db/waveform) + amplitude VU meter
+   ────────────────────────────────────────────────────────────────────────── */
+var VU_ACCENT  = '#7b5cf5';
+var VU_ACCENT2 = '#a07af7';
+
+function _fetchWaveform(filepath) {
+  S.waveform = null;
+  _drawWaveforms();
+  if (!filepath) { S.waveformFp = null; return; }
+  S.waveformFp = filepath;
+  api('GET', '/api/v1/db/waveform?filepath=' + encodeURIComponent(filepath)).then(function(data) {
+    if (S.waveformFp !== filepath) return;  // track changed while loading
+    S.waveform = (data && data.waveform) || null;
+    _drawWaveforms();
+  }).catch(function() {
+    // waveform unavailable (ffmpeg off / not cached) — leave bars empty
+  });
+}
+
+function _playPct() {
+  var dur = _audio.duration;
+  if (!dur || isNaN(dur)) return 0;
+  return _audio.currentTime / dur;
+}
+
+function _drawWaveBars(canvas, data, pct) {
+  if (!canvas) return;
+  var dpr = window.devicePixelRatio || 1;
+  var W = Math.floor(canvas.clientWidth * dpr);
+  var H = Math.floor(canvas.clientHeight * dpr);
+  if (!W || !H) return;
+  if (canvas.width !== W || canvas.height !== H) { canvas.width = W; canvas.height = H; }
+  var ctx = canvas.getContext('2d');
+  ctx.clearRect(0, 0, W, H);
+  if (!data || !data.length) return;
+
+  var midY = H / 2;
+  var n = data.length;
+  var barW = W / n;
+  var drawW = Math.max(1, barW > 2 ? barW - 1 : barW);
+  var splitX = pct * W;
+
+  var grad = ctx.createLinearGradient(0, 0, W, 0);
+  grad.addColorStop(0, VU_ACCENT);
+  grad.addColorStop(1, VU_ACCENT2);
+  ctx.fillStyle = grad;
+
+  for (var i = 0; i < n; i++) {
+    var x = (i / n) * W;
+    var barH = Math.max(2 * dpr, (data[i] / 255) * midY * 1.8);
+    ctx.globalAlpha = (x < splitX) ? 1 : 0.28;
+    ctx.fillRect(x, midY - barH / 2, drawW, barH);
+  }
+  ctx.globalAlpha = 1;
+}
+
+function _drawWaveforms() {
+  var pct = _playPct();
+  _drawWaveBars(el('pb-wave'), S.waveform, pct);
+  if (!el('player-overlay').classList.contains('hidden')) {
+    _drawWaveBars(el('ov-wave'), S.waveform, pct);
+  }
+}
+
+/* Amplitude-driven VU / spectrum meter (no Web Audio — 100% Tizen-safe).
+   Bars react to the real waveform envelope at the current playback position. */
+var _vuRaf  = null;
+var _vuBars = [];
+var VU_BAR_COUNT = 40;
+
+function _startVU() {
+  if (_vuRaf) return;
+  if (!_vuBars.length) { for (var i = 0; i < VU_BAR_COUNT; i++) _vuBars.push(0); }
+  var loop = function() {
+    _vuRaf = requestAnimationFrame(loop);
+    _drawVU();
+  };
+  _vuRaf = requestAnimationFrame(loop);
+}
+
+function _stopVU() {
+  if (_vuRaf) { cancelAnimationFrame(_vuRaf); _vuRaf = null; }
+}
+
+function _drawVU() {
+  var canvas = el('ov-vu');
+  if (!canvas) return;
+  var dpr = window.devicePixelRatio || 1;
+  var W = Math.floor(canvas.clientWidth * dpr);
+  var H = Math.floor(canvas.clientHeight * dpr);
+  if (!W || !H) return;
+  if (canvas.width !== W || canvas.height !== H) { canvas.width = W; canvas.height = H; }
+  var ctx = canvas.getContext('2d');
+  ctx.clearRect(0, 0, W, H);
+
+  var amp = 0;
+  if (S.waveform && S.waveform.length && _audio.duration && !isNaN(_audio.duration)) {
+    var idx = Math.floor((_audio.currentTime / _audio.duration) * S.waveform.length);
+    if (idx < 0) idx = 0;
+    if (idx >= S.waveform.length) idx = S.waveform.length - 1;
+    amp = S.waveform[idx] / 255;
+  }
+  var playing = S.playing && !_audio.paused;
+
+  var n = VU_BAR_COUNT;
+  var gap = 4 * dpr;
+  var barW = (W - gap * (n - 1)) / n;
+  var center = (n - 1) / 2;
+
+  for (var i = 0; i < n; i++) {
+    var dist = Math.abs(i - center) / center;   // 0 centre .. 1 edges
+    var shape = 1 - dist * 0.5;
+    var target = playing ? amp * shape * (0.55 + Math.random() * 0.75) : 0;
+    if (target > 1) target = 1;
+    // ballistics: instant attack, exponential release
+    if (target > _vuBars[i]) _vuBars[i] = target;
+    else _vuBars[i] = _vuBars[i] * 0.86 + target * 0.14;
+    if (_vuBars[i] < 0.002) _vuBars[i] = 0;
+
+    var barH = Math.max(2 * dpr, _vuBars[i] * H);
+    var x = i * (barW + gap);
+    var grad = ctx.createLinearGradient(0, H, 0, H - barH);
+    grad.addColorStop(0, VU_ACCENT);
+    grad.addColorStop(1, VU_ACCENT2);
+    ctx.fillStyle = grad;
+    ctx.fillRect(x, H - barH, barW, barH);
+  }
+}
+
+// Seek ±delta seconds when the waveform bar is focused; returns true if handled
+function _seekIfWave(delta) {
+  if (!_currentFocusEl) return false;
+  var id = _currentFocusEl.id;
+  if (id !== 'pb-wave' && id !== 'ov-wave') return false;
+  if (!_audio.duration || isNaN(_audio.duration)) return false;
+  var t = _audio.currentTime + delta;
+  if (t < 0) t = 0;
+  if (t > _audio.duration) t = _audio.duration;
+  _audio.currentTime = t;
+  _drawWaveforms();
+  return true;
 }
 
 function togglePlay() {
@@ -1015,11 +1160,13 @@ function hidePlayerBar() {
    ────────────────────────────────────────────────────────────────────────── */
 function openOverlay() {
   el('player-overlay').classList.remove('hidden');
-  setTimeout(function() { setFocus(el('ov-play')); }, 50);
+  _startVU();
+  setTimeout(function() { _drawWaveforms(); setFocus(el('ov-play')); }, 50);
 }
 
 function closeOverlay() {
   el('player-overlay').classList.add('hidden');
+  _stopVU();
   setTimeout(function() {
     if (_currentFocusEl) setFocus(_currentFocusEl);
     else focusFirst(el('nav-bar'));
