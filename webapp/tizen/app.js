@@ -813,7 +813,7 @@ function playQueue(queue, startIdx) {
 }
 
 function _trackUrl(filepath) {
-  return S.baseUrl + '/media/' + filepath.split('/').slice(1).join('/');
+  return S.baseUrl + '/media/' + filepath.split('/').slice(1).join('/') + '?token=' + encodeURIComponent(S.token);
 }
 
 function _loadAndPlay(track) {
