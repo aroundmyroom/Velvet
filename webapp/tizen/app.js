@@ -185,12 +185,10 @@ document.addEventListener('keydown', function(e) {
     RETURN: 10009  // same as BACK on Tizen
   };
 
-  // Allow normal typing in text fields
   var tag = document.activeElement && document.activeElement.tagName;
   var isInput = (tag === 'INPUT' || tag === 'TEXTAREA');
-  if (isInput && key !== KEY.BACK && key !== 27) return;
 
-  // Overlay active
+  // Overlay active — no inputs there, block typing early
   if (!el('player-overlay').classList.contains('hidden')) {
     if (key === KEY.LEFT)  { _moveFocus('left'); e.preventDefault(); return; }
     if (key === KEY.RIGHT) { _moveFocus('right'); e.preventDefault(); return; }
@@ -203,13 +201,24 @@ document.addEventListener('keydown', function(e) {
     return;
   }
 
-  // Login screen
+  // Login screen — intercept UP/DOWN for field navigation even while typing
   if (!el('screen-login').classList.contains('hidden')) {
-    if (key === KEY.UP)    { _moveFocus('up'); e.preventDefault(); return; }
-    if (key === KEY.DOWN)  { _moveFocus('down'); e.preventDefault(); return; }
+    if (key === KEY.UP)   { _moveFocus('up');   e.preventDefault(); return; }
+    if (key === KEY.DOWN) { _moveFocus('down'); e.preventDefault(); return; }
     if (key === KEY.ENTER && !isInput) { _activateFocused(e); return; }
+    // ENTER on an input: move focus to next field (or button)
+    if (key === KEY.ENTER && isInput) {
+      var fields = [el('login-url'), el('login-user'), el('login-pass'), el('login-btn')];
+      var idx = fields.indexOf(document.activeElement);
+      if (idx >= 0 && idx < fields.length - 1) { setFocus(fields[idx + 1]); e.preventDefault(); }
+      return;
+    }
+    if (isInput) return;  // let all other keys through for typing
     return;
   }
+
+  // Main screen — block typing keys (no free-text inputs outside login)
+  if (isInput && key !== KEY.BACK && key !== 27) return;
 
   // Main screen
   if (key === KEY.LEFT)  { _moveFocus('left'); e.preventDefault(); }
