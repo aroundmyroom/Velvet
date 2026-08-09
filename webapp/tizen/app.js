@@ -63,15 +63,18 @@ function api(method, path, body) {
   });
 }
 
-function artUrl(artFile, size) {
-  if (!artFile) return '';
-  return S.baseUrl + '/api/v1/files/art?fp=' + encodeURIComponent(artFile) + '&size=' + (size || 'm');
+// aaFile is a hash like "abc123.jpg" served from /album-art/
+function artUrl(aaFile, size) {
+  if (!aaFile) return '';
+  return S.baseUrl + '/album-art/' + encodeURIComponent(aaFile) + '?compress=' + (size || 'm') + '&token=' + encodeURIComponent(S.token);
 }
 
-function albumArtUrl(artFile) {
+// Prefer aaFile (cached hash); fall back to raw artFile path
+function albumArtUrl(aaFile, artFile) {
+  if (aaFile) return artUrl(aaFile, 'm');
   if (!artFile) return '';
   if (artFile.indexOf('http') === 0) return artFile;
-  return S.baseUrl + '/api/v1/albums/art-file?p=' + encodeURIComponent(artFile);
+  return S.baseUrl + '/api/v1/albums/art-file?p=' + encodeURIComponent(artFile) + '&token=' + encodeURIComponent(S.token);
 }
 
 /* ── DOM shortcuts ────────────────────────────────────────────────────────────── */
@@ -451,13 +454,13 @@ function renderAlbumGrid(albums) {
   var html = '';
   for (var i = 0; i < albums.length; i++) {
     var a = albums[i];
-    var artSrc = a.artFile ? albumArtUrl(a.artFile) : '';
+    var artSrc = albumArtUrl(a.aaFile, a.artFile);
     html += '<div class="album-card focusable" tabindex="0" data-id="' + _escAttr(a.id) + '">' +
       (artSrc
-        ? '<img class="album-card-art" src="' + _escAttr(artSrc) + '" alt="" loading="lazy" onerror="this.parentNode.innerHTML=\'<div class=album-card-art-placeholder>&#127925;</div>\'+ this.parentNode.innerHTML.replace(/<img[^>]*>/,\'\');">'
+        ? '<img class="album-card-art" src="' + _escAttr(artSrc) + '" alt="" loading="lazy" onerror="this.style.display=\'none\';">'
         : '<div class="album-card-art-placeholder">&#127925;</div>') +
       '<div class="album-card-info">' +
-        '<div class="album-card-title">' + _esc(a.name) + '</div>' +
+        '<div class="album-card-title">' + _esc(a.displayName || a.name || '') + '</div>' +
         '<div class="album-card-artist">' + _esc(a.artist || '') + '</div>' +
       '</div>' +
     '</div>';
@@ -492,12 +495,12 @@ function openAlbumDetail(albumId) {
 }
 
 function _renderAlbumDetail(album) {
-  var artSrc = album.artFile ? albumArtUrl(album.artFile) : '';
+  var artSrc = albumArtUrl(album.aaFile, album.artFile);
   var artEl = el('album-detail-art');
   if (artSrc) { artEl.src = artSrc; artEl.style.display = ''; }
   else { artEl.style.display = 'none'; }
 
-  el('album-detail-title').textContent  = album.name || '';
+  el('album-detail-title').textContent  = album.displayName || album.name || '';
   el('album-detail-artist').textContent = album.artist || '';
   el('album-detail-year').textContent   = album.year ? String(album.year) : '';
 
@@ -518,9 +521,9 @@ function _renderAlbumDetail(album) {
       return {
         filepath: tr.filepath,
         title:    tr.title || tr.filepath.split('/').pop(),
-        artist:   album.artist || '',
-        album:    album.name || '',
-        artFile:  album.artFile || null
+        artist:   tr.artist || album.artist || '',
+        album:    album.displayName || album.name || '',
+        artFile:  tr.aaFile || album.aaFile || null
       };
     });
     playQueue(queue, 0);
@@ -532,7 +535,7 @@ function _renderAlbumDetail(album) {
   for (var i = 0; i < tracks.length; i++) {
     var tr = tracks[i];
     html += '<div class="track-row focusable" tabindex="0" data-idx="' + i + '">' +
-      '<div class="track-num">' + _esc(tr.track ? String(tr.track) : String(i + 1)) + '</div>' +
+      '<div class="track-num">' + _esc(tr.number ? String(tr.number) : String(i + 1)) + '</div>' +
       '<div class="track-title">' + _esc(tr.title || tr.filepath.split('/').pop()) + '</div>' +
       '<div class="track-dur">' + fmtTime(tr.duration) + '</div>' +
     '</div>';
@@ -549,9 +552,9 @@ function _renderAlbumDetail(album) {
           return {
             filepath: tr.filepath,
             title:    tr.title || tr.filepath.split('/').pop(),
-            artist:   albumRef.artist || '',
-            album:    albumRef.name || '',
-            artFile:  albumRef.artFile || null
+            artist:   tr.artist || albumRef.artist || '',
+            album:    albumRef.displayName || albumRef.name || '',
+            artFile:  tr.aaFile || albumRef.aaFile || null
           };
         });
         playQueue(queue, idx);
@@ -628,11 +631,11 @@ function openArtistProfile(key, name) {
     var html = '';
     for (var i = 0; i < albums.length; i++) {
       var a = albums[i];
-      var artSrc = a.artFile ? albumArtUrl(a.artFile) : '';
+      var artSrc = albumArtUrl(a.aaFile, a.artFile);
       html += '<div class="album-card focusable" tabindex="0" data-id="' + _escAttr(a.id) + '">' +
-        (artSrc ? '<img class="album-card-art" src="' + _escAttr(artSrc) + '" alt="" loading="lazy">' : '<div class="album-card-art-placeholder">&#127925;</div>') +
+        (artSrc ? '<img class="album-card-art" src="' + _escAttr(artSrc) + '" alt="" loading="lazy" onerror="this.style.display=\'none\'">' : '<div class="album-card-art-placeholder">&#127925;</div>') +
         '<div class="album-card-info">' +
-          '<div class="album-card-title">' + _esc(a.name) + '</div>' +
+          '<div class="album-card-title">' + _esc(a.displayName || a.name || '') + '</div>' +
           '<div class="album-card-artist">' + _esc(a.year ? String(a.year) : '') + '</div>' +
         '</div>' +
       '</div>';
@@ -705,12 +708,14 @@ function openPlaylistDetail(name) {
     hideLoading();
     el('playlist-detail-title').textContent = name;
 
-    var tracks = data.songs || [];
+    // Response is an array (not {songs:[]})
+    var tracks = Array.isArray(data) ? data : (data.songs || []);
     var html = '';
     for (var i = 0; i < tracks.length; i++) {
       var tr = tracks[i];
-      var title  = (tr.metadata && tr.metadata.title) ? tr.metadata.title : tr.filepath.split('/').pop();
-      var artist = (tr.metadata && tr.metadata.artist) ? tr.metadata.artist : '';
+      var meta   = tr.metadata || {};
+      var title  = meta.title  || tr.filepath.split('/').pop();
+      var artist = meta.artist || '';
       html += '<div class="track-row focusable" tabindex="0" data-idx="' + i + '">' +
         '<div class="track-num">' + (i + 1) + '</div>' +
         '<div class="track-title">' + _esc(title) + (artist ? '<br><span style="font-size:22px;color:var(--text2)">' + _esc(artist) + '</span>' : '') + '</div>' +
@@ -724,12 +729,13 @@ function openPlaylistDetail(name) {
       (function(row, idx) {
         row.addEventListener('click', function() {
           var queue = allTracks.map(function(t) {
+            var m = t.metadata || {};
             return {
               filepath: t.filepath,
-              title:   (t.metadata && t.metadata.title) ? t.metadata.title : t.filepath.split('/').pop(),
-              artist:  (t.metadata && t.metadata.artist) ? t.metadata.artist : '',
-              album:   (t.metadata && t.metadata.album) ? t.metadata.album : '',
-              artFile: (t.metadata && t.metadata['album-art']) ? t.metadata['album-art'] : null
+              title:   m.title  || t.filepath.split('/').pop(),
+              artist:  m.artist || '',
+              album:   m.album  || '',
+              artFile: m['album-art'] || null
             };
           });
           playQueue(queue, idx);
@@ -762,13 +768,14 @@ function _autoDjPick() {
     var songs = data.songs || [];
     if (!songs.length) { el('autodj-status').textContent = 'No songs found.'; return; }
     var s = songs[0];
+    var m = s.metadata || {};
     S.autoDjIgnoreList = data.ignoreList || [];
     var track = {
       filepath: s.filepath,
-      title:    s.title || s.filepath.split('/').pop(),
-      artist:   s.artist || '',
-      album:    s.album  || '',
-      artFile:  s['album-art'] || null
+      title:    m.title  || s.filepath.split('/').pop(),
+      artist:   m.artist || '',
+      album:    m.album  || '',
+      artFile:  m['album-art'] || null
     };
     if (S.queueIdx < 0) {
       // First track: start playing immediately
@@ -926,13 +933,8 @@ function _updatePlayerBar(track) {
   el('overlay-album').textContent  = track.album || '';
 
   var artSrc = track.artFile ? artUrl(track.artFile, 'm') : '';
-  if (artSrc) {
-    el('pb-art').src      = artSrc;
-    el('overlay-art').src = artSrc;
-  } else {
-    el('pb-art').src      = '';
-    el('overlay-art').src = '';
-  }
+  el('pb-art').src      = artSrc || '';
+  el('overlay-art').src = artSrc || '';
 
   // Auto-DJ badge
   if (S.autoDj) show('ov-autodj-badge');
