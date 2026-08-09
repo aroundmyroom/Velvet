@@ -745,45 +745,52 @@ function _renderPlaylists(playlists) {
 function openPlaylistDetail(name) {
   showLoading();
   api('POST', '/api/v1/playlist/load', { playlistname: name }).then(function(data) {
-    hideLoading();
-    el('playlist-detail-title').textContent = name;
-
-    // Response is an array (not {songs:[]})
+    // Response is an array
     var tracks = Array.isArray(data) ? data : (data.songs || []);
-    var html = '';
-    for (var i = 0; i < tracks.length; i++) {
-      var tr = tracks[i];
-      var meta   = tr.metadata || {};
-      var title  = meta.title  || tr.filepath.split('/').pop();
-      var artist = meta.artist || '';
-      html += '<div class="track-row focusable" tabindex="0" data-idx="' + i + '">' +
-        '<div class="track-num">' + (i + 1) + '</div>' +
-        '<div class="track-title">' + _esc(title) + (artist ? '<br><span style="font-size:22px;color:var(--text2)">' + _esc(artist) + '</span>' : '') + '</div>' +
-      '</div>';
-    }
-    el('playlist-track-list').innerHTML = html || '<div style="color:var(--text2);padding:20px">Empty playlist.</div>';
 
-    var allTracks = tracks;
-    var rows = el('playlist-track-list').querySelectorAll('.track-row');
-    for (var j = 0; j < rows.length; j++) {
-      (function(row, idx) {
-        row.addEventListener('click', function() {
-          var queue = allTracks.map(function(t) {
-            var m = t.metadata || {};
-            return {
-              filepath: t.filepath,
-              title:   m.title  || t.filepath.split('/').pop(),
-              artist:  m.artist || '',
-              album:   m.album  || '',
-              artFile: m['album-art'] || null
-            };
+    // Resolve filepaths via batch metadata API so child-vpath paths
+    // (e.g. "12-inches/B/...") get corrected to root-vpath paths ("Music/12-inches/B/...")
+    var filepaths = tracks.map(function(t) { return t.filepath; });
+    return api('POST', '/api/v1/db/metadata/batch', filepaths).then(function(resolved) {
+      hideLoading();
+      el('playlist-detail-title').textContent = name;
+
+      var html = '';
+      for (var i = 0; i < tracks.length; i++) {
+        var tr = tracks[i];
+        var meta = tr.metadata || {};
+        var title  = meta.title  || tr.filepath.split('/').pop();
+        var artist = meta.artist || '';
+        html += '<div class="track-row focusable" tabindex="0" data-idx="' + i + '">' +
+          '<div class="track-num">' + (i + 1) + '</div>' +
+          '<div class="track-title">' + _esc(title) + (artist ? '<br><span style="font-size:22px;color:var(--text2)">' + _esc(artist) + '</span>' : '') + '</div>' +
+        '</div>';
+      }
+      el('playlist-track-list').innerHTML = html || '<div style="color:var(--text2);padding:20px">Empty playlist.</div>';
+
+      var rows = el('playlist-track-list').querySelectorAll('.track-row');
+      for (var j = 0; j < rows.length; j++) {
+        (function(row, idx) {
+          row.addEventListener('click', function() {
+            var queue = tracks.map(function(t) {
+              var m = t.metadata || {};
+              // Use resolved (root-vpath) filepath if available
+              var fp = (resolved[t.filepath] && resolved[t.filepath].filepath) || t.filepath;
+              return {
+                filepath: fp,
+                title:   m.title  || t.filepath.split('/').pop(),
+                artist:  m.artist || '',
+                album:   m.album  || '',
+                artFile: m['album-art'] || null
+              };
+            });
+            playQueue(queue, idx);
           });
-          playQueue(queue, idx);
-        });
-      })(rows[j], j);
-    }
+        })(rows[j], j);
+      }
 
-    showView('playlist-detail');
+      showView('playlist-detail');
+    });
   }).catch(function() {
     hideLoading();
   });
