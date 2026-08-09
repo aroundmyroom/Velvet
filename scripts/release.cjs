@@ -159,23 +159,56 @@ stepLog('Tag + push tag (triggers Docker build)');
 sh(`git tag v${version}`);
 sh(`git push origin v${version}`);
 
-stepLog('GitHub release');
-sh(`gh release create v${version} --title ${JSON.stringify(`v${version} — ${title}`)} --notes-file releases/v${version}.md --repo ${REPO}`);
-
-stepLog('Tizen TV widget — clean build + attach (credential-free)');
+stepLog('Tizen TV widget — clean build (credential-free)');
 // ALWAYS the :dist (clean) build for a public release: it never reads
 // webapp/tizen/velvet-tv.config.json, so no server URL / login can leak.
 sh('npm run build:tizen:dist');
 const wgtRel = `dist/velvet-tv-${version}.wgt`;
+const wgtPath = path.join(ROOT, wgtRel);
 if (!DRY) {
-  const wgtPath = path.join(ROOT, wgtRel);
   if (fs.existsSync(wgtPath)) {
     const leak = /aroundtheworld|password" content="[^"]/.test(fs.readFileSync(wgtPath, 'latin1'));
-    if (leak) die(`Refusing to upload ${wgtRel} — it appears to contain credentials. Build with --dist only.`);
+    if (leak) die(`Refusing to publish ${wgtRel} — it appears to contain credentials. Build with --dist only.`);
+  } else {
+    console.log(C.y(`  ! ${wgtRel} not found — the TV widget will not be attached`));
+  }
+}
+
+stepLog('GitHub release (with auto Downloads footer → WGT + Docker)');
+// Every release body ALWAYS ends with pointers to both artifacts, whatever the
+// version: the Samsung TV widget (this release's asset) and the Docker image.
+const wgtName = `velvet-tv-${version}.wgt`;
+const downloadsFooter = [
+  '',
+  '---',
+  '',
+  '## Downloads',
+  '',
+  '### Samsung TV app (`.wgt`)',
+  `- **[\`${wgtName}\`](https://github.com/${REPO}/releases/download/v${version}/${wgtName})** — attached to this release.`,
+  '- Side-load it with [Apps2Samsung](https://github.com/Apps2Samsung/Apps2Samsung) (Developer Mode → *Custom WGT file*). Full guide: [`docs/tizen-tv.md`](https://github.com/' + REPO + `/blob/v${version}/docs/tizen-tv.md).`,
+  '',
+  '### Docker image',
+  '```bash',
+  `docker pull ghcr.io/aroundmyroom/velvet:v${version}`,
+  'docker pull ghcr.io/aroundmyroom/velvet:latest',
+  '```',
+  `- Package page: <https://github.com/${REPO}/pkgs/container/velvet>`,
+  ''
+].join('\n');
+const baseNotes = fs.readFileSync(path.join(ROOT, `releases/v${version}.md`), 'utf8');
+const notesTmp = path.join(ROOT, `.release-notes-v${version}.tmp.md`);
+if (!DRY) fs.writeFileSync(notesTmp, baseNotes.replace(/\s*$/, '\n') + downloadsFooter);
+sh(`gh release create v${version} --title ${JSON.stringify(`v${version} — ${title}`)} --notes-file ${DRY ? `releases/v${version}.md` : `.release-notes-v${version}.tmp.md`} --repo ${REPO}`);
+
+stepLog('Attach Tizen TV widget to the release');
+if (!DRY) {
+  if (fs.existsSync(wgtPath)) {
     sh(`gh release upload v${version} ${wgtRel} --repo ${REPO}`);
   } else {
     console.log(C.y(`  ! ${wgtRel} not found — skipped TV widget upload`));
   }
+  if (fs.existsSync(notesTmp)) fs.unlinkSync(notesTmp);
 } else {
   sh(`gh release upload v${version} ${wgtRel} --repo ${REPO}`);
 }

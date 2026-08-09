@@ -79,6 +79,8 @@ frp/*.ini
 
 dist/*
 
+.release-notes-*.tmp.md
+
 .env
 TODO.md
 competitors.md

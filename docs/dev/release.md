@@ -43,6 +43,13 @@ The script (`scripts/release.cjs`) does, in order:
 11. **Tizen TV widget** — `npm run build:tizen:dist` (clean, credential-free) and
     `gh release upload` the resulting `dist/velvet-tv-X.Y.Z.wgt` onto the release.
 
+**Every release body ALWAYS ends with a "Downloads" footer** the script appends
+automatically — pointing to *both* artifacts no matter the version: the Samsung
+TV widget (this release's `.wgt` asset) and the Docker image
+(`docker pull ghcr.io/aroundmyroom/velvet:vX.Y.Z` + `:latest`, plus the GHCR
+package page). You never hand-write these links; they are generated from the
+version so they can't go stale.
+
 ## Flags
 
 | Flag | Effect |
