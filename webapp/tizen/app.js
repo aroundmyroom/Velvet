@@ -126,6 +126,43 @@ function focusFirst(container) {
   if (items.length) setFocus(items[0]);
 }
 
+// Which UI zone an element belongs to: 'nav' | 'content' | 'player' | 'overlay'
+function _zoneOf(elm) {
+  if (!elm) return 'content';
+  var ov = el('player-overlay');
+  if (ov && ov.contains(elm) && !ov.classList.contains('hidden')) return 'overlay';
+  var nav = el('nav-bar');
+  if (nav && nav.contains(elm)) return 'nav';
+  var pb = el('player-bar');
+  if (pb && pb.contains(elm)) return 'player';
+  return 'content';
+}
+
+var _lastContentFocus = null;  // remember content focus so we can return from the player bar
+
+function _playerBarVisible() {
+  var pb = el('player-bar');
+  return pb && !pb.classList.contains('hidden');
+}
+
+function _focusZone(zone) {
+  var container = zone === 'nav' ? el('nav-bar')
+    : zone === 'player' ? el('player-bar')
+    : null;
+  if (zone === 'content') {
+    // Restore previous content focus if still visible, else first item in active view
+    if (_lastContentFocus && _lastContentFocus.offsetParent !== null) { setFocus(_lastContentFocus); return true; }
+    var view = document.querySelector('.view.active');
+    if (view) { var items = _allFocusable(view); if (items.length) { setFocus(items[0]); return true; } }
+    return false;
+  }
+  if (!container) return false;
+  var list = _allFocusable(container).filter(function(e) { return e.offsetParent !== null; });
+  if (!list.length) return false;
+  setFocus(list[0]);
+  return true;
+}
+
 function _moveFocus(dir) {
   var cur = _currentFocusEl;
   if (!cur) {
@@ -133,12 +170,18 @@ function _moveFocus(dir) {
     return;
   }
 
-  // Gather all visible focusable elements
-  var all = _allFocusable().filter(function(e) {
+  var zone = _zoneOf(cur);
+  if (zone === 'content') _lastContentFocus = cur;
+
+  // Same-zone spatial search
+  var container = zone === 'nav' ? el('nav-bar')
+    : zone === 'player' ? el('player-bar')
+    : zone === 'overlay' ? el('player-overlay')
+    : document.querySelector('.view.active') || document;
+
+  var all = _allFocusable(container).filter(function(e) {
     return e.offsetParent !== null;  // visible
   });
-
-  if (!all.length) return;
 
   var curRect = cur.getBoundingClientRect();
   var curCX = curRect.left + curRect.width / 2;
@@ -173,7 +216,22 @@ function _moveFocus(dir) {
     if (score < bestScore) { bestScore = score; best = candidate; }
   }
 
-  if (best) setFocus(best);
+  if (best) { setFocus(best); if (zone === 'content') _lastContentFocus = best; return; }
+
+  // No same-zone candidate in this direction — jump between zones
+  if (dir === 'down') {
+    if (zone === 'nav') { if (_focusZone('content')) return; if (_playerBarVisible()) _focusZone('player'); return; }
+    if (zone === 'content') { if (_playerBarVisible()) _focusZone('player'); return; }
+  } else if (dir === 'up') {
+    if (zone === 'player') { if (_focusZone('content')) return; _focusZone('nav'); return; }
+    if (zone === 'content') { _focusZone('nav'); return; }
+  } else if (dir === 'right') {
+    // Vertical lists have no horizontal neighbours — RIGHT jumps to the player bar
+    if (zone === 'content' && _playerBarVisible()) { _focusZone('player'); return; }
+  } else if (dir === 'left') {
+    // LEFT from the leftmost player control returns to the content list
+    if (zone === 'player') { _focusZone('content'); return; }
+  }
 }
 
 /* ── Key handler ─────────────────────────────────────────────────────────────── */
