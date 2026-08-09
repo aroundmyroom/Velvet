@@ -4,8 +4,8 @@
         id="http://aroundmyroom.com/velvet-tv"
         version="1.0">
 
-  <tizen:application id="aroundmyroom.VelvetTV"
-                     package="aroundmyroom"
+  <tizen:application id="VelvetTV00.VelvetTV"
+                     package="VelvetTV00"
                      required_version="5.5"/>
 
   <name>Velvet TV</name>
@@ -15,7 +15,6 @@
   <!-- Network access required to reach the Velvet server -->
   <feature name="http://tizen.org/feature/network.internet"/>
   <tizen:privilege name="http://tizen.org/privilege/internet"/>
-  <tizen:privilege name="http://tizen.org/privilege/volume.set"/>
 
   <!-- Allow connections to any origin (the user's Velvet server) -->
   <access origin="*" subdomains="true"/>
