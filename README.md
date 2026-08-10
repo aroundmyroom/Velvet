@@ -6,8 +6,9 @@
 [![License](https://img.shields.io/badge/license-GPL--3.0-6d28d9?style=for-the-badge)](LICENSE)
 [![Discord](https://img.shields.io/badge/Discord-Velvet-5865F2?logo=discord&logoColor=white&style=for-the-badge)](https://discord.gg/KfsTCYrTkS)
 [![Docker](https://img.shields.io/badge/Docker-ghcr.io-2496ED?logo=docker&logoColor=white&style=for-the-badge)](https://github.com/aroundmyroom/Velvet/pkgs/container/velvet)
+[![Samsung TV](https://img.shields.io/badge/Samsung%20TV-Tizen%20app-1428A0?logo=samsung&logoColor=white&style=for-the-badge)](https://github.com/aroundmyroom/Velvet/blob/main/docs/tizen-tv.md)
 
-Velvet streams your local music collection to any browser, phone, or Subsonic-compatible app — with intelligent Auto-DJ, metadata enrichment, album-art management, and a Milkdrop visualizer. No cloud. No subscription. Your music, your server.
+Velvet streams your local music collection to any browser, phone, **Samsung Smart TV**, or Subsonic-compatible app — with intelligent Auto-DJ, metadata enrichment, album-art management, and a Milkdrop visualizer. No cloud. No subscription. Your music, your server.
 
 > **Before you continue:** This project was built with AI assistance. If that bothers you, the exit is right there. If you're still reading — welcome, you're going to be fine. Probably. [Read the full disclaimer →](docs/responsible-disclosure.md)
 
@@ -22,7 +23,7 @@ Velvet streams your local music collection to any browser, phone, or Subsonic-co
 | **Album library first** | Multi-disc detection, series grouping, category folders, per-disc cover art, CUE sheet support — your classical and box-set collections look right |
 | **Listening analytics** | Full play history, skip rates, hourly heat charts, personality type, fun facts — all local, no external calls |
 | **Real audio quality** | EBU R128 loudness normalization, gapless playback, crossfade, BPM/harmonic mixing, on-demand transcoding |
-| **Plays everywhere** | Browser, Sonos, DLNA/UPnP, Subsonic API (Symfonium, DSub, Ultrasonic), shared playlist links |
+| **Plays everywhere** | Browser, **Samsung Smart TV (Tizen app)**, Sonos, DLNA/UPnP, Subsonic API (Symfonium, DSub, Ultrasonic), shared playlist links |
 
 ---
 
@@ -114,6 +115,7 @@ Dynamic filter-based playlists that re-evaluate every time you open them:
 | **Sonos** | Auto-discovery, cast current track, queue mirroring, bidirectional pause/resume, hi-res transcoding, favourites playback (Spotify, Apple Music, TuneIn). [Docs →](docs/audio-output.md) |
 | **DLNA / UPnP** | Browse and stream over LAN to Smart TVs, Kodi, BubbleUPnP, AV receivers. [Docs →](docs/dlna.md) |
 | **Subsonic API** | Full 1.16.1 + Open Subsonic compatibility. Works with Symfonium, DSub, Ultrasonic, and more. [Docs →](docs/subsonic.md) |
+| **Samsung Smart TV** | Native **Velvet TV** app for Tizen 5.5+ — full remote/D-pad navigation, albums (CUE + multi-disc), A–Z quick-jump, VU meter and visualizer. Side-load the `.wgt` with Apps2Samsung. [Docs →](docs/tizen-tv.md) |
 | **Sharesonic (Android)** | Community Android app for Velvet. [GitHub →](https://github.com/Tiritibambix/Sharesonic) |
 
 ### Audio Content
@@ -207,6 +209,7 @@ Full local play history — no external calls, no historical imports needed:
 | Internet radio | [docs/scanning.md](docs/scanning.md) |
 | Podcasts & audiobooks | [docs/audiobooks.md](docs/audiobooks.md) |
 | YouTube downloads | [docs/youtube-download.md](docs/youtube-download.md) |
+| Samsung TV app (Tizen) | [docs/tizen-tv.md](docs/tizen-tv.md) |
 | ListenBrainz | [docs/listenbrainz.md](docs/listenbrainz.md) |
 | Keyboard shortcuts | [docs/keyboard-shortcuts.md](docs/keyboard-shortcuts.md) |
 | Security | [docs/frontend-security.md](docs/frontend-security.md) |
@@ -217,6 +220,8 @@ Full local play history — no external calls, no historical imports needed:
 ## Credits
 
 **Milkdrop visualizer** — The full-screen music visualizer in Velvet is powered by [**Butterchurn**](https://github.com/jberg/butterchurn) by Jordan Berg, a faithful WebGL port of [**MilkDrop**](https://www.geisswerks.com/milkdrop/) — the legendary Winamp visualization plugin originally created by **Ryan Geiss**. Thousands of community presets from the MilkDrop preset ecosystem are compatible. Huge thanks to both for keeping this piece of music history alive in the browser.
+
+**Apps2Samsung** — The **Velvet TV** Samsung Tizen app is featured in [**Apps2Samsung**](https://github.com/Apps2Samsung/Apps2Samsung), a community project that makes it easy to side-load custom `.wgt` apps onto Samsung Smart TVs. Big thanks to the Apps2Samsung team for adopting Velvet TV and making installation effortless for TV users.
 
 **IrosTheBeggar** — Velvet is a fork of [mStream](https://github.com/IrosTheBeggar/mStream), the original self-hosted music server. Copyright © 2015–2026 IrosTheBeggar.
 
