@@ -24,7 +24,7 @@ Quick version:
 3. Choose **Custom WGT file → `velvet-tv-<version>.wgt` → Install**.
 4. Launch **Velvet TV**, enter your server URL + login, and you’re in.
 
-Full guide: [`docs/tizen-tv.md`](../docs/tizen-tv.md).
+Full guide: [`docs/tizen-tv.md`](https://github.com/aroundmyroom/Velvet/blob/main/docs/tizen-tv.md).
 
 ## What’s inside
 
