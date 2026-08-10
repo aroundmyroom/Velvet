@@ -781,7 +781,7 @@ export function setup(velvet) {
     try {
       const wfDir = config.program.storage?.waveformDirectory;
       stats.waveformCount = wfDir
-        ? fs.readdirSync(wfDir).filter(f => f.startsWith('wf-') && f.endsWith('.json')).length
+        ? fs.readdirSync(wfDir).filter(f => /^wf2?-/.test(f) && f.endsWith('.json')).length
         : 0;
     } catch { stats.waveformCount = 0; }
     res.json(stats);

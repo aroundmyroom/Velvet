@@ -140,6 +140,38 @@ const ERRORS = {
   NOT_FOUND:         { code: 70, message: 'The requested data was not found.' },
 };
 
+// ── Express qs param-overflow guard ─────────────────────────────────────────
+// Express's qs parser silently drops query params past ~1000 entries (its
+// default parameterLimit). Routes that accept large repeated-id lists (e.g.
+// savePlayQueue, createPlaylist) also receive scalars AFTER those lists, so
+// `current`, `position`, `name`, etc. fall off the cliff too and read as
+// undefined from req.query. Use the raw URL instead; URLSearchParams has no
+// cap. The cached value on req avoids reparsing per-helper-call.
+function _rawQuery(req) {
+  if (req._rawQueryParams === undefined) {
+    const u = req.originalUrl || req.url || '';
+    const qi = u.indexOf('?');
+    req._rawQueryParams = qi === -1 ? null : new URLSearchParams(u.slice(qi + 1));
+  }
+  return req._rawQueryParams;
+}
+// Array param: returns all values for `name` as a string array, never null.
+function arrayParam(req, name) {
+  const raw = _rawQuery(req);
+  if (raw) return raw.getAll(name);
+  const v = req.query[name];
+  if (v == null) return [];
+  return Array.isArray(v) ? v : [v];
+}
+// Scalar param: returns first occurrence or undefined. Safe even when the
+// param arrives after 1000+ repeated ids in the query string.
+function qparam(req, name) {
+  const raw = _rawQuery(req);
+  if (raw) { const v = raw.get(name); return v === null ? undefined : v; }
+  const v = req.query[name];
+  return Array.isArray(v) ? v[0] : v;
+}
+
 /** Send response in XML or JSON based on ?f= query param */
 function sendResponse(req, res, payload) {
   const fmt = (req.query.f || req.body?.f || 'xml').toLowerCase();
@@ -1714,13 +1746,15 @@ export function setup(velvet) {
 
   // ── createPlaylist ────────────────────────────────────────────────────────────
   router('createPlaylist', (req, res) => {
-    const rawName = req.query.name || req.body?.name;
+    const rawName = qparam(req, 'name') ?? req.body?.name;
     if (!rawName) return sendResponse(req, res, makeError(ERRORS.MISSING_PARAM.code, 'name required'));
     // Sanitise AI-generated names: strip common prefixes/suffixes that tools like
     // AudioMuse-AI append (e.g. "Path: Foo Bar_instant" → "Foo Bar").
     const name = sanitizePlaylistName(rawName);
 
-    const songIds = [req.query.songId || req.body?.songId || []].flat().filter(Boolean);
+    const songIds = arrayParam(req, 'songId').filter(Boolean).concat(
+      [req.body?.songId || []].flat().filter(Boolean)
+    );
     const songMap = resolveSongRows(songIds, req.subsonicUser);
 
     // Delete existing then recreate atomically.
@@ -1750,17 +1784,20 @@ export function setup(velvet) {
 
   // ── updatePlaylist ────────────────────────────────────────────────────────────
   router('updatePlaylist', (req, res) => {
-    const rawPlaylistId = req.query.playlistId || req.body?.playlistId;
+    const rawPlaylistId = qparam(req, 'playlistId') ?? req.body?.playlistId;
     if (!rawPlaylistId) return sendResponse(req, res, makeError(ERRORS.MISSING_PARAM.code, 'playlistId required'));
     const playlistId = sanitizePlaylistName(rawPlaylistId);
 
-    // Optional rename/comment — newName is used if provided
-    const rawNewName = req.query.name || req.body?.name;
+    const rawNewName = qparam(req, 'name') ?? req.body?.name;
     const newName = rawNewName ? sanitizePlaylistName(rawNewName) : null;
 
-    const toAdd    = [req.query.songIdToAdd    || req.body?.songIdToAdd    || []].flat().filter(Boolean);
+    const toAdd    = arrayParam(req, 'songIdToAdd').filter(Boolean).concat(
+      [req.body?.songIdToAdd || []].flat().filter(Boolean)
+    );
     const songMap = resolveSongRows(toAdd, req.subsonicUser);
-    const toRemove = [req.query.songIndexToRemove || req.body?.songIndexToRemove || []].flat().map(Number).filter(n => !Number.isNaN(n));
+    const toRemove = arrayParam(req, 'songIndexToRemove').concat(
+      [req.body?.songIndexToRemove || []].flat()
+    ).map(Number).filter(n => !Number.isNaN(n));
 
     // Load existing
     const entries = db.loadPlaylistEntries(req.subsonicUser, playlistId);
@@ -1938,10 +1975,13 @@ export function setup(velvet) {
   // save the full queue + current position to the server so it survives client
   // restarts reliably — more durable than client-side local storage.
   router('savePlayQueue', (req, res) => {
-    const rawIds     = [req.query.id || req.body?.id || []].flat().filter(Boolean);
-    const rawCurrent = req.query.current || req.body?.current || rawIds[0] || null;
-    const position   = Number(req.query.position ?? req.body?.position ?? 0);
-    const changedBy  = req.query.c || req.body?.c || null;
+    // arrayParam + qparam bypass Express qs's ~1000 param limit: clients append
+    // `current` and `position` AFTER the id list, so with a 1000+ track queue
+    // they land past the cliff and read undefined from req.query.
+    const rawIds     = arrayParam(req, 'id').filter(Boolean);
+    const rawCurrent = qparam(req, 'current') ?? req.body?.current ?? rawIds[0] ?? null;
+    const position   = Number(qparam(req, 'position') ?? req.body?.position ?? 0);
+    const changedBy  = qparam(req, 'c') ?? req.body?.c ?? null;
     // Canonicalise ids to the current "<hash>@<rowid>" form before storing so the
     // saved queue keeps matching what getPlayQueue/stream emit even after a rescan
     // reassigns rowids. Ids that don't resolve are kept verbatim so nothing is lost.

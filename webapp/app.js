@@ -1,5 +1,5 @@
 'use strict';
-const VELVET_VERSION = '0.3.20';
+const VELVET_VERSION = '0.3.21';
 // ── SERVER IDENTITY GUARD ────────────────────────────────────────────────────
 // Detects when this browser's localStorage belongs to a different Velvet
 // instance (fresh install, IP change, reverse-proxy swap, second server).
@@ -6445,25 +6445,36 @@ const VIZ = (() => {
     if (presetIndex < 0) presetIndex = Math.floor(Math.random() * presetKeys.length);
     canvas.width  = canvas.clientWidth  || window.innerWidth;
     canvas.height = canvas.clientHeight || window.innerHeight;
-    visualizer = butterchurn.default.createVisualizer(audioCtx, canvas, {
-      width: canvas.width, height: canvas.height,
-      pixelRatio: window.devicePixelRatio || 1, textureRatio: 1,
-    });
-    visualizer.connectAudio(analyserNode);
-    loadPreset(0);
-    startRender();
-    // Give the branded velvet preset a longer first display (40 s) before auto-cycling
-    const _firstCycleMs = presetKeys[presetIndex] === _VELVET_PRESET_KEY ? 40000 : CYCLE_MS;
-    cycleTimer = setTimeout(function _firstCycle() {
-      presetHistory.push(presetIndex);
-      presetIndex = _nextAutoIndex();
-      loadPreset(2.7);
-      cycleTimer = setInterval(() => {
+    try {
+      visualizer = butterchurn.default.createVisualizer(audioCtx, canvas, {
+        width: canvas.width, height: canvas.height,
+        pixelRatio: window.devicePixelRatio || 1, textureRatio: 1,
+      });
+      visualizer.connectAudio(analyserNode);
+      loadPreset(0);
+      startRender();
+      // Give the branded velvet preset a longer first display (40 s) before auto-cycling
+      const _firstCycleMs = presetKeys[presetIndex] === _VELVET_PRESET_KEY ? 40000 : CYCLE_MS;
+      cycleTimer = setTimeout(function _firstCycle() {
         presetHistory.push(presetIndex);
         presetIndex = _nextAutoIndex();
         loadPreset(2.7);
-      }, CYCLE_MS);
-    }, _firstCycleMs);
+        cycleTimer = setInterval(() => {
+          presetHistory.push(presetIndex);
+          presetIndex = _nextAutoIndex();
+          loadPreset(2.7);
+        }, CYCLE_MS);
+      }, _firstCycleMs);
+    } catch (e) {
+      // createVisualizer needs WebGL2 — absent with HW acceleration off, on
+      // older GPUs, and in some VM/remote-desktop setups. Reset all state so a
+      // later open can retry instead of leaving a half-built, wedged visualizer.
+      console.warn('[Velvet] Visualizer init failed:', e);
+      if (frameId) { cancelAnimationFrame(frameId); frameId = null; }
+      if (cycleTimer) { clearTimeout(cycleTimer); clearInterval(cycleTimer); cycleTimer = null; }
+      visualizer = null;
+      toast(t('player.toast.visualizerError'));
+    }
   }
 
   // ── SPECTRUM RENDERER — 7 modes, click canvas to cycle ────
@@ -7403,7 +7414,11 @@ const VIZ = (() => {
       if (vizTopMode === 0) {
         const canvas = document.getElementById('viz-canvas');
         if (!visualizer) {
-          _loadPresetScripts().then(() => initViz(canvas));
+          _loadPresetScripts().then(() => initViz(canvas)).catch((e) => {
+            console.warn('[Velvet] Visualizer open failed:', e);
+            visualizer = null;
+            toast(t('player.toast.visualizerError'));
+          });
         } else {
           canvas.width  = canvas.clientWidth;
           canvas.height = canvas.clientHeight;
@@ -20143,15 +20158,24 @@ function _updateWaveformProgress() {
 // ── WAVEFORM RAF LOOP — drives smooth real-time split during playback ─────────
 let _waveformRaf = null;
 let _wfStatusClearTimer = null;
+let _wfLastSplitPx = -1;  // last integer split position drawn; skip frame if unchanged
 function _startWaveformRaf() {
   if (_waveformRaf) return;
   (function loop() {
-    _drawWaveform();
+    // timeupdate fires ~4 Hz; at 60 fps ~93% of frames would redraw 1600 fillRects
+    // for zero visible change. Guard on whole-pixel split position, not in
+    // _drawWaveform itself — several callers need an unconditional clear (track change).
+    const canvas = document.getElementById('waveform-canvas');
+    const W = canvas ? canvas.offsetWidth : 0;
+    const dur = audioEl.duration || 0;
+    const splitPx = (dur > 0 && W > 0) ? Math.round((audioEl.currentTime / dur) * W) : 0;
+    if (splitPx !== _wfLastSplitPx) { _wfLastSplitPx = splitPx; _drawWaveform(); }
     _waveformRaf = requestAnimationFrame(loop);
   }());
 }
 function _stopWaveformRaf() {
   if (_waveformRaf) { cancelAnimationFrame(_waveformRaf); _waveformRaf = null; }
+  _wfLastSplitPx = -1;
   _drawWaveform(); // final redraw at resting position
 }
 
@@ -23867,6 +23891,9 @@ function _onAudioSeeked() {
       api('POST', 'api/v1/sonos/seek', { ip: S.sonosRoom.ip, position: Math.floor(audioEl.currentTime) }).catch(() => {});
     }, 400);
   }
+  // Repaint waveform split when seeking while paused — the rAF loop isn't
+  // running then, so nothing else would update the orange/grey split.
+  if (audioEl.paused && _waveformData) { _wfLastSplitPx = -1; _drawWaveform(); }
 }
 
 // Periodic position-only DB sync every 60 s during playback — keeps the

@@ -1,3 +1,7 @@
+## v0.3.21 (2026-08-10)
+
+Maintenance release: waveform cache refresh, visualizer graceful fallback, Subsonic large-queue position fix, deterministic album sort order.
+
 ## v0.3.20 (2026-08-09)
 
 ### Velvet TV — Samsung Tizen app: album feature parity + shareable build

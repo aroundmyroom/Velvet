@@ -1,5 +1,6 @@
 import path from 'node:path';
 import fs from 'node:fs';
+import fsp from 'node:fs/promises';
 import crypto from 'node:crypto';
 import { spawn } from 'node:child_process';
 import * as config from '../state/config.js';
@@ -113,7 +114,11 @@ function downsample(data, count) {
   // RMS per chunk — robust energy estimate, naturally smooth at high sample rate
   for (let i = 0; i < count; i++) {
     const start = Math.floor(i * chunkSize);
-    const end   = Math.min(total, Math.floor((i + 1) * chunkSize));
+    // Ensure each bar covers at least one sample for clips shorter than
+    // `count` samples — otherwise neighbours share a group (same fix as
+    // upstream's PeakPyramid::bars()). Without this, bars at the end of a
+    // very short clip get end===start and come back as 0 (silent).
+    const end   = Math.min(total, Math.max(start + 1, Math.floor((i + 1) * chunkSize)));
     let sum = 0;
     for (let j = start; j < end; j++) sum += data[j] * data[j];
     result[i] = end > start ? Math.sqrt(sum / (end - start)) : 0;
@@ -136,6 +141,25 @@ function downsample(data, count) {
 }
 
 export function setup(velvet) {
+  // One-time async sweep: delete old wf-*.json files left by the previous
+  // cache generation (before the -ac 1 removal). They are dead weight now —
+  // the new wf2- names are what the endpoint reads. Best-effort; a
+  // read-only cache dir is already handled as advisory everywhere else.
+  const _wfCacheDir = config.program.storage.waveformDirectory;
+  if (_wfCacheDir && fs.existsSync(_wfCacheDir)) {
+    (async () => {
+      try {
+        const names = await fsp.readdir(_wfCacheDir);
+        const stale = names.filter(n => /^wf-[0-9a-f]+\.json$/.test(n));
+        let removed = 0;
+        for (const n of stale) {
+          try { await fsp.unlink(path.join(_wfCacheDir, n)); removed++; } catch (_) {}
+        }
+        if (removed > 0) console.info(`[waveform] swept ${removed} superseded wf- cache file(s); regenerating with corrected ffmpeg args`);
+      } catch (_) {}
+    })();
+  }
+
   velvet.get('/api/v1/db/waveform', async (req, res) => {
     if (!req.query.filepath) throw new WebError('Missing filepath', 400);
 
@@ -154,7 +178,7 @@ export function setup(velvet) {
 
     const cacheDir  = config.program.storage.waveformDirectory;
     const cacheHash = fileRow?.hash ?? crypto.createHash('sha256').update(pathInfo.fullPath).digest('hex');
-    const cacheKey  = `wf-${cacheHash}.json`;
+    const cacheKey  = `wf2-${cacheHash}.json`;
     const cachePath = resolvePathWithinRoot(cacheDir, cacheKey);
 
     if (cachePath && fs.existsSync(cachePath)) {

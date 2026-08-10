@@ -1595,7 +1595,7 @@ export function getArtistAlbumsMulti(artists, vpaths, ignoreVPaths, excludeFilep
   // Pass 1: albums where this artist is directly credited (artist or album_artist)
   const pass1 = db.prepare(`${baseSelect} AND COALESCE(album_artist, artist) IN (${placeholders})
     GROUP BY album, rtrim(filepath, replace(filepath, '/', ''))
-    ORDER BY MAX(year) DESC
+    ORDER BY MAX(year) DESC, album COLLATE NOCASE
   `).all(...baseParams, ...artistList);
 
   // Pass 2: sibling discs under the same MULTI-DISC parent folder not caught by pass 1.
@@ -1665,7 +1665,7 @@ export function getArtistAlbums(artist, vpaths, ignoreVPaths, excludeFilepathPre
     FROM files
     WHERE ${vIn.sql}${ep.sql}${ip.sql} AND COALESCE(album_artist, artist) = ?
     GROUP BY album, rtrim(filepath, replace(filepath, '/', ''))
-    ORDER BY MAX(year) DESC
+    ORDER BY MAX(year) DESC, album COLLATE NOCASE
   `).all(...vIn.params, ...ep.params, ...ip.params, String(artist));
 
   const albums = [];

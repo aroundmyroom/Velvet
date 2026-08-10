@@ -379,7 +379,7 @@ async function runOrphanCleanup() {
     }
 
     // --- Waveform orphan cleanup ---
-    const WAVEFORM_RE = /^wf-(.+)\.json$/;
+    const WAVEFORM_RE = /^wf2?-(.+)\.json$/;  // matches both wf- (old) and wf2- (current)
     if (waveformDir && fs.existsSync(waveformDir)) {
       for (const file of fs.readdirSync(waveformDir)) {
         const wfMatch = file.match(WAVEFORM_RE);

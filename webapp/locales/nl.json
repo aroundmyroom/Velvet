@@ -1688,6 +1688,7 @@
   "player.toast.djMusicOnly": "Auto-DJ werkt alleen met muziek — stop radio, podcasts of luisterboeken",
   "player.toast.djMinSourcesRequired": "Minimaal één bron moet actief zijn",
   "player.toast.visualizerLoading": "Visualizer laden… probeer het over een moment",
+  "player.toast.visualizerError": "Visualizer niet beschikbaar — je browser of GPU ondersteunt mogelijk geen WebGL2",
   "player.toast.audioMotionNotLoaded": "audioMotion nog niet geladen",
   "player.toast.playFirstForAudio": "Speel eerst een nummer af om audio te initialiseren",
   "player.toast.filesUploaded": "{{count}} bestand(en) geüpload",

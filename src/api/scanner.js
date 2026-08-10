@@ -461,7 +461,7 @@ function _cleanWaveformCache(vpath, scanId) {
     const cacheDir    = config.program.storage.waveformDirectory;
     const staleHashes = db.getStaleFileHashes(vpath, scanId);
     for (const hash of staleHashes) {
-      const wfPath = resolvePathWithinRoot(cacheDir, `wf-${hash}.json`);
+      const wfPath = resolvePathWithinRoot(cacheDir, `wf2-${hash}.json`);
       if (fs.existsSync(wfPath)) fs.unlinkSync(wfPath);
     }
   } catch (e) { console.debug('[velvet]', e?.message ?? e); }
