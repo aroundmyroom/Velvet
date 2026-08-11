@@ -106,6 +106,17 @@ app session so you don’t have to sign in every time you open a view.
 The left **side menu** gives you: **Home**, **Albums**, **Artists**,
 **Playlists** and **Auto-DJ**.
 
+#### Auto-DJ engine (v0.3.22+)
+
+The TV's Auto-DJ runs the same scoring/continuity engine as the web player
+(see `docs/architecture.md` § 4): similar-artist matching, BPM continuity,
+harmonic (Camelot) mixing, year/era continuity, artist diversity, and the
+same 3-tier fallback (similar-artist + BPM + key → library-wide BPM + key →
+free pick). There's no settings screen on the TV, so these all run with fixed
+defaults instead of the web app's configurable sliders/toggles. The keyword
+and genre whitelist/blacklist filters remain web/desktop-only, since they need
+a list-editing UI the remote doesn't have.
+
 ### Media keys
 
 The TV’s dedicated media keys are wired directly to playback:

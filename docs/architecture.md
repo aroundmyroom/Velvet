@@ -184,6 +184,27 @@ flowchart LR
 
 How Auto-DJ selects, filters, and queues the next track.
 
+### Scoring engine (v0.3.22+)
+
+Each `_djApiCall()` round asks the server for a candidate; instead of accepting
+the first unblocked one, the client makes up to 5 attempts, scores every
+unblocked candidate with `_djScoreSong()`, and keeps the best (stopping early
+at a score ≥0.75). Weights: harmonic (Camelot) fit 25%, genre compatibility
+15% (a transition matrix, not a binary same/different check), Last.fm
+similarity rank 20%, BPM proximity 20%, year/era proximity 10% (rolling
+average of the last 8 picked years — same pattern as the BPM anchor, prevents
+era drift over a long similar-artist chain), artist diversity 10%. Songs whose
+artist isn't in the current similar-artist list are hard-capped at 0.25 so a
+tier-2/3 fallback pick never outscores a legitimate similar-artist match.
+
+The BPM/Camelot anchors only ever update from actual DJ-picked songs, never
+from a manually-played track — so switching Auto-DJ on mid-playback doesn't
+lock the session to an unrelated tempo.
+
+The Tizen TV app (`webapp/tizen/app.js`) runs a self-contained port of this
+same engine with fixed defaults (no settings screen to configure it from) —
+see `docs/tizen-tv.md`.
+
 ```mermaid
 flowchart TD
     SONGEND["🎵 Song ending\n(or DJ turned on\nwith empty queue)"]

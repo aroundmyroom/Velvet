@@ -561,6 +561,7 @@ function doLogout() {
   S.token = ''; S.baseUrl = ''; S.username = '';
   pauseAudio();
   S.queue = []; S.queueIdx = -1; S.autoDj = false;
+  _djResetSession();
   hidePlayerBar();
   showScreen('login');
   el('login-pass').value = '';
@@ -1056,12 +1057,375 @@ function openPlaylistDetail(name) {
 
 /* ─────────────────────────────────────────────────────────────────────────────
    AUTO-DJ
+   Lightweight port of the web player's Auto-DJ scoring engine (webapp/app.js:
+   _djScoreSong / _djSongBlocked / autoDJPrefetch). The TV has no settings UI,
+   so there is nothing to configure — similar-artist matching, BPM continuity,
+   harmonic (Camelot) mixing and year/era continuity are always on with fixed
+   sensible defaults. The optional keyword/genre filters from the web app are
+   user-configured lists with no TV equivalent UI, so they are intentionally
+   left out here.
+   Same 3-tier fallback as the web app: (1) similar-artist + BPM + key,
+   (2) library-wide BPM + key (drop similar-artist constraint), (3) free pick
+   (drop BPM/key too) — so the DJ can never get permanently stuck.
    ────────────────────────────────────────────────────────────────────────── */
+var DJ_ARTIST_COOLDOWN = 15;
+var DJ_BPM_TOLERANCE   = 8;
+var DJ_YEAR_TOLERANCE  = 12;
+var _djArtistHistory   = [];  // last N artists played this Auto-DJ session
+var _bpmHistory        = [];
+var _bpmAnchor         = null;
+var _yearHistory       = [];
+var _yearAnchor        = null;
+var _camelotAnchor           = null;
+var _camelotAnchorNeighbours = null;
+var _djSimilarFor     = '';   // artist we last looked up on Last.fm
+var _djSimilarArtists = [];   // raw DB artist variants (SQL IN filter)
+var _djVariantRankMap = {};   // DB artist variant -> 1-indexed Last.fm rank
+var _djCurArtist  = null;     // last accepted DJ pick — scoring/continuity reference
+var _djCurGenre   = null;
+var _djCurYear    = null;
+var _djCurBpm     = null;
+var _djCurCamelot = null;
+var _djCurNeighbours = null;
+
+function _djResetSession() {
+  _djArtistHistory = []; _bpmHistory = []; _bpmAnchor = null;
+  _yearHistory = []; _yearAnchor = null;
+  _camelotAnchor = null; _camelotAnchorNeighbours = null;
+  _djSimilarFor = ''; _djSimilarArtists = []; _djVariantRankMap = {};
+  _djCurArtist = null; _djCurGenre = null; _djCurYear = null;
+  _djCurBpm = null; _djCurCamelot = null; _djCurNeighbours = null;
+}
+
+function _bpmAvg(arr) {
+  if (!arr.length) return null;
+  var sum = 0;
+  for (var i = 0; i < arr.length; i++) sum += arr[i];
+  return Math.round(sum / arr.length);
+}
+function _bpmHistoryPush(bpm) {
+  if (bpm == null) return;
+  _bpmHistory.push(bpm);
+  if (_bpmHistory.length > 8) _bpmHistory.shift();
+  _bpmAnchor = _bpmAvg(_bpmHistory);
+}
+function _yearHistoryPush(year) {
+  if (year == null) return;
+  _yearHistory.push(year);
+  if (_yearHistory.length > 8) _yearHistory.shift();
+  _yearAnchor = _bpmAvg(_yearHistory);
+}
+function _djCooldownList() {
+  return _djArtistHistory.length > 0 ? _djArtistHistory.slice(-DJ_ARTIST_COOLDOWN) : undefined;
+}
+function _djPushArtistHistory(artist) {
+  if (!artist) return;
+  _djArtistHistory.push(artist);
+  if (_djArtistHistory.length > 500) _djArtistHistory.shift();
+}
+
+// -- Camelot Wheel for harmonic mixing (canonical copy: webapp/app.js) --
+var _CAMELOT = {
+  'Ab minor':'1A','G# minor':'1A','B major':'1B',
+  'Eb minor':'2A','D# minor':'2A','F# major':'2B','Gb major':'2B',
+  'Bb minor':'3A','A# minor':'3A','Db major':'3B','C# major':'3B',
+  'F minor':'4A','Ab major':'4B','G# major':'4B',
+  'C minor':'5A','Eb major':'5B','D# major':'5B',
+  'G minor':'6A','Bb major':'6B','A# major':'6B',
+  'D minor':'7A','F major':'7B',
+  'A minor':'8A','C major':'8B',
+  'E minor':'9A','G major':'9B',
+  'B minor':'10A','D major':'10B',
+  'F# minor':'11A','A major':'11B',
+  'C# minor':'12A','E major':'12B'
+};
+function toCamelot(key) {
+  if (!key) return null;
+  return _CAMELOT[key] || null;
+}
+function camelotNeighbours(code) {
+  if (!code) return null;
+  var num = parseInt(code, 10);
+  var letter = code.slice(-1);
+  var other = letter === 'A' ? 'B' : 'A';
+  var prev = ((num - 2 + 12) % 12) + 1;
+  var next = (num % 12) + 1;
+  var set = {};
+  set[num + letter] = true; set[num + other] = true;
+  set[prev + letter] = true; set[prev + other] = true;
+  set[next + letter] = true; set[next + other] = true;
+  return set; // plain object used as a Set — check membership with `code in set`
+}
+function _camelotKeyNamesFor(neighbourSet) {
+  var names = [];
+  for (var name in _CAMELOT) {
+    if (neighbourSet[_CAMELOT[name]]) names.push(name);
+  }
+  return names;
+}
+
+// -- Genre grouping / compatibility (ported from webapp/app.js) --
+var _DJ_HARD_GENRE_KW = ['hardcore','hardstyle','gabber','speedcore','frenchcore','terrorcore','jumpstyle','rawstyle','hard trance','makina'];
+var _DJ_SOFT_GENRE_KW = ['pop','rock','soul','r&b','rnb','folk','country','jazz','classical','indie','alternative','easy listening','ballad','synth-pop','synthpop','new wave','blues','funk','disco'];
+function _djGenreGroup(g) {
+  if (!g) return null;
+  var lc = g.toLowerCase();
+  for (var i = 0; i < _DJ_HARD_GENRE_KW.length; i++) if (lc.indexOf(_DJ_HARD_GENRE_KW[i]) !== -1) return 'hard';
+  for (var j = 0; j < _DJ_SOFT_GENRE_KW.length; j++) if (lc.indexOf(_DJ_SOFT_GENRE_KW[j]) !== -1) return 'soft';
+  return null;
+}
+function _djGenreCat(lc) {
+  if (lc.indexOf('ambient') !== -1 || lc.indexOf('chillout') !== -1 || lc.indexOf('downtempo') !== -1 || lc.indexOf('new age') !== -1) return 'ambient';
+  if (lc.indexOf('disco') !== -1 || lc.indexOf('funk') !== -1 || lc.indexOf('soul') !== -1 || lc.indexOf('motown') !== -1) return 'disco';
+  if (lc.indexOf('electronic') !== -1 || lc.indexOf('techno') !== -1 || lc.indexOf('house') !== -1 ||
+      lc.indexOf('trance') !== -1 || lc.indexOf('dance') !== -1 || lc.indexOf('edm') !== -1 ||
+      lc.indexOf('synth') !== -1 || lc.indexOf('electro') !== -1) return 'electronic';
+  if (lc.indexOf('hardcore') !== -1 || lc.indexOf('hardstyle') !== -1 || lc.indexOf('gabber') !== -1) return 'hard';
+  if (lc.indexOf('pop') !== -1 || lc.indexOf('rock') !== -1 || lc.indexOf('indie') !== -1 ||
+      lc.indexOf('alternative') !== -1 || lc.indexOf('country') !== -1 || lc.indexOf('folk') !== -1 ||
+      lc.indexOf('r&b') !== -1 || lc.indexOf('rnb') !== -1 || lc.indexOf('jazz') !== -1) return 'soft';
+  return 'other';
+}
+function _djGenreCompatScore(curGenre, candGenre) {
+  if (!curGenre || !candGenre) return 0.6;
+  var lc1 = curGenre.toLowerCase(), lc2 = candGenre.toLowerCase();
+  if (lc1 === lc2) return 1.0;
+  var c1 = _djGenreCat(lc1), c2 = _djGenreCat(lc2);
+  if (c1 === c2) return 0.9;
+  var MATRIX = {
+    'electronic->disco':0.7,   'disco->electronic':0.7,
+    'electronic->ambient':0.35,'ambient->electronic':0.35,
+    'disco->ambient':0.15,     'ambient->disco':0.15,
+    'electronic->soft':0.25,   'soft->electronic':0.25,
+    'disco->soft':0.45,        'soft->disco':0.45,
+    'ambient->soft':0.25,      'soft->ambient':0.25,
+    'electronic->hard':0.05,   'hard->electronic':0.05,
+    'disco->hard':0.05,        'hard->disco':0.05,
+    'ambient->hard':0.0,       'hard->ambient':0.0,
+    'soft->hard':0.15,         'hard->soft':0.15
+  };
+  var key = c1 + '->' + c2;
+  return (key in MATRIX) ? MATRIX[key] : 0.5;
+}
+
+// Score a DJ candidate (0..1, higher = better fit). Same weights as the web
+// app: harmonic 25%, genre 15%, Last.fm rank 20%, BPM 20%, year 10%, diversity 10%.
+function _djScoreSong(song) {
+  var score = 0;
+
+  if (song.musicalKey) {
+    var cand = toCamelot(song.musicalKey);
+    if (!cand) {
+      score += 0.25 * 0.4;
+    } else if (cand === _djCurCamelot) {
+      score += 0.25 * 1.0;
+    } else if (_djCurNeighbours && _djCurNeighbours[cand]) {
+      score += 0.25 * 0.7;
+    } else {
+      var cn = camelotNeighbours(cand);
+      score += 0.25 * ((cn && _djCurCamelot && cn[_djCurCamelot]) ? 0.3 : 0.0);
+    }
+  } else {
+    score += 0.25 * 0.4;
+  }
+
+  score += 0.15 * _djGenreCompatScore(_djCurGenre, song.genre);
+
+  var hasRankData = false;
+  for (var _k in _djVariantRankMap) { hasRankData = true; break; }
+  if (song.artist && hasRankData) {
+    var rank = _djVariantRankMap[song.artist];
+    score += 0.20 * (rank != null ? Math.max(0.18, 1.0 - (rank - 1) / 60) : 0);
+  } else {
+    score += 0.20 * 0.3;
+  }
+
+  var blendRef = (_djCurBpm != null && _bpmAnchor != null) ? Math.round(0.6 * _djCurBpm + 0.4 * _bpmAnchor) : (_djCurBpm != null ? _djCurBpm : _bpmAnchor);
+  if (song.bpm && blendRef != null) {
+    var diff = Math.abs(song.bpm - blendRef);
+    var bpmScore = diff <= DJ_BPM_TOLERANCE ? 1.0 - (diff / DJ_BPM_TOLERANCE) * 0.3
+                 : diff <= DJ_BPM_TOLERANCE * 2 ? 0.3 - ((diff - DJ_BPM_TOLERANCE) / DJ_BPM_TOLERANCE) * 0.3
+                 : 0;
+    score += 0.20 * bpmScore;
+  } else {
+    score += 0.20 * 0.5;
+  }
+
+  var yearBlend = (_djCurYear != null && _yearAnchor != null) ? Math.round(0.6 * _djCurYear + 0.4 * _yearAnchor) : (_djCurYear != null ? _djCurYear : _yearAnchor);
+  if (song.year && yearBlend != null) {
+    var ydiff = Math.abs(song.year - yearBlend);
+    var yearScore = ydiff <= DJ_YEAR_TOLERANCE ? 1.0 - (ydiff / DJ_YEAR_TOLERANCE) * 0.3
+                  : ydiff <= DJ_YEAR_TOLERANCE * 2 ? 0.3 - ((ydiff - DJ_YEAR_TOLERANCE) / DJ_YEAR_TOLERANCE) * 0.3
+                  : 0;
+    score += 0.10 * yearScore;
+  } else {
+    score += 0.10 * 0.5;
+  }
+
+  var recent = _djCooldownList() || [];
+  var aNorm = function(a) { return (a || '').trim().toLowerCase(); };
+  var aidx = -1;
+  for (var i = 0; i < recent.length; i++) { if (aNorm(recent[i]) === aNorm(song.artist)) aidx = i; }
+  score += 0.10 * (aidx === -1 ? 1.0 : aidx >= recent.length - 5 ? 0.0 : aidx >= recent.length - 10 ? 0.4 : 0.7);
+
+  if (_djSimilarArtists.length > 0 && _djSimilarArtists.indexOf(song.artist) === -1) {
+    return Math.min(score, 0.25);
+  }
+  return score;
+}
+
+// Binary blocking gates. opts.skipBpm/skipHarmonic relax the two constraints
+// the tier-3 free-pick fallback intentionally has no server-side data for.
+function _djSongBlocked(song, opts) {
+  opts = opts || {};
+  if (!opts.skipBpm && _bpmAnchor != null) {
+    if (!song.bpm) return 'no-bpm';
+    var matchNormal = Math.abs(song.bpm - _bpmAnchor) <= DJ_BPM_TOLERANCE;
+    var matchHalf   = Math.abs(song.bpm - _bpmAnchor / 2) <= DJ_BPM_TOLERANCE / 2;
+    var matchDouble = Math.abs(song.bpm - _bpmAnchor * 2) <= DJ_BPM_TOLERANCE * 2;
+    if (!matchNormal && !matchHalf && !matchDouble) return 'bpm';
+  }
+  if (!opts.skipHarmonic && _camelotAnchorNeighbours && song.musicalKey) {
+    var cand = toCamelot(song.musicalKey);
+    if (cand && !_camelotAnchorNeighbours[cand]) return 'harmonic';
+  }
+  var curG = _djGenreGroup(_djCurGenre), candG = _djGenreGroup(song.genre);
+  if (curG && candG && curG !== candG) return 'genre-jump';
+  return null;
+}
+
+function _djSongFromApi(s) {
+  var m = s.metadata || {};
+  return {
+    filepath:   s.filepath,
+    title:      m.title  || s.filepath.split('/').pop(),
+    artist:     m.artist || '',
+    album:      m.album  || '',
+    artFile:    m['album-art'] || null,
+    genre:      m.genre || null,
+    bpm:        m.bpm || null,
+    musicalKey: m['musical-key'] || null,
+    year:       m.year || null
+  };
+}
+
+function _djFetchSimilarArtists(artist) {
+  if (!artist || _djSimilarFor === artist) return Promise.resolve();
+  return api('GET', '/api/v1/lastfm/similar-artists?artist=' + encodeURIComponent(artist)).then(function(d) {
+    _djSimilarFor = artist;
+    _djSimilarArtists = d.artists || [];
+    _djVariantRankMap = d.variantRankMap || {};
+  }).catch(function() {
+    _djSimilarFor = artist;
+    _djSimilarArtists = [];
+    _djVariantRankMap = {};
+  });
+}
+
+function _djBuildRequestBody(withConstraints) {
+  var body = {
+    ignoreList: S.autoDjIgnoreList,
+    ignoreArtists: _djCooldownList()
+  };
+  if (withConstraints) {
+    if (_djSimilarArtists.length > 0) body.artists = _djSimilarArtists;
+    if (_bpmAnchor != null) {
+      body.bpmRanges = [
+        { min: _bpmAnchor - DJ_BPM_TOLERANCE, max: _bpmAnchor + DJ_BPM_TOLERANCE },
+        { min: _bpmAnchor / 2 - DJ_BPM_TOLERANCE / 2, max: _bpmAnchor / 2 + DJ_BPM_TOLERANCE / 2 },
+        { min: _bpmAnchor * 2 - DJ_BPM_TOLERANCE * 2, max: _bpmAnchor * 2 + DJ_BPM_TOLERANCE * 2 }
+      ];
+    }
+    if (_camelotAnchorNeighbours) {
+      var keyNames = _camelotKeyNamesFor(_camelotAnchorNeighbours);
+      if (keyNames.length) { body.requireMusicalKey = true; body.musicalKeys = keyNames; }
+    }
+  }
+  return body;
+}
+
+// Tier 1: similar-artist + BPM + key (up to 5 attempts, keep the best-scoring
+// unblocked candidate; stop early once a clearly good match (>=0.75) is found).
+function _djAttemptTier1(remaining, bestSoFar) {
+  if (remaining <= 0) return Promise.resolve(bestSoFar);
+  return api('POST', '/api/v1/db/random-songs', _djBuildRequestBody(true)).then(function(data) {
+    S.autoDjIgnoreList = data.ignoreList || S.autoDjIgnoreList;
+    var s = (data.songs || [])[0];
+    if (!s) return bestSoFar;
+    var cand = _djSongFromApi(s);
+    if (!_djSongBlocked(cand)) {
+      var sc = _djScoreSong(cand);
+      if (!bestSoFar || sc > bestSoFar.score) bestSoFar = { song: cand, score: sc };
+      if (bestSoFar.score >= 0.75) return bestSoFar;
+    }
+    return _djAttemptTier1(remaining - 1, bestSoFar);
+  }).catch(function() { return bestSoFar; });
+}
+
+// Tier 2: library-wide BPM + key — drop the similar-artist constraint.
+function _djAttemptTier2() {
+  var body = _djBuildRequestBody(true);
+  delete body.artists;
+  return api('POST', '/api/v1/db/random-songs', body).then(function(data) {
+    S.autoDjIgnoreList = data.ignoreList || S.autoDjIgnoreList;
+    var s = (data.songs || [])[0];
+    if (!s) return null;
+    var cand = _djSongFromApi(s);
+    if (_djSongBlocked(cand)) return null;
+    return { song: cand, score: _djScoreSong(cand) };
+  }).catch(function() { return null; });
+}
+
+// Tier 3: free pick — drop BPM/key entirely. Still enforce the hard
+// genre-group jump guard (up to 3 attempts) so the DJ never gets stuck.
+function _djAttemptTier3(remaining, bestSoFar) {
+  if (remaining <= 0) return Promise.resolve(bestSoFar);
+  return api('POST', '/api/v1/db/random-songs', _djBuildRequestBody(false)).then(function(data) {
+    S.autoDjIgnoreList = data.ignoreList || S.autoDjIgnoreList;
+    var s = (data.songs || [])[0];
+    if (!s) return bestSoFar;
+    var cand = _djSongFromApi(s);
+    if (!_djSongBlocked(cand, { skipBpm: true, skipHarmonic: true })) {
+      return { song: cand, score: _djScoreSong(cand) };
+    }
+    return _djAttemptTier3(remaining - 1, bestSoFar);
+  }).catch(function() { return bestSoFar; });
+}
+
+function _djAcceptPick(song) {
+  _djPushArtistHistory(song.artist);
+  if (song.bpm != null) _bpmHistoryPush(song.bpm);
+  if (song.year != null) _yearHistoryPush(song.year);
+  var cc = toCamelot(song.musicalKey);
+  if (cc) { _camelotAnchor = cc; _camelotAnchorNeighbours = camelotNeighbours(cc); }
+  _djCurArtist = song.artist; _djCurGenre = song.genre; _djCurYear = song.year;
+  _djCurBpm = song.bpm; _djCurCamelot = cc; _djCurNeighbours = cc ? camelotNeighbours(cc) : null;
+
+  var track = {
+    filepath: song.filepath,
+    title:    song.title,
+    artist:   song.artist,
+    album:    song.album,
+    artFile:  song.artFile
+  };
+  if (S.queueIdx < 0) {
+    // First track: start playing immediately
+    S.queue = [track];
+    S.queueIdx = 0;
+    _loadAndPlay(track);
+  } else {
+    // Queue it up so _onTrackEnd will pick it
+    S.queue.push(track);
+  }
+  el('autodj-status').textContent = 'Playing: ' + track.title;
+}
+
 el('autodj-start-btn').addEventListener('click', function() {
   S.autoDj = true;
   S.autoDjIgnoreList = [];
   S.queue = [];
   S.queueIdx = -1;
+  _djResetSession();
   el('autodj-status').textContent = 'Picking a track…';
   show('autodj-status');
   _autoDjPick();
@@ -1069,29 +1433,21 @@ el('autodj-start-btn').addEventListener('click', function() {
 
 function _autoDjPick() {
   if (!S.autoDj) return;
-  api('POST', '/api/v1/db/random-songs', { ignoreList: S.autoDjIgnoreList }).then(function(data) {
-    var songs = data.songs || [];
-    if (!songs.length) { el('autodj-status').textContent = 'No songs found.'; return; }
-    var s = songs[0];
-    var m = s.metadata || {};
-    S.autoDjIgnoreList = data.ignoreList || [];
-    var track = {
-      filepath: s.filepath,
-      title:    m.title  || s.filepath.split('/').pop(),
-      artist:   m.artist || '',
-      album:    m.album  || '',
-      artFile:  m['album-art'] || null
-    };
-    if (S.queueIdx < 0) {
-      // First track: start playing immediately
-      S.queue = [track];
-      S.queueIdx = 0;
-      _loadAndPlay(track);
-    } else {
-      // Queue it up so _onTrackEnd will pick it
-      S.queue.push(track);
+  el('autodj-status').textContent = 'Picking a track…';
+  _djFetchSimilarArtists(_djCurArtist).then(function() {
+    return _djAttemptTier1(5, null);
+  }).then(function(best) {
+    if (best) return best;
+    return _djAttemptTier2();
+  }).then(function(best) {
+    if (best) return best;
+    return _djAttemptTier3(3, null);
+  }).then(function(best) {
+    if (!best || !best.song || !best.song.filepath) {
+      el('autodj-status').textContent = 'No songs found.';
+      return;
     }
-    el('autodj-status').textContent = 'Playing: ' + track.title;
+    _djAcceptPick(best.song);
   }).catch(function() {
     el('autodj-status').textContent = 'Error fetching track. Retrying…';
     setTimeout(_autoDjPick, 5000);

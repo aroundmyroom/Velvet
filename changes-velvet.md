@@ -1,3 +1,19 @@
+## v0.3.22 (2026-08-11)
+
+Auto-DJ scoring engine + Samsung TV parity: weighted candidate scoring, year/era continuity, smarter fallback chain, and the Tizen app now runs the same engine.
+
+### Auto-DJ — weighted scoring engine, year/era continuity, smarter fallback
+- **New scoring engine.** Instead of accepting the first candidate the server returns, Auto-DJ now requests up to 5 candidates and scores each one — harmonic (Camelot) fit 25%, genre compatibility 15%, Last.fm similarity rank 20%, BPM proximity 20%, year/era proximity 10%, artist diversity 10% — and queues the best-scoring unblocked song. A genre compatibility matrix (e.g. electronic↔disco 0.7, electronic↔hard 0.05) replaces the old binary same/different genre check.
+- **New: year/era continuity.** A rolling average of the last 8 DJ-picked years (like the existing BPM anchor) now nudges each pick toward a coherent era, preventing the similar-artist "random walk" from drifting from 2005 to 2023 over a dozen songs with nothing to notice or correct it.
+- **Fixed: BPM/harmonic anchors could be seeded from a manually-played song.** If you were listening to a slow ballad and switched on Auto-DJ, the first DJ pick used to lock the whole session's BPM window to that song's tempo, often exhausting the similar-artist pool immediately. The rolling anchor now only ever updates from actual DJ-picked songs — the first pick after enabling Auto-DJ is unconstrained and lets the artist/genre/harmonic signals guide it instead.
+- **Fixed: tier-3 "free pick" fallback could still violate the artist keyword filter or jump hard↔soft genre groups.** It now retries up to 3 times and validates each candidate against those two guards before accepting it.
+- **Fixed: the genre-escape fallback (used when a genre run gets stuck) could return a candidate that was itself blocked.** It's now validated the same way as every other candidate; if blocked, the original pick is kept instead.
+- **Fixed: the artist-cooldown list sent to the server could grow up to 500 entries.** On smaller libraries this caused the server to exhaust the entire catalog and silently drop the cooldown constraint. Only the most recent 15 artists (the actual cooldown window) are sent now.
+- **Improved Last.fm similar-artist matching** for compound artist names (`"A & B"`, `"A vs. B"`, `"A pres. B"`, `"A x B"`) — each part is tried individually until one returns results, and each result now carries its Last.fm rank (used by the new scoring engine) instead of an unordered list.
+
+### Velvet TV — Samsung Tizen app: Auto-DJ parity
+- **The TV app's Auto-DJ now uses the same scoring/continuity engine as the web player** — similar-artist matching, BPM continuity, harmonic (Camelot) mixing, year/era continuity, artist diversity, and the same 3-tier fallback chain (similar+BPM+key → library-wide BPM+key → free pick). Since the TV has no settings screen, these all run with fixed sensible defaults rather than user-configurable options — there was previously no way to expose them there. The keyword and genre whitelist/blacklist filters remain web/desktop-only, since those inherently need a list-editing UI the remote doesn't have.
+
 ## v0.3.21 (2026-08-10)
 
 Maintenance release: waveform cache refresh, visualizer graceful fallback, Subsonic large-queue position fix, deterministic album sort order.
