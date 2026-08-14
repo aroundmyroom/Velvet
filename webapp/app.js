@@ -1,5 +1,5 @@
 'use strict';
-const VELVET_VERSION = '0.3.22';
+const VELVET_VERSION = '0.4.0';
 // ── SERVER IDENTITY GUARD ────────────────────────────────────────────────────
 // Detects when this browser's localStorage belongs to a different Velvet
 // instance (fresh install, IP change, reverse-proxy swap, second server).
@@ -758,6 +758,37 @@ let _djLastPickFree          = false; // true when last DJ pick had no BPM conte
 let _djGenreHistory          = [];    // rolling window — last 25 picked genres (drift prevention)
 let _djEscaping              = false; // single-shot guard — prevents recursive escape retries
 let _djGenreGroupsCache      = null;  // [{name, genres:[{genre,cnt}]}] — fetched once per viewAutoDJ open
+let _djGenreGroupsCachePromise = null; // in-flight fetch, so concurrent callers share one request
+
+// Ensures _djGenreGroupsCache is populated even if the user never opened the
+// Auto-DJ settings panel this session (e.g. Auto-DJ auto-resumes on page load,
+// or is toggled from the player-bar light). Without this, a saved "GROUP:x"
+// genre selection silently expands to an EMPTY array (see _expandDjGenres),
+// which both (a) drops the genre filter from the server request entirely, and
+// (b) makes the client-side whitelist check block every candidate — the two
+// combine to let a totally wrong-genre song through via the tier-3 free pick.
+async function _ensureDjGenreGroupsCache() {
+  if (_djGenreGroupsCache) return _djGenreGroupsCache;
+  if (!_djGenreGroupsCachePromise) {
+    _djGenreGroupsCachePromise = api('GET', 'api/v1/db/genre-groups').then(data => {
+      if (!data?.genres) return null;
+      _djGenreGroupsCache = data.groups
+        ? (() => {
+            const cntMap = new Map(data.genres.map(g => [g.genre, g.cnt]));
+            return data.groups.map(grp => ({
+              name: grp.name,
+              genres: grp.genres.map(g => {
+                const name = typeof g === 'string' ? g : g.genre;
+                return { genre: name, cnt: cntMap.get(name) ?? (typeof g === 'object' ? (g.cnt || 0) : 0) };
+              }),
+            }));
+          })()
+        : [{ name: 'All genres', genres: data.genres }];
+      return _djGenreGroupsCache;
+    }).catch(() => null).finally(() => { _djGenreGroupsCachePromise = null; });
+  }
+  return _djGenreGroupsCachePromise;
+}
 
 // Rolling year/era history — same pattern as BPM history. Prevents the
 // similar-artist "random walk" (A→similar-to-A→B→similar-to-B→C…) from
@@ -2125,29 +2156,9 @@ function _queueArtist(song) {
 }
 
 // Returns true if a song should be EXCLUDED by the active keyword filter.
-// Genre group tables used by _djSongBlocked.
-// Each keyword is tested with String.includes() after lowercasing.
-// A genre string matches a group only when it contains at least one keyword.
-const _DJ_HARD_GENRE_KW = [
-  'hardcore', 'hardstyle', 'gabber', 'speedcore', 'frenchcore',
-  'terrorcore', 'jumpstyle', 'rawstyle', 'hard trance', 'makina',
-];
-const _DJ_SOFT_GENRE_KW = [
-  'pop', 'rock', 'soul', 'r&b', 'rnb', 'folk', 'country', 'jazz',
-  'classical', 'indie', 'alternative', 'easy listening', 'ballad',
-  'synth-pop', 'synthpop', 'new wave', 'blues', 'funk', 'disco',
-];
-function _djGenreGroup(g) {
-  if (!g) return null;
-  const lc = g.toLowerCase();
-  if (_DJ_HARD_GENRE_KW.some(kw => lc.includes(kw))) return 'hard';
-  if (_DJ_SOFT_GENRE_KW.some(kw => lc.includes(kw))) return 'soft';
-  return null;
-}
-
-// Genre compatibility matrix — returns 0..1 for a genre transition.
-// Used by _djScoreSong; the hard blocker (_djGenreGroup) still guards
-// extreme jumps (hard↔soft) as a binary gate.
+// Genre compatibility matrix — returns 0..1 for a genre transition. Every
+// transition (including a hard↔soft jump like pop→hardcore) is scored, never
+// hard-blocked — Auto-DJ signals are "nice to have", not exclusionary.
 function _djGenreCompatScore(curGenre, candGenre) {
   if (!curGenre || !candGenre) return 0.6;
   const lc1 = curGenre.toLowerCase(), lc2 = candGenre.toLowerCase();
@@ -2181,43 +2192,87 @@ function _djGenreCompatScore(curGenre, candGenre) {
   return MATRIX[`${c1}→${c2}`] ?? 0.5;
 }
 
-// Score a DJ candidate song (0..1, higher = better fit).
-// Weights: harmonic 25%, genre 15%, lastfm 20%, bpm 20%, year 10%, diversity 10%.
-// Called for each of the (up to 5) server candidates so the best-scoring
-// unblocked song wins rather than always the first one returned.
+// Explicit user genre whitelist/blacklist preference, expressed as a soft
+// 0..1 score (never a hard block — see _djScoreSong design notes below).
+// Returns null when no filter is configured, or its GROUP: definitions
+// haven't loaded yet — "no opinion", caller falls back to continuity scoring.
+function _djGenreFilterScore(song) {
+  if (!S.djGenreEnabled || !S.djGenres.length) return null;
+  const expanded = _expandDjGenres(S.djGenres);
+  if (expanded.length === 0) return null;
+  const raw = (song.genre || '').toLowerCase();
+  const inList = expanded.some(g => {
+    const lc = g.toLowerCase();
+    return raw === lc || raw.startsWith(lc + ',') || raw.endsWith(', ' + lc) || raw.includes(', ' + lc + ',');
+  });
+  if (S.djGenreMode === 'whitelist') return raw ? (inList ? 1.0 : 0.0) : 0.5;
+  return raw ? (inList ? 0.0 : 1.0) : 1.0; // blacklist: untagged songs pass freely
+}
+
+// Score a DJ candidate song (0..1, higher = better fit). Every signal here is
+// a soft "nice to have" bonus — nothing excludes a candidate, it only moves
+// it up or down relative to the rest of the batch (see _djPickSong, which
+// takes the single highest-scoring candidate from the whole batch).
+//
+// Priority order (highest → lowest weight when all signals have data):
+//   similar-artist (Last.fm) > BPM continuity > genre > harmonic mixing
+// Year/diversity are fixed-weight secondary tie-breakers.
+//
+// When Last.fm has no similar artists for the current track (or similar-
+// artist mode is off), the similar-artist weight share is redistributed
+// proportionally to BPM/genre/harmonic — they become the primary basis for
+// the pick instead ("if we don't get a result back, the other items ARE
+// more important").
 function _djScoreSong(song) {
+  const _hasSimilarData = S.djSimilar && _djSimilarArtists.length > 0;
+  let wArtist = 0.35, wBpm = 0.25, wGenre = 0.13, wHarmonic = 0.07;
+  if (!_hasSimilarData) {
+    const otherTotal = wBpm + wGenre + wHarmonic;
+    wBpm      += wArtist * (wBpm / otherTotal);
+    wGenre    += wArtist * (wGenre / otherTotal);
+    wHarmonic += wArtist * (wHarmonic / otherTotal);
+    wArtist = 0;
+  }
+
   let score = 0;
 
-  // ── Harmonic (25%) — uses current-track key, not locked session anchor ─────
+  // ── Harmonic — uses current-track key, not a locked session anchor ──────
   if (song.musical_key) {
     const cand = toCamelot(song.musical_key);
     if (!cand) {
-      score += 0.25 * 0.4;
+      score += wHarmonic * 0.4;
     } else if (cand === _currentCamelot) {
-      score += 0.25 * 1.0;                         // same key
+      score += wHarmonic * 1.0;                         // same key
     } else if (_currentNeighbours?.has(cand)) {
-      score += 0.25 * 0.7;                         // Camelot-adjacent
+      score += wHarmonic * 0.7;                         // Camelot-adjacent
     } else {
       const candNeighbours = camelotNeighbours(cand);
-      score += 0.25 * (candNeighbours.has(_currentCamelot) ? 0.3 : 0.0); // 2 steps
+      score += wHarmonic * (candNeighbours.has(_currentCamelot) ? 0.3 : 0.0); // 2 steps
     }
   } else {
-    score += 0.25 * 0.4; // no key tag → neutral
+    score += wHarmonic * 0.4; // no key tag → neutral
   }
 
-  // ── Genre (15%) ───────────────────────────────────────────────────────────
-  score += 0.15 * _djGenreCompatScore(S.queue[S.idx]?.genre, song.genre);
+  // ── Genre — blends the user's explicit whitelist/blacklist (when
+  // configured) with continuity-based compatibility scoring ──────────────
+  const _filterScore = _djGenreFilterScore(song);
+  const _contScore   = _djGenreCompatScore(S.queue[S.idx]?.genre, song.genre);
+  const genreScore   = _filterScore != null ? (0.6 * _filterScore + 0.4 * _contScore) : _contScore;
+  score += wGenre * genreScore;
 
-  // ── Last.fm rank (20%) ───────────────────────────────────────────────────
-  // rank 1 → 1.0, rank 50 → ~0.18; not in list → 0 (no similarity signal)
-  if (song.artist && Object.keys(_djVariantRankMap).length > 0) {
-    const rank = _djVariantRankMap[song.artist];
-    score += 0.20 * (rank != null ? Math.max(0.18, 1.0 - (rank - 1) / 60) : 0);
-  } else {
-    score += 0.20 * 0.3; // no Last.fm data → weak neutral
+  // ── Similar-artist / Last.fm rank ───────────────────────────────────────
+  // rank 1 → 1.0, rank 50 → ~0.18; not in list → 0 (no similarity signal,
+  // but NOT excluded — bpm/genre/harmonic/year/diversity still decide).
+  if (wArtist > 0) {
+    if (song.artist && Object.keys(_djVariantRankMap).length > 0) {
+      const rank = _djVariantRankMap[song.artist];
+      score += wArtist * (rank != null ? Math.max(0.18, 1.0 - (rank - 1) / 60) : 0);
+    } else {
+      score += wArtist * 0.3; // no Last.fm data → weak neutral
+    }
   }
 
-  // ── BPM proximity (20%) — blended reference: 60% current + 40% base ──────
+  // ── BPM proximity — blended reference: 60% current + 40% base ──────────
   // Allows gradual BPM movement (e.g. 127→128→130→132) rather than always
   // snapping back to the session base.
   const _baseRef  = S.djBpmBase ?? _bpmAnchor;
@@ -2230,12 +2285,12 @@ function _djScoreSong(song) {
     const bpmScore = diff <= tol       ? 1.0 - (diff / tol) * 0.3
                    : diff <= tol * 2   ? 0.3 - ((diff - tol) / tol) * 0.3
                    : 0;
-    score += 0.20 * bpmScore;
+    score += wBpm * bpmScore;
   } else {
-    score += 0.20 * 0.5; // no BPM → neutral
+    score += wBpm * 0.5; // no BPM → neutral
   }
 
-  // ── Year/era proximity (10%) — blended reference: 60% current + 40% anchor ─
+  // ── Year/era proximity (10%, fixed) — blended reference: 60% current + 40% anchor ─
   // Prevents the similar-artist "random walk" from drifting the decade over
   // many picks (tempo/key are era-independent, so nothing else penalises this).
   const _curYear   = S.queue[S.idx]?.year ?? null;
@@ -2253,7 +2308,7 @@ function _djScoreSong(song) {
     score += 0.10 * 0.5; // no year data → neutral
   }
 
-  // ── Artist diversity (10%) ───────────────────────────────────────────────
+  // ── Artist diversity (10%, fixed) ───────────────────────────────────────
   const recent = S.djArtistHistory.slice(-DJ_ARTIST_COOLDOWN);
   const aNorm  = a => (a || '').trim().toLowerCase();
   const aidx   = recent.findIndex(a => aNorm(a) === aNorm(song.artist));
@@ -2262,22 +2317,14 @@ function _djScoreSong(song) {
                  : aidx >= recent.length - 10 ? 0.4   // 6–10 songs ago
                  : 0.7);                              // 11–15 songs ago
 
-  // ── Similar-artist gate (hard cap) ──────────────────────────────────────
-  // When S.djSimilar is on and we have a non-empty similar-artist list, songs
-  // whose artist is NOT in that list come from the server's tier-2/3 fallback
-  // (similar-artist pool was exhausted or had no BPM/key match).  BPM+key+genre
-  // alone can push their score to ~0.55, which beats rank-20+ similar artists
-  // that happen to be slightly off-key or off-tempo.  Cap fallback songs at 0.25
-  // so any similar artist at any rank wins — fallback only triggers when the
-  // entire similar pool keeps scoring below 0.25 for all 5 attempts.
-  if (S.djSimilar && _djSimilarArtists.length > 0 && !_djSimilarArtists.includes(song.artist)) {
-    return Math.min(score, 0.25);
-  }
   return score;
 }
 
-function _djSongBlocked(song, opts = {}) {
-  // Keyword text filter (independent toggle — can be off while BPM/harmonic are on)
+// Keyword filter — the ONLY hard block left in Auto-DJ. Everything else
+// (genre, BPM continuity, harmonic mixing, similar-artist) is a soft scoring
+// bonus handled entirely in _djScoreSong — see _djPickSong for how a batch of
+// candidates is filtered (keyword only), scored, and the best one chosen.
+function _djSongBlocked(song) {
   if (S.djFilterEnabled && S.djFilterWords.length) {
     // Normalise: lowercase + collapse repeated characters (acappella == acapella)
     const norm = s => s.toLowerCase().replaceAll(/(.)\1+/g, '$1');
@@ -2289,62 +2336,17 @@ function _djSongBlocked(song, opts = {}) {
     ].join(' '));
     if (S.djFilterWords.some(w => w && haystack.includes(norm(w)))) return true;
   }
-  // User genre filter — whitelist or blacklist (defence-in-depth; server already enforces this)
-  if (S.djGenreEnabled && S.djGenres.length) {
-    const raw = (song.genre || '').toLowerCase();
-    // Expand GROUP:X entries to their member genres before matching
-    const expanded = _expandDjGenres(S.djGenres);
-    const inList = expanded.some(g => {
-      const lc = g.toLowerCase();
-      return raw === lc || raw.startsWith(lc + ',') || raw.endsWith(', ' + lc) || raw.includes(', ' + lc + ',');
-    });
-    if (S.djGenreMode === 'whitelist') {
-      if (!raw || !inList) return true; // no genre tag, or not in whitelist → blocked
-    } else {
-      if (raw && inList) return true;   // genre is in blacklist → blocked
-    }
-  }
-  // BPM continuity — block when there IS a reference BPM AND the candidate
-  // either has no BPM tag (can't validate — could be any tempo) or falls
-  // outside all octave windows.
-  // Only use djBpmBase or the rolling DJ anchor — never _currentBpm (a manually
-  // played song). The first DJ pick always passes BPM if no anchor is established.
-  // opts.skipBpm — used by the tier-3 free-pick fallback, which intentionally
-  // has no BPM/key constraint from the server; re-blocking on BPM there would
-  // defeat the purpose of that tier.
-  const _refBpm = S.djBpmBase ?? _bpmAnchor;
-  if (!opts.skipBpm && S.djBpmContinuity && _refBpm != null) {
-    if (!song.bpm) return true; // no BPM tag — cannot validate, treat as blocked
-    const tol = S.djBpmTolerance ?? 8;
-    // Octave equivalence: also accept songs at half-tempo or double-tempo.
-    // Tolerance scales proportionally so the relative window stays consistent:
-    //   normal  → ±tol    (e.g. 128 ± 8  = 120–136)
-    //   half    → ±tol/2  (e.g.  64 ± 4  =  60–68)
-    //   double  → ±tol*2  (e.g. 256 ± 16 = 240–272)
-    const matchNormal = Math.abs(song.bpm - _refBpm)       <= tol;
-    const matchHalf   = Math.abs(song.bpm - _refBpm / 2)   <= tol / 2;
-    const matchDouble = Math.abs(song.bpm - _refBpm * 2)   <= tol * 2;
-    if (!matchNormal && !matchHalf && !matchDouble) return true;
-  }
-  // Harmonic mixing — only block if the candidate HAS key data AND it falls
-  // outside the Camelot neighbours. Songs without a key tag pass through —
-  // same rationale as BPM: server already exhausted all tagged options.
-  const _refNeighbours = _camelotAnchorNeighbours ?? _currentNeighbours;
-  if (!opts.skipHarmonic && S.djHarmonicMixing && song.musical_key) {
-    const cand = toCamelot(song.musical_key);
-    if (_refNeighbours && cand && !_refNeighbours.has(cand)) return true;
-  }
-  // Genre compatibility — prevent jarring style jumps (e.g. pop → hardcore or
-  // hardcore → pop). Only fires when BOTH songs have a recognised genre group;
-  // untagged or ambiguous genres (dance, electronic, trance…) pass through.
-  const _curGenreGroup  = _djGenreGroup(S.queue[S.idx]?.genre);
-  const _candGenreGroup = _djGenreGroup(song.genre);
-  if (_curGenreGroup && _candGenreGroup && _curGenreGroup !== _candGenreGroup) return true;
   return false;
 }
 
 // Shared helper — returns {ignoreList, songs} from the random-songs API
-async function _djApiCall(escapeOpts = {}) {
+// Fetch a batch of Auto-DJ candidates in a single request. Genre/BPM/harmonic
+// are soft, client-scored signals (see _djScoreSong) and are never sent as
+// hard filters — the server just needs the hard scope: selected collections,
+// minRating, the similar-artist list (when available), and artist cooldown.
+// It returns many songs, not one; _djPickSong scores every one and keeps the
+// best.
+async function _djFetchBatch(escapeOpts = {}) {
   const selected = S.djVpaths.length > 0 ? S.djVpaths : S.vpaths;
 
   // Child-vpath optimisation: if every selected vpath is a child of the
@@ -2353,83 +2355,17 @@ async function _djApiCall(escapeOpts = {}) {
   const meta = S.vpathMeta || {};
   const abEx = _audioBookExclusions();
   const _epParam = abEx.excludeFilepathPrefixes.length > 0 ? { excludeFilepathPrefixes: abEx.excludeFilepathPrefixes } : {};
-  const _expandedGenres = _expandDjGenres(S.djGenres);
-  // Genre escape overrides the user-set genre param for this one pick only
-  const _genreParam = escapeOpts.escapeGenre
-    ? { genres: [escapeOpts.escapeGenre], genreMode: 'blacklist' }
-    : (S.djGenreEnabled && _expandedGenres.length > 0 ? { genres: _expandedGenres, genreMode: S.djGenreMode } : {});
+  // Warm the genre-groups cache so _djGenreFilterScore can expand GROUP:
+  // entries synchronously once scoring runs.
+  if (S.djGenreEnabled && S.djGenres.some(g => g.startsWith('GROUP:'))) await _ensureDjGenreGroupsCache();
   const allChildSameParent =
     selected.length > 0 &&
     selected.every(v => meta[v]?.parentVpath) &&
     new Set(selected.map(v => meta[v].parentVpath)).size === 1;
 
-  // BPM continuity + harmonic mixing — build server-side filter params.
-  // Lock the anchor on the first DJ call of the session so BPM/key never
-  // drift upward over time (e.g. 112 → 120 → 128 → 136 …).
-  // The anchor is cleared when the user plays a song manually or turns features off.
-  // IMPORTANT: only lock from _currentBpm if the current song was NOT a free pick
-  // (i.e. it was chosen by the user or was a DJ pick that itself had a BPM anchor).
-  // This prevents a freely-picked DJ song (Tainted Love at 145 BPM picked with no
-  // prior context) from wrongly becoming the permanent anchor.
-  const _curSongIsFree = _djLastPickFree;
-  // Do NOT pre-seed BPM history from the manually-played track.
-  // If the user was playing Taylor Swift at 85 BPM and switches to Auto-DJ,
-  // seeding from 85 would lock the first DJ pick into a 77–93 BPM window where
-  // similar artists have almost nothing — eventually forcing a random tier-3 pick.
-  // Instead let the first pick be artist/genre/harmonic-guided with no BPM gate.
-  // BPM continuity starts naturally once the first DJ song plays and pushes its
-  // BPM to history (see playAt → if(s?._dj) block).
-  if (S.djHarmonicMixing && _currentCamelot != null && _camelotAnchor == null) {
-    _camelotAnchor           = _currentCamelot;
-    _camelotAnchorNeighbours = camelotNeighbours(_camelotAnchor);
-    try { localStorage.setItem(_djKey('camelot_anchor'), _camelotAnchor); } catch(_) {}
-  }
-  const _bpmParam = {};
-  if (S.djBpmContinuity) {
-    // BPM reference: only use djBpmBase (explicit session target) or the rolling
-    // average of actual DJ plays (_bpmAnchor). Never fall back to _currentBpm —
-    // that may be a manually-played song at an arbitrary tempo that has nothing
-    // to do with the DJ session.
-    const _effectiveBpmRef = S.djBpmBase ?? _bpmAnchor;
-    if (_effectiveBpmRef != null) {
-      const tol = S.djBpmTolerance ?? 8;
-      // Build three ranges: normal, half-tempo, double-tempo.
-      // Tolerance scales proportionally so the relative window stays consistent.
-      const _buildRanges = (t) => [
-        { min: _effectiveBpmRef - t,       max: _effectiveBpmRef + t },       // normal
-        { min: _effectiveBpmRef / 2 - t/2, max: _effectiveBpmRef / 2 + t/2 }, // half
-        { min: _effectiveBpmRef * 2 - t*2, max: _effectiveBpmRef * 2 + t*2 }, // double
-      ]
-        .filter(r => r.max >= 20 && r.min <= 300)
-        .map(r => ({ min: Math.max(20, r.min), max: Math.min(300, r.max) }));
-      _bpmParam.bpmRanges     = _buildRanges(tol);      // tight:  ±tol   (e.g. ±8)
-      _bpmParam.bpmRangesWide = _buildRanges(tol + 2);  // wide:   ±(tol+2) (e.g. ±10)
-    } else {
-      // No anchor yet (current song has no BPM or is itself a free pick).
-      // Still tell the server to prefer songs that HAVE BPM so the pool stays
-      // tagged-first. The server's fallback chain will drop this constraint if
-      // no tagged similar-artist songs exist — and that result should be accepted.
-      _bpmParam.requireBpm = true;
-    }
-    // Track whether this call is going out with no BPM filter so we can mark
-    // the returned song as a free pick (must not seed the anchor).
-    _djLastPickFree = (_effectiveBpmRef == null);
-    console.debug(`[Auto-DJ] BPM ref=${_effectiveBpmRef ?? 'none'} anchor=${_bpmAnchor ?? 'none'} base=${S.djBpmBase ?? 'none'} tol=${S.djBpmTolerance ?? 8} free=${_djLastPickFree}`);
-  } else {
-    _djLastPickFree = false;
-  }
-  if (S.djHarmonicMixing) {
-    // Always require key data — songs without key are never eligible
-    _bpmParam.requireMusicalKey = true;
-    if (_camelotAnchorNeighbours) {
-      _bpmParam.musicalKeys = [..._camelotAnchorNeighbours];
-      console.debug(`[Auto-DJ] Harmonic anchor=${_camelotAnchor} neighbours=${[..._camelotAnchorNeighbours].join(',')}`);
-    }
-  }
-
   // Similar-artists mode: bias towards artists similar to the current track.
-  // Cache the Last.fm result per artist so the 10-attempt retry loop in
-  // autoDJPrefetch/autoDJFetch never makes more than 1 Last.fm API call per song.
+  // Cache the Last.fm result per artist so repeated picks for the same
+  // current song never make more than 1 Last.fm API call.
   let artistFilter;
   if (S.djSimilar && S.queue[S.idx]?.artist) {
     const currentArtist = S.queue[S.idx].artist;
@@ -2447,7 +2383,7 @@ async function _djApiCall(escapeOpts = {}) {
           _djVariantRankMap = d.variantRankMap || {};
           console.log(`[Auto-DJ] Last.fm similar to "${currentArtist}":`, d.displayArtists || artistFilter);
         } else {
-          console.warn(`[Auto-DJ] Last.fm returned no similar artists for "${currentArtist}" — playing random`);
+          console.warn(`[Auto-DJ] Last.fm returned no similar artists for "${currentArtist}" — other criteria take priority`);
           _djSimilarFor = currentArtist;
           _djSimilarArtists = [];
           _djSimilarDisplayArtists = [];
@@ -2467,111 +2403,71 @@ async function _djApiCall(escapeOpts = {}) {
   // Hard escape: drop similar-artist filter entirely to break out of a deeply locked genre cluster
   if (escapeOpts.dropArtistFilter) artistFilter = undefined;
 
+  const base = {
+    ignoreList:    S.djIgnore,
+    minRating:     S.djMinRating || undefined,
+    artists:       artistFilter,
+    ignoreArtists: _djCooldownList(),
+    returnAll:     true,
+    ..._epParam,
+  };
   if (allChildSameParent) {
     const parentVpath = meta[selected[0]].parentVpath;
     const filepathPrefix = selected.length === 1 ? meta[selected[0]].filepathPrefix : null;
     const ignoreVPaths = S.vpaths.filter(v => v !== parentVpath && !meta[v]?.parentVpath);
-    try {
-      return await api('POST', 'api/v1/db/random-songs', {
-        ignoreList:    S.djIgnore,
-        minRating:     S.djMinRating || undefined,
-        ignoreVPaths:  ignoreVPaths.length > 0 ? ignoreVPaths : undefined,
-        filepathPrefix: filepathPrefix || undefined,
-        artists:       artistFilter,
-        ignoreArtists: _djCooldownList(),
-        ..._epParam,
-        ..._bpmParam,
-        ..._genreParam,
-      });
-    } catch(e) {
-      if (artistFilter && e.status === 400) {
-        // Step 1 — keep similar-artists but drop BPM/harmonic constraints.
-        // Old-school tracks often lack musical_key / BPM tags, so the combined
-        // filter (artist + requireMusicalKey + bpmRanges) returns 0 results.
-        // Dropping only BPM/key gives a genre-correct pick instead of anything random.
-        try {
-          console.warn('[Auto-DJ] similar artists + BPM/key returned nothing — retrying without BPM/key');
-          return await api('POST', 'api/v1/db/random-songs', {
-            ignoreList:    S.djIgnore,
-            minRating:     S.djMinRating || undefined,
-            ignoreVPaths:  ignoreVPaths.length > 0 ? ignoreVPaths : undefined,
-            filepathPrefix: filepathPrefix || undefined,
-            artists:       artistFilter,
-            ignoreArtists: _djCooldownList(),
-            ..._epParam,
-            ..._genreParam,
-          });
-        } catch(e2) {
-          // Step 2 — no similar-artist songs in library at all → truly random within scope.
-          if (e2.status === 400) {
-            console.warn('[Auto-DJ] No library songs for similar artists at all, falling back to random');
-            _showInfoStrip('Auto-DJ', t('player.autodj.infoNoLibrarySongs'), 8000);
-            return api('POST', 'api/v1/db/random-songs', {
-              ignoreList:    S.djIgnore,
-              minRating:     S.djMinRating || undefined,
-              ignoreVPaths:  ignoreVPaths.length > 0 ? ignoreVPaths : undefined,
-              filepathPrefix: filepathPrefix || undefined,
-              ignoreArtists: _djCooldownList(),
-              ..._epParam,
-              ..._genreParam,
-            });
-          }
-          throw e2;
-        }
-      }
-      throw e;
-    }
-  }
-
-  try {
-    return await api('POST', 'api/v1/db/random-songs', {
-      ignoreList:   S.djIgnore,
-      minRating:    S.djMinRating || undefined,
-      ignoreVPaths: S.vpaths.filter(v => !selected.includes(v)).length > 0 ? S.vpaths.filter(v => !selected.includes(v)) : undefined,
-      artists:      artistFilter,
-      ignoreArtists: _djCooldownList(),
-      ..._epParam,
-      ..._bpmParam,
-      ..._genreParam,
+    return api('POST', 'api/v1/db/random-songs', {
+      ...base,
+      ignoreVPaths:   ignoreVPaths.length > 0 ? ignoreVPaths : undefined,
+      filepathPrefix: filepathPrefix || undefined,
     });
-  } catch(e) {
-    if (artistFilter && e.status === 400) {
-      // Step 1 — keep similar-artists but drop BPM/harmonic constraints.
-      // Old-school tracks often lack musical_key / BPM tags, so the combined
-      // filter (artist + requireMusicalKey + bpmRanges) returns 0 results.
-      // Dropping only BPM/key gives a genre-correct pick instead of anything random.
-      const ignoreVPaths = S.vpaths.filter(v => !selected.includes(v));
-      try {
-        console.warn('[Auto-DJ] similar artists + BPM/key returned nothing — retrying without BPM/key');
-        return await api('POST', 'api/v1/db/random-songs', {
-          ignoreList:   S.djIgnore,
-          minRating:    S.djMinRating || undefined,
-          ignoreVPaths: ignoreVPaths.length > 0 ? ignoreVPaths : undefined,
-          artists:      artistFilter,
-          ignoreArtists: _djCooldownList(),
-          ..._epParam,
-          ..._genreParam,
-        });
-      } catch(e2) {
-        // Step 2 — no similar-artist songs in library at all → truly random within scope.
-        if (e2.status === 400) {
-          console.warn('[Auto-DJ] No library songs for similar artists at all, falling back to random');
-          _djSimilarArtists = []; _djSimilarDisplayArtists = [];  // prevent _showDJStrip from showing "similar to" for a random fallback
-          _showInfoStrip('Auto-DJ', t('player.autodj.infoNoLibrarySongs'), 8000);
-          return api('POST', 'api/v1/db/random-songs', {
-            ignoreList:   S.djIgnore,
-            minRating:    S.djMinRating || undefined,
-            ignoreVPaths: ignoreVPaths.length > 0 ? ignoreVPaths : undefined,
-            ignoreArtists: _djCooldownList(),
-            ..._epParam,
-            ..._genreParam,
-          });
-        }
-        throw e2;
-      }
-    }
-    throw e;
   }
+  const ignoreVPaths = S.vpaths.filter(v => !selected.includes(v));
+  return api('POST', 'api/v1/db/random-songs', {
+    ...base,
+    ignoreVPaths: ignoreVPaths.length > 0 ? ignoreVPaths : undefined,
+  });
+}
+
+// Fetch a batch of candidates, drop keyword-blocked and just-played tracks,
+// score every remaining candidate (_djScoreSong), and return the single best
+// one (ties broken randomly). Returns null when nothing at all is available.
+//
+// DJ_ARTIST_HARD_FLOOR is a hard (non-scored) exclusion, unlike the 10%
+// diversity bonus in _djScoreSong. It exists because _batchRandomSongs
+// (src/api/db.js) can drop the ignoreArtists cooldown list entirely when the
+// similar-artist pool is too narrow to satisfy both filters at once — that
+// fallback can legitimately hand back an artist played only 1-3 songs ago.
+// Falls back to the full candidate list if it would empty the pool, so
+// Auto-DJ never stalls.
+const DJ_ARTIST_HARD_FLOOR = 3; // never repeat the same artist within this many songs
+async function _djPickSong(escapeOpts = {}) {
+  const d = await _djFetchBatch(escapeOpts);
+  _persistDjIgnore(d.ignoreList);
+  let candidates = (d.songs || []).map(norm).filter(c => !_djSongBlocked(c));
+  // Avoid literal repeats of a track played very recently.
+  const recentPaths = new Set(S.queue.slice(-30).map(s => s.filepath));
+  const deduped = candidates.filter(c => !recentPaths.has(c.filepath));
+  if (deduped.length > 0) candidates = deduped;
+  // Hard artist-repeat floor — independent of (and a backstop for) the
+  // server-side cooldown list, see DJ_ARTIST_HARD_FLOOR comment above.
+  const floorArtists = new Set(S.djArtistHistory.slice(-DJ_ARTIST_HARD_FLOOR).map(a => (a || '').trim().toLowerCase()));
+  if (floorArtists.size > 0) {
+    const beyondFloor = candidates.filter(c => !floorArtists.has((c.artist || '').trim().toLowerCase()));
+    if (beyondFloor.length > 0) candidates = beyondFloor;
+  }
+  // Genre-drift soft escape: prefer candidates outside the overrepresented genre.
+  if (escapeOpts.escapeGenre) {
+    const filtered = candidates.filter(c => (c.genre || '').trim().toLowerCase() !== escapeOpts.escapeGenre);
+    if (filtered.length > 0) candidates = filtered;
+  }
+  if (!candidates.length) return null;
+  let best = null, bestScore = -Infinity;
+  for (const c of candidates) {
+    const sc = _djScoreSong(c);
+    if (sc > bestScore || (sc === bestScore && Math.random() < 0.5)) { bestScore = sc; best = c; } // NOSONAR: non-security tie-break
+  }
+  console.debug(`[Auto-DJ] picked from ${candidates.length} candidates: ${best.artist} — ${best.title} | bpm=${best.bpm ?? '?'} key=${best.musical_key ?? '?'} score=${bestScore.toFixed(3)}`);
+  return best;
 }
 
 // Pre-fetch: silently queue the next DJ song without playing it
@@ -2653,58 +2549,6 @@ function _pruneQueue() {
 
 // Fallback API call: library-wide BPM+key match, no similar-artists filter.
 // Called when the similar-artists pool has no songs in the current BPM window.
-async function _djBpmFallbackCall(skipBpm = false) {
-  const selected = S.djVpaths.length > 0 ? S.djVpaths : S.vpaths;
-  const abEx = _audioBookExclusions();
-  const _epParam = abEx.excludeFilepathPrefixes.length > 0 ? { excludeFilepathPrefixes: abEx.excludeFilepathPrefixes } : {};
-  const meta = S.vpathMeta || {};
-  const _effectiveBpmRef = S.djBpmBase ?? _bpmAnchor;
-  const _bpmParam = {};
-  if (skipBpm) { /* free-pick tier: no BPM or harmonic constraint */ }
-  if (!skipBpm && _effectiveBpmRef != null && S.djBpmContinuity) {
-    const tol = S.djBpmTolerance ?? 8;
-    const _buildRanges = (t) => [
-      { min: _effectiveBpmRef - t,       max: _effectiveBpmRef + t },
-      { min: _effectiveBpmRef / 2 - t/2, max: _effectiveBpmRef / 2 + t/2 },
-      { min: _effectiveBpmRef * 2 - t*2, max: _effectiveBpmRef * 2 + t*2 },
-    ]
-      .filter(r => r.max >= 20 && r.min <= 300)
-      .map(r => ({ min: Math.max(20, r.min), max: Math.min(300, r.max) }));
-    _bpmParam.bpmRanges     = _buildRanges(tol);
-    _bpmParam.bpmRangesWide = _buildRanges(tol + 2);
-  }
-  if (!skipBpm && S.djHarmonicMixing && _camelotAnchorNeighbours) {
-    _bpmParam.musicalKeys = [..._camelotAnchorNeighbours];
-  }
-  const base = {
-    ignoreList:    S.djIgnore,
-    minRating:     S.djMinRating || undefined,
-    ignoreArtists: _djCooldownList(),
-    ..._epParam,
-    ..._bpmParam,
-    ...(S.djGenreEnabled && S.djGenres.length > 0 ? { genres: _expandDjGenres(S.djGenres), genreMode: S.djGenreMode } : {}),
-  };
-  const allChildSameParent =
-    selected.length > 0 &&
-    selected.every(v => meta[v]?.parentVpath) &&
-    new Set(selected.map(v => meta[v].parentVpath)).size === 1;
-  if (allChildSameParent) {
-    const parentVpath = meta[selected[0]].parentVpath;
-    const filepathPrefix = selected.length === 1 ? meta[selected[0]].filepathPrefix : null;
-    const ignoreVPaths = S.vpaths.filter(v => v !== parentVpath && !meta[v]?.parentVpath);
-    return api('POST', 'api/v1/db/random-songs', {
-      ...base,
-      ignoreVPaths:   ignoreVPaths.length > 0 ? ignoreVPaths : undefined,
-      filepathPrefix: filepathPrefix || undefined,
-    });
-  }
-  const ignoreVPaths = S.vpaths.filter(v => !selected.includes(v));
-  return api('POST', 'api/v1/db/random-songs', {
-    ...base,
-    ignoreVPaths: ignoreVPaths.length > 0 ? ignoreVPaths : undefined,
-  });
-}
-
 // Auto-DJ recently-played memory. The server returns an ignoreList of offsets
 // capped at half the matching pool, which on a large library is tens of
 // thousands of integers. Persisting that unbounded array every pick eventually
@@ -2727,58 +2571,8 @@ async function autoDJPrefetch() {
   if (S.queue.length > S.idx + 1) return; // already pre-queued
   S._djPrefetching = true;
   try {
-    let d, song, attempts = 0;
-    // Score each candidate and keep the best unblocked one.
-    // Early-exit when a clearly good match (≥0.75) is found.
-    let bestSong = null, bestScore = -Infinity;
-    do {
-      d = await _djApiCall();
-      _persistDjIgnore(d.ignoreList);
-      const candidate = norm(d.songs[0]);
-      const blocked = _djSongBlocked(candidate);
-      if (!blocked) {
-        const sc = _djScoreSong(candidate);
-        console.debug(`[Auto-DJ] prefetch attempt ${attempts+1}: ${candidate.artist} — ${candidate.title} | bpm=${candidate.bpm ?? '?'} key=${candidate.musical_key ?? '?'} score=${sc.toFixed(3)}`);
-        if (sc > bestScore) { bestScore = sc; bestSong = candidate; }
-        if (bestScore >= 0.75) break; // good enough — stop early
-      } else {
-        console.debug(`[Auto-DJ] prefetch attempt ${attempts+1}: BLOCKED ${candidate.artist} — ${candidate.title} | bpm=${candidate.bpm ?? '?'} key=${candidate.musical_key ?? '?'}`);
-      }
-      song = candidate; // track last attempt for tier-2 fallback check
-      attempts++;
-    } while (attempts < 5);
-    if (bestSong) { song = bestSong; console.debug(`[Auto-DJ] prefetch selected: ${song.artist} — ${song.title} (score=${bestScore.toFixed(3)})`); }
-    // Hard block: if after all attempts the song still violates BPM/key continuity,
-    // try a library-wide BPM+key fallback (no similar-artists constraint) before giving up.
-    if (_djSongBlocked(song)) {
-      // Tier 2: library-wide BPM+key fallback. If it throws (no BPM-matching songs
-      // in the whole library — server returns 400 instead of a random song now that
-      // the “truly random” Step 6 fallback was removed), fall through to tier-3.
-      let tier2Blocked = false;
-      try {
-        const fd = await _djBpmFallbackCall();
-        _persistDjIgnore(fd.ignoreList);
-        song = norm(fd.songs[0]);
-        tier2Blocked = _djSongBlocked(song);
-      } catch(_) { tier2Blocked = true; } // no BPM-matching songs — try tier-3
-      if (tier2Blocked) {
-        // Tier 3: drop BPM/key entirely — any song from the selected vpath.
-        // Still enforce keyword filter + hard genre-group jump (skipBpm/skipHarmonic
-        // only relax the two constraints this tier intentionally has no data for).
-        let tier3Song = null;
-        for (let t = 0; t < 3; t++) {
-          const fd2 = await _djBpmFallbackCall(true);
-          if (!fd2?.songs?.[0]) break;
-          _persistDjIgnore(fd2.ignoreList);
-          const cand = norm(fd2.songs[0]);
-          tier3Song = cand;
-          if (!_djSongBlocked(cand, { skipBpm: true, skipHarmonic: true })) break;
-        }
-        if (!tier3Song?.filepath) return;
-        song = tier3Song;
-        _djLastPickFree = true;
-      }
-    }
+    let song = await _djPickSong();
+    if (!song) { console.warn('[Auto-DJ] prefetch: no candidates available'); return; }
     // ── Genre drift prevention ────────────────────────────────────────────────
     // Skip when user has an active genre whitelist — the escape blacklist would
     // conflict with it and the whitelist already restricts the pool.
@@ -2791,16 +2585,10 @@ async function autoDJPrefetch() {
         _djEscaping = true;
         try {
           const escOpts = { escapeGenre, dropArtistFilter: consecCount >= DJ_GENRE_CONSEC_HARD };
-          const ed = await _djApiCall(escOpts);
-          if (ed?.songs?.[0]) {
-            _persistDjIgnore(ed.ignoreList);
-            const escSong = norm(ed.songs[0]);
-            if (!_djSongBlocked(escSong)) {
-              song = escSong;
-              console.log(`[Auto-DJ] Genre escape: "${escapeGenre}" → "${song.genre || '?'}"`);
-            } else {
-              console.debug('[Auto-DJ] Genre escape candidate blocked — keeping original pick');
-            }
+          const escSong = await _djPickSong(escOpts);
+          if (escSong) {
+            song = escSong;
+            console.log(`[Auto-DJ] Genre escape: "${escapeGenre}" → "${song.genre || '?'}"`);
           }
         } catch (_) { /* accept original if escape fails */ }
         finally { _djEscaping = false; }
@@ -2809,16 +2597,7 @@ async function autoDJPrefetch() {
     // ─────────────────────────────────────────────────────────────────────────
     _djPushArtistHistory(song.artist);
     _djGenreHistoryPush(song.genre);
-    // Advance Camelot anchor to the queued song's key so the NEXT pick targets
-    // keys harmonically compatible with this song, enabling gradual key walking.
-    if (S.djHarmonicMixing && song.musical_key) {
-      const _qCamelot = toCamelot(song.musical_key);
-      if (_qCamelot) {
-        _camelotAnchor = _qCamelot;
-        _camelotAnchorNeighbours = camelotNeighbours(_qCamelot);
-        try { localStorage.setItem(_djKey('camelot_anchor'), _qCamelot); } catch(_) {}
-      }
-    }
+    _djLastPickFree = (song.bpm == null);
     // Only push if nothing was added while we were waiting (autoDJFetch race guard)
     if (S.queue.length <= S.idx + 1) {
       _pruneQueue();
@@ -2851,59 +2630,8 @@ async function autoDJFetch() {
   }
   S._djPrefetching = true;
   try {
-    let d, song, attempts = 0;
-    let bestSong = null, bestScore = -Infinity;
-    do {
-      d = await _djApiCall();
-      _persistDjIgnore(d.ignoreList);
-      const candidate = norm(d.songs[0]);
-      const blocked = _djSongBlocked(candidate);
-      if (!blocked) {
-        const sc = _djScoreSong(candidate);
-        console.debug(`[Auto-DJ] fetch attempt ${attempts+1}: ${candidate.artist} — ${candidate.title} | bpm=${candidate.bpm ?? '?'} key=${candidate.musical_key ?? '?'} score=${sc.toFixed(3)}`);
-        if (sc > bestScore) { bestScore = sc; bestSong = candidate; }
-        if (bestScore >= 0.75) break;
-      } else {
-        console.debug(`[Auto-DJ] fetch attempt ${attempts+1}: BLOCKED ${candidate.artist} — ${candidate.title} | bpm=${candidate.bpm ?? '?'} key=${candidate.musical_key ?? '?'}`);
-      }
-      song = candidate;
-      attempts++;
-    } while (attempts < 5);
-    if (bestSong) { song = bestSong; console.debug(`[Auto-DJ] fetch selected: ${song.artist} — ${song.title} (score=${bestScore.toFixed(3)})`); }
-    // Hard block: if after all attempts the song still violates BPM/key continuity,
-    // try a library-wide BPM+key fallback (no similar-artists constraint) before stopping.
-    if (_djSongBlocked(song)) {
-      // Tier 2: library-wide BPM+key fallback. If it throws (no BPM-matching songs
-      // in the whole library — server now returns 400 instead of a Step-6 random
-      // song, so this catch fires more often than before), fall through to tier-3.
-      let tier2Blocked = false;
-      try {
-        console.warn('[Auto-DJ] similar-artist pool has no BPM match — trying library-wide BPM fallback');
-        const fd = await _djBpmFallbackCall();
-        _persistDjIgnore(fd.ignoreList);
-        song = norm(fd.songs[0]);
-        tier2Blocked = _djSongBlocked(song);
-      } catch(_) { tier2Blocked = true; } // no BPM-matching songs anywhere — proceed to tier-3
-      if (tier2Blocked) {
-        // Tier 3: drop BPM/key entirely — any song from the selected vpath.
-        // Still enforce keyword filter + hard genre-group jump (skipBpm/skipHarmonic
-        // only relax the two constraints this tier intentionally has no data for).
-        console.warn('[Auto-DJ] BPM fallback exhausted — dropping BPM/key constraint, free pick');
-        let tier3Song = null;
-        for (let t = 0; t < 3; t++) {
-          const fd2 = await _djBpmFallbackCall(true);
-          if (!fd2?.songs?.[0]) break;
-          _persistDjIgnore(fd2.ignoreList);
-          const cand = norm(fd2.songs[0]);
-          tier3Song = cand;
-          if (!_djSongBlocked(cand, { skipBpm: true, skipHarmonic: true })) break;
-        }
-        if (!tier3Song?.filepath) { toast(t('player.toast.djNoBpmMatch')); return; }
-        song = tier3Song;
-        _djLastPickFree = true;
-      }
-      _showInfoStrip('Auto-DJ', t('player.autodj.infoBpmFallback'), 8000);
-    }
+    let song = await _djPickSong();
+    if (!song) { toast(t('player.toast.djNoSong')); return; }
     // ── Genre drift prevention (same logic as autoDJPrefetch) ────────────────
     if (!_djEscaping && song?.genre && !(S.djGenreEnabled && S.djGenreMode === 'whitelist')) {
       const songGenreNorm = song.genre.trim().toLowerCase();
@@ -2914,16 +2642,10 @@ async function autoDJFetch() {
         _djEscaping = true;
         try {
           const escOpts = { escapeGenre, dropArtistFilter: consecCount >= DJ_GENRE_CONSEC_HARD };
-          const ed = await _djApiCall(escOpts);
-          if (ed?.songs?.[0]) {
-            _persistDjIgnore(ed.ignoreList);
-            const escSong = norm(ed.songs[0]);
-            if (!_djSongBlocked(escSong)) {
-              song = escSong;
-              console.log(`[Auto-DJ] Genre escape: "${escapeGenre}" → "${song.genre || '?'}"`);
-            } else {
-              console.debug('[Auto-DJ] Genre escape candidate blocked — keeping original pick');
-            }
+          const escSong = await _djPickSong(escOpts);
+          if (escSong) {
+            song = escSong;
+            console.log(`[Auto-DJ] Genre escape: "${escapeGenre}" → "${song.genre || '?'}"`);
           }
         } catch (_) { /* accept original if escape fails */ }
         finally { _djEscaping = false; }
@@ -2932,14 +2654,7 @@ async function autoDJFetch() {
     // ─────────────────────────────────────────────────────────────────────────
     _djPushArtistHistory(song.artist);
     _djGenreHistoryPush(song.genre);
-    if (S.djHarmonicMixing && song.musical_key) {
-      const _qCamelot = toCamelot(song.musical_key);
-      if (_qCamelot) {
-        _camelotAnchor = _qCamelot;
-        _camelotAnchorNeighbours = camelotNeighbours(_qCamelot);
-        try { localStorage.setItem(_djKey('camelot_anchor'), _qCamelot); } catch(_) {}
-      }
-    }
+    _djLastPickFree = (song.bpm == null);
     _pruneQueue();
     song._dj = true;
     S.queue.push(song); _qvsVersion++;
@@ -23499,6 +23214,14 @@ function _onAudioError() {
     return;
   }
 }
+// Shared handler for both 'stalled' (network stopped delivering bytes) and
+// 'waiting' (playback paused because the buffer ran dry — the far more common
+// case for a mid-song hang: 'stalled' does not reliably fire in every browser
+// for a slow-trickle underrun, but 'waiting' always does). Without 'waiting'
+// wired up, a silent buffer stall never recovers, 'ended' never fires, and
+// Auto-DJ never advances to the next song — while a Sonos cast (which streams
+// independently from the server) keeps playing the current track to its own
+// completion, making it look like "Sonos finished but nothing new started".
 function _onAudioStalled() {
   // readyState=0 means no bytes received yet — this is the normal initial-load state
   // when the server is slow to respond. Calling audioEl.load() here would cancel the
@@ -23911,6 +23634,7 @@ function _attachAudioListeners(el) {
   el.addEventListener('ended',          _onAudioEnded);
   el.addEventListener('error',          _onAudioError);
   el.addEventListener('stalled',        _onAudioStalled);
+  el.addEventListener('waiting',        _onAudioStalled);
   el.addEventListener('playing',        _onAudioPlaying);
   el.addEventListener('canplay',        _onAudioCanPlay);
   el.addEventListener('timeupdate',     _onAudioTimeupdatePersist);
@@ -23926,6 +23650,7 @@ function _detachAudioListeners(el) {
   el.removeEventListener('ended',          _onAudioEnded);
   el.removeEventListener('error',          _onAudioError);
   el.removeEventListener('stalled',        _onAudioStalled);
+  el.removeEventListener('waiting',        _onAudioStalled);
   el.removeEventListener('playing',        _onAudioPlaying);
   el.removeEventListener('canplay',        _onAudioCanPlay);
   el.removeEventListener('timeupdate',     _onAudioTimeupdatePersist);

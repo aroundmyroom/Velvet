@@ -999,6 +999,16 @@ export function setup(velvet) {
     const hasArtistFilter = Array.isArray(req.body.artists) && req.body.artists.length > 0;
     const bp = _parseBpmParams(req.body);
 
+    // ── Batch mode: Auto-DJ soft scoring ────────────────────────────────────
+    // Genre/BPM/harmonic are soft, client-scored signals — the server just
+    // returns a broad pool of candidates (scoped to collections/rating/artist/
+    // cooldown) instead of picking one itself. See docs/API/db_random-songs.md.
+    if (req.body.returnAll) {
+      const batch = _batchRandomSongs(db, req.user, req.body);
+      if (!batch) throw new WebError('No songs that match criteria', 400);
+      return res.json({ songs: batch.map(s => renderMetadataObj(s)) });
+    }
+
     // ── Genre filter: resolve display names → raw DB genre strings ──────────
     if (Array.isArray(req.body.genres) && req.body.genres.length > 0) {
       const _ci = computeChildInclusions(req.user);
@@ -1316,6 +1326,76 @@ export function setup(velvet) {
 
 // ── random-songs helpers ───────────────────────────────────────────────────────
 
+// Batch mode result cap — Auto-DJ scores every candidate client-side, so this
+// just bounds the response payload/shuffle cost on very large similar-artist
+// pools; it is not a quality filter.
+const RANDOM_SONGS_BATCH_CAP = 500;
+// Per-artist sample cap when a similar-artist list is active. Without this, an
+// artist with a large catalogue in the library (e.g. 80 tracks) statistically
+// crowds out artists with only a handful of tracks once the combined pool is
+// randomly cut down to RANDOM_SONGS_BATCH_CAP — so a well-tagged song from a
+// thinly-represented similar artist may never even reach the scoring stage.
+// Sampling per-artist first guarantees every similar artist gets a fair shot
+// at being scored, matching "10 random songs per artist, highest score wins".
+const PER_ARTIST_SAMPLE_CAP = 10;
+
+function _sampleUpTo(arr, n) {
+  if (arr.length <= n) return arr;
+  return [...arr].sort(() => Math.random() - 0.5).slice(0, n); // NOSONAR: non-security shuffle
+}
+
+/**
+ * Batch candidate pool for Auto-DJ soft scoring (req.body.returnAll). Returns
+ * many songs scoped to collections/rating/artists/cooldown — no BPM/key/genre
+ * filtering, since those are soft client-side signals. When a similar-artist
+ * list is active, samples up to PER_ARTIST_SAMPLE_CAP songs from EACH artist
+ * so every similar artist is represented in the scored pool, not just
+ * whichever artist happens to have the most tracks in the library.
+ * Falls back progressively (drop cooldown, then drop artist scope) so a
+ * non-empty artist-similar pool is never abandoned just because it's small,
+ * and an empty one still yields a broader same-scope pool for the client to
+ * score by BPM/genre/harmonic instead. Returns null only when the selected
+ * collections have no songs at all.
+ */
+function _batchRandomSongs(db, user, body) {
+  const hasArtistFilter = Array.isArray(body.artists) && body.artists.length > 0;
+  const baseOpts = {
+    ignoreVPaths: body.ignoreVPaths,
+    minRating: body.minRating,
+    filepathPrefix: body.filepathPrefix || null,
+    excludeFilepathPrefixes: body.excludeFilepathPrefixes,
+  };
+  const ignoreArtists = Array.isArray(body.ignoreArtists) ? body.ignoreArtists : undefined;
+  const vpaths = userDbVpaths(user);
+
+  let batch = db.getAllFilesWithMetadata(vpaths, user.username, {
+    ...baseOpts,
+    artists: hasArtistFilter ? body.artists : undefined,
+    ignoreArtists,
+  });
+  let balanceByArtist = hasArtistFilter;
+  if (hasArtistFilter && batch.length === 0 && ignoreArtists?.length > 0) {
+    batch = db.getAllFilesWithMetadata(vpaths, user.username, { ...baseOpts, artists: body.artists });
+  }
+  if (hasArtistFilter && batch.length === 0) {
+    batch = db.getAllFilesWithMetadata(vpaths, user.username, { ...baseOpts, ignoreArtists });
+    balanceByArtist = false; // artist scope dropped entirely — plain pool now
+  }
+  if (batch.length === 0) return null;
+
+  if (balanceByArtist) {
+    const byArtist = new Map();
+    for (const row of batch) {
+      const key = (row.artist || '').toLowerCase();
+      if (!byArtist.has(key)) byArtist.set(key, []);
+      byArtist.get(key).push(row);
+    }
+    batch = [...byArtist.values()].flatMap(songs => _sampleUpTo(songs, PER_ARTIST_SAMPLE_CAP));
+  }
+
+  return batch.length > RANDOM_SONGS_BATCH_CAP ? _sampleUpTo(batch, RANDOM_SONGS_BATCH_CAP) : batch;
+}
+
 /**
  * Parse BPM/key params from request body into option bundles used throughout
  * the lean-path and full-load fallback chains.
@@ -1435,12 +1515,6 @@ function _leanRandomPick(db, user, body, bp, ignoreList, ignorePercentage) {
   return _leanFallbackPick(db, user, fallbacks);
 }
 
-// Minimum pool size for similar-artists mode. Below this, the 50% ignoreList cap
-// allows only floor(N/2) cooldown slots — e.g. N=3 means only 1 song cooled, so
-// the same 2 tracks loop forever. When the filtered pool is smaller than this,
-// drop the artist filter and widen to the full library.
-const MIN_SIMILAR_POOL = 10;
-
 // Similar-artist fallback steps (2–3b): progressively relax BPM/key constraints
 // while keeping the artist filter active.
 function _similarArtistFallbacks(query, bp, artists, ignoreArtists, r) {
@@ -1453,16 +1527,16 @@ function _similarArtistFallbacks(query, bp, artists, ignoreArtists, r) {
   // Step 2c: similar + BPM wide only
   if (!r.length && bp.hasWide)
     r = query({ artists, ignoreArtists, ...bp.bpmWideOnly });
-  // Step 3: similar only — Tier 0/1 guard
-  if (!r.length && (bp.hasBpm || bp.hasKey)) {
-    const step3 = query({ artists, ignoreArtists });
-    if (_hasGoodBpmTier(step3, bp)) r = step3;
-  }
-  // Step 3b: similar (drop artist-cooldown) — same guard
-  if (!r.length && ignoreArtists?.length > 0) {
-    const step3b = query({ artists });
-    if (_hasGoodBpmTier(step3b, bp)) r = step3b;
-  }
+  // Step 3: similar only — BPM/key constraints fully dropped. Accept any
+  // non-empty result even if every match has a known-wrong BPM/key tag: a
+  // real similar artist match always outranks abandoning the artist filter
+  // (the downstream _qualityTierFilter still prefers in-range songs when the
+  // pool contains a mix of tiers).
+  if (!r.length && (bp.hasBpm || bp.hasKey))
+    r = query({ artists, ignoreArtists });
+  // Step 3b: similar (drop artist-cooldown too)
+  if (!r.length && ignoreArtists?.length > 0)
+    r = query({ artists });
   return r;
 }
 
@@ -1497,14 +1571,22 @@ function _noSimilarFallbacks(query, bp, ignoreArtists, hasArtistFilter, r) {
  *   2. similar + BPM only             (drop harmonic/key)
  *   2b. similar + BPM wide + Key
  *   2c. similar + BPM wide only
- *   3. similar only                   (Tier 0/1 guard: skip if all songs are known-wrong BPM)
+ *   3. similar only                   (BPM/key constraints fully dropped)
  *   3b. similar (drop artist-cooldown)
- *   4. no similar + BPM + Key
+ *   4. no similar + BPM + Key         (only reached if steps 1–3b found ZERO similar-artist songs)
  *   5. no similar + BPM only
  *   5b. no similar + BPM wide + Key
  *   5c. no similar + BPM wide only
  *   (Step 6 "truly random" removed — server returns 400 when BPM constraints are
  *    active and exhausted; client tier-3 handles the unconstrained free pick)
+ *
+ * IMPORTANT: any non-empty result from the similar-artist steps (1–3b) is
+ * returned immediately, however small. A small similar-artist pool is always
+ * preferable to a same-BPM/key song from an unrelated artist — dropping the
+ * artist bias for pool-size reasons previously caused Auto-DJ to serve fully
+ * unrelated genres (e.g. trance) while a populated similar-artists list sat
+ * unused, because the *combined* BPM+key+artist intersection was small even
+ * though the artist pool itself was not empty.
  */
 function _fullLoadFallbackChain(db, user, body, bp, hasArtistFilter, initial) {
   const base = { ignoreVPaths: body.ignoreVPaths, minRating: body.minRating, filepathPrefix: body.filepathPrefix || null, excludeFilepathPrefixes: body.excludeFilepathPrefixes, genreRawStrings: body._genreRawStrings, genreMode: body._genreMode };
@@ -1513,9 +1595,10 @@ function _fullLoadFallbackChain(db, user, body, bp, hasArtistFilter, initial) {
   const query = (extra) => db.getAllFilesWithMetadata(userDbVpaths(user), user.username, { ...base, ...extra });
 
   let r = initial;
-  if (hasArtistFilter) r = _similarArtistFallbacks(query, bp, artists, ignoreArtists, r);
-  // Pool too small to avoid looping — reset so _noSimilarFallbacks widens the search.
-  if (hasArtistFilter && r.length > 0 && r.length < MIN_SIMILAR_POOL) r = [];
+  if (hasArtistFilter) {
+    r = _similarArtistFallbacks(query, bp, artists, ignoreArtists, r);
+    if (r.length > 0) return r;
+  }
   r = _noSimilarFallbacks(query, bp, ignoreArtists, hasArtistFilter, r);
   // No BPM/key active: _noSimilarFallbacks has no free-pick step, so handle it here.
   if (!r.length && hasArtistFilter && !bp.hasBpm && !bp.hasKey) r = query({ ignoreArtists });
@@ -1524,7 +1607,7 @@ function _fullLoadFallbackChain(db, user, body, bp, hasArtistFilter, initial) {
 
 /**
  * Returns null if no filter applies, true if in-range/known-good, false if known-wrong.
- * Used by both _hasGoodBpmTier and _qualityTierFilter.
+ * Used by _qualityTierFilter.
  */
 function _calcBpmOk(song, bpmRanges) {
   if (!bpmRanges?.length) return null;
@@ -1536,26 +1619,6 @@ function _calcKeyOk(song, keySet) {
   if (!keySet) return null;
   if (song.musical_key == null) return null;
   return keySet.has(song.musical_key);
-}
-
-/**
- * Returns true if `arr` contains at least one Tier 0 (in-range) or Tier 1
- * (unknown BPM/key) song — i.e. NOT all songs are known-wrong.
- * Used by the full-load chain to avoid stranding on Tier-2-only similar-artist sets.
- */
-function _hasGoodBpmTier(arr, bp) {
-  if (!arr.length) return false;
-  if (!bp.hasBpm && !bp.hasKey) return true; // no filter → all Tier 0
-  const bpmRanges = bp.bpmOpts.bpmRanges;
-  const keySet    = bp.bpmOpts.musicalKeys ? new Set(bp.bpmOpts.musicalKeys) : null;
-  return arr.some(song => {
-    const bpmOk = _calcBpmOk(song, bpmRanges);
-    const keyOk = _calcKeyOk(song, keySet);
-    if (bpmOk === true && keyOk !== false) return true;  // Tier 0
-    if (bpmOk !== false && keyOk === true) return true;  // Tier 0
-    if (bpmOk !== false && keyOk !== false) return true; // Tier 1
-    return false; // Tier 2
-  });
 }
 
 /**
