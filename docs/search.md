@@ -64,8 +64,8 @@ POST /api/v1/db/search
 {
   "artists": [{ "name": "...", "album_art_file": "..." }],
   "albums":  [{ "name": "...", "album_art_file": "..." }],
-  "title":   [{ "name": "Artist - Title", "filepath": "...", "album_art_file": "..." }],
-  "files":   [{ "name": "...", "filepath": "...", "album_art_file": "..." }]
+  "title":   [{ "name": "Artist - Title", "filepath": "...", "album_art_file": "...", "duration": 213.4 }],
+  "files":   [{ "name": "...", "filepath": "...", "album_art_file": "...", "duration": 213.4 }]
 }
 ```
 

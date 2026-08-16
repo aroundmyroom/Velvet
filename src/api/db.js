@@ -337,6 +337,7 @@ function searchByX(req, searchCol, resCol, posSearch, negativeTerms = [], maxRes
         name: name,
         album_art_file: row.aaFile ? row.aaFile : null,
         album_version: (searchCol === 'album') ? (row.album_version || null) : null,
+        duration: row.duration || null,
         filepath
       });
       store[row[resCol]] = true;

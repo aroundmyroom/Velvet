@@ -1,5 +1,5 @@
 'use strict';
-const VELVET_VERSION = '0.4.0';
+const VELVET_VERSION = '0.4.1';
 // ── SERVER IDENTITY GUARD ────────────────────────────────────────────────────
 // Detects when this browser's localStorage belongs to a different Velvet
 // instance (fresh install, IP change, reverse-proxy swap, second server).
@@ -10987,6 +10987,7 @@ async function doSearch(q) {
         artist:     t.name.includes(' - ') ? t.name.split(' - ')[0] : '',
         filepath:   t.filepath,
         'album-art': t.album_art_file || null,
+        duration:   t.duration || null,
       };
     });
     // Songs matched only by filename (no ID3 title hit) — deduplicate against above
@@ -10997,6 +10998,7 @@ async function doSearch(q) {
         artist:     '',
         filepath:   f.filepath,
         'album-art': f.album_art_file || null,
+        duration:   f.duration || null,
       }));
     const allSongs = [...titleSongs, ...fileSongs];
     const SEARCH_BATCH = 50;

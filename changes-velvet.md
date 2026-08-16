@@ -1,3 +1,10 @@
+## v0.4.1 (2026-08-16)
+
+Bugfix: songs added to the queue from search results now show their playtime like everywhere else.
+
+### Fixed: search results missing duration in the queue
+- Adding a song to the queue from the search view showed no playtime next to it, while every other queue entry (albums, artists, playlists) displayed its duration normally. `searchByX()` (backing `POST /api/v1/db/search` title/files categories) only returned `{name, filepath, album_art_file}` per row, dropping `duration` even though the underlying DB row has it. Search results now carry `duration` through the API response and into the queued song objects.
+
 ## v0.4.0 (2026-08-14)
 
 Auto-DJ redesign: hard-filter fallback chain replaced with soft/weighted batch scoring, plus a hard artist-repeat floor and a playback-stall fix that could silently halt Auto-DJ mid-session.
