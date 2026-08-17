@@ -1,3 +1,13 @@
+## v0.4.2 (2026-08-17)
+
+Velvet TV (Tizen): File Explorer and an on-screen app version so you can confirm a side-loaded update actually installed.
+
+### New: File Explorer on Velvet TV
+- Added a **Files** tab (side menu + Home tile) that browses the library's raw folder structure via the same `POST /api/v1/file-explorer` endpoint the web player uses. Drilling into a folder shows sub-folders and playable tracks together; the breadcrumb trail is focusable so you can jump back to any parent folder directly instead of pressing Back repeatedly. Selecting a track queues every playable file in that folder and starts playback from the one picked.
+
+### New: app version shown on the Velvet TV sign-in screen
+- The sign-in screen now shows the installed app version (e.g. `v0.4.2`), stamped from `package.json` at build time in both `index.html` and `config.xml`. Since Tizen widgets are side-loaded rather than auto-updated through a store, this makes it easy to confirm a freshly side-loaded `.wgt` actually replaced the previous install.
+
 ## v0.4.1 (2026-08-16)
 
 Bugfix: songs added to the queue from search results now show their playtime like everywhere else.

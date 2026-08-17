@@ -151,11 +151,17 @@ function collectFiles(dir, base) {
           .replace('__VELVET_SERVER_URL__', escAttr(cfg.serverUrl))
           .replace('__VELVET_USERNAME__',   escAttr(cfg.username))
           .replace('__VELVET_PASSWORD__',   escAttr(cfg.password))
-          .replace('__VELVET_AUTOLOGIN__',  autoLogin);
+          .replace('__VELVET_AUTOLOGIN__',  autoLogin)
+          .replace('__VELVET_TV_VERSION__', pkg.version);
         data = Buffer.from(html, 'utf8');
         if (hasCreds) {
           console.warn('  ! credentials baked into WGT from config — do NOT distribute this build');
         }
+      }
+      // Stamp the widget version (shown in index.html and used for upgrade tracking)
+      if (rel === 'config.xml') {
+        const xml = data.toString('utf8').replace('__VELVET_TV_VERSION__', pkg.version);
+        data = Buffer.from(xml, 'utf8');
       }
       entries.push({ name: rel, data });
     }

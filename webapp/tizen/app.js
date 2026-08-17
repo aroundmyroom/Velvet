@@ -17,6 +17,8 @@ var S = {
   currentView: 'home',
   albumCache:  null,
   artistCache: null,
+  filesDir:      '',   // current file-explorer directory (server directory param format)
+  filesDirStack: [],   // stack of previous directories for Back navigation
   waveform:    null,   // decoded waveform array [0..255] for current track
   waveformFp:  null,   // filepath matching S.waveform (avoids double-fetch)
   // Focus management
@@ -364,6 +366,10 @@ function _handleBack() {
   if (S.currentView === 'album-detail') { showView('albums'); return; }
   if (S.currentView === 'artist-profile') { showView('artists'); return; }
   if (S.currentView === 'playlist-detail') { showView('playlists'); return; }
+  if (S.currentView === 'files') {
+    if (S.filesDirStack.length) { loadFiles(S.filesDirStack.pop(), false); return; }
+    showView('home'); return;
+  }
   if (S.currentView === 'home') {
     // On home, Back exits if Tizen
     if (window.tizen) { try { tizen.application.getCurrentApplication().exit(); } catch(ex) {} }
@@ -552,6 +558,7 @@ function navigateTo(name) {
   if (name === 'albums')    { showView('albums'); loadAlbums(); }
   else if (name === 'artists')   { showView('artists'); loadArtists(); }
   else if (name === 'playlists') { showView('playlists'); loadPlaylists(); }
+  else if (name === 'files')     { showView('files'); loadFiles('', false); }
   else if (name === 'autodj')    { showView('autodj'); }
   else                           { showView('home'); }
 }
@@ -1053,6 +1060,110 @@ function openPlaylistDetail(name) {
   }).catch(function() {
     hideLoading();
   });
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   FILE EXPLORER
+   Same API as the web player (POST /api/v1/file-explorer). directory="" lists
+   the root vpaths; otherwise directory is "/<vpath>/rest/of/path".
+   ────────────────────────────────────────────────────────────────────────── */
+function loadFiles(dir, pushStack) {
+  if (pushStack && S.filesDir !== dir) S.filesDirStack.push(S.filesDir);
+  S.filesDir = dir || '';
+  showLoading();
+  api('POST', '/api/v1/file-explorer', { directory: S.filesDir, sort: true, pullMetadata: true }).then(function(data) {
+    hideLoading();
+    _renderFiles(data);
+  }).catch(function() {
+    hideLoading();
+    el('files-breadcrumb').innerHTML = '';
+    el('files-list').innerHTML = '<div style="color:#f05050;padding:30px">Failed to load directory.</div>';
+  });
+}
+
+function _renderFiles(d) {
+  var curPath = d.path || '/';
+  var parts = curPath.replace(/^\/|\/$/g, '').split('/').filter(function(p) { return p; });
+
+  // Breadcrumb
+  var crumbHtml = '<span class="fe-crumb focusable" tabindex="0" data-dir="">Home</span>';
+  var cum = '';
+  for (var i = 0; i < parts.length; i++) {
+    cum += (cum ? '/' : '') + parts[i];
+    crumbHtml += '<span class="fe-crumb-sep">/</span>';
+    crumbHtml += '<span class="fe-crumb focusable" tabindex="0" data-dir="/' + _escAttr(cum) + '">' + _esc(parts[i]) + '</span>';
+  }
+  el('files-breadcrumb').innerHTML = crumbHtml;
+
+  var crumbs = el('files-breadcrumb').querySelectorAll('.fe-crumb');
+  for (var c = 0; c < crumbs.length; c++) {
+    (function(crumb) {
+      crumb.addEventListener('click', function() {
+        loadFiles(crumb.getAttribute('data-dir'), true);
+      });
+    })(crumbs[c]);
+  }
+
+  var dirs  = d.directories || [];
+  var files = d.files || [];
+
+  var html = '';
+  for (var j = 0; j < dirs.length; j++) {
+    var dname = dirs[j].name;
+    html += '<div class="fe-dir-row focusable" tabindex="0" data-name="' + _escAttr(dname) + '">' +
+      '<span class="fe-icon">&#128193;</span>' +
+      '<span class="fe-name">' + _esc(dname) + '</span>' +
+      '<span class="fe-arrow">&#10095;</span>' +
+    '</div>';
+  }
+
+  // Only files with resolved metadata (i.e. supported/indexed audio) are playable
+  var queueSongs = [];
+  for (var k = 0; k < files.length; k++) {
+    var f    = files[k];
+    var meta = f.metadata && f.metadata.metadata;
+    var fp   = f.metadata && f.metadata.filepath;
+    if (!fp) continue;
+    var title  = (meta && meta.title)  || f.name;
+    var artist = (meta && meta.artist) || '';
+    queueSongs.push({
+      filepath: fp,
+      title:    title,
+      artist:   artist,
+      album:    (meta && meta.album) || '',
+      artFile:  meta ? meta['album-art'] : null
+    });
+    html += '<div class="fe-file-row track-row focusable" tabindex="0" data-idx="' + (queueSongs.length - 1) + '">' +
+      '<div class="track-num">' + queueSongs.length + '</div>' +
+      '<div class="track-title">' + _esc(title) + (artist ? '<br><span style="font-size:22px;color:var(--text2)">' + _esc(artist) + '</span>' : '') + '</div>' +
+    '</div>';
+  }
+
+  el('files-list').innerHTML = html || '<div style="color:var(--text2);padding:30px">Empty folder.</div>';
+
+  var dirRows = el('files-list').querySelectorAll('.fe-dir-row');
+  for (var m = 0; m < dirRows.length; m++) {
+    (function(row) {
+      row.addEventListener('click', function() {
+        var next = curPath.replace(/\/$/, '') + '/' + row.getAttribute('data-name');
+        loadFiles(next, true);
+      });
+    })(dirRows[m]);
+  }
+
+  var fileRows = el('files-list').querySelectorAll('.fe-file-row');
+  for (var n = 0; n < fileRows.length; n++) {
+    (function(idx) {
+      fileRows[idx].addEventListener('click', function() {
+        playQueue(queueSongs, idx);
+      });
+    })(n);
+  }
+
+  setTimeout(function() {
+    var items = _allFocusable(el('view-files'));
+    if (items.length) setFocus(items[0]);
+  }, 50);
 }
 
 /* ─────────────────────────────────────────────────────────────────────────────

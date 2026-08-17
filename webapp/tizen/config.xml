@@ -2,7 +2,7 @@
 <widget xmlns="http://www.w3.org/ns/widgets"
         xmlns:tizen="http://tizen.org/ns/widgets"
         id="http://aroundmyroom.com/velvet-tv"
-        version="1.0">
+        version="__VELVET_TV_VERSION__">
 
   <tizen:application id="VelvetTV00.VelvetTV"
                      package="VelvetTV00"

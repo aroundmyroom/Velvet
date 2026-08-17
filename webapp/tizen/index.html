@@ -20,6 +20,7 @@
         <div class="login-logo">VELVET</div>
       </div>
       <div class="login-subtitle">Music Server</div>
+      <div id="login-version" class="login-version">v__VELVET_TV_VERSION__</div>
       <div class="login-fields">
         <div class="field-group">
           <label class="field-label">Server URL</label>
@@ -53,6 +54,7 @@
         <button class="nav-item focusable" data-screen="albums">Albums</button>
         <button class="nav-item focusable" data-screen="artists">Artists</button>
         <button class="nav-item focusable" data-screen="playlists">Playlists</button>
+        <button class="nav-item focusable" data-screen="files">Files</button>
         <button class="nav-item focusable" data-screen="autodj">Auto-DJ</button>
       </div>
       <button id="nav-logout" class="nav-logout focusable">Sign out</button>
@@ -72,6 +74,9 @@
           </div>
           <div class="home-tile focusable" data-screen="playlists">
             <div class="home-tile-icon">&#9776; Playlists</div>
+          </div>
+          <div class="home-tile focusable" data-screen="files">
+            <div class="home-tile-icon">&#128193; Files</div>
           </div>
           <div class="home-tile focusable" data-screen="autodj">
             <div class="home-tile-icon">&#8734; Auto-DJ</div>
@@ -130,6 +135,13 @@
       <div id="view-playlist-detail" class="view hidden">
         <div id="playlist-detail-title" class="view-header"></div>
         <div id="playlist-track-list" class="track-list"></div>
+      </div>
+
+      <!-- File Explorer -->
+      <div id="view-files" class="view hidden">
+        <div class="view-header">Files</div>
+        <div id="files-breadcrumb" class="fe-breadcrumb"></div>
+        <div id="files-list" class="fe-list"></div>
       </div>
 
       <!-- Auto-DJ -->

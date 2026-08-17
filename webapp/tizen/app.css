@@ -85,7 +85,14 @@ html, body {
 .login-subtitle {
   font-size: 28px;
   color: var(--text2);
-  margin-bottom: 60px;
+  margin-bottom: 20px;
+}
+
+.login-version {
+  font-size: 18px;
+  color: var(--text3);
+  text-align: center;
+  margin-bottom: 40px;
 }
 
 .login-fields { display: flex; flex-direction: column; gap: 28px; }
@@ -509,6 +516,52 @@ html, body {
 }
 .playlist-name { font-size: 32px; font-weight: 600; flex: 1; }
 .playlist-count { font-size: 26px; color: var(--text2); }
+
+/* ── File Explorer ──────────────────────────────────────────────────────────── */
+.fe-breadcrumb {
+  font-size: 26px;
+  color: var(--text2);
+  margin-bottom: 30px;
+  display: -webkit-box;
+  display: flex;
+  flex-wrap: wrap;
+}
+.fe-crumb {
+  cursor: pointer;
+  border-radius: 6px;
+  padding: 4px 8px;
+  border: 2px solid transparent;
+}
+.fe-crumb.focused, .fe-crumb:focus {
+  background: var(--accent);
+  color: #fff;
+  border-color: var(--accent2);
+  outline: none;
+}
+.fe-crumb-sep { margin: 0 4px; color: var(--text3); }
+
+.fe-list { display: flex; flex-direction: column; }
+
+.fe-dir-row {
+  display: flex;
+  align-items: center;
+  padding: 18px 20px;
+  margin-bottom: 6px;
+  border-radius: 8px;
+  cursor: pointer;
+  border: 2px solid transparent;
+  transition: background 0.1s;
+}
+.fe-dir-row.focused, .fe-dir-row:focus {
+  background: var(--accent);
+  border-color: var(--accent2);
+  outline: none;
+}
+.fe-dir-row .fe-icon { font-size: 30px; margin-right: 20px; flex-shrink: 0; }
+.fe-dir-row .fe-name { font-size: 30px; font-weight: 600; flex: 1; }
+.fe-dir-row .fe-arrow { color: var(--text3); font-size: 24px; flex-shrink: 0; }
+
+.fe-file-row { margin-bottom: 4px; }
 
 /* ── Auto-DJ screen ─────────────────────────────────────────────────────────── */
 .autodj-center {

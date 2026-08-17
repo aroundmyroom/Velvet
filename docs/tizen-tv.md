@@ -13,6 +13,8 @@ standard TV remote.
   MilkDrop-style visualizer
 - Ships **without any server URL or credentials baked in** — every user signs in
   to their own server on the TV
+- The **app version** is shown on the sign-in screen (e.g. `v0.4.1`) so you can
+  confirm a newly side-loaded `.wgt` actually replaced the previous install
 
 ---
 
@@ -104,7 +106,17 @@ app session so you don’t have to sign in every time you open a view.
 | **Back / Return** | Go up one level (detail → list, or close an overlay) |
 
 The left **side menu** gives you: **Home**, **Albums**, **Artists**,
-**Playlists** and **Auto-DJ**.
+**Playlists**, **Files** and **Auto-DJ**.
+
+#### File Explorer
+
+**Files** browses your library's raw folder structure — the same
+`POST /api/v1/file-explorer` endpoint used by the web player. Selecting the
+**Files** tile lists your configured vpaths; drilling into a folder shows its
+sub-folders and playable tracks side by side. Selecting a track queues every
+playable file in that folder and starts playback from the one you picked. The
+breadcrumb trail at the top of the view is also focusable — jump back to any
+parent folder directly instead of pressing **Back** repeatedly.
 
 #### Auto-DJ engine (v0.3.22+)
 
