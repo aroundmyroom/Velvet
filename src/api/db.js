@@ -289,7 +289,7 @@ function _crossFieldSearch(req, title, positiveTerms, negativeTerms) {
     const fp = dbFilepath(row.vpath, row.filepath);
     if (!seenPaths.has(fp)) {
       seenPaths.add(fp);
-      title.push({ name: `${row.artist} - ${row.title}`, album_art_file: row.aaFile || null, filepath: fp });
+      title.push({ name: `${row.artist} - ${row.title}`, album_art_file: row.aaFile || null, duration: row.duration || null, filepath: fp });
     }
   }
 }

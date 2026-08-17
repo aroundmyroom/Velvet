@@ -1,3 +1,10 @@
+## v0.4.3 (2026-08-17)
+
+Bugfix: multi-word search queries (e.g. an artist name plus part of the title) still queued songs without a duration, even after the v0.4.1 fix.
+
+### Fixed: cross-field search results still missing duration
+- The v0.4.1 fix patched the single-column search helper (`searchByX()`), but multi-word queries — where the title and artist words match in different database columns, e.g. searching "Rock the Box Sylvester" — go through a separate cross-field search path (`_crossFieldSearch()`) that builds its own result objects independently. That path still didn't include `duration`, so a very common real-world "artist + title" search still queued songs without a playtime shown. `duration` is now included there too.
+
 ## v0.4.2 (2026-08-17)
 
 Velvet TV (Tizen): File Explorer and an on-screen app version so you can confirm a side-loaded update actually installed.
