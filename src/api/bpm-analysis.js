@@ -201,6 +201,34 @@ export function setup(velvet) {
   // Re-check after every scan so newly added files are processed immediately.
   onEveryScanEnd(_tryBpmAutoStart);
 
+  function _tryEssentiaAutoStart() {
+    try {
+      if (_esRunning) return;
+      if (isScanRunning()) {
+        winston.info('[bpm-essentia] Auto-start deferred — scan in progress');
+        onScanEnd(_tryEssentiaAutoStart);
+        return;
+      }
+      const stats = db.getBpmStats();
+      if (stats && stats.essentia_queued > 0) {
+        if (stats.essentia_queued >= 500) {
+          winston.info(`[bpm-essentia] Auto-start skipped: ${stats.essentia_queued} files queued — backlog too large, start from Admin`);
+          return;
+        }
+        _spawnEssentiaWorker();
+        winston.info(`[bpm-essentia] Auto-started: ${stats.essentia_queued} files queued`);
+      }
+    } catch (e) {
+      winston.warn('[bpm-essentia] Auto-start check failed: ' + e.message);
+    }
+  }
+  // Same 90 s boot delay as the AB worker so it doesn't contend with AcoustID + RG.
+  setTimeout(_tryEssentiaAutoStart, 90_000);
+  // Re-check after every scan so newly added files are processed immediately.
+  // 5 s delay lets the scan's own DB commit + AcoustID/RG settle before
+  // Essentia opens a writer thread that would otherwise contend with them.
+  onEveryScanEnd(() => setTimeout(_tryEssentiaAutoStart, 5_000));
+
   // Guard — all endpoints are admin-only
   velvet.all('/api/v1/admin/bpm/{*path}', (req, res, next) => {
     if (req.user?.admin !== true) return res.status(403).json({ error: 'Admin only' });

@@ -1,3 +1,13 @@
+## v0.4.4 (2026-08-19)
+
+Two fixes: Essentia BPM/key analysis now auto-starts after scan (was never triggered), and the Transcoding admin panel now shows readable status instead of raw true/false.
+
+### Fixed: Essentia BPM/key auto-start missing from post-scan pipeline
+- After a library scan finished, AcoustID fingerprinting, ReplayGain, and AcousticBrainz lookups were all queued automatically — but Essentia (local BPM + musical key analysis) was never started. It could only be launched manually from the Admin UI. The missing `_tryEssentiaAutoStart` hook is now registered with `onEveryScanEnd`, using the same pattern as the other workers: 90 s boot delay (to let AcoustID and RG settle first), deferred start if a scan is still in progress, and a < 500 file threshold to avoid auto-starting on very large libraries where an admin decision is more appropriate.
+
+### Fixed: Transcoding admin panel showed raw `true`/`false` for FFmpeg status
+- The "FFmpeg Downloaded" row displayed the raw boolean value from the server, which users interpreted as a config flag they needed to manually set. It now shows **Ready** / **Not ready** (NL: Gereed / Niet gereed). The "Download" button is also relabelled to "Verify / Download" to clarify that in Docker the binary is pre-installed and the action simply verifies it rather than fetching it from the internet.
+
 ## v0.4.3 (2026-08-17)
 
 Bugfix: multi-word search queries (e.g. an artist name plus part of the title) still queued songs without a duration, even after the v0.4.1 fix.

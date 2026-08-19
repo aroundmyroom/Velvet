@@ -1131,6 +1131,8 @@
   "admin.transcode.labelFfmpegDownloaded": "FFmpeg Downloaded:",
   "admin.transcode.editInConfig": "Edit in config file",
   "admin.transcode.pending": "pending...",
+  "admin.transcode.statusReady": "Ready",
+  "admin.transcode.statusNotReady": "Not ready",
   "admin.transcode.confirmEnableTitle": "Enable Transcoding?",
   "admin.transcode.confirmDisableTitle": "Disable Transcoding?",
   "admin.federation.poweredBy": "Powered By",

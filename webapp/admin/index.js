@@ -5127,7 +5127,7 @@ const transcodeView = Vue.component('transcode-view', {
                     <td style="color:var(--t2);font-size:.82rem">{{t('admin.transcode.editInConfig')}}</td>
                   </tr>
                   <tr>
-                    <td><b>{{t('admin.transcode.labelFfmpegDownloaded')}}</b> {{downloadPending.val === true ? t('admin.transcode.pending') : params.downloaded}}</td>
+                    <td><b>{{t('admin.transcode.labelFfmpegDownloaded')}}</b> {{downloadPending.val === true ? t('admin.transcode.pending') : (params.downloaded === true ? t('admin.transcode.statusReady') : t('admin.transcode.statusNotReady'))}}</td>
                     <td>
                       <a v-on:click="downloadFFMpeg()" class="btn-sm">{{t('admin.transcode.btnDownload')}}</a>
                     </td>
