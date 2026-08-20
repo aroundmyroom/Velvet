@@ -2197,13 +2197,13 @@ export function setup(velvet) {
     }
 
     const fmt           = (row.format || 'mp3').toLowerCase();
-    const sourceBitrate = Math.round((row.bitrate || FORMAT_BITRATE[fmt] || 128) * 1000);
+    const sourceBitrateKbps = row.bitrate || FORMAT_BITRATE[fmt] || 128;
     const sourceStream  = {
       protocol:        'http',
       container:       fmt,
       codec:           fmt,
       audioChannels:   row.channels     || 2,
-      audioBitrate:    sourceBitrate,
+      audioBitrate:    Math.round(sourceBitrateKbps * 1000),
       audioProfile:    '',
       audioSamplerate: row.sample_rate  || 44100,
       audioBitdepth:   row.bit_depth    || 16,
@@ -2211,16 +2211,24 @@ export function setup(velvet) {
 
     // Check whether the client's directPlayProfiles cover this format
     const directPlayProfiles = req.body?.directPlayProfiles ?? [];
-    const canDirectPlay = directPlayProfiles.length === 0 || directPlayProfiles.some(p => {
+    const formatAllowed = directPlayProfiles.length === 0 || directPlayProfiles.some(p => {
       const containers = p.containers ?? [];
       return containers.length === 0 || containers.includes(fmt);
     });
+
+    // maxAudioBitrate is the cap for direct play (bits/sec); row.bitrate is in kbps
+    const maxAudioBitsPerSec = req.body?.maxAudioBitrate || 0;
+    const bitrateExceeded    = maxAudioBitsPerSec > 0 && (sourceBitrateKbps * 1000) > maxAudioBitsPerSec;
+
+    const canDirectPlay = formatAllowed && !bitrateExceeded;
 
     const transcodeEnabled = transcode.isEnabled();
     let canTranscode   = false;
     let transcodeParams;
     let transcodeStream;
-    const transcodeReason = canDirectPlay ? [] : ['ContainerNotSupported'];
+    const transcodeReason = [];
+    if (!formatAllowed)  transcodeReason.push('ContainerNotSupported');
+    if (bitrateExceeded) transcodeReason.push('AudioBitrateNotAllowed');
 
     if (transcodeEnabled) {
       const supportedCodecs = new Set(transcode.getTransCodecs());

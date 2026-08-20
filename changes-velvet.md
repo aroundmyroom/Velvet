@@ -1,3 +1,11 @@
+## v0.4.7 (2026-08-20)
+
+Fix `getTranscodeDecision` ignoring `maxAudioBitrate` — Symfonium was getting `canDirectPlay: true` for FLAC files even when the bitrate cap was set to 192 kbps, causing it to request `format=raw` (passthrough) instead of a transcoded stream.
+
+### Fixed: `getTranscodeDecision` does not enforce `maxAudioBitrate`
+- The `ClientInfo` body from Symfonium (and other clients) includes a `maxAudioBitrate` field (in bits/sec) that caps what the client is willing to direct-play. The previous implementation only checked whether the source container/format was listed in `directPlayProfiles`, but completely ignored this bitrate ceiling. A FLAC file at 800 kbps would return `canDirectPlay: true` even when `maxAudioBitrate: 192000` was set — so Symfonium correctly obeyed and called `stream?format=raw`, playing the original file unmodified.
+- The fix: if `sourceBitrate * 1000 > maxAudioBitrate`, `canDirectPlay` is forced to `false` and `AudioBitrateNotAllowed` is added to `transcodeReason`. Symfonium will now receive `canDirectPlay: false` / `canTranscode: true` and will call `getTranscodeStream` instead.
+
 ## v0.4.6 (2026-08-20)
 
 Transcoding diagnostic logging and bitrate display fix for Subsonic clients.
