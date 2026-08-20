@@ -574,6 +574,8 @@ function buildSong(row, _vpaths) {
   if (transcode.isEnabled()) {
     const defaultCodec = config.program.transcode.defaultCodec ?? 'opus';
     if (fmt !== defaultCodec) {
+      const defaultBitrateStr = config.program.transcode.defaultBitrate ?? '128k';
+      song.bitRate = parseInt(defaultBitrateStr);   // reflect what client actually receives
       song.transcodedSuffix = defaultCodec;
       song.transcodedContentType = transcode.codecContentType(defaultCodec);
     }
@@ -1518,9 +1520,18 @@ export function setup(velvet) {
           ? reqFormat : (config.program.transcode.defaultCodec ?? 'opus');
         const bitrate = reqMaxBitRate > 0
           ? _mapMaxBitrateKbps(reqMaxBitRate) : (config.program.transcode.defaultBitrate ?? '128k');
+        winston.info(`[SUBSONIC] stream TRANSCODE ${fmt}→${codec}@${bitrate} src="${row.artist} - ${row.title}" client=${req.query.c ?? req.body?.c ?? '?'}`);
         transcode.pipeTranscodeToRes(res, fullPath, codec, bitrate);
         return;
       }
+    }
+
+    // Log why transcoding was skipped — helps Docker users diagnose configuration
+    if (reqFormat || reqMaxBitRate > 0) {
+      const reason = !transcode.isEnabled()  ? 'transcode disabled in config'
+                   : reqFormat === 'raw'     ? 'format=raw requested'
+                   : 'no supported codec/bitrate requested';
+      winston.info(`[SUBSONIC] stream PASSTHROUGH (${reason}) format=${reqFormat ?? 'none'} maxBitRate=${reqMaxBitRate} src="${row.artist} - ${row.title}" client=${req.query.c ?? req.body?.c ?? '?'}`);
     }
 
     // Set explicit Content-Type using the DB format field so iOS AVFoundation gets
@@ -2297,6 +2308,7 @@ export function setup(velvet) {
     const bitrate = transcode.getTransBitrates().includes(transcodeInfo.bitrate)
       ? transcodeInfo.bitrate : (config.program.transcode.defaultBitrate ?? '128k');
 
+    winston.info(`[SUBSONIC] getTranscodeStream ${codec}@${bitrate} offset=${offset} src="${row.artist} - ${row.title}" client=${req.query.c ?? req.body?.c ?? '?'}`);
     transcode.pipeTranscodeToRes(res, fullPath, codec, bitrate, null, offset);
   });
 

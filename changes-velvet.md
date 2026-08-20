@@ -1,3 +1,14 @@
+## v0.4.6 (2026-08-20)
+
+Transcoding diagnostic logging and bitrate display fix for Subsonic clients.
+
+### Fixed: `bitRate` in song metadata shows source bitrate instead of transcoded bitrate
+- When transcoding is enabled, `Child` objects (used by `getSong`, `getAlbum`, `search3`, etc.) now report `bitRate` as the configured transcoded target bitrate (e.g. 192) instead of the source file's bitrate (e.g. 800 for FLAC). This fixes clients such as Tempus that correctly detected the `transcodedSuffix` but displayed the wrong bitrate.
+
+### Added: stream transcoding decision logged for Docker diagnostics
+- Every `/rest/stream` call that triggers a transcode now logs: `[SUBSONIC] stream TRANSCODE flac→opus@192k src="Artist - Title" client=Symfonium`. Calls that pass through (transcoding disabled, `format=raw`, or no transcode params sent) log the reason when the client did send `format`/`maxBitRate` params. This makes it straightforward to confirm in `docker logs` whether a client's transcoding configuration is actually reaching Velvet and whether the transcode path is being taken.
+- `getTranscodeStream` also logs the codec, bitrate, and offset for each transcoded stream it serves.
+
 ## v0.4.5 (2026-08-20)
 
 Full OpenSubsonic transcoding compliance. The `stream` endpoint now honours `maxBitRate` and `format` parameters; song metadata includes `transcodedSuffix`/`transcodedContentType`; and the `getTranscodeDecision` + `getTranscodeStream` extension endpoints are implemented.
