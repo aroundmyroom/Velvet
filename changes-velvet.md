@@ -1,3 +1,11 @@
+## v0.4.8 (2026-08-20)
+
+Fix: transcoding admin panel shows "Not ready" even when FFmpeg is already installed (e.g. in Docker).
+
+### Fixed: FFmpeg status always "Not ready" until user clicks Verify/Download
+- The server only probed for the FFmpeg binary at startup when `transcode.enabled` was `true`. With transcoding disabled (the default), the binary was never verified, so `isDownloaded()` returned `false` and the admin panel showed "Not ready" — even though the binary was pre-bundled and fully present on disk (as in Docker). The user had to manually click "Verify / Download" to correct the display.
+- The fix: the binary probe now always runs on startup, regardless of the `enabled` flag. If FFmpeg is present, `lockInit` is set to `true` immediately, and the admin panel shows "Ready" as soon as it opens. If the binary is absent, `lockInit` stays `false` as before.
+
 ## v0.4.7 (2026-08-20)
 
 Fix `getTranscodeDecision` ignoring `maxAudioBitrate` — Symfonium was getting `canDirectPlay: true` for FLAC files even when the bitrate cap was set to 192 kbps, causing it to request `format=raw` (passthrough) instead of a transcoded stream.
