@@ -1,3 +1,15 @@
+## v0.4.9 (2026-08-20)
+
+Fix two regressions from v0.4.7–v0.4.8 that broke transcoding and made the Symfonium library appear empty.
+
+### Fixed: `getTranscodeDecision` could return `canDirectPlay:false` AND `canTranscode:false` simultaneously
+- v0.4.7 introduced a check that blocked direct play when `maxAudioBitrate` was exceeded (e.g. a FLAC at 800 kbps with `maxAudioBitrate:192000` set). This is correct when transcoding is available as an alternative — but when Velvet's transcoding is disabled, the result was `canDirectPlay:false AND canTranscode:false`. Clients such as Symfonium interpret this as the file being unplayable, so the entire library appeared empty.
+- Fix: the `maxAudioBitrate` bitrate cap now only blocks direct play when transcoding is actually enabled (i.e. there is a working alternative). When transcoding is disabled, `canDirectPlay` falls back to the container-format check only — the client will direct-play regardless of bitrate, which is the only option available.
+
+### Fixed: `setup()` calling full `init()` unconditionally could interfere with existing FFmpeg binary
+- v0.4.8 changed `setup()` to call the full `init()` (which runs `ensureFfmpeg()` and may trigger a download or upgrade check) regardless of whether transcoding was enabled. This could interfere with an already-working ffmpeg installation in Docker environments.
+- Restored the v0.4.7 behaviour: full `init()` only runs when `transcode.enabled:true`. When disabled, a lightweight file-existence probe is used instead — enough to set `lockInit=true` and display "Ready" in the admin panel without touching the binary.
+
 ## v0.4.8 (2026-08-20)
 
 Fix: transcoding admin panel shows "Not ready" even when FFmpeg is already installed (e.g. in Docker).

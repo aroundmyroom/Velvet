@@ -103,11 +103,21 @@ function spawnTranscode(inputPath, codec, bitrate, gainDb = null, offsetSec = 0)
 }
 
 export function setup(velvet) {
-  // Always probe for the FFmpeg binary at startup so isDownloaded() reflects
-  // reality before the user visits the Transcoding admin panel. In Docker the
-  // binary is pre-bundled; without this probe the UI shows "Not ready" until
-  // the user manually clicks Verify/Download even though ffmpeg is already there.
-  init().catch(() => { /* binary absent — lockInit stays false */ });
+  if (config.program.transcode.enabled === true) {
+    // Full init: verify version and download if needed.
+    init().catch(err => {
+      winston.error('FFmpeg init failed — transcoding disabled', { stack: err });
+    });
+  } else {
+    // Transcoding disabled — just probe for an existing binary so the admin
+    // panel shows the correct "Ready"/"Not ready" status without triggering
+    // a download. In Docker the binary is pre-bundled; this removes the need
+    // for the user to click "Verify / Download" to get the correct status.
+    fsp.access(ffmpegBin()).then(() => {
+      lockInit = true;
+      winston.info('FFmpeg OK!');
+    }).catch(() => { /* binary absent — lockInit stays false */ });
+  }
 
   velvet.all("/transcode/{*filepath}", async (req, res) => {
     if (config.program.transcode?.enabled !== true) {

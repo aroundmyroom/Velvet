@@ -2220,15 +2220,18 @@ export function setup(velvet) {
     const maxAudioBitsPerSec = req.body?.maxAudioBitrate || 0;
     const bitrateExceeded    = maxAudioBitsPerSec > 0 && (sourceBitrateKbps * 1000) > maxAudioBitsPerSec;
 
-    const canDirectPlay = formatAllowed && !bitrateExceeded;
-
+    // Only block direct play for bitrate reasons if transcoding is available
+    // as an alternative — otherwise the client gets canDirectPlay:false AND
+    // canTranscode:false simultaneously, which means it cannot play the file.
     const transcodeEnabled = transcode.isEnabled();
+    const canDirectPlay = formatAllowed && (!transcodeEnabled || !bitrateExceeded);
+
     let canTranscode   = false;
     let transcodeParams;
     let transcodeStream;
     const transcodeReason = [];
-    if (!formatAllowed)  transcodeReason.push('ContainerNotSupported');
-    if (bitrateExceeded) transcodeReason.push('AudioBitrateNotAllowed');
+    if (!formatAllowed)                        transcodeReason.push('ContainerNotSupported');
+    if (bitrateExceeded && transcodeEnabled)   transcodeReason.push('AudioBitrateNotAllowed');
 
     if (transcodeEnabled) {
       const supportedCodecs = new Set(transcode.getTransCodecs());
