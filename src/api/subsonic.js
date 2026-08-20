@@ -25,6 +25,7 @@ import * as dbQueue from '../db/task-queue.js';
 import * as scanProgress from '../state/scan-progress.js';
 import { ffmpegBin, ensureFfmpeg } from '../util/ffmpeg-bootstrap.js';
 import { resolveChildPath, resolvePathWithinRoot } from '../util/path-security.js';
+import * as transcode from './transcode.js';
 
 const require = createRequire(import.meta.url);
 const packageJson = require('../../package.json');
@@ -459,6 +460,16 @@ function canonicalSongId(rawId, row) {
 // The stream handler always transcodes the slice to FLAC (lossless re-mux with
 // fresh STREAMINFO so the per-track duration sticks), so we advertise FLAC as
 // the suffix/contentType regardless of the source file's container.
+
+// Maps a maxBitRate value in kbps to the nearest supported transcode bitrate string
+// (largest supported rate that does not exceed the cap; floor at '64k').
+function _mapMaxBitrateKbps(kbps) {
+  for (const r of [192, 128, 96, 64]) {
+    if (r <= kbps) return `${r}k`;
+  }
+  return '64k';
+}
+
 function buildCueSong(cp, nextCp, baseRow, index) {
   const base = buildSong(baseRow);
   const endDur = baseRow.duration ? Math.max(0, baseRow.duration - cp.t) : null;
@@ -559,6 +570,14 @@ function buildSong(row, _vpaths) {
     song.userRating = Math.min(5, Math.round(row.rating / 2));
   }
   if (row.disk) song.discNumber = row.disk;
+
+  if (transcode.isEnabled()) {
+    const defaultCodec = config.program.transcode.defaultCodec ?? 'opus';
+    if (fmt !== defaultCodec) {
+      song.transcodedSuffix = defaultCodec;
+      song.transcodedContentType = transcode.codecContentType(defaultCodec);
+    }
+  }
 
   return song;
 }
@@ -1486,6 +1505,24 @@ export function setup(velvet) {
       }
     }
 
+    const fmt = (row.format || path.extname(fullPath).slice(1)).toLowerCase();
+
+    // Honour Subsonic transcoding params: format=[codec|raw] and maxBitRate=[kbps]
+    const reqFormat     = req.query.format     ?? req.body?.format     ?? null;
+    const reqMaxBitRate = Number(req.query.maxBitRate ?? req.body?.maxBitRate ?? 0);
+    if (transcode.isEnabled() && reqFormat !== 'raw') {
+      const supportedCodecs = transcode.getTransCodecs();
+      const transcodeNeeded = (reqFormat && supportedCodecs.includes(reqFormat)) || reqMaxBitRate > 0;
+      if (transcodeNeeded) {
+        const codec   = (reqFormat && supportedCodecs.includes(reqFormat))
+          ? reqFormat : (config.program.transcode.defaultCodec ?? 'opus');
+        const bitrate = reqMaxBitRate > 0
+          ? _mapMaxBitrateKbps(reqMaxBitRate) : (config.program.transcode.defaultBitrate ?? '128k');
+        transcode.pipeTranscodeToRes(res, fullPath, codec, bitrate);
+        return;
+      }
+    }
+
     // Set explicit Content-Type using the DB format field so iOS AVFoundation gets
     // the correct IANA MIME type. Express's mime module maps .flac → audio/x-flac
     // and .wav → audio/x-wav, both of which iOS rejects. We need audio/flac + audio/wav.
@@ -1496,7 +1533,6 @@ export function setup(velvet) {
       aif: 'audio/aiff', ape: 'audio/ape', wv: 'audio/x-wavpack',
       mpc: 'audio/musepack'
     };
-    const fmt = (row.format || path.extname(fullPath).slice(1)).toLowerCase();
     const mime = streamMimeMap[fmt];
     if (mime) res.set('Content-Type', mime);
 
@@ -2132,6 +2168,138 @@ export function setup(velvet) {
     sendResponse(req, res, makeResponse('ok', { scanStatus: { scanning: true, count: 0 } }));
   });
 
+  // ── getTranscodeDecision (OpenSubsonic transcoding extension v1) ─────────────
+  // POST is required per spec; router() registers velvet.all() so GET also works.
+  router('getTranscodeDecision', async (req, res) => {
+    const mediaId   = req.query.mediaId   ?? req.body?.mediaId;
+    const mediaType = req.query.mediaType ?? req.body?.mediaType ?? 'song';
+    if (!mediaId) {
+      return sendResponse(req, res, makeError(ERRORS.MISSING_PARAM.code, 'mediaId required'));
+    }
+    if (mediaType !== 'song') {
+      return sendResponse(req, res, makeError(ERRORS.GENERIC.code, 'Only song mediaType is supported'));
+    }
+
+    const row = resolveSongRow(mediaId, req.subsonicUser);
+    if (!row || !req.subsonicVpaths.includes(row.vpath)) {
+      return sendResponse(req, res, makeError(ERRORS.NOT_FOUND.code, ERRORS.NOT_FOUND.message));
+    }
+
+    const fmt           = (row.format || 'mp3').toLowerCase();
+    const sourceBitrate = Math.round((row.bitrate || FORMAT_BITRATE[fmt] || 128) * 1000);
+    const sourceStream  = {
+      protocol:        'http',
+      container:       fmt,
+      codec:           fmt,
+      audioChannels:   row.channels     || 2,
+      audioBitrate:    sourceBitrate,
+      audioProfile:    '',
+      audioSamplerate: row.sample_rate  || 44100,
+      audioBitdepth:   row.bit_depth    || 16,
+    };
+
+    // Check whether the client's directPlayProfiles cover this format
+    const directPlayProfiles = req.body?.directPlayProfiles ?? [];
+    const canDirectPlay = directPlayProfiles.length === 0 || directPlayProfiles.some(p => {
+      const containers = p.containers ?? [];
+      return containers.length === 0 || containers.includes(fmt);
+    });
+
+    const transcodeEnabled = transcode.isEnabled();
+    let canTranscode   = false;
+    let transcodeParams;
+    let transcodeStream;
+    const transcodeReason = canDirectPlay ? [] : ['ContainerNotSupported'];
+
+    if (transcodeEnabled) {
+      const supportedCodecs = new Set(transcode.getTransCodecs());
+      const transcodingProfiles = req.body?.transcodingProfiles ?? [];
+      let targetCodec = config.program.transcode.defaultCodec ?? 'opus';
+      for (const p of transcodingProfiles) {
+        const c = (p.audioCodec ?? p.container ?? '').toLowerCase();
+        if (supportedCodecs.has(c)) { targetCodec = c; break; }
+      }
+
+      // maxTranscodingAudioBitrate is in bits/sec; maxAudioBitrate is also bits/sec
+      const maxBits   = req.body?.maxTranscodingAudioBitrate || req.body?.maxAudioBitrate || 0;
+      const maxKbps   = maxBits > 0 ? Math.round(maxBits / 1000) : 192;
+      const targetBitrateStr = _mapMaxBitrateKbps(maxKbps);
+      const targetBitrateNum = parseInt(targetBitrateStr) * 1000;
+
+      canTranscode    = true;
+      transcodeParams = Buffer.from(JSON.stringify({
+        id: mediaId, codec: targetCodec, bitrate: targetBitrateStr
+      })).toString('base64url');
+      transcodeStream = {
+        protocol:        'http',
+        container:       targetCodec,
+        codec:           targetCodec,
+        audioChannels:   Math.min(row.channels || 2, 2),
+        audioBitrate:    targetBitrateNum,
+        audioProfile:    '',
+        audioSamplerate: targetCodec === 'aac' ? (row.sample_rate || 44100) : 48000,
+        audioBitdepth:   16,
+      };
+    }
+
+    const decision = {
+      canDirectPlay,
+      canTranscode,
+      transcodeReason,
+      errorReason:   '',
+      sourceStream,
+    };
+    if (transcodeParams) decision.transcodeParams = transcodeParams;
+    if (transcodeStream) decision.transcodeStream  = transcodeStream;
+
+    sendResponse(req, res, makeResponse('ok', { transcodeDecision: decision }));
+  });
+
+  // ── getTranscodeStream (OpenSubsonic transcoding extension v1) ───────────────
+  router('getTranscodeStream', async (req, res) => {
+    const mediaId       = req.query.mediaId       ?? req.body?.mediaId;
+    const transcodeParamsStr = req.query.transcodeParams ?? req.body?.transcodeParams;
+    const rawOffset     = Number.parseFloat(String(req.query.offset ?? req.body?.offset ?? '0'));
+    const offset        = Number.isFinite(rawOffset) && rawOffset > 0 ? rawOffset : 0;
+
+    if (!mediaId || !transcodeParamsStr) {
+      return sendResponse(req, res, makeError(ERRORS.MISSING_PARAM.code, 'mediaId and transcodeParams required'));
+    }
+
+    let transcodeInfo;
+    try {
+      transcodeInfo = JSON.parse(Buffer.from(transcodeParamsStr, 'base64url').toString('utf8'));
+    } catch {
+      return sendResponse(req, res, makeError(ERRORS.GENERIC.code, 'Invalid transcodeParams token'));
+    }
+    if (transcodeInfo.id !== mediaId) {
+      return sendResponse(req, res, makeError(ERRORS.NOT_FOUND.code, 'transcodeParams does not match mediaId'));
+    }
+
+    const row = resolveSongRow(mediaId, req.subsonicUser);
+    if (!row || !req.subsonicVpaths.includes(row.vpath)) {
+      return sendResponse(req, res, makeError(ERRORS.NOT_FOUND.code, ERRORS.NOT_FOUND.message));
+    }
+    if (!transcode.isEnabled()) {
+      return sendResponse(req, res, makeError(ERRORS.GENERIC.code, 'Transcoding is not available'));
+    }
+
+    const folder = config.program.folders[row.vpath];
+    let fullPath;
+    try {
+      fullPath = resolvePathWithinRoot(folder.root, row.filepath);
+    } catch {
+      return sendResponse(req, res, makeError(ERRORS.NOT_FOUND.code, 'File not found on disk'));
+    }
+
+    const codec   = transcode.getTransCodecs().includes(transcodeInfo.codec)
+      ? transcodeInfo.codec   : (config.program.transcode.defaultCodec ?? 'opus');
+    const bitrate = transcode.getTransBitrates().includes(transcodeInfo.bitrate)
+      ? transcodeInfo.bitrate : (config.program.transcode.defaultBitrate ?? '128k');
+
+    transcode.pipeTranscodeToRes(res, fullPath, codec, bitrate, null, offset);
+  });
+
   // ── getOpenSubsonicExtensions ─────────────────────────────────────────────────
   router('getOpenSubsonicExtensions', (req, res) => {
     sendResponse(req, res, makeResponse('ok', {
@@ -2142,6 +2310,7 @@ export function setup(velvet) {
         { name: 'apiKeyAuth',     versions: [1] },
         { name: 'songLyrics',     versions: [1] },
         { name: 'playbackReport', versions: [1] },
+        { name: 'transcoding',    versions: [1] },
       ]
     }));
   });

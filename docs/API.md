@@ -1107,3 +1107,11 @@ Base URL: `/rest/`
 |---|---|---|---|
 | `GET/POST` | `/rest/getPlayQueue(.view)` | Subsonic auth params | Returns the authenticated user's saved queue, current track ID, and position (ms). |
 | `GET/POST` | `/rest/savePlayQueue(.view)` | Subsonic auth params + `id[]`, `current`, `position` | Saves/upserts the authenticated user's queue server-side so clients can restore queue state across restarts. |
+
+**OpenSubsonic transcoding extension (v1)**:
+
+| Method | Endpoint | Body | Description |
+|---|---|---|---|
+| `GET/POST` | `/rest/stream(.view)` | `maxBitRate` (kbps), `format` (`mp3`/`opus`/`aac`/`raw`) | Streams a song; transcodes when `maxBitRate` or `format` is provided and transcoding is enabled. `format=raw` forces passthrough. |
+| `POST` | `/rest/getTranscodeDecision(.view)` | Subsonic auth + `mediaId`, `mediaType`, `ClientInfo` JSON | Returns `transcodeDecision` with `canDirectPlay`, `canTranscode`, `transcodeParams` token, `sourceStream`, and `transcodeStream` details. |
+| `GET/POST` | `/rest/getTranscodeStream(.view)` | Subsonic auth + `mediaId`, `transcodeParams`, `offset` | Streams the song transcoded using the settings encoded in the opaque `transcodeParams` token from `getTranscodeDecision`. |

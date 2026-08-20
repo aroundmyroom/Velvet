@@ -53,6 +53,21 @@ export function reset() {
   lockInit = false;
 }
 
+export function pipeTranscodeToRes(res, fullPath, codec, bitrate, gainDb = null, offset = 0) {
+  const proc = spawnTranscode(fullPath, codec, bitrate, gainDb, offset);
+  res.set('Content-Type', codecMap[codec].contentType);
+  proc.once('error', err => {
+    winston.error('[transcode] spawn error', { stack: err, path: fullPath });
+    if (!res.headersSent) res.status(500).end();
+    else try { res.end(); } catch { /* already closed */ }
+  });
+  proc.stdout.pipe(res);
+}
+
+export function codecContentType(codec) {
+  return codecMap[codec]?.contentType ?? 'audio/mpeg';
+}
+
 export function isEnabled() {
   return lockInit === true && config.program.transcode.enabled === true;
 }
