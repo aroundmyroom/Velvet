@@ -2333,7 +2333,13 @@ export function setup(velvet) {
         { name: 'apiKeyAuth',     versions: [1] },
         { name: 'songLyrics',     versions: [1] },
         { name: 'playbackReport', versions: [1] },
-        { name: 'transcoding',    versions: [1] },
+        // 'transcoding' extension intentionally not advertised: clients that
+        // partially implement the Dec-2025 spec (getTranscodeDecision but not
+        // getTranscodeStream) fall back to stream?format=raw when they receive
+        // canDirectPlay:false, defeating transcoding entirely. The legacy
+        // stream?format=X&maxBitRate=Y params work correctly for all clients.
+        // getTranscodeDecision and getTranscodeStream remain functional for
+        // clients that call them without relying on the extension advertisement.
       ]
     }));
   });

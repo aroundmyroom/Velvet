@@ -1,3 +1,11 @@
+## v0.4.10 (2026-08-20)
+
+Fix: stop advertising the `transcoding` OpenSubsonic extension — clients with partial implementations (e.g. `getTranscodeDecision` but not `getTranscodeStream`) were falling back to `stream?format=raw` when they received `canDirectPlay:false`, defeating transcoding entirely.
+
+### Fixed: `transcoding` extension advertisement breaks transcoding for partially-compliant clients
+- When Velvet advertised `transcoding v1` in `getOpenSubsonicExtensions`, clients like Tempus and Symfonium switched from the proven legacy `stream?format=X&maxBitRate=Y` flow to the newer `getTranscodeDecision`/`getTranscodeStream` extension flow (Dec 2025 spec). Clients that implement `getTranscodeDecision` but do not implement `getTranscodeStream` had no path to transcode: they received `canDirectPlay:false` and called `stream?format=raw` as a fallback — passthrough — instead of transcoding.
+- The extension advertisement is now removed. Clients fall back to the well-established legacy params (`format`, `maxBitRate`) on the `stream` endpoint, which work correctly for all clients. The `getTranscodeDecision` and `getTranscodeStream` endpoints remain fully functional for any client that calls them independently of the extension advertisement.
+
 ## v0.4.9 (2026-08-20)
 
 Fix two regressions from v0.4.7–v0.4.8 that broke transcoding and made the Symfonium library appear empty.
