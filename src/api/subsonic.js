@@ -574,8 +574,6 @@ function buildSong(row, _vpaths) {
   if (transcode.isEnabled()) {
     const defaultCodec = config.program.transcode.defaultCodec ?? 'opus';
     if (fmt !== defaultCodec) {
-      const defaultBitrateStr = config.program.transcode.defaultBitrate ?? '128k';
-      song.bitRate = parseInt(defaultBitrateStr);   // reflect what client actually receives
       song.transcodedSuffix = defaultCodec;
       song.transcodedContentType = transcode.codecContentType(defaultCodec);
     }

@@ -1,3 +1,10 @@
+## v0.4.11 (2026-08-21)
+
+Fix: `bitRate` in song metadata incorrectly showed the transcoded target bitrate instead of the source file's actual bitrate, causing clients to display the wrong bitrate when playing in passthrough mode (e.g. on Wi-Fi).
+
+### Fixed: `bitRate` field overwritten with transcoded bitrate
+- v0.4.6 changed `buildSong` to replace `bitRate` with the configured transcode default (e.g. 192) when `transcodedSuffix` was set. Per the OpenSubsonic spec, `bitRate` is the source file's bitrate — not the transcoded stream's bitrate. Overwriting it caused clients like Tempus to show "192 kbps" for a FLAC file even when it was being direct-played on Wi-Fi at full bitrate. The source bitrate is now preserved; `transcodedSuffix` and `transcodedContentType` remain as the correct spec-defined indicators that transcoding is available.
+
 ## v0.4.10 (2026-08-20)
 
 Fix: stop advertising the `transcoding` OpenSubsonic extension — clients with partial implementations (e.g. `getTranscodeDecision` but not `getTranscodeStream`) were falling back to `stream?format=raw` when they received `canDirectPlay:false`, defeating transcoding entirely.
