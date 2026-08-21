@@ -571,14 +571,6 @@ function buildSong(row, _vpaths) {
   }
   if (row.disk) song.discNumber = row.disk;
 
-  if (transcode.isEnabled()) {
-    const defaultCodec = config.program.transcode.defaultCodec ?? 'opus';
-    if (fmt !== defaultCodec) {
-      song.transcodedSuffix = defaultCodec;
-      song.transcodedContentType = transcode.codecContentType(defaultCodec);
-    }
-  }
-
   return song;
 }
 

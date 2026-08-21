@@ -1,3 +1,11 @@
+## v0.4.12 (2026-08-21)
+
+Fix: Symfonium library appeared completely empty and tracks were unplayable when `transcode.enabled: true` in Docker. Remove `transcodedSuffix`/`transcodedContentType` from song metadata.
+
+### Fixed: `transcodedSuffix` in song metadata causes Symfonium to route all playback through extension endpoints that fail in Docker
+- When transcoding was enabled, every `Child` object in `buildSong` included `transcodedSuffix` and `transcodedContentType` fields. Symfonium uses these fields to decide whether to use the `getTranscodeDecision`/`getTranscodeStream` extension flow — regardless of whether the `transcoding` extension is advertised. In Docker environments, `getTranscodeStream` fails due to file path differences, causing Symfonium to report "no media to play" for every track. The Albums/Artists views appeared completely empty because Symfonium considers tracks with no playable stream as non-existent in those views; folder browsing showed them but playback failed.
+- These fields are removed. The `stream` endpoint already correctly handles `format` and `maxBitRate` parameters for all clients — Symfonium and Tempus both work via the legacy transcoding params without needing metadata hints. The `getTranscodeDecision` and `getTranscodeStream` endpoints remain available.
+
 ## v0.4.11 (2026-08-21)
 
 Fix: `bitRate` in song metadata incorrectly showed the transcoded target bitrate instead of the source file's actual bitrate, causing clients to display the wrong bitrate when playing in passthrough mode (e.g. on Wi-Fi).
