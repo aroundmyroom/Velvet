@@ -1,3 +1,16 @@
+## v0.4.13 (2026-08-22)
+
+Maintenance: bump dependencies — ws 8.21.3, nanoid 6.0.1, eslint 10.8.1, globals 17.11.0, fast-xml-parser 5.11.0, file-type 22.0.2, trivy-action GitHub Action.
+
+### Dependency updates
+- `ws` 8.21.1 → 8.21.3 (patch)
+- `nanoid` 6.0.0 → 6.0.1 (patch)
+- `eslint` 10.8.0 → 10.8.1 (patch, devDep)
+- `globals` 17.9.0 → 17.11.0 (minor, devDep)
+- `fast-xml-parser` 5.10.1 → 5.11.0 (minor)
+- `file-type` 22.0.1 → 22.0.2 (patch)
+- `aquasecurity/trivy-action` GitHub Action updated to latest commit
+
 ## v0.4.12 (2026-08-21)
 
 Fix: Symfonium library appeared completely empty and tracks were unplayable when `transcode.enabled: true` in Docker. Remove `transcodedSuffix`/`transcodedContentType` from song metadata.

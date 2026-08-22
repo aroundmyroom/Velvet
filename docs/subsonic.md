@@ -112,7 +112,7 @@ Supported extensions returned by `getOpenSubsonicExtensions`:
 - `songLyrics` — structured lyrics via `getLyricsBySongId` (reads embedded file tags)
 - `playbackReport` — `reportPlayback` endpoint for timeline state updates
 
-Extensions **not** advertised: `transcoding` (future PR), `indexBasedQueue`.
+Extensions **not** advertised: `transcoding` (extension flow not needed — `stream` handles `format`/`maxBitRate` natively), `indexBasedQueue`.
 
 ---
 
@@ -311,7 +311,7 @@ Clients then navigate deeper using `getMusicDirectory?id=<dirId>`.
 
 | Area | Status |
 |---|---|
-| Transcoding | Not supported — `stream` always serves the original file; `maxBitRate` and `format` params are ignored |
+| Transcoding | ✅ Supported — `stream` honours `format` (`mp3`/`opus`/`aac`) and `maxBitRate`; requires ffmpeg and `transcode.enabled: true` in config. `transcodedSuffix`/`transcodedContentType` are intentionally **not** set in song metadata to avoid extension-flow conflicts with clients such as Symfonium. |
 | `getCoverArt` `size` param | Accepted but not used — full-size image always returned |
 | `ifModifiedSince` on `getIndexes` | Accepted but ignored — always returns full response |
 | Artist/album metadata (bio, similar) | External lookups (Last.fm, MusicBrainz) not wired up |

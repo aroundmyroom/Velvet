@@ -69,6 +69,7 @@ test/*.svg
 # private user analysis files
 Mauri_*.md
 harmonic-plan.md
+chora.md
 
 *.log
 *.db
