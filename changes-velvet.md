@@ -1,3 +1,13 @@
+## v0.4.15 (2026-08-22)
+
+Implement `transcodeOffset` OpenSubsonic extension: true seeking in transcoded streams.
+
+### Added: `transcodeOffset` extension (OpenSubsonic v1)
+- The `stream` endpoint now accepts the `timeOffset` parameter for music, telling ffmpeg to start encoding from that position via `-ss`. This enables real seeking in transcoded streams — clients no longer have to restart from the beginning and fast-forward.
+- `transcodeOffset` is now advertised in `getOpenSubsonicExtensions`. Clients that check for this extension (Tempus uses it via `DynamicMediaSourceFactory` to select `TranscodingMediaSource` instead of `ProgressiveMediaSource`) will automatically use proper seek support.
+- `Content-Length` estimate adjusted: accounts for the remaining duration after `timeOffset` so the seekbar remains accurate after a seek.
+- The underlying ffmpeg `-ss` support already existed in `pipeTranscodeToRes`; the stream endpoint simply wasn't reading the parameter.
+
 ## v0.4.14 (2026-08-22)
 
 Fix three Subsonic transcoding issues affecting Tempus (and similar ExoPlayer-based clients): wrong Opus Content-Type, missing Content-Length on transcoded streams, and bitrate cap at 192k.

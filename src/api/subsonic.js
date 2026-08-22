@@ -1502,6 +1502,7 @@ export function setup(velvet) {
     // Honour Subsonic transcoding params: format=[codec|raw] and maxBitRate=[kbps]
     const reqFormat     = req.query.format     ?? req.body?.format     ?? null;
     const reqMaxBitRate = Number(req.query.maxBitRate ?? req.body?.maxBitRate ?? 0);
+    const reqTimeOffset = Math.max(0, Number(req.query.timeOffset ?? req.body?.timeOffset ?? 0));
     if (transcode.isEnabled() && reqFormat !== 'raw') {
       const supportedCodecs = transcode.getTransCodecs();
       const transcodeNeeded = (reqFormat && supportedCodecs.includes(reqFormat)) || reqMaxBitRate > 0;
@@ -1510,13 +1511,14 @@ export function setup(velvet) {
           ? reqFormat : (config.program.transcode.defaultCodec ?? 'opus');
         const bitrate = reqMaxBitRate > 0
           ? _mapMaxBitrateKbps(reqMaxBitRate) : (config.program.transcode.defaultBitrate ?? '128k');
-        winston.info(`[SUBSONIC] stream TRANSCODE ${fmt}→${codec}@${bitrate} src="${row.artist} - ${row.title}" client=${req.query.c ?? req.body?.c ?? '?'}`);
+        winston.info(`[SUBSONIC] stream TRANSCODE ${fmt}→${codec}@${bitrate} offset=${reqTimeOffset} src="${row.artist} - ${row.title}" client=${req.query.c ?? req.body?.c ?? '?'}`);
         if (row.duration) {
           const bitrateNum = parseInt(bitrate, 10);
-          const estimatedBytes = Math.ceil(bitrateNum * 1000 / 8 * row.duration);
+          const remaining  = Math.max(0, row.duration - reqTimeOffset);
+          const estimatedBytes = Math.ceil(bitrateNum * 1000 / 8 * remaining);
           res.set('Content-Length', String(estimatedBytes));
         }
-        transcode.pipeTranscodeToRes(res, fullPath, codec, bitrate);
+        transcode.pipeTranscodeToRes(res, fullPath, codec, bitrate, null, reqTimeOffset);
         return;
       }
     }
@@ -2322,12 +2324,13 @@ export function setup(velvet) {
   router('getOpenSubsonicExtensions', (req, res) => {
     sendResponse(req, res, makeResponse('ok', {
       openSubsonicExtensions: [
-        { name: 'formPost',       versions: [1] },
-        { name: 'noAuth',         versions: [1] },
-        { name: 'albumArtist',    versions: [1] },
-        { name: 'apiKeyAuth',     versions: [1] },
-        { name: 'songLyrics',     versions: [1] },
-        { name: 'playbackReport', versions: [1] },
+        { name: 'formPost',         versions: [1] },
+        { name: 'noAuth',           versions: [1] },
+        { name: 'albumArtist',      versions: [1] },
+        { name: 'apiKeyAuth',       versions: [1] },
+        { name: 'songLyrics',       versions: [1] },
+        { name: 'playbackReport',   versions: [1] },
+        { name: 'transcodeOffset',  versions: [1] },
         // 'transcoding' extension intentionally not advertised: clients that
         // partially implement the Dec-2025 spec (getTranscodeDecision but not
         // getTranscodeStream) fall back to stream?format=raw when they receive
