@@ -1,3 +1,16 @@
+## v0.4.14 (2026-08-22)
+
+Fix three Subsonic transcoding issues affecting Tempus (and similar ExoPlayer-based clients): wrong Opus Content-Type, missing Content-Length on transcoded streams, and bitrate cap at 192k.
+
+### Fixed: Opus transcoded stream sent `Content-Type: audio/ogg` instead of `audio/opus`
+- ffmpeg `-f opus` produces a native Opus bitstream, not an OGG container. Sending `audio/ogg` caused ExoPlayer to dispatch the wrong extractor (`OggExtractor` instead of `OpusExtractor`), which could fail to parse the stream entirely. Corrected to `audio/opus`.
+
+### Fixed: Transcoded streams had no `Content-Length`, causing unknown seekbar duration in Tempus
+- `pipeTranscodeToRes` pipes ffmpeg stdout directly with no `Content-Length`. ExoPlayer's `ProgressiveMediaSource` uses `Content-Length ÷ bitrate` to derive stream duration when the container doesn't embed it (Opus native doesn't). Without it, `player.getDuration()` returns `C.TIME_UNSET` and Tempus shows no seekbar progress or track length. The server now sets an estimated `Content-Length` (CBR estimate: `ceil(bitrateKbps × 1000/8 × durationSec)`) before piping.
+
+### Fixed: Transcoded bitrate capped at 192k — 256k and 320k now supported
+- `_mapMaxBitrateKbps` only stepped down through `[192, 128, 96, 64]`, so a Tempus user configured for 256k or 320k Wi-Fi got silently served at 192k. Both values added to the lookup array and to the `bitrateSet` allowlist in `transcode.js`.
+
 ## v0.4.13 (2026-08-22)
 
 Maintenance: bump dependencies — ws 8.21.3, nanoid 6.0.1, eslint 10.8.1, globals 17.11.0, fast-xml-parser 5.11.0, file-type 22.0.2, trivy-action GitHub Action.

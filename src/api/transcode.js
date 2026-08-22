@@ -8,12 +8,12 @@ import { ensureFfmpeg, ffmpegBin } from '../util/ffmpeg-bootstrap.js';
 
 const codecMap = {
   'mp3': { codec: 'libmp3lame', contentType: 'audio/mpeg' },
-  'opus': { codec: 'libopus', contentType: 'audio/ogg' },
+  'opus': { codec: 'libopus', contentType: 'audio/opus' },
   'aac': { codec: 'aac', contentType: 'audio/aac' }
 };
 
 const algoSet = new Set(['buffer', 'stream']);
-const bitrateSet = new Set(['64k', '128k', '192k', '96k']);
+const bitrateSet = new Set(['64k', '96k', '128k', '192k', '256k', '320k']);
 
 export function getTransAlgos() {
   return Array.from(algoSet);

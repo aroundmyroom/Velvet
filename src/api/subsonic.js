@@ -464,7 +464,7 @@ function canonicalSongId(rawId, row) {
 // Maps a maxBitRate value in kbps to the nearest supported transcode bitrate string
 // (largest supported rate that does not exceed the cap; floor at '64k').
 function _mapMaxBitrateKbps(kbps) {
-  for (const r of [192, 128, 96, 64]) {
+  for (const r of [320, 256, 192, 128, 96, 64]) {
     if (r <= kbps) return `${r}k`;
   }
   return '64k';
@@ -1511,6 +1511,11 @@ export function setup(velvet) {
         const bitrate = reqMaxBitRate > 0
           ? _mapMaxBitrateKbps(reqMaxBitRate) : (config.program.transcode.defaultBitrate ?? '128k');
         winston.info(`[SUBSONIC] stream TRANSCODE ${fmt}→${codec}@${bitrate} src="${row.artist} - ${row.title}" client=${req.query.c ?? req.body?.c ?? '?'}`);
+        if (row.duration) {
+          const bitrateNum = parseInt(bitrate, 10);
+          const estimatedBytes = Math.ceil(bitrateNum * 1000 / 8 * row.duration);
+          res.set('Content-Length', String(estimatedBytes));
+        }
         transcode.pipeTranscodeToRes(res, fullPath, codec, bitrate);
         return;
       }
