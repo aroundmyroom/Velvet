@@ -1,3 +1,19 @@
+## v0.4.16 (2026-08-23)
+
+Fix slow track start / retry loop and wrong format display in Tempus; add two missing Server Speaker endpoints.
+
+### Fixed: Transcoded stream caused 3× retry loop and slow playback start in Tempus
+- The CBR `Content-Length` estimate added in v0.4.14 conflicted with `TranscodingMediaSource` (activated via `transcodeOffset` in v0.4.15). That client probes the stream before committing to playback, and since libopus is VBR the actual bytes never matched the estimate — ExoPlayer treated it as a truncated response and retried, adding 4–7 s latency and sometimes requiring a second manual Play press. Removed the `Content-Length` header from transcoded streams entirely; `TranscodingMediaSource` derives duration from the `getSong` `duration` field instead.
+
+### Fixed: Tempus showed "FLAC 800kbps" instead of actual transcode output format
+- `buildSong` returned `suffix: 'flac'` and `bitRate: 800` from the source file, so clients displayed the source format even when the server was actively transcoding to Opus. Now populates `transcodedSuffix` and `transcodedContentType` for lossless source formats (flac, wav, aiff, ape, wv, wma, alac…) when transcoding is enabled, advertising the actual output codec (e.g. `opus` / `audio/opus`).
+
+### Added: `POST /api/v1/server-playback/queue/add-many` endpoint
+- Documented in the API but not implemented. Now accepts `{ files: [{ filepath, title?, artist?, album?, albumArt?, seekTo?, rgEnabled?, rgMode?, rgPreamp?, rgClip? }] }` and returns `{ indices }`.
+
+### Added: `POST /api/v1/server-playback/play` endpoint
+- Documented in the API but not implemented. Convenience shortcut: clear queue, add one file, start playback at index 0. Accepts `{ file: { filepath, ... } }`.
+
 ## v0.4.15 (2026-08-22)
 
 Implement `transcodeOffset` OpenSubsonic extension: true seeking in transcoded streams.

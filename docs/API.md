@@ -525,9 +525,9 @@ small local window for instant boot, then lazy-loads the rest from here.
 | `POST` | `/api/v1/server-playback/loop` | — | Toggle loop mode. |
 | `POST` | `/api/v1/server-playback/shuffle` | — | Shuffle the queue. |
 | `GET` | `/api/v1/server-playback/queue` | — | Get current queue (virtual paths). |
-| `POST` | `/api/v1/server-playback/play` | `{ file }` | Clear queue and play a file. |
-| `POST` | `/api/v1/server-playback/queue/add` | `{ filepath }` | Append a file to the queue. |
-| `POST` | `/api/v1/server-playback/queue/add-many` | `{ files[] }` | Append multiple files. |
+| `POST` | `/api/v1/server-playback/play` | `{ file: { filepath, title?, artist?, album?, albumArt?, seekTo?, rgEnabled?, rgMode?, rgPreamp?, rgClip? } }` | Clear queue, add one file, start playback. |
+| `POST` | `/api/v1/server-playback/queue/add` | `{ filepath, title?, artist?, album?, albumArt?, seekTo?, rgEnabled?, rgMode?, rgPreamp?, rgClip? }` | Append a file to the queue. Returns `{ index }`. |
+| `POST` | `/api/v1/server-playback/queue/add-many` | `{ files: [{ filepath, title?, artist?, album?, albumArt?, seekTo?, rgEnabled?, rgMode?, rgPreamp?, rgClip? }] }` | Append multiple files. Returns `{ indices[] }`. |
 | `POST` | `/api/v1/server-playback/queue/play-index` | `{ index }` | Jump to queue index. |
 | `POST` | `/api/v1/server-playback/queue/remove` | `{ index }` | Remove track at index. |
 | `POST` | `/api/v1/server-playback/queue/clear` | — | Clear the queue. |

@@ -571,6 +571,16 @@ function buildSong(row, _vpaths) {
   }
   if (row.disk) song.discNumber = row.disk;
 
+  // Advertise transcodedSuffix for lossless formats so clients display the correct
+  // output format (e.g. "Opus 192 kbps" instead of "FLAC") when transcoding is on.
+  const losslessFormats = new Set(['flac', 'wav', 'aiff', 'aif', 'ape', 'wv', 'dsf', 'dff', 'wma', 'alac']);
+  if (transcode.isEnabled() && losslessFormats.has(fmt)) {
+    const tc = config.program.transcode.defaultCodec ?? 'opus';
+    const tcMime = { opus: 'audio/opus', mp3: 'audio/mpeg', aac: 'audio/aac' };
+    song.transcodedSuffix = tc;
+    song.transcodedContentType = tcMime[tc] ?? 'audio/opus';
+  }
+
   return song;
 }
 
@@ -1512,12 +1522,6 @@ export function setup(velvet) {
         const bitrate = reqMaxBitRate > 0
           ? _mapMaxBitrateKbps(reqMaxBitRate) : (config.program.transcode.defaultBitrate ?? '128k');
         winston.info(`[SUBSONIC] stream TRANSCODE ${fmt}→${codec}@${bitrate} offset=${reqTimeOffset} src="${row.artist} - ${row.title}" client=${req.query.c ?? req.body?.c ?? '?'}`);
-        if (row.duration) {
-          const bitrateNum = parseInt(bitrate, 10);
-          const remaining  = Math.max(0, row.duration - reqTimeOffset);
-          const estimatedBytes = Math.ceil(bitrateNum * 1000 / 8 * remaining);
-          res.set('Content-Length', String(estimatedBytes));
-        }
         transcode.pipeTranscodeToRes(res, fullPath, codec, bitrate, null, reqTimeOffset);
         return;
       }

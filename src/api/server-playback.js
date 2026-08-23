@@ -721,6 +721,37 @@ export function setup(velvet) {
     } catch (e) { res.status(400).json({ error: e.message }); }
   });
 
+  // POST /api/v1/server-playback/queue/add-many  { files: [{ filepath, title, artist, album, albumArt, seekTo, rgEnabled, rgMode, rgPreamp, rgClip }] }
+  velvet.post('/api/v1/server-playback/queue/add-many', async (req, res) => {
+    const { files } = req.body;
+    if (!Array.isArray(files) || files.length === 0) return res.status(400).json({ error: 'files array required' });
+    try {
+      const indices = [];
+      for (const f of files) {
+        const { filepath, title, artist, album, albumArt, seekTo, rgEnabled, rgMode, rgPreamp, rgClip } = f;
+        if (!filepath) return res.status(400).json({ error: 'each file must have filepath' });
+        indices.push(await addToQueue(filepath, { title, artist, album, albumArt, seekTo: seekTo || 0, rgEnabled, rgMode, rgPreamp, rgClip }));
+      }
+      _resetHeartbeat();
+      res.json({ indices });
+    } catch (e) { res.status(400).json({ error: e.message }); }
+  });
+
+  // POST /api/v1/server-playback/play  { file: { filepath, title, artist, album, albumArt, seekTo, rgEnabled, rgMode, rgPreamp, rgClip } }
+  // Convenience: clear queue, add one file, start playback at index 0.
+  velvet.post('/api/v1/server-playback/play', async (req, res) => {
+    const f = req.body?.file;
+    if (!f?.filepath) return res.status(400).json({ error: 'file.filepath required' });
+    try {
+      await clearQueue();
+      const { filepath, title, artist, album, albumArt, seekTo, rgEnabled, rgMode, rgPreamp, rgClip } = f;
+      await addToQueue(filepath, { title, artist, album, albumArt, seekTo: seekTo || 0, rgEnabled, rgMode, rgPreamp, rgClip });
+      await playAtIndex(0);
+      _resetHeartbeat();
+      res.json({});
+    } catch (e) { res.status(400).json({ error: e.message }); }
+  });
+
   // POST /api/v1/server-playback/heartbeat — client pings this while casting
   // (every ~8 s).  Absence of pings triggers the watchdog and stops mpv.
   velvet.post('/api/v1/server-playback/heartbeat', (req, res) => {
