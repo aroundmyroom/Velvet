@@ -64,6 +64,7 @@ import { sanitizeFilename } from './util/validation.js';
 import { ensureFfmpeg } from './util/ffmpeg-bootstrap.js';
 import { canAccessMediaVpath } from './util/media-access.js';
 import { resolvePathWithinRoot } from './util/path-security.js';
+import { classifyBootError, bootErrorMessage } from './util/boot-errors.js';
 
 const require = createRequire(import.meta.url);
 const packageJson = require('../package.json');
@@ -124,8 +125,24 @@ export async function serveIt(configFile) {
   // Setup middleware, static files and admin auth
   _setupExpressMiddleware(velvet);
 
-  // Setup DB
-  await dbManager.initDB();
+  // Setup DB — with boot-hold on known environmental failures (disk full,
+  // WAL I/O error on network FS, permissions, locked DB, etc.).
+  // Instead of crashing and leaving the port dead, we bind the port immediately
+  // and serve a self-refreshing 503 diagnosis page until the problem is fixed.
+  try {
+    await dbManager.initDB();
+  } catch (err) {
+    const dbDir = config.program?.storage?.dbDirectory;
+    const category = classifyBootError(err, dbDir);
+    if (!category) {
+      // Unclassified failure (migration bug, logic error) — crash loudly.
+      winston.error('Fatal DB init error', { stack: err });
+      process.exit(1);
+    }
+    winston.error(`[boot-hold] ${category}: ${err.message}`);
+    await _runBootHold(category, err, dbDir);
+    return; // _runBootHold retries serveIt() when the problem clears
+  }
 
   // ── Phone detection ──────────────────────────────────────────────────────
   // A "phone" is a small handheld with a mobile-class user agent. Tablets
@@ -550,6 +567,78 @@ export async function serveIt(configFile) {
       winston.info(`Local HTTP port for LAN devices: http://localhost:${config.program.localHttpPort}`);
     });
   }
+}
+
+const BOOT_HOLD_RETRY_MS = Number(process.env.VELVET_BOOT_HOLD_RETRY_MS) || 15_000;
+
+/**
+ * Bind the configured port and serve a self-refreshing 503 diagnosis page
+ * until the environmental problem clears.  Retries a full boot every
+ * BOOT_HOLD_RETRY_MS ms.  On recovery, closes the hold server and re-runs
+ * serveIt() from scratch — the same path as reboot().
+ */
+async function _runBootHold(category, _err, dbDir) {
+  const { title, detail } = bootErrorMessage(category, dbDir);
+  const retryS = Math.round(BOOT_HOLD_RETRY_MS / 1000);
+  const holdPage = `<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8">
+<meta http-equiv="refresh" content="${retryS}">
+<title>Velvet — Starting up</title>
+<style>
+  body{font-family:system-ui,sans-serif;background:#111;color:#eee;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0}
+  .box{max-width:520px;padding:2rem;border:1px solid #333;border-radius:8px;background:#1a1a1a}
+  h1{margin:0 0 .5rem;font-size:1.4rem;color:#ff7b72}
+  p{margin:.5rem 0;color:#bbb;line-height:1.5}
+  .hint{font-size:.85rem;color:#666;margin-top:1rem}
+</style>
+</head><body>
+<div class="box">
+  <h1>&#9888; ${title}</h1>
+  <p>${detail}</p>
+  <p class="hint">Velvet is retrying every ${retryS} seconds. This page refreshes automatically.</p>
+</div>
+</body></html>`;
+
+  const holdHandler = (req, res) => {
+    const wantsJson = req.headers['accept']?.includes('application/json')
+      || Boolean(req.headers['x-access-token']);
+    res.setHeader('X-Velvet-Boot-Hold', category);
+    res.setHeader('Retry-After', String(retryS));
+    res.status(503);
+    if (wantsJson) {
+      res.json({ error: 'boot-hold', category, message: title });
+    } else {
+      res.setHeader('Content-Type', 'text/html; charset=utf-8');
+      res.send(holdPage);
+    }
+  };
+
+  // _createHttpServer() was already called in serveIt() before initDB(), so
+  // the SSL context is set up. Attach the hold handler and bind the port.
+  server.on('request', holdHandler);
+  await new Promise(resolve => {
+    if (server.listening) {
+      resolve();
+    } else {
+      server.listen(config.program.port, config.program.address, () => {
+        winston.info(`[boot-hold] Listening on port ${config.program.port} (holding: ${category})`);
+        resolve();
+      });
+    }
+  });
+
+  const scheduleRetry = () => {
+    setTimeout(() => {
+      winston.info('[boot-hold] Retrying boot…');
+      // Remove hold, close the server, then re-run serveIt() from scratch.
+      // serveIt() will call initDB(); if it fails again it re-enters _runBootHold.
+      server.removeListener('request', holdHandler);
+      server.closeAllConnections?.();
+      server.close(() => serveIt(config.configFile));
+    }, BOOT_HOLD_RETRY_MS);
+  };
+
+  scheduleRetry();
 }
 
 export function reboot() {

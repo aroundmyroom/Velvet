@@ -1,3 +1,13 @@
+## v0.4.17 (2026-08-26)
+
+Boot hold: survive disk-full and storage I/O errors without crashing.
+
+### Added: Boot hold — 503 hold page on environmental startup failures
+- When Velvet cannot open its SQLite database due to a known environmental problem (disk full, WAL I/O error on network storage, corrupt DB file, missing/unwritable directory, or locked DB), it no longer crashes. Instead it binds the configured port immediately and serves a self-refreshing 503 diagnosis page explaining the problem and the recommended fix.
+- Retry every 15 seconds (tunable via `VELVET_BOOT_HOLD_RETRY_MS` environment variable). When the storage problem is resolved Velvet recovers automatically — no manual restart needed.
+- API clients (requests with `Accept: application/json` or `x-access-token` header) receive `{ error: "boot-hold", category, message }` with `X-Velvet-Boot-Hold` and `Retry-After` response headers.
+- Unclassified failures (migration bugs, code errors) still crash immediately so they remain visible and loud.
+
 ## v0.4.16 (2026-08-23)
 
 Fix slow track start / retry loop and wrong format display in Tempus; add two missing Server Speaker endpoints.
