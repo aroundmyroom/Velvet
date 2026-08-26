@@ -3782,7 +3782,8 @@ function renderNPModal() {
   }
   const _metaLabel = (k) => String(t(k) || '').replace(/:\s*$/, '');
   const starStr = s.rating ? `${'\u2605'.repeat(Math.round(s.rating/2))}${'\u2606'.repeat(5-Math.round(s.rating/2))}` : null;
-  const _rgVal2 = s.replaygain ?? s.rg?.trackGain ?? null;
+  const _rgRaw2 = s.replaygain ?? s.rg?.trackGain ?? null;
+  const _rgVal2 = _rgRaw2 != null ? _rgRaw2 + (S.rgPreamp || 0) : null;
   const rgStr   = _rgVal2 != null ? `${_rgVal2 > 0 ? '+' : ''}${Number(_rgVal2).toFixed(2)} dB` : null;
   const rows = [
     [_metaLabel('metadata.title'),      s.title],
@@ -11661,7 +11662,8 @@ async function _renderPlayingNow(fade) {
 
   // Metadata table rows
   function mv(v) { return v != null ? `<span class="pnow-meta-v">${esc(String(v))}</span>` : `<span class="pnow-meta-v dim">—</span>`; }
-  const _rgVal = s.replaygain ?? s.rg?.trackGain ?? null;
+  const _rgRaw = s.replaygain ?? s.rg?.trackGain ?? null;
+  const _rgVal = _rgRaw != null ? _rgRaw + (S.rgPreamp || 0) : null;
   const rgStr = _rgVal != null ? `${_rgVal > 0 ? '+' : ''}${Number(_rgVal).toFixed(2)} dB` : null;
   const metaRows = [
     [t('metadata.title'),  s.title],
@@ -19850,7 +19852,11 @@ function _applyRGGain(s) {
           s._rgFetching = false;
           if (meta?.rg) {
             s.rg = meta.rg;
-            if (S.queue[S.idx] === s) _applyRGGain(s);
+            if (S.queue[S.idx] === s) {
+              _applyRGGain(s);
+              // Refresh pnow track info if it's showing this song
+              if (S.view === 'playing-now' && _pnowSongFp === s.filepath) _renderPlayingNow();
+            }
           }
         }).catch(() => { s._rgFetching = false; });
     }
