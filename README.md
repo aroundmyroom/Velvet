@@ -14,6 +14,79 @@ Velvet streams your local music collection to any browser, phone, **Samsung Smar
 
 ---
 
+## Look and feel
+
+**Now playing** — queue panel, waveform scrubber, album art, and full transport controls in one view:
+
+<img src="screenshots/playingnow.png" alt="Now Playing — player with queue, waveform scrubber and controls" width="100%">
+
+<br>
+
+<table>
+<tr>
+<td width="50%">
+
+**Album browser** — structured library with multi-disc detection, series grouping, and category filters:
+
+<img src="screenshots/albums.png" alt="Album browser with grid view, multi-disc and series support" width="100%">
+
+</td>
+<td width="50%">
+
+**Artist browser** — photo grid with A–Z navigation, song counts, and Discogs-sourced images:
+
+<img src="screenshots/artists.png" alt="Artist browser with photo grid and A–Z navigation" width="100%">
+
+</td>
+</tr>
+</table>
+
+**File Explorer** — browse your library by folder, filter inline, and queue or play any directory:
+
+<img src="screenshots/fileexplorer.png" alt="File Explorer — folder browser with inline filter" width="100%">
+
+<br>
+
+<table>
+<tr>
+<td width="68%">
+
+**Admin — Add directory** — vpath wizard with type selection: music, audiobooks, radio recordings, YouTube downloads:
+
+<img src="screenshots/adminmain.png" alt="Admin panel — add directory wizard" width="100%">
+
+</td>
+<td width="32%">
+
+**External services** — Last.fm, ListenBrainz, Discogs, Webhooks, Radio, Lyrics, and language picker:
+
+<img src="screenshots/adminexternlserv-small.png" alt="Admin sidebar — external services and language" width="100%">
+
+</td>
+</tr>
+</table>
+
+<table>
+<tr>
+<td width="53%">
+
+**Admin — Directories** — manage virtual paths, per-user access, DLNA flags, and folder type per mount:
+
+<img src="screenshots/admindirectories.png" alt="Admin directories panel with vpath management" width="100%">
+
+</td>
+<td width="47%">
+
+**Admin — Tools & folder structure** — AcoustID, Tag Workshop, Genre Enricher, BPM analysis, and live hierarchy preview:
+
+<img src="screenshots/admintools.png" alt="Admin tools panel with folder structure preview" width="100%">
+
+</td>
+</tr>
+</table>
+
+---
+
 ## What makes Velvet different
 
 | | |
