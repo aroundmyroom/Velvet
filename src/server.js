@@ -549,14 +549,48 @@ export async function serveIt(configFile) {
 
   // Start the server!
   server.on('request', velvet);
-  server.listen(config.program.port, config.program.address, () => {
+
+  // Surface listen() failures with actionable messages instead of crashing
+  // silently (unhandled 'error' event = no log entry on failure).
+  // Also suppresses the TLS-handshake-abort noise from port scanners / bots
+  // that connect to the HTTPS port and disconnect before completing the shake.
+  const onListening = () => {
     const protocol = config.program.ssl?.cert && config.program.ssl?.key ? 'https' : 'http';
     winston.info(`Access Velvet locally: ${protocol}://localhost:${config.program.port}`);
-
     dbQueue.runAfterBoot();
-    // Boot mpv if server audio is enabled in config
     serverPlaybackApi.startIfEnabled();
+  };
+  let _ipv4Retried = false;
+  server.on('error', err => {
+    // TLS handshake abort from scanners / half-open clients — log at debug.
+    if (err.code === 'ECONNRESET' || err.message?.includes('before secure TLS')) {
+      winston.debug(`[tls] ${err.message}`);
+      return;
+    }
+
+    // For bind errors on the first attempt, try falling back to IPv4 if the
+    // configured address is the IPv6 wildcard and IPv6 is disabled on this host.
+    const isBindErr = err.code === 'EADDRNOTAVAIL' || err.code === 'EAFNOSUPPORT';
+    if (isBindErr && !_ipv4Retried && !config.program.address) {
+      _ipv4Retried = true;
+      winston.warn(`[server] IPv6 bind failed (${err.code}); retrying on IPv4 0.0.0.0. Set "address": "0.0.0.0" in your config to silence this.`);
+      server.listen(config.program.port, '0.0.0.0', onListening);
+      return;
+    }
+
+    let hint = `Failed to start on ${config.program.address || '::'}:${config.program.port}.`;
+    if (err.code === 'EADDRINUSE') {
+      hint = `Port ${config.program.port} is already in use — stop whatever is bound to it or set a different "port" in your config.`;
+    } else if (err.code === 'EADDRNOTAVAIL' || err.code === 'EAFNOSUPPORT') {
+      hint = `Address "${config.program.address}" is not available on this host (${err.code}). Try setting "address": "0.0.0.0" in your config.`;
+    } else if (err.code === 'EACCES') {
+      hint = `Permission denied binding port ${config.program.port} — ports below 1024 require elevated privileges; choose a higher port.`;
+    }
+    winston.error(`Server failed to start (${err.code || 'unknown'}): ${err.message}. ${hint}`, { stack: err });
+    setTimeout(() => process.exit(1), 500);
   });
+
+  server.listen(config.program.port, config.program.address, onListening);
 
   // Optional plain-HTTP listener for local devices (e.g. Sonos) that can't use HTTPS
   // Only started when running in HTTPS mode AND localHttpPort is configured.
