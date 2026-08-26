@@ -1,10 +1,11 @@
 import { spawn } from 'node:child_process';
 import { Readable } from 'node:stream';
+import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import winston from 'winston';
 import * as vpath from '../util/vpath.js';
 import * as config from '../state/config.js';
-import { ensureFfmpeg, ffmpegBin } from '../util/ffmpeg-bootstrap.js';
+import { ensureFfmpeg, ffmpegBin, ffprobeBin } from '../util/ffmpeg-bootstrap.js';
 
 const codecMap = {
   'mp3': { codec: 'libmp3lame', contentType: 'audio/mpeg' },
@@ -73,7 +74,15 @@ export function isEnabled() {
 }
 
 export function isDownloaded() {
-  return lockInit;
+  if (lockInit) return true;
+  // ensureFfmpeg() is async — if it hasn't resolved yet (e.g. admin panel
+  // opened immediately after boot) check synchronously so the UI shows the
+  // correct Ready status instead of waiting for the next page load.
+  if (fs.existsSync(ffmpegBin()) && fs.existsSync(ffprobeBin())) {
+    lockInit = true;
+    return true;
+  }
+  return false;
 }
 
 export async function downloadedFFmpeg() {
