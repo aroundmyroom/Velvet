@@ -3782,7 +3782,8 @@ function renderNPModal() {
   }
   const _metaLabel = (k) => String(t(k) || '').replace(/:\s*$/, '');
   const starStr = s.rating ? `${'\u2605'.repeat(Math.round(s.rating/2))}${'\u2606'.repeat(5-Math.round(s.rating/2))}` : null;
-  const rgStr   = s.replaygain != null ? `${s.replaygain > 0 ? '+' : ''}${Number(s.replaygain).toFixed(2)} dB` : null;
+  const _rgVal2 = s.replaygain ?? s.rg?.gain ?? null;
+  const rgStr   = _rgVal2 != null ? `${_rgVal2 > 0 ? '+' : ''}${Number(_rgVal2).toFixed(2)} dB` : null;
   const rows = [
     [_metaLabel('metadata.title'),      s.title],
     [_metaLabel('metadata.artist'),     s.artist],
@@ -11660,7 +11661,8 @@ async function _renderPlayingNow(fade) {
 
   // Metadata table rows
   function mv(v) { return v != null ? `<span class="pnow-meta-v">${esc(String(v))}</span>` : `<span class="pnow-meta-v dim">—</span>`; }
-  const rgStr = s.replaygain != null ? `${s.replaygain > 0 ? '+' : ''}${Number(s.replaygain).toFixed(2)} dB` : null;
+  const _rgVal = s.replaygain ?? s.rg?.gain ?? null;
+  const rgStr = _rgVal != null ? `${_rgVal > 0 ? '+' : ''}${Number(_rgVal).toFixed(2)} dB` : null;
   const metaRows = [
     [t('metadata.title'),  s.title],
     [t('metadata.artist'), s.artist],
