@@ -1,3 +1,14 @@
+## v0.4.18 (2026-08-26)
+
+Server reliability: actionable listen-error messages and TLS noise suppression.
+
+### Fixed: unhandled listen() errors crashed silently with no log entry
+- `server.on('error')` was missing, so a failed port bind (port in use, permission denied, address unavailable) emitted an unhandled event — the CLI crashed and the log just stopped with no explanation. Now logs an actionable message identifying the cause (`EADDRINUSE`, `EACCES`, `EADDRNOTAVAIL`) with a remediation hint before exiting cleanly.
+- On hosts where IPv6 is disabled, the default `::` bind address fails with `EADDRNOTAVAIL`. Velvet now transparently retries once on `0.0.0.0` rather than failing to boot, logging a hint to make `"address": "0.0.0.0"` permanent in the config.
+
+### Fixed: "Client network socket disconnected before secure TLS connection" log spam
+- Internet scanners and bots that connect to the HTTPS port and drop before completing the TLS handshake previously surfaced as unhandled errors in journalctl. These are now caught by the new `server.on('error')` handler and logged at `debug` level only — no more noise in the journal.
+
 ## v0.4.17 (2026-08-26)
 
 Boot hold: survive disk-full and storage I/O errors without crashing.
