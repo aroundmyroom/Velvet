@@ -1,3 +1,19 @@
+## v0.4.19 (2026-08-26)
+
+Playing Now track info fixes and Docker FFmpeg "Not ready" bug.
+
+### Fixed: Replay Gain shown as "—" in Playing Now track info when only DB measurement exists
+- The Track Info panel read `metadata['replaygain-track-db']` (the raw embedded tag) and showed "—" for any track where ReplayGain was measured via the Normalisation Workshop but never written back to the file tags. Now falls back to `s.rg.trackGain` — the best available value using the same priority chain as the playback engine (measured → R128 → tag).
+
+### Fixed: Track Info Replay Gain value differed from the playbar badge
+- The playbar badge displays the effective applied gain (`trackGain + rgPreamp`), but Track Info showed only the raw gain, making them appear inconsistent whenever the ReplayGain pre-gain slider was non-zero. Track Info now adds `rgPreamp` so both panels always show the same number.
+
+### Fixed: Track Info Replay Gain not updating after lazy-fetch
+- Tracks restored from localStorage start with `rg: null`; the gain value was fetched asynchronously and updated the playbar badge, but the Playing Now panel was never re-rendered afterward. It now re-renders when the lazy-fetch completes.
+
+### Fixed: Admin panel showed FFmpeg as "Not ready" immediately after Docker container start
+- `isDownloaded()` returned `lockInit`, which starts `false` and is set `true` only after the async `ensureFfmpeg()` resolves. If the admin panel was opened before that async task completed (common on fast Docker hosts), the status showed "Not ready" even though the bundled binary was present. Fixed by adding a synchronous `fs.existsSync()` fallback: if both `ffmpeg` and `ffprobe` are on disk, `isDownloaded()` now returns `true` immediately regardless of whether the async init has completed.
+
 ## v0.4.18 (2026-08-26)
 
 Server reliability: actionable listen-error messages and TLS noise suppression.
