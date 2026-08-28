@@ -1,3 +1,13 @@
+## v0.4.20 (2026-08-28)
+
+File Explorer and Search: song duration displayed next to file format badge.
+
+### Added: duration next to file-type badge in File Explorer and Search
+- Audio files in the File Explorer now show their duration alongside the format label on the right side of each row — e.g. **FLAC&nbsp;&nbsp;&nbsp;4:32**.
+- Track rows in Search results (Tracks section) show the same format + duration pair.
+- Extension and duration are separated by 24 px of space so they are easy to read at a glance.
+- Rows without a DB-indexed duration (e.g. unscanned files) show only the extension, unchanged.
+
 ## v0.4.19 (2026-08-26)
 
 Playing Now track info fixes and Docker FFmpeg "Not ready" bug.

@@ -794,7 +794,7 @@ button, a, .song-row, .artist-row, .album-card, .album-row,
 .search-section h3{font-size:11px;font-weight:700;letter-spacing:.8px;color:var(--t3);text-transform:uppercase;margin-bottom:10px;}
 .search-overflow-note{font-size:12px;color:var(--t3);text-align:center;padding:10px 0 4px;}
 /* Search result rows have no album-art column — saves 50 img fetches + reflows */
-.song-row.search-row{grid-template-columns:36px 1fr auto;}
+.song-row.search-row{grid-template-columns:36px 1fr auto auto;}
 
 /* ── FILE EXPLORER ─────────────────────────────────────────── */
 .fe-filter-row{display:flex;align-items:center;gap:8px;margin-bottom:12px;background:var(--surface);border:1px solid var(--border);border-radius:var(--r);padding:8px 12px;transition:border-color .18s,box-shadow .18s;}
@@ -817,7 +817,7 @@ button, a, .song-row, .artist-row, .album-card, .album-row,
 .fe-thumb{width:36px;height:36px;border-radius:4px;object-fit:cover;flex-shrink:0;background:var(--raised);}
 .fe-dir .fe-icon{color:var(--accent);}
 .fe-name{font-size:14px;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
-.fe-sub{font-size:12px;color:var(--t2);flex-shrink:0;}
+.fe-sub{font-size:12px;color:var(--t2);flex-shrink:0;display:flex;align-items:center;gap:24px;}
 .fe-actions{opacity:0;display:flex;gap:3px;transition:opacity .14s;}
 .fe-file:hover .fe-actions{opacity:1;}
 .fe-act{display:flex;align-items:center;justify-content:center;width:26px;height:26px;border-radius:5px;color:var(--t2);transition:background .14s,color .14s;}

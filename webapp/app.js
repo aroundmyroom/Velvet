@@ -1,5 +1,5 @@
 'use strict';
-const VELVET_VERSION = '0.4.19';
+const VELVET_VERSION = '0.4.20';
 // ── SERVER IDENTITY GUARD ────────────────────────────────────────────────────
 // Detects when this browser's localStorage belongs to a different Velvet
 // instance (fresh install, IP change, reverse-proxy swap, second server).
@@ -3505,6 +3505,8 @@ function renderSearchRows(songs, offset = 0) {
     const artist = s.artist || '';
     const album  = s.album  ? ` · ${s.album}` : '';
     const pathDir = s.filepath ? s.filepath.split('/').slice(0, -1).join('\\') : '';
+    const sExt = s.filepath ? s.filepath.split('.').pop().toUpperCase() : '';
+    const sDur = s.duration ? _fmtDuration(s.duration) : '';
     return `<div class="song-row search-row" data-ci="${ci}">
       <div class="row-num">
         <span class="num-val">${ci + 1}</span>
@@ -3515,6 +3517,7 @@ function renderSearchRows(songs, offset = 0) {
         ${artist || album ? `<div class="song-sub">${esc(artist)}${esc(album)}</div>` : ''}
         ${pathDir ? `<div class="song-path" title="${esc(s.filepath)}">📁 ${esc(pathDir)}</div>` : ''}
       </div>
+      <span class="fe-sub"><span>${esc(sExt)}</span>${sDur ? `<span>${sDur}</span>` : ''}</span>
       <div class="row-actions">
         <button class="row-act-btn add-btn" data-ci="${ci}" title="${t('player.ctrl.addToQueue')}">
           ${icon('plus')}
@@ -12692,7 +12695,7 @@ function renderFileExplorer(d) {
           <div>${esc(title)}</div>
           ${artist ? `<div style="font-size:11px;color:var(--t2);margin-top:1px">${esc(artist)}</div>` : ''}
         </div>
-        <span class="fe-sub">${esc(file.type?.toUpperCase() || '')}</span>
+        <span class="fe-sub"><span>${esc(file.type?.toUpperCase() || '')}</span>${meta?.duration ? `<span>${_fmtDuration(meta.duration)}</span>` : ''}</span>
         <div class="fe-actions">
           <button class="fe-act fe-play-btn" title="${t('player.fe.btnPlay')}">
             <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><polygon points="5,3 19,12 5,21"/></svg>
