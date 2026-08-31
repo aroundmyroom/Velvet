@@ -1,5 +1,5 @@
 'use strict';
-const VELVET_VERSION = '0.4.20';
+const VELVET_VERSION = '0.4.21';
 // ── SERVER IDENTITY GUARD ────────────────────────────────────────────────────
 // Detects when this browser's localStorage belongs to a different Velvet
 // instance (fresh install, IP change, reverse-proxy swap, second server).
@@ -10252,6 +10252,7 @@ async function viewAlbumDetail(albumId, activeDiscIdx, opts = {}) {
           <div class="alb-detail-actions">
             <button id="albd-play-all" class="primary-btn">${t('player.ctrl.albPlayAll')}</button>
             <button id="albd-add-all" class="secondary-btn">${t('player.ctrl.albAddAll')}</button>
+            <button id="albd-add-pl" class="secondary-btn">${t('player.ctrl.albAddPlaylist')}</button>
           </div>
           ${isCueAlbum   ? `<div class="alb-cue-badge">${t('player.alb.cueBadge')}</div>` : ''}
           ${isCueInvalid ? `<div class="alb-cue-badge alb-cue-badge--invalid">${t('player.alb.cueInvalid')}</div>` : ''}
@@ -10296,17 +10297,19 @@ async function viewAlbumDetail(albumId, activeDiscIdx, opts = {}) {
             <span class="alb-track-title">${esc(cp.title || '?')}</span>
             <span></span>
             <span class="alb-track-dur">${dur}</span>
+            <button class="alb-track-ctx-btn" title="${t('player.ctrl.moreOptions')}">${icon('more')}</button>
           </div>`;
         }).join('');
         return;
       }
-      tl.innerHTML = disc.tracks.map((t, ti) => {
-          const dur = t.duration ? fmt(t.duration) : '';
+      tl.innerHTML = disc.tracks.map((tr, ti) => {
+          const dur = tr.duration ? fmt(tr.duration) : '';
           return `<div class="alb-track-row" data-ti="${ti}" data-disc="${dIdx}">
-            <span class="alb-track-num">${t.number || (ti + 1)}</span>
-            <span class="alb-track-title">${esc(t.title || '?')}</span>
-            ${t.artist && t.artist !== album.artist ? `<span class="alb-track-artist">${esc(t.artist)}</span>` : '<span></span>'}
+            <span class="alb-track-num">${tr.number || (ti + 1)}</span>
+            <span class="alb-track-title">${esc(tr.title || '?')}</span>
+            ${tr.artist && tr.artist !== album.artist ? `<span class="alb-track-artist">${esc(tr.artist)}</span>` : '<span></span>'}
             <span class="alb-track-dur">${dur}</span>
+            <button class="alb-track-ctx-btn" title="${t('player.ctrl.moreOptions')}">${icon('more')}</button>
           </div>`;
         }).join('');
     }
@@ -10321,6 +10324,11 @@ async function viewAlbumDetail(albumId, activeDiscIdx, opts = {}) {
     // Add (current disc) to queue
     body.querySelector('#albd-add-all').onclick = () => {
       Player.addAll(getDiscSongsFor(curDiscIdx));
+    };
+    // Add (current disc) to playlist
+    body.querySelector('#albd-add-pl').onclick = () => {
+      const songs = getDiscSongsFor(curDiscIdx);
+      if (songs.length) showAddToPlaylistModalBulk(songs);
     };
 
     // Disc tabs — switch view + per-disc add buttons
@@ -10428,34 +10436,46 @@ async function viewAlbumDetail(albumId, activeDiscIdx, opts = {}) {
 
     // Click row to play from that track
     body.querySelector('#albd-tracklist').addEventListener('click', e => {
+      // Context (⋯) button — open context menu for this track only
+      if (e.target.closest('.alb-track-ctx-btn')) {
+        e.stopPropagation();
+        const row = e.target.closest('.alb-track-row');
+        if (!row) return;
+        let song;
+        if (row.dataset.cueDisc != null) {
+          const dIdx  = Number.parseInt(row.dataset.cueDisc, 10);
+          const cpIdx = Number.parseInt(row.dataset.cueIdx,  10);
+          song = getDiscSongsFor(dIdx)[cpIdx];
+        } else {
+          const dIdx = Number.parseInt(row.dataset.disc, 10);
+          const ti   = Number.parseInt(row.dataset.ti,   10);
+          song = getDiscSongsFor(dIdx)[ti];
+        }
+        if (!song) return;
+        S.ctxSong = song;
+        showCtxMenu(e.clientX, e.clientY);
+        return;
+      }
+
       const row = e.target.closest('.alb-track-row');
       if (!row) return;
 
-      // CUE row: play virtual CUE track (getDiscSongsFor returns one entry per cuepoint)
+      // CUE row: play virtual CUE track starting from this cuepoint
       if (row.dataset.cueDisc != null) {
         const dIdx  = Number.parseInt(row.dataset.cueDisc, 10);
         const cpIdx = Number.parseInt(row.dataset.cueIdx,  10);
         const songs = getDiscSongsFor(dIdx);
         if (!songs.length) return;
-        if (S.queue.length > 0) {
-          Player.addAll(songs);
-        } else {
-          Player.setQueue(songs, cpIdx);
-        }
+        Player.setQueue(songs, cpIdx);
         return;
       }
 
-      // Normal row — load only the disc that was clicked
+      // Normal row — play disc from this track
       const dIdx = Number.parseInt(row.dataset.disc, 10);
       const ti   = Number.parseInt(row.dataset.ti,   10);
       const disc = discs[dIdx];
       if (!disc) return;
-      const songs = getDiscSongsFor(dIdx);
-      if (S.queue.length > 0) {
-        Player.addAll(songs);
-      } else {
-        Player.setQueue(songs, ti);
-      }
+      Player.setQueue(getDiscSongsFor(dIdx), ti);
     });
 
   } catch(e) { setBody(`<div class="empty-state">Error: ${esc(e.message)}</div>`); }
@@ -11873,7 +11893,7 @@ async function _pnowLoadArtistData(artist, forFp, skipImg = false) {
             ${trackNum}
             <span class="artpro2-song-title">${esc(title)}</span>
             ${dur ? `<span class="artpro2-song-dur">${dur}</span>` : ''}
-            <button class="artpro2-song-add" data-fp="${esc(s.filepath)}" title="Add to queue">+</button>
+            <button class="artpro2-song-ctx" data-fp="${esc(s.filepath)}" title="${t('player.ctrl.moreOptions')}">${icon('more')}</button>
           </div>`;
         }
         songsHtml += `</div></div>`;
@@ -11889,16 +11909,18 @@ async function _pnowLoadArtistData(artist, forFp, skipImg = false) {
       });
       songsEl2.querySelectorAll('.artpro2-song-row').forEach(row => {
         row.addEventListener('click', e => {
-          if (e.target.closest('.artpro2-song-add')) return;
+          if (e.target.closest('.artpro2-song-ctx')) return;
           const s = rawSongs.find(x => x.filepath === row.dataset.fp);
           if (s) Player.addSong(s);
         });
       });
-      songsEl2.querySelectorAll('.artpro2-song-add').forEach(btn => {
+      songsEl2.querySelectorAll('.artpro2-song-ctx').forEach(btn => {
         btn.addEventListener('click', e => {
           e.stopPropagation();
           const s = rawSongs.find(x => x.filepath === btn.dataset.fp);
-          if (s) Player.addSong(s);
+          if (!s) return;
+          S.ctxSong = s;
+          showCtxMenu(e.clientX, e.clientY);
         });
       });
       const songsTabBtn = albumsEl?.querySelector('.artpro2-tab[data-tab="songs"]');
@@ -12703,6 +12725,9 @@ function renderFileExplorer(d) {
           <button class="fe-act fe-add-btn" title="${t('player.fe.btnAddQueue')}">
             ${icon('plus')}
           </button>
+          ${fp ? `<button class="fe-act fe-pl-btn" title="${t('player.fe.btnAddPlaylist')}">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>
+          </button>` : ''}
           <a class="fe-act" href="${fp ? dlUrl(fp) : '#'}" download="${esc(file.name)}" title="${t('player.fe.btnDownload')}" onclick="event.stopPropagation()">
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7,10 12,15 17,10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
           </a>
@@ -12850,6 +12875,14 @@ function renderFileExplorer(d) {
       const fp = btn.closest('.fe-file').dataset.fp;
       const found = dirSongs.find(s => s.filepath === fp);
       if (found) Player.addSong(found);
+    });
+  });
+  body.querySelectorAll('.fe-pl-btn').forEach(btn => {
+    btn.addEventListener('click', e => {
+      e.stopPropagation();
+      const fp = btn.closest('.fe-file').dataset.fp;
+      const found = dirSongs.find(s => s.filepath === fp);
+      if (found) showAddToPlaylistModal(found);
     });
   });
   body.querySelectorAll('.fe-del-btn').forEach(btn => {

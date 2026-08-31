@@ -1,3 +1,25 @@
+## v0.4.21 (2026-08-31)
+
+Smarter playlist & queue actions across Albums, Artists, File Explorer and Search.
+
+### Fixed: album track click always plays from that track
+- Clicking a track in the Album detail view now always calls `Player.setQueue(disc, trackIndex)` — the whole disc starts from the selected track. Previously, if the queue was non-empty the entire disc was appended instead of playing the chosen track, which was confusing and unexpected.
+
+### Added: ⋯ context menu button per track in Album detail
+- Each album track row now has a **⋯** button (visible on hover, always visible on touch) that opens the standard context menu: Add to Queue, Play Next, Add to Playlist, Download, Rate, Go to Artist, Go to Album.
+
+### Added: "Add to Playlist" button in Album header
+- Next to **▶ Play** and **+ Add to Queue**, a new **+ Add to Playlist** button bulk-adds the current disc to any existing playlist.
+
+### Added: ⋯ context menu button per song in Artist profile (Songs tab)
+- The small `+` button on each song row in the artist Songs tab is replaced by a **⋯** button opening the full context menu (Add to Queue, Play Next, Add to Playlist, Download, Rate…). Works in both the Artist view and the Playing Now library panel.
+
+### Added: "Add to Playlist" button per file in File Explorer
+- Indexed audio files now show a playlist icon button alongside the play/queue/download buttons. Clicking it opens the playlist picker for that single file.
+
+### Added: file format + duration in Search track rows
+- Track rows in Search results now show the file format and duration (e.g. `FLAC  4:32`) on the right, consistent with the File Explorer.
+
 ## v0.4.20 (2026-08-28)
 
 File Explorer and Search: song duration displayed next to file format badge.
