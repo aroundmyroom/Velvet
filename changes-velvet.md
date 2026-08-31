@@ -1,3 +1,15 @@
+## v0.4.22 (2026-08-31)
+
+Album track-click mode toggle: choose between "full disc from here" and "single song".
+
+### Added: album track-click mode toggle
+- A small **Full disc** toggle now appears next to the hint text below every album's track list.
+- **Toggle ON** (default): clicking a track loads the entire disc starting from that track — the classic album-listening experience.
+- **Toggle OFF**: clicking a track adds only that single song to the queue.
+- The hint text updates live to reflect the current mode.
+- Preference is saved in `localStorage` and remembered per user across sessions.
+- Works for both regular and CUE-sheet albums.
+
 ## v0.4.21 (2026-08-31)
 
 Smarter playlist & queue actions across Albums, Artists, File Explorer and Search.

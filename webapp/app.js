@@ -1,5 +1,5 @@
 'use strict';
-const VELVET_VERSION = '0.4.21';
+const VELVET_VERSION = '0.4.22';
 // ── SERVER IDENTITY GUARD ────────────────────────────────────────────────────
 // Detects when this browser's localStorage belongs to a different Velvet
 // instance (fresh install, IP change, reverse-proxy swap, second server).
@@ -139,6 +139,8 @@ const S = {
   rgPreamp:  Number.parseFloat(localStorage.getItem('ms2_rg_preamp_' + _u)) || 0,
   rgClip:    localStorage.getItem('ms2_rg_clip_'   + _u) !== '0',  // default ON
   gapless:   localStorage.getItem('ms2_gapless_'  + _u) === '1',
+  // Album track click mode: 'disc' (default) = load full disc from track; 'single' = add only that song
+  albumClickMode: localStorage.getItem('ms2_album_click_mode_' + _u) || 'disc',
   dynColor:  localStorage.getItem('ms2_dyn_color_' + _u) !== '0',  // default ON; stored as '0' when disabled
   barTop:    localStorage.getItem('ms2_bar_top_'   + _u) === '1',
   autoResume: localStorage.getItem('ms2_auto_resume_' + _u) === '1',  // default OFF — pause on page reload
@@ -10271,7 +10273,14 @@ async function viewAlbumDetail(albumId, activeDiscIdx, opts = {}) {
           </div>`;
         }).join('')}
       </div>` : ''}
-      <div class="alb-play-hint">${multiDisc ? t('player.ctrl.albPlayHintDisc') : t('player.ctrl.albPlayHint')}</div>
+      <div class="alb-play-hint-row">
+        <span id="albd-play-hint" class="alb-play-hint">${multiDisc ? t('player.ctrl.albPlayHintDisc') : (S.albumClickMode === 'disc' ? t('player.ctrl.albPlayHintDisc2') : t('player.ctrl.albPlayHintSingle'))}</span>
+        <label class="toggle-sw albd-mode-toggle" title="${t('player.ctrl.albModeToggleTitle')}">
+          <input type="checkbox" ${S.albumClickMode === 'disc' ? 'checked' : ''}>
+          <span class="toggle-sw-track"><span class="toggle-sw-thumb"></span></span>
+          <span class="albd-mode-label">${t('player.ctrl.albModeToggleLabel')}</span>
+        </label>
+      </div>
       <div id="albd-tracklist" class="song-list"></div>`;
 
     // Render track list
@@ -10330,6 +10339,13 @@ async function viewAlbumDetail(albumId, activeDiscIdx, opts = {}) {
       const songs = getDiscSongsFor(curDiscIdx);
       if (songs.length) showAddToPlaylistModalBulk(songs);
     };
+    // Album mode toggle — 'disc' vs 'single'
+    body.querySelector('.albd-mode-toggle input').addEventListener('change', e => {
+      S.albumClickMode = e.target.checked ? 'disc' : 'single';
+      localStorage.setItem('ms2_album_click_mode_' + _u, S.albumClickMode);
+      const hint = body.querySelector('#albd-play-hint');
+      if (hint) hint.textContent = S.albumClickMode === 'disc' ? t('player.ctrl.albPlayHintDisc2') : t('player.ctrl.albPlayHintSingle');
+    });
 
     // Disc tabs — switch view + per-disc add buttons
     if (multiDisc) {
@@ -10466,16 +10482,24 @@ async function viewAlbumDetail(albumId, activeDiscIdx, opts = {}) {
         const cpIdx = Number.parseInt(row.dataset.cueIdx,  10);
         const songs = getDiscSongsFor(dIdx);
         if (!songs.length) return;
-        Player.setQueue(songs, cpIdx);
+        if (S.albumClickMode === 'single') {
+          Player.addSong(songs[cpIdx]);
+        } else {
+          Player.setQueue(songs, cpIdx);
+        }
         return;
       }
 
-      // Normal row — play disc from this track
+      // Normal row — play disc from this track, or single song depending on mode
       const dIdx = Number.parseInt(row.dataset.disc, 10);
       const ti   = Number.parseInt(row.dataset.ti,   10);
       const disc = discs[dIdx];
       if (!disc) return;
-      Player.setQueue(getDiscSongsFor(dIdx), ti);
+      if (S.albumClickMode === 'single') {
+        Player.addSong(getDiscSongsFor(dIdx)[ti]);
+      } else {
+        Player.setQueue(getDiscSongsFor(dIdx), ti);
+      }
     });
 
   } catch(e) { setBody(`<div class="empty-state">Error: ${esc(e.message)}</div>`); }
