@@ -79,6 +79,23 @@ GET /media/<vpath>/<path/to/song.mp3>?token=<jwt>
 |---|---|---|---|
 | `POST` | `/api/v1/auth/login` | `{ username, password }` | Authenticates. Returns `{ token, vpaths }` and sets an `x-access-token` cookie (5-year max-age). Brute-force protected (800ms delay on failure). |
 | `GET` | `/api/v1/auth/refresh` | — | Issues a freshly-signed JWT from the current valid session; refreshes the `x-access-token` cookie. Returns `{ token }` or `{ token: null }` on no-auth servers. *(Velvet)* |
+| `POST` | `/api/v1/auth/change-password` | `{ currentPassword, newPassword }` | Self-service password change for the logged-in user. Verifies the current password first (800ms delay on failure). Returns `{ ok: true }`. *(Velvet)* |
+
+### Passkey (WebAuthn) — public endpoints (no token required)
+
+| Method | Endpoint | Body | Description |
+|---|---|---|---|
+| `POST` | `/api/v1/auth/passkey/auth/options` | `{ username? }` | Generate a WebAuthn authentication challenge. Optional `username` restricts to that user's credentials; omit for discoverable-credential (resident key) flow. Returns `PublicKeyCredentialRequestOptionsJSON`. *(Velvet)* |
+| `POST` | `/api/v1/auth/passkey/auth/verify` | `{ credential, challenge }` | Verify a WebAuthn assertion. Returns `{ token, vpaths, username }` and sets `x-access-token` cookie — same response as `/auth/login`. *(Velvet)* |
+
+### Passkey (WebAuthn) — authenticated endpoints (token required)
+
+| Method | Endpoint | Body / Params | Description |
+|---|---|---|---|
+| `POST` | `/api/v1/auth/passkey/register/options` | — | Generate a WebAuthn registration challenge for the current user. Returns `PublicKeyCredentialCreationOptionsJSON`. *(Velvet)* |
+| `POST` | `/api/v1/auth/passkey/register/verify` | `{ credential, friendlyName? }` | Verify a registration response and store the new passkey credential. Returns `{ verified: true }`. *(Velvet)* |
+| `GET` | `/api/v1/auth/passkey/credentials` | `?username=x` (admin) | List passkeys for the current user (or `username` if admin). Returns `{ credentials: [{ id, friendlyName, deviceType, backedUp, createdAt, lastUsedAt }] }`. *(Velvet)* |
+| `DELETE` | `/api/v1/auth/passkey/credentials/:id` | `?username=x` (admin) | Remove a specific passkey by id. *(Velvet)* |
 
 ---
 

@@ -57,6 +57,7 @@ import * as genreEnricherApi from './api/genre-enricher.js';
 import * as dupWorkshopApi from './api/duplicate-workshop.js';
 import * as dlnaApi from './api/dlna.js';
 import * as sonosApi from './api/sonos.js';
+import * as authPasskeyApi from './api/auth-passkey.js';
 import * as queueApi from './api/queue.js';
 import * as smartPlaylistMlApi from './smartplaylist/routes.js';
 import WebError from './util/web-error.js';
@@ -300,10 +301,12 @@ export async function serveIt(configFile) {
   });
 
   // Everything below this line requires authentication
+  authPasskeyApi.setupPublic(velvet);
   authApi.setup(velvet);
 
   scannerApi.setup(velvet);
   adminApi.setup(velvet);
+  authPasskeyApi.setup(velvet);
   dbApi.setup(velvet);
   playlistApi.setup(velvet);
   downloadApi.setup(velvet);

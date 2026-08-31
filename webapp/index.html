@@ -13,7 +13,8 @@
   <script defer src="../assets/js/lib/butterchurn.min.js"></script>
   <script defer src="../assets/js/lib/audiomotion-analyzer.js"></script>
   <script defer src="../assets/js/lib/qr.js"></script>
-  <link rel="stylesheet" href="/style.css?v=0.4.22-52d0e3f8">
+  <link rel="stylesheet" href="/style.css?v=0.4.23-52d0e3f8">
+  <script src="/assets/js/lib/simplewebauthn-browser.js"></script>
   <script src="/assets/js/i18n.js"></script>
 </head>
 <body>
@@ -26,7 +27,7 @@
       <h1>Velvet</h1>
       <p data-i18n="player.login.tagline">a music server — evolved.</p>
       <p data-i18n="player.login.tagline2">Enter the danger zone.</p>
-      <p id="login-version" class="login-version-tag">v0.4.22</p>
+      <p id="login-version" class="login-version-tag">v0.4.23</p>
     </div>
     <form id="login-form">
       <label class="field-label" for="l-user" data-i18n="player.login.username">Username</label>
@@ -34,6 +35,7 @@
       <label class="field-label" for="l-pass" data-i18n="player.login.password">Password</label>
       <input id="l-pass" type="password" placeholder="Password" data-i18n-attr="placeholder" data-i18n="player.login.password" autocomplete="current-password">
       <button type="submit" id="login-btn" data-i18n="player.login.signIn">Sign In</button>
+      <button type="button" id="passkey-btn" data-i18n="player.login.signInPasskey" style="display:none;text-align:center;width:100%">Sign in with Passkey</button>
       <p id="login-error"></p>
     </form>
   </div>
@@ -624,6 +626,10 @@
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
           <span data-i18n="player.nav.settings">Audio Settings</span>
         </button>
+        <button class="nav-btn" data-view="user-settings">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+          <span data-i18n="player.nav.userSettings">User Settings</span>
+        </button>
         <button class="nav-btn" data-view="apps">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
           <span data-i18n="player.nav.mobileApps">Mobile Apps</span>
@@ -1053,7 +1059,7 @@
 
 <div id="tip-box"></div>
 <script src="/assets/js/player-locale.js"></script>
-  <script src="/app.js?v=0.4.22-746d4a64"></script>
+  <script src="/app.js?v=0.4.23-b5d0658d"></script>
 
 </body>
 </html>

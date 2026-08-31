@@ -408,6 +408,22 @@ export function init(dbDirectory) {
     );
     CREATE INDEX IF NOT EXISTS idx_subsonic_api_keys_key ON subsonic_api_keys(api_key);
     CREATE INDEX IF NOT EXISTS idx_subsonic_api_keys_user ON subsonic_api_keys(username);
+
+    CREATE TABLE IF NOT EXISTS passkeys (
+      id              INTEGER PRIMARY KEY AUTOINCREMENT,
+      username        TEXT NOT NULL,
+      credential_id   TEXT NOT NULL UNIQUE,
+      public_key      TEXT NOT NULL,
+      counter         INTEGER NOT NULL DEFAULT 0,
+      transports      TEXT,
+      device_type     TEXT,
+      backed_up       INTEGER NOT NULL DEFAULT 0,
+      friendly_name   TEXT,
+      created_at      INTEGER NOT NULL,
+      last_used_at    INTEGER
+    );
+    CREATE INDEX IF NOT EXISTS idx_passkeys_username ON passkeys(username);
+    CREATE INDEX IF NOT EXISTS idx_passkeys_cred_id  ON passkeys(credential_id);
   `);
   // Migration: add cuepoints column for databases created before this feature
   try { db.exec('ALTER TABLE files ADD COLUMN cuepoints TEXT'); } catch { /* already exists */ }
@@ -5551,4 +5567,41 @@ export function deleteApiKeyById(id, username) {
 
 export function deleteAllApiKeysByUsername(username) {
   db.prepare('DELETE FROM subsonic_api_keys WHERE username = ?').run(username);
+}
+
+// ── Passkeys ─────────────────────────────────────────────────────────────────
+
+export function getPasskeysByUsername(username) {
+  return db.prepare(
+    'SELECT id, username, credential_id, public_key, counter, transports, device_type, backed_up, friendly_name, created_at, last_used_at FROM passkeys WHERE username = ? ORDER BY created_at DESC'
+  ).all(username);
+}
+
+export function getPasskeyByCredentialId(credentialId) {
+  return db.prepare(
+    'SELECT id, username, credential_id, public_key, counter, transports, device_type, backed_up, friendly_name, created_at, last_used_at FROM passkeys WHERE credential_id = ?'
+  ).get(credentialId) ?? null;
+}
+
+export function insertPasskey({ username, credentialId, publicKey, counter, transports, deviceType, backedUp, friendlyName }) {
+  db.prepare(
+    'INSERT INTO passkeys (username, credential_id, public_key, counter, transports, device_type, backed_up, friendly_name, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
+  ).run(username, credentialId, publicKey, counter, transports ?? null, deviceType ?? null, backedUp ? 1 : 0, friendlyName ?? null, Date.now());
+}
+
+export function updatePasskeyCounter(credentialId, counter) {
+  db.prepare(
+    'UPDATE passkeys SET counter = ?, last_used_at = ? WHERE credential_id = ?'
+  ).run(counter, Date.now(), credentialId);
+}
+
+export function deletePasskeyById(id, username) {
+  const result = db.prepare(
+    'DELETE FROM passkeys WHERE id = ? AND username = ?'
+  ).run(id, username);
+  return result.changes > 0;
+}
+
+export function deleteAllPasskeysByUsername(username) {
+  db.prepare('DELETE FROM passkeys WHERE username = ?').run(username);
 }

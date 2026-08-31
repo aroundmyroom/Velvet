@@ -1,3 +1,54 @@
+## v0.4.23 (2026-09-01)
+
+WebAuthn / Passkey authentication — sign in without a password using biometrics, security keys or synced passkeys.
+
+### Added: WebAuthn / Passkey login
+- New backend (`src/api/auth-passkey.js`) built on `@simplewebauthn/server` v13.
+- Six REST endpoints:
+  - `POST /api/v1/auth/passkey/auth/options` — generate authentication challenge (public, no token required)
+  - `POST /api/v1/auth/passkey/auth/verify` — verify assertion and issue JWT (public)
+  - `POST /api/v1/auth/passkey/register/options` — generate registration challenge (requires session)
+  - `POST /api/v1/auth/passkey/register/verify` — verify attestation and store credential (requires session)
+  - `GET /api/v1/auth/passkey/credentials` — list own passkeys (admin can pass `?username=x`)
+  - `DELETE /api/v1/auth/passkey/credentials/:id` — remove a passkey
+- Passkey credentials stored in new `passkeys` SQLite table (auto-migrated on boot).
+- Challenges stored in-memory with 5-minute TTL; a background sweep clears expired entries.
+- `rpId` derived from request hostname; overridable via `passkeys.rpId` in config.
+
+### Added: "Sign in with Passkey" button on login screen
+- Button appears automatically when the browser supports WebAuthn.
+- Uses discoverable-credential flow — no username required.
+- On success, sets `S.token`, `S.username`, `S.vpaths` and calls `showApp()` like the password login.
+- Cancelled prompt is silent; other errors are shown inline.
+
+### Added: "User Settings" view (Settings → User Settings)
+- New dedicated **User Settings** page, accessible from the sidebar nav (person icon).
+- **Change Velvet Password** section — current password + new password + confirm; changes take effect immediately. Uses the new `POST /api/v1/auth/change-password` endpoint (self-service, no admin required).
+- **Passkeys** section — lists registered passkeys with name, type (synced / single-device), and date added; "Add Passkey" triggers the browser registration prompt; "Remove" revokes individual passkeys.
+- Passkey section only appears when the browser supports WebAuthn.
+- First-time passkey nudge: after a successful password login, if the user has no passkeys yet, a 12-second toast appears offering to jump straight to User Settings to set one up.
+
+### Changed: passkeys moved out of Subsonic API view
+- The passkey management section was removed from the Subsonic API settings view; it now lives exclusively in User Settings (see above).
+- The Subsonic API view remains focused on Subsonic/scrobble configuration.
+
+### Added: Passkey management in Admin UI (Users modal)
+- "Passkeys" section in the Reset Password modal lists all passkeys for the selected user.
+- Admins can revoke any passkey for any user.
+- Passkeys can only be *added* by the user from their own device.
+
+### Added: i18n for all passkey strings (all 12 locales)
+- Keys added under `player.passkey.*`, `player.login.signInPasskey`, and `admin.users.passkeys*`.
+
+### Fixed: passkey name is now required before registration
+- The "Add Passkey" button is blocked if the name field is empty; an inline error prompts the user to fill it in.
+- Placeholder text updated to remove "(optional)" — a name is always required so passkeys are identifiable.
+- Login screen passkey button label is centred to match the Sign In button layout.
+
+### New npm dependencies
+- **`@simplewebauthn/server` v13** — server-side WebAuthn (registration and authentication verification). Bare-metal installs: run `npm install --only=prod` after `git pull`. Docker users get it automatically in the new image.
+- **`@simplewebauthn/browser` v13** — bundled as `webapp/assets/js/lib/simplewebauthn-browser.js`; loaded as a static asset, no extra install step needed.
+
 ## v0.4.22 (2026-08-31)
 
 Album track-click mode toggle: choose between "full disc from here" and "single song".

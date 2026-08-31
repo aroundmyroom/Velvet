@@ -1,6 +1,6 @@
 {
   "name": "velvet",
-  "version": "0.4.22",
+  "version": "0.4.23",
   "description": "Velvet — your personal music server",
   "type": "module",
   "main": "cli-boot-wrapper.js",
@@ -32,6 +32,8 @@
   "dependencies": {
     "@distube/ytdl-core": "^4.16.12",
     "@lvcabral/node-ssdp": "^4.0.4",
+    "@simplewebauthn/browser": "^13.3.0",
+    "@simplewebauthn/server": "^13.3.3",
     "archiver": "^8.0.0",
     "axios": "^1.19.0",
     "busboy": "^1.6.0",

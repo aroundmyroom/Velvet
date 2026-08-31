@@ -10940,10 +10940,15 @@ const userPasswordView = Vue.component('user-password-view', {
       apiKeysLoading: false,
       newKeyLabel: '',
       newlyGeneratedKey: null,
+      passkeys: [],
+      passkeysLoading: false,
+      newPasskeyName: '',
+      passkeyStatus: '',
     };
   },
   mounted() {
     this.loadApiKeys();
+    this.loadPasskeys();
   },
   template: `
     <form @submit.prevent="updatePassword">
@@ -11000,6 +11005,32 @@ const userPasswordView = Vue.component('user-password-view', {
             <b>{{ t('admin.users.apiKeysNewKey') }}</b><br>
             <span style="font-family:monospace;word-break:break-all">{{ newlyGeneratedKey }}</span>
           </div>
+        </div>
+
+        <div class="field-group" style="margin-top:1.4rem;">
+          <label>{{ t('admin.users.passkeysTitle') }}</label>
+          <div style="font-size:.78rem;color:var(--t2);margin-bottom:.5rem;">{{ t('admin.users.passkeysDesc') }}</div>
+          <div v-if="passkeysLoading" style="font-size:.82rem;color:var(--t2)">Loading…</div>
+          <table v-else-if="passkeys.length" style="width:100%;border-collapse:collapse;font-size:.82rem;margin-bottom:.5rem;">
+            <thead><tr style="color:var(--t2)">
+              <th style="text-align:left;padding:2px 8px 2px 0">{{ t('admin.users.passkeysColName') }}</th>
+              <th style="text-align:left;padding:2px 8px 2px 0">{{ t('admin.users.passkeysColType') }}</th>
+              <th style="text-align:left;padding:2px 8px 2px 0">{{ t('admin.users.passkeysColAdded') }}</th>
+              <th style="text-align:left;padding:2px 8px 2px 0">{{ t('admin.users.passkeysColLastUsed') }}</th>
+              <th></th>
+            </tr></thead>
+            <tbody>
+              <tr v-for="pk in passkeys" :key="pk.id" style="border-top:1px solid var(--border,#333)">
+                <td style="padding:3px 8px 3px 0">{{ pk.friendlyName || '—' }}</td>
+                <td style="padding:3px 8px 3px 0;font-size:.78rem;color:var(--t2)">{{ pk.deviceType === 'multiDevice' ? '☁ synced' : '🔑 single' }}</td>
+                <td style="padding:3px 8px 3px 0;white-space:nowrap">{{ new Date(pk.createdAt).toLocaleDateString() }}</td>
+                <td style="padding:3px 8px 3px 0;white-space:nowrap">{{ pk.lastUsedAt ? new Date(pk.lastUsedAt).toLocaleDateString() : '—' }}</td>
+                <td style="padding:3px 0"><button type="button" @click="revokePasskey(pk.id)" style="font-size:.78rem;padding:1px 8px;background:var(--red,#c33);color:#fff;border:none;border-radius:4px;cursor:pointer">{{ t('admin.users.passkeysRevoke') }}</button></td>
+              </tr>
+            </tbody>
+          </table>
+          <div v-else style="font-size:.82rem;color:var(--t2);margin-bottom:.5rem;">{{ t('admin.users.passkeysNone') }}</div>
+          <div style="font-size:.78rem;color:var(--t2)">{{ t('admin.users.passkeysAdminNote') }}</div>
         </div>
       </div>
       ${mFoot("t('admin.modal.btnUpdatePassword')", "t('admin.modal.btnUpdating')")}
@@ -11095,6 +11126,28 @@ const userPasswordView = Vue.component('user-password-view', {
         if (this.newlyGeneratedKey) this.newlyGeneratedKey = null;
       } catch {
         iziToast.error({ title: 'Failed to revoke API key', position: 'topCenter', timeout: 3000 });
+      }
+    },
+    loadPasskeys: async function() {
+      this.passkeysLoading = true;
+      try {
+        const res = await API.axios({
+          method: 'GET',
+          url: `${API.url()}/api/v1/auth/passkey/credentials?username=${encodeURIComponent(this.currentUser.value)}`
+        });
+        this.passkeys = res.data.credentials || [];
+      } catch { this.passkeys = []; }
+      finally { this.passkeysLoading = false; }
+    },
+    revokePasskey: async function(id) {
+      try {
+        await API.axios({
+          method: 'DELETE',
+          url: `${API.url()}/api/v1/auth/passkey/credentials/${id}?username=${encodeURIComponent(this.currentUser.value)}`
+        });
+        await this.loadPasskeys();
+      } catch {
+        iziToast.error({ title: 'Failed to revoke passkey', position: 'topCenter', timeout: 3000 });
       }
     }
   }

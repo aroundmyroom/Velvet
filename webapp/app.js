@@ -1,5 +1,5 @@
 'use strict';
-const VELVET_VERSION = '0.4.22';
+const VELVET_VERSION = '0.4.23';
 // ── SERVER IDENTITY GUARD ────────────────────────────────────────────────────
 // Detects when this browser's localStorage belongs to a different Velvet
 // instance (fresh install, IP change, reverse-proxy swap, second server).
@@ -16208,6 +16208,189 @@ async function viewSubsonic() {
   });
 }
 
+// ── USER SETTINGS ─────────────────────────────────────────────
+async function viewUserSettings() {
+  setTitle(t('player.title.userSettings')); setBack(null); setNavActive('user-settings'); S.view = 'user-settings';
+  S.curSongs = [];
+  document.getElementById('play-all-btn').onclick = null;
+  document.getElementById('add-all-btn').onclick  = null;
+
+  setBody(`
+    <div class="playback-panel">
+
+      <div class="playback-section">
+        <div class="playback-section-hdr">
+          <div class="playback-section-icon">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+          </div>
+          <div>
+            <div class="playback-section-title">${t('player.userSettings.pwTitle')}</div>
+            <div class="playback-section-desc">${t('player.userSettings.pwDesc')}</div>
+          </div>
+        </div>
+        <div class="playback-row">
+          <label class="playback-row-label" for="us-cur-pw">
+            <div class="playback-row-name">${t('player.userSettings.currentPw')}</div>
+          </label>
+          <input type="password" id="us-cur-pw" class="settings-input" style="max-width:260px" autocomplete="current-password" data-lpignore="true" data-1p-ignore data-bwignore>
+        </div>
+        <div class="playback-row">
+          <label class="playback-row-label" for="us-new-pw">
+            <div class="playback-row-name">${t('player.userSettings.newPw')}</div>
+          </label>
+          <input type="password" id="us-new-pw" class="settings-input" style="max-width:260px" autocomplete="new-password" data-lpignore="true" data-1p-ignore data-bwignore>
+        </div>
+        <div class="playback-row">
+          <label class="playback-row-label" for="us-confirm-pw">
+            <div class="playback-row-name">${t('player.userSettings.confirmPw')}</div>
+          </label>
+          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+            <input type="password" id="us-confirm-pw" class="settings-input" style="max-width:260px" autocomplete="new-password" data-lpignore="true" data-1p-ignore data-bwignore>
+            <button class="btn-primary" id="us-change-pw-btn">${t('player.userSettings.btnChange')}</button>
+          </div>
+        </div>
+        <div id="us-pw-status" style="padding:0 0 .25rem .5rem;font-size:.82rem;color:var(--t2)"></div>
+      </div>
+
+      <div id="us-passkey-section"></div>
+
+    </div>`);
+
+  const changePwBtn = document.getElementById('us-change-pw-btn');
+  const pwStatus    = document.getElementById('us-pw-status');
+
+  async function _doChangePassword() {
+    const cur  = document.getElementById('us-cur-pw').value;
+    const nw   = document.getElementById('us-new-pw').value;
+    const conf = document.getElementById('us-confirm-pw').value;
+    if (!cur || !nw || !conf) { pwStatus.textContent = t('player.toast.errorMsg', { error: 'All fields are required.' }); return; }
+    if (nw !== conf) { pwStatus.textContent = t('player.userSettings.pwMismatch'); return; }
+    changePwBtn.disabled = true;
+    pwStatus.textContent = '';
+    try {
+      await api('POST', 'api/v1/auth/change-password', { currentPassword: cur, newPassword: nw });
+      document.getElementById('us-cur-pw').value = '';
+      document.getElementById('us-new-pw').value = '';
+      document.getElementById('us-confirm-pw').value = '';
+      toast(t('player.userSettings.pwChanged'));
+    } catch(e) {
+      const msg = e.status === 401
+        ? t('player.userSettings.pwWrongCurrent')
+        : (e.message || 'Failed to change password.');
+      pwStatus.textContent = msg;
+    } finally {
+      changePwBtn.disabled = false;
+    }
+  }
+
+  changePwBtn?.addEventListener('click', _doChangePassword);
+  ['us-cur-pw','us-new-pw','us-confirm-pw'].forEach(id => {
+    document.getElementById(id)?.addEventListener('keydown', e => { if (e.key === 'Enter') _doChangePassword(); });
+  });
+
+  // ── Passkey section (async, progressive) ──
+  (async function _renderPasskeySection() {
+    const el = document.getElementById('us-passkey-section');
+    if (!el) return;
+    if (!window.SimpleWebAuthnBrowser?.browserSupportsWebAuthn()) return;
+    if (!S.username) return;
+
+    async function _reloadPasskeys() {
+      let creds = [];
+      try {
+        const res = await api('GET', `api/v1/auth/passkey/credentials?username=${encodeURIComponent(S.username)}`);
+        creds = res.credentials || [];
+      } catch(_) {}
+
+      const rows = creds.map(c => `
+        <tr style="border-top:1px solid var(--border,#333)">
+          <td style="padding:3px 8px 3px 0">${esc(c.friendlyName || '—')}</td>
+          <td style="padding:3px 8px 3px 0;font-size:.78rem;color:var(--t2)">${c.deviceType === 'multiDevice' ? '☁ synced' : '🔑 single'}</td>
+          <td style="padding:3px 8px 3px 0;white-space:nowrap;font-size:.78rem">${new Date(c.createdAt).toLocaleDateString()}</td>
+          <td style="padding:3px 0"><button data-pkid="${c.id}" class="pk-revoke-btn" style="font-size:.78rem;padding:1px 8px;background:var(--red,#c33);color:#fff;border:none;border-radius:4px;cursor:pointer">${t('player.passkey.revoke')}</button></td>
+        </tr>`).join('');
+
+      el.innerHTML = `
+        <div class="playback-section">
+          <div class="playback-section-hdr">
+            <div class="playback-section-icon">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"/></svg>
+            </div>
+            <div>
+              <div class="playback-section-title">${t('player.passkey.title')}</div>
+              <div class="playback-section-desc">${t('player.passkey.desc')}</div>
+            </div>
+          </div>
+          ${creds.length ? `
+          <table style="width:100%;border-collapse:collapse;font-size:.82rem;margin-bottom:.5rem">
+            <thead><tr style="color:var(--t2)">
+              <th style="text-align:left;padding:2px 8px 2px 0">${t('player.passkey.colName')}</th>
+              <th style="text-align:left;padding:2px 8px 2px 0">${t('player.passkey.colType')}</th>
+              <th style="text-align:left;padding:2px 8px 2px 0">${t('player.passkey.colAdded')}</th>
+              <th></th>
+            </tr></thead>
+            <tbody>${rows}</tbody>
+          </table>` : `<div style="font-size:.82rem;color:var(--t2);margin-bottom:.5rem">${t('player.passkey.none')}</div>`}
+          <div id="pk-add-row" style="display:flex;gap:.5rem;align-items:center;flex-wrap:wrap">
+            <input id="pk-name-input" type="text" placeholder="${t('player.passkey.namePlaceholder')}" style="flex:1;min-width:140px;padding:4px 8px;font-size:.82rem" autocomplete="off" />
+            <button id="pk-add-btn" style="padding:4px 12px;font-size:.82rem;white-space:nowrap">${t('player.passkey.addBtn')}</button>
+          </div>
+          <div id="pk-status" style="margin-top:.4rem;font-size:.78rem;color:var(--t2)"></div>
+        </div>`;
+
+      el.querySelectorAll('.pk-revoke-btn').forEach(btn => {
+        btn.addEventListener('click', async () => {
+          const id = btn.dataset.pkid;
+          btn.disabled = true;
+          try {
+            await api('DELETE', `api/v1/auth/passkey/credentials/${id}?username=${encodeURIComponent(S.username)}`);
+            toast(t('player.passkey.toastRevoked'));
+            await _reloadPasskeys();
+          } catch(e) {
+            toast(t('player.toast.errorMsg', { error: e.message || 'Failed' }));
+            btn.disabled = false;
+          }
+        });
+      });
+
+      document.getElementById('pk-add-btn')?.addEventListener('click', async () => {
+        const addBtn    = document.getElementById('pk-add-btn');
+        const nameInput = document.getElementById('pk-name-input');
+        const status    = document.getElementById('pk-status');
+        const name = nameInput.value.trim();
+        if (!name) {
+          status.textContent = t('player.passkey.nameRequired');
+          nameInput.focus();
+          return;
+        }
+        addBtn.disabled = true;
+        status.textContent = t('player.passkey.statusWaiting');
+        try {
+          const optRes = await api('POST', 'api/v1/auth/passkey/register/options');
+          const credential = await window.SimpleWebAuthnBrowser.startRegistration({ optionsJSON: optRes });
+          await api('POST', 'api/v1/auth/passkey/register/verify', {
+            credential,
+            friendlyName: name,
+          });
+          status.textContent = '';
+          nameInput.value = '';
+          toast(t('player.passkey.toastAdded'));
+          await _reloadPasskeys();
+        } catch(e) {
+          if (e.name === 'NotAllowedError') {
+            status.textContent = t('player.passkey.statusCancelled');
+          } else {
+            status.textContent = e.message || t('player.passkey.statusFailed');
+          }
+          addBtn.disabled = false;
+        }
+      });
+    }
+
+    await _reloadPasskeys();
+  })();
+}
+
 // ── DISCOGS ADMIN SETTINGS ───────────────────────────────────
 async function viewDiscogs() {
   setTitle(t('player.title.discogs')); setBack(null); setNavActive('discogs'); S.view = 'discogs';
@@ -22173,6 +22356,9 @@ async function _rerenderCurrentViewForLanguageChange() {
     case 'discogs':
       await viewDiscogs();
       return;
+    case 'user-settings':
+      await viewUserSettings();
+      return;
     case 'subsonic':
       await viewSubsonic();
       return;
@@ -22232,6 +22418,72 @@ const _loginVer = document.getElementById('login-version');
 if (_loginVer) _loginVer.textContent = 'v' + VELVET_VERSION;
 
 // ── EVENTS ────────────────────────────────────────────────────
+// ── PASSKEY ───────────────────────────────────────────────────
+async function tryPasskeyLogin() {
+  const SimpleWebAuthnBrowser = window.SimpleWebAuthnBrowser;
+  if (!SimpleWebAuthnBrowser?.browserSupportsWebAuthn()) throw new Error('WebAuthn not supported');
+
+  // 1. Get authentication options from server (discoverable credential flow)
+  const optRes = await fetch('/api/v1/auth/passkey/auth/options', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({}),
+  });
+  if (!optRes.ok) throw new Error('Failed to get passkey options');
+  const options = await optRes.json();
+  const challenge = options.challenge;
+
+  // 2. Prompt the browser authenticator
+  const credential = await SimpleWebAuthnBrowser.startAuthentication({ optionsJSON: options });
+
+  // 3. Verify on server
+  const verRes = await fetch('/api/v1/auth/passkey/auth/verify', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ credential, challenge }),
+  });
+  if (!verRes.ok) {
+    const err = await verRes.json().catch(() => ({}));
+    throw new Error(err.error || 'Passkey verification failed');
+  }
+  const d = await verRes.json();
+  S.token    = d.token;
+  S.username = d.username;
+  S.vpaths   = d.vpaths || [];
+  const _savedDjVpaths = JSON.parse(localStorage.getItem(_djKey('vpaths')) || 'null');
+  S.djVpaths = (_savedDjVpaths?.length) ? _savedDjVpaths.filter(v => S.vpaths.includes(v)) : [...S.vpaths];
+  if (S.djVpaths.length === 0) S.djVpaths = [...S.vpaths];
+  localStorage.setItem('ms2_token', d.token);
+  localStorage.setItem('token', d.token);
+  localStorage.setItem('ms2_user', d.username);
+  localStorage.removeItem('ms2_logged_out');
+}
+
+// Show passkey button only if WebAuthn is available in this browser
+(function _initPasskeyBtn() {
+  const pkBtn = document.getElementById('passkey-btn');
+  if (!pkBtn) return;
+  if (!window.SimpleWebAuthnBrowser?.browserSupportsWebAuthn()) return;
+  pkBtn.style.display = '';
+  pkBtn.addEventListener('click', async () => {
+    const err = document.getElementById('login-error');
+    pkBtn.disabled = true;
+    err.textContent = '';
+    try {
+      await tryPasskeyLogin();
+      showApp();
+    } catch(e) {
+      if (e.name === 'NotAllowedError') {
+        err.textContent = '';
+      } else {
+        err.textContent = e.message || 'Passkey sign-in failed.';
+      }
+    } finally {
+      pkBtn.disabled = false;
+    }
+  });
+})();
+
 // Login
 document.getElementById('login-form').addEventListener('submit', async e => {
   e.preventDefault();
@@ -22241,6 +22493,20 @@ document.getElementById('login-form').addEventListener('submit', async e => {
   try {
     await tryLogin(document.getElementById('l-user').value.trim(), document.getElementById('l-pass').value);
     showApp();
+    // After a successful password login, check if this device/browser supports
+    // WebAuthn and the user has no passkeys yet — if so, nudge them to set one up.
+    if (window.SimpleWebAuthnBrowser?.browserSupportsWebAuthn() && S.username) {
+      fetch(`/api/v1/auth/passkey/credentials?username=${encodeURIComponent(S.username)}`, {
+        headers: { 'x-access-token': S.token }
+      }).then(r => r.ok ? r.json() : null).then(data => {
+        if (data?.credentials?.length === 0) {
+          toast(t('player.passkey.nudgeMsg'), {
+            ms: 12000,
+            action: { label: t('player.passkey.nudgeBtn'), onClick: () => viewUserSettings() }
+          });
+        }
+      }).catch(() => {});
+    }
   } catch(_) { err.textContent = 'Login failed. Check credentials.'; }
   finally    { btn.disabled = false; btn.textContent = 'Sign In'; }
 });
@@ -22278,6 +22544,7 @@ document.querySelectorAll('.nav-btn').forEach(btn => {
     else if (v === 'webhooks')        viewWebhooks();
     else if (v === 'discogs')      viewDiscogs();
     else if (v === 'subsonic')     viewSubsonic();
+    else if (v === 'user-settings') viewUserSettings();
     else if (v === 'radio')        viewRadio();
     else if (v === 'sonos-radio')   viewSonosRadio();
     else if (v === 'podcasts')        viewPodcasts();

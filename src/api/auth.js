@@ -2,6 +2,7 @@ import jwt from 'jsonwebtoken';
 import Joi from 'joi';
 import winston from 'winston';
 import * as auth from '../util/auth.js';
+import * as adminUtil from '../util/admin.js';
 import * as config from '../state/config.js';
 import * as shared from '../api/shared.js';
 import WebError from '../util/web-error.js';
@@ -121,6 +122,34 @@ export function setup(velvet) {
     }
 
     next();
+  });
+
+  // Self-service password change — any logged-in user can change their own
+  // Velvet password by providing the current password for verification.
+  velvet.post('/api/v1/auth/change-password', async (req, res) => {
+    const schema = Joi.object({
+      currentPassword: Joi.string().required(),
+      newPassword:     Joi.string().min(1).required(),
+    });
+    const { error, value } = schema.validate(req.body);
+    if (error) return res.status(400).json({ error: error.message });
+
+    const username = req.user.username;
+    const user = config.program.users[username];
+    if (!user) return res.status(401).json({ error: 'User not found' });
+
+    try {
+      await auth.authenticateUser(user.password, user.salt, value.currentPassword);
+    } catch {
+      // Delay like login to slow brute-force
+      return new Promise(resolve => setTimeout(() => {
+        res.status(401).json({ error: 'Current password is incorrect' });
+        resolve();
+      }, 800));
+    }
+
+    await adminUtil.editUserPassword(username, value.newPassword);
+    res.json({});
   });
 
   // Issue a fresh token from a valid session — call on every page load so
