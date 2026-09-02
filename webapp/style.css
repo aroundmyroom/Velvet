@@ -873,6 +873,13 @@ button, a, .song-row, .artist-row, .album-card, .album-row,
 .dj-filter-input{background:transparent;border:none;outline:none;color:var(--t1);font-size:12px;flex:1;min-width:100px;}
 .dj-filter-input::placeholder{color:var(--t3);}
 .dj-filter-input:disabled{opacity:.4;cursor:not-allowed;}
+/* ── DJ track-length window ─────────────────────────────────── */
+.dj-duration-inputs{display:flex;gap:12px;width:100%;}
+.dj-duration-field{display:flex;flex-direction:column;gap:4px;flex:1 1 0;min-width:0;}
+.dj-duration-field-label{font-size:11px;color:var(--t3);}
+.dj-duration-num{width:100%;}
+.dj-duration-num::-webkit-inner-spin-button,.dj-duration-num::-webkit-outer-spin-button{appearance:none;margin:0;}
+.dj-duration-num{appearance:textfield;}
 
 /* ── QUEUE PANEL (permanent right column) ──────────────────── */
 .queue-panel{
@@ -2545,8 +2552,8 @@ body.vu-needle-mode .eq-panel{bottom:calc(var(--player) + 8px);}
 .home-shelf.hs-over{outline:2px dashed var(--primary);outline-offset:4px;border-radius:var(--r2);}
 /* horizontal grid row — same auto-fill approach as radio station list */
 .home-row{display:grid;grid-template-columns:repeat(auto-fill,minmax(120px,1fr));gap:10px;}
-/* ── art card (radio, podcast, songs) ── */
-.hc{width:100%;cursor:pointer;border-radius:var(--r);overflow:hidden;background:var(--raised);border:1px solid var(--border);position:relative;display:flex;flex-direction:column;transition:background .12s,box-shadow .12s;}
+/* ── art card (radio, podcast, songs) — transparent at rest so it blends into the page bg like a File Explorer row; only the art thumbnail carries its own tone ── */
+.hc{width:100%;cursor:pointer;border-radius:var(--r);overflow:hidden;background:transparent;position:relative;display:flex;flex-direction:column;transition:background .12s,box-shadow .12s;}
 .hc:hover{background:var(--hover);box-shadow:0 0 0 1px var(--border2);}
 .hc-art{width:100%;aspect-ratio:1;flex-shrink:0;background:var(--surface);display:flex;align-items:center;justify-content:center;overflow:hidden;color:var(--t2);position:relative;}
 .hc-art img{width:100%;height:100%;object-fit:cover;display:block;}
@@ -3185,12 +3192,17 @@ body.audiobook-mode #ab-speed-btn{color:var(--primary);}
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 5px 4px;
-  border-radius: 4px;
+  padding: 8px 10px;
+  border-radius: var(--r);
   cursor: pointer;
   transition: background .12s;
 }
-.artpro2-song-row:hover { background: var(--bg2); }
+.artpro2-song-row:hover { background: var(--hover); }
+.artpro2-song-row.playing,
+.artpro2-song-row.selected { background: var(--active); }
+.artpro2-song-row.playing .artpro2-song-title { color: var(--primary); }
+:root.light .artpro2-song-row.playing,
+:root.light .artpro2-song-row.selected { background: rgba(109,60,230,.10); }
 .artpro2-track-num { min-width: 24px; text-align: right; color: var(--t3); font-size: 12px; }
 .artpro2-song-title { flex: 1; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .artpro2-song-dur { font-size: 12px; color: var(--t3); white-space: nowrap; }

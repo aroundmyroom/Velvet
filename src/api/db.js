@@ -1000,10 +1000,21 @@ export function setup(velvet) {
     const hasArtistFilter = Array.isArray(req.body.artists) && req.body.artists.length > 0;
     const bp = _parseBpmParams(req.body);
 
+    // ── Track-length window (minDuration/maxDuration, SECONDS) ─────────────
+    // A hard scope filter, same category as minRating — not a soft score.
+    // 0 / absent / non-numeric on a side means "no bound there". A backwards
+    // window is rejected here rather than silently matching nothing, so
+    // Auto-DJ doesn't 400 on every future pick with no clue why.
+    req.body.minDuration = _clampDurationBound(req.body.minDuration);
+    req.body.maxDuration = _clampDurationBound(req.body.maxDuration);
+    if (req.body.minDuration != null && req.body.maxDuration != null && req.body.minDuration > req.body.maxDuration) {
+      throw new WebError('minDuration must be <= maxDuration', 400);
+    }
+
     // ── Batch mode: Auto-DJ soft scoring ────────────────────────────────────
     // Genre/BPM/harmonic are soft, client-scored signals — the server just
     // returns a broad pool of candidates (scoped to collections/rating/artist/
-    // cooldown) instead of picking one itself. See docs/API/db_random-songs.md.
+    // cooldown/duration) instead of picking one itself. See docs/API/db_random-songs.md.
     if (req.body.returnAll) {
       const batch = _batchRandomSongs(db, req.user, req.body);
       if (!batch) throw new WebError('No songs that match criteria', 400);
@@ -1345,6 +1356,16 @@ function _sampleUpTo(arr, n) {
   return [...arr].sort(() => Math.random() - 0.5).slice(0, n); // NOSONAR: non-security shuffle
 }
 
+// Clamps a track-length bound (SECONDS) to (0, 86400] — mirrors the client's
+// DJ_DURATION_MAX_SECONDS cap. Non-numeric, negative, zero, or absent all
+// collapse to undefined, meaning "no bound on this side" (0 is the sentinel
+// the webapp persists for an empty field, same as djMinRating's "Any").
+function _clampDurationBound(v) {
+  const n = Number(v);
+  if (!Number.isFinite(n) || n <= 0) return undefined;
+  return Math.min(86400, n);
+}
+
 /**
  * Batch candidate pool for Auto-DJ soft scoring (req.body.returnAll). Returns
  * many songs scoped to collections/rating/artists/cooldown — no BPM/key/genre
@@ -1365,6 +1386,12 @@ function _batchRandomSongs(db, user, body) {
     minRating: body.minRating,
     filepathPrefix: body.filepathPrefix || null,
     excludeFilepathPrefixes: body.excludeFilepathPrefixes,
+    // Track-length window — a hard scope filter like minRating, so it rides
+    // along on every fallback tier below (never relaxed, same as upstream's
+    // always-on contract for this filter).
+    minDuration: body.minDuration,
+    maxDuration: body.maxDuration,
+    allowUnknownDuration: !!body.allowUnknownDuration,
   };
   const ignoreArtists = Array.isArray(body.ignoreArtists) ? body.ignoreArtists : undefined;
   const vpaths = userDbVpaths(user);

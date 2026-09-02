@@ -30,6 +30,9 @@
   | `minRating` | `integer` | Only consider songs with a rating ≥ this value (0–10 scale, matches `POST /api/v1/db/rate-song`). |
   | `filepathPrefix` | `string\|null` | Restrict candidates to songs whose filepath starts with this prefix. Used to limit Auto-DJ to a specific vpath sub-folder. |
   | `artists` | `string[]` | When provided, only songs whose artist is in this list are considered. Used by the Auto-DJ Similar Artists mode (see [`/api/v1/lastfm/similar-artists`](lastfm_similar-artists.md)). |
+  | `minDuration` | `number` | Lower bound of the track-length window, in **seconds**. `0` or omitted means no lower bound. A hard scope filter (like `minRating`) — never relaxed. |
+  | `maxDuration` | `number` | Upper bound of the track-length window, in **seconds**. `0` or omitted means no upper bound. Sending both with `minDuration` > `maxDuration` returns 400. |
+  | `allowUnknownDuration` | `boolean` | Default `false`. Tracks whose duration the scanner never read (`NULL`) are excluded from the window unless this is `true`. Ignored when neither bound is set. |
 
   ```json
   {
@@ -37,7 +40,9 @@
     "ignorePercentage": 0.5,
     "ignoreVPaths": ["Audiobooks"],
     "minRating": 6,
-    "artists": ["Iggy Pop", "Lou Reed", "T. Rex"]
+    "artists": ["Iggy Pop", "Lou Reed", "T. Rex"],
+    "minDuration": 90,
+    "maxDuration": 600
   }
   ```
 
@@ -78,7 +83,9 @@
 * **Error Response:**
 
   * **Code:** 400 — `{ "error": "No songs that match criteria" }` — no songs exist
-    that satisfy the `minRating` / `ignoreVPaths` / `filepathPrefix` filters.
+    that satisfy the `minRating` / `ignoreVPaths` / `filepathPrefix` / duration-window filters.
+  * **Code:** 400 — `{ "error": "minDuration must be <= maxDuration" }` — the
+    track-length window is backwards.
 
 * **Notes**
 

@@ -1,5 +1,5 @@
 'use strict';
-const VELVET_VERSION = '0.4.23';
+const VELVET_VERSION = '0.4.24';
 // ── SERVER IDENTITY GUARD ────────────────────────────────────────────────────
 // Detects when this browser's localStorage belongs to a different Velvet
 // instance (fresh install, IP change, reverse-proxy swap, second server).
@@ -161,6 +161,13 @@ const S = {
   djGenreEnabled: localStorage.getItem('ms2_dj_genre_on_' + _u) === '1',
   djGenreMode:    localStorage.getItem('ms2_dj_genre_mode_' + _u) || 'whitelist',
   djGenres:       JSON.parse(localStorage.getItem('ms2_dj_genre_list_' + _u) || 'null') || [],
+  // Auto-DJ track-length window — default OFF; a HARD scope filter (like
+  // minRating), sent to the server and never relaxed. Bounds in SECONDS;
+  // 0 means "no bound on this side".
+  djDurationEnabled:      localStorage.getItem('ms2_dj_duration_on_' + _u) === '1',
+  djMinDuration:          Number.parseInt(localStorage.getItem('ms2_dj_min_duration_' + _u) || '0', 10) || 0,
+  djMaxDuration:          Number.parseInt(localStorage.getItem('ms2_dj_max_duration_' + _u) || '0', 10) || 0,
+  djAllowUnknownDuration: localStorage.getItem('ms2_dj_duration_unknown_' + _u) === '1',
   // Auto-DJ BPM continuity + harmonic mixing — default OFF
   djBpmContinuity:  localStorage.getItem('ms2_dj_bpm_cont_' + _u) === '1',
   djBpmTolerance:   Number.parseInt(localStorage.getItem('ms2_dj_bpm_tol_' + _u) || '8', 10),
@@ -903,6 +910,21 @@ function _queueKey()   { return `ms2_queue_${S.username}`; }
 function _playingKey() { return `ms2_playing_${S.username}`; }
 function _djKey(k)    { return `ms2_dj_${k}_${S.username || ''}`; }
 function _uKey(k)     { return `ms2_${k}_${S.username || ''}`; }
+
+// Auto-DJ track-length window — AUTODJ stores SECONDS (wire units); the panel
+// inputs are MINUTES because that's how people think about track length.
+const DJ_DURATION_MAX_SECONDS = 86400; // mirrors the server's clamp in _clampDurationBound
+function _djSecToMin(s) {
+  const n = Number(s);
+  if (!Number.isFinite(n) || n <= 0) return '';
+  // Trim the float tail: 150s → 2.5, 120s → 2 (not 2.0).
+  return String(Math.round((n / 60) * 100) / 100);
+}
+function _djMinToSec(raw) {
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n <= 0) return 0;
+  return Math.min(DJ_DURATION_MAX_SECONDS, Math.round(n * 60));
+}
 // Queue persistence payload controls
 const _QUEUE_LOCAL_MAX = 25;
 const _QUEUE_LOCAL_BEFORE = 12;
@@ -2413,6 +2435,14 @@ async function _djFetchBatch(escapeOpts = {}) {
     returnAll:     true,
     ..._epParam,
   };
+  // Track-length window — a hard scope filter like minRating, sent only when
+  // the toggle is on AND at least one bound is real (>0). allowUnknownDuration
+  // rides along only then — on its own it constrains nothing server-side.
+  if (S.djDurationEnabled && (S.djMinDuration > 0 || S.djMaxDuration > 0)) {
+    if (S.djMinDuration > 0) base.minDuration = S.djMinDuration;
+    if (S.djMaxDuration > 0) base.maxDuration = S.djMaxDuration;
+    base.allowUnknownDuration = !!S.djAllowUnknownDuration;
+  }
   if (allChildSameParent) {
     const parentVpath = meta[selected[0]].parentVpath;
     const filepathPrefix = selected.length === 1 ? meta[selected[0]].filepathPrefix : null;
@@ -3287,6 +3317,7 @@ function toggleQueue() {
 // ── HIGHLIGHT ────────────────────────────────────────────────
 function highlightRow() {
   document.querySelectorAll('.song-row.playing').forEach(r => r.classList.remove('playing'));
+  document.querySelectorAll('.artpro2-song-row.playing').forEach(r => r.classList.remove('playing'));
   const cur = S.queue[S.idx];
   if (!cur) return;
   document.querySelectorAll('.song-row').forEach(r => {
@@ -3294,6 +3325,9 @@ function highlightRow() {
     if (!Number.isNaN(i) && S.curSongs[i] && S.curSongs[i].filepath === cur.filepath) {
       r.classList.add('playing');
     }
+  });
+  document.querySelectorAll('.artpro2-song-row').forEach(r => {
+    if (r.dataset.fp === cur.filepath) r.classList.add('playing');
   });
 }
 
@@ -13583,6 +13617,38 @@ ${_webAnimSupported ? `
             </div>
           </div>
         </div>
+        <div class="autodj-opt-row autodj-opt-col">
+          <div class="autodj-filter-header">
+            <div>
+              <div class="autodj-opt-label">${t('player.autodj.durationFilterLabel')}</div>
+              <div class="autodj-opt-hint">${t('player.autodj.durationFilterHint')}</div>
+            </div>
+            <label class="toggle-sw">
+              <input type="checkbox" id="dj-duration-toggle" ${S.djDurationEnabled ? 'checked' : ''}>
+              <span class="toggle-sw-track"><span class="toggle-sw-thumb"></span></span>
+            </label>
+          </div>
+          <div class="dj-genre-ctrl" id="dj-duration-ctrl" style="${S.djDurationEnabled ? '' : 'display:none'}">
+            <div class="dj-duration-inputs">
+              <label class="dj-duration-field">
+                <span class="dj-duration-field-label">${t('player.autodj.durationMinLabel')}</span>
+                <input type="number" class="autodj-select dj-duration-num" id="dj-duration-min" min="0" max="1440" step="any"
+                  placeholder="${esc(t('player.autodj.durationNoLimit'))}" value="${esc(_djSecToMin(S.djMinDuration))}"
+                  aria-label="${esc(t('player.autodj.durationMinInputLabel'))}">
+              </label>
+              <label class="dj-duration-field">
+                <span class="dj-duration-field-label">${t('player.autodj.durationMaxLabel')}</span>
+                <input type="number" class="autodj-select dj-duration-num" id="dj-duration-max" min="0" max="1440" step="any"
+                  placeholder="${esc(t('player.autodj.durationNoLimit'))}" value="${esc(_djSecToMin(S.djMaxDuration))}"
+                  aria-label="${esc(t('player.autodj.durationMaxInputLabel'))}">
+              </label>
+            </div>
+            <label class="dj-genre-radio" style="margin-top:8px">
+              <input type="checkbox" id="dj-duration-unknown" ${S.djAllowUnknownDuration ? 'checked' : ''}> ${t('player.autodj.durationUnknownLabel')}
+            </label>
+            <div class="autodj-opt-hint">${t('player.autodj.durationUnknownHint')}</div>
+          </div>
+        </div>
         <div class="autodj-opt-row">
           <div>
             <div class="autodj-opt-label">${t('player.autodj.bpmContinuity')}</div>
@@ -13813,6 +13879,43 @@ ${_webAnimSupported ? `
     }
     _rebuildGenreSelect();
   }).catch(() => {}); /* no-op: genre select stays empty on error */
+
+  // ── Track-length window handlers ───────────────────────────
+  document.getElementById('dj-duration-toggle').addEventListener('change', e => {
+    S.djDurationEnabled = e.target.checked;
+    S.djDurationEnabled
+      ? localStorage.setItem('ms2_dj_duration_on_' + (S.username || ''), '1')
+      : localStorage.removeItem('ms2_dj_duration_on_' + (S.username || ''));
+    const ctrl = document.getElementById('dj-duration-ctrl');
+    if (ctrl) ctrl.style.display = S.djDurationEnabled ? '' : 'none';
+    toast(t(S.djDurationEnabled ? 'player.toast.durationFilterOn' : 'player.toast.durationFilterOff'));
+  });
+  // `edited` names the side the user just changed; a backwards window (min >
+  // max) is repaired by pushing the OTHER bound rather than rejected, so the
+  // panel can never send a request the server 400s.
+  function _commitDjDuration(edited) {
+    const minEl = document.getElementById('dj-duration-min');
+    const maxEl = document.getElementById('dj-duration-max');
+    let min = _djMinToSec(minEl.value);
+    let max = _djMinToSec(maxEl.value);
+    if (min > 0 && max > 0 && min > max) {
+      if (edited === 'max') min = max; else max = min;
+    }
+    S.djMinDuration = min;
+    S.djMaxDuration = max;
+    localStorage.setItem('ms2_dj_min_duration_' + (S.username || ''), String(min));
+    localStorage.setItem('ms2_dj_max_duration_' + (S.username || ''), String(max));
+    minEl.value = _djSecToMin(min);
+    maxEl.value = _djSecToMin(max);
+  }
+  document.getElementById('dj-duration-min').onchange = () => _commitDjDuration('min');
+  document.getElementById('dj-duration-max').onchange = () => _commitDjDuration('max');
+  document.getElementById('dj-duration-unknown').addEventListener('change', e => {
+    S.djAllowUnknownDuration = e.target.checked;
+    S.djAllowUnknownDuration
+      ? localStorage.setItem('ms2_dj_duration_unknown_' + (S.username || ''), '1')
+      : localStorage.removeItem('ms2_dj_duration_unknown_' + (S.username || ''));
+  });
 
   // ── BPM Continuity handlers ────────────────────────────────
   document.getElementById('dj-bpm-cont').addEventListener('change', e => {

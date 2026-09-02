@@ -1,3 +1,14 @@
+## v0.4.24 (2026-09-02)
+
+Auto-DJ track-length window — skip short interludes/skits and long DJ mixes/concert rips.
+
+### Added: Auto-DJ track-length filter (minDuration/maxDuration)
+- New optional min/max track-length window in the Auto-DJ settings panel, under Filters — two minute fields plus an "include unknown length" toggle.
+- Server: `POST /api/v1/db/random-songs` accepts `minDuration`/`maxDuration` (seconds) and `allowUnknownDuration`. Enforced as a hard scope filter (same category as `minRating`) in `_batchRandomSongs()`/`getAllFilesWithMetadata()` — never relaxed, so an over-narrow window 400s rather than silently serving a track outside it.
+- Unknown-length tracks (scanner never read a duration) are excluded by default; `allowUnknownDuration: true` lets them ride along — useful on partially-scanned libraries.
+- New `idx_files_duration` index so the filter seeks instead of scanning.
+- Docs: `docs/API.md`, `docs/API/db_random-songs.md`, `docs/autodj-scoring.md` updated. i18n keys added to all 12 locales (NL translated, others English placeholder).
+
 ## v0.4.23 (2026-09-01)
 
 WebAuthn / Passkey authentication — sign in without a password using biometrics, security keys or synced passkeys.

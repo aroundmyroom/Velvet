@@ -2,7 +2,8 @@
 
 Auto-DJ picks the next song by fetching a broad batch of candidates and
 scoring every one of them — nothing except collections/paths, minimum
-rating, and the keyword filter can outright exclude a song. This replaced an
+rating, the keyword filter, and the track-length window can outright exclude
+a song. This replaced an
 earlier "hard filter + escalating fallback tier" design (tier 1 → BPM-only
 fallback → free pick) that had to keep growing every time a combination of
 hard filters (BPM + key + genre + similar-artist) proved too restrictive for
@@ -18,6 +19,16 @@ Only three things are true hard filters:
 2. **Minimum rating** — songs below the floor are never candidates.
 3. **Keyword filter** — explicitly excludes certain songs/artists/albums by
    substring match (this one stays exclusionary on purpose).
+4. **Track-length window** (`djDurationEnabled` + `djMinDuration`/
+   `djMaxDuration`, in seconds) — an optional min/max track length, sent to
+   the server as `minDuration`/`maxDuration` and enforced as a hard SQL
+   filter (`_appendDurationFilter()` in
+   [src/db/sqlite-backend.js](../src/db/sqlite-backend.js)), same category as
+   minimum rating. `djAllowUnknownDuration` controls whether tracks with no
+   scanned duration (`NULL`) are included; default excludes them. Never
+   relaxed — an over-narrow window 400s rather than serving a track outside
+   it (see `POST /api/v1/db/random-songs` in
+   [docs/API/db_random-songs.md](API/db_random-songs.md)).
 
 Everything else — similar-artist mode, genre filter, BPM continuity,
 harmonic (Camelot) mixing — is additive scoring only:

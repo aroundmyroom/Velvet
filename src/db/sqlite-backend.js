@@ -436,6 +436,9 @@ export function init(dbDirectory) {
   try { db.exec('CREATE INDEX IF NOT EXISTS idx_files_audio_hash ON files(audio_hash)'); } catch { /* already exists */ }
   // Migration: add duration column (track length in seconds)
   try { db.exec('ALTER TABLE files ADD COLUMN duration REAL'); } catch { /* already exists */ }
+  // Auto-DJ track-length window (minDuration/maxDuration) filters on this column
+  // for every batch pick — index so it seeks instead of scanning. See _appendDurationFilter.
+  db.exec('CREATE INDEX IF NOT EXISTS idx_files_duration ON files(duration)');
   // Migration: add description column to radio_schedules
   try { db.exec('ALTER TABLE radio_schedules ADD COLUMN description TEXT'); } catch { /* already exists */ }
   // Migration: add fix_action column to record what the fix button actually did
@@ -2721,6 +2724,7 @@ export function getAllFilesWithMetadata(vpaths, username, opts) {
 
   sql = _appendBpmKeyFilters(sql, params, opts);
   sql = _appendGenreFilter(sql, params, opts);
+  sql = _appendDurationFilter(sql, params, opts);
 
   const rows = db.prepare(sql).all(...params);
   return rows.map(mapFileRow);
@@ -2804,6 +2808,26 @@ function _appendGenreFilter(sql, params, opts) {
     sql += ` AND f.genre IS NOT NULL AND f.genre != '' AND f.genre IN (${placeholders})`;
   }
   params.push(...opts.genreRawStrings);
+  return sql;
+}
+
+// Auto-DJ track-length window (minDuration/maxDuration, in SECONDS — same
+// units as the `duration` column and the wire `duration` field). Both bounds
+// are independent and optional. Unknown-duration rows (NULL — file never
+// scanned for length) are EXCLUDED by default, same rule the BPM/key filters
+// and the genre whitelist already apply; `allowUnknownDuration: true` lets
+// them ride along instead, which matters on partially-scanned libraries.
+function _appendDurationFilter(sql, params, opts) {
+  const hasMin = Number.isFinite(Number(opts.minDuration)) && Number(opts.minDuration) > 0;
+  const hasMax = Number.isFinite(Number(opts.maxDuration)) && Number(opts.maxDuration) > 0;
+  if (!hasMin && !hasMax) return sql;
+  const range = [];
+  if (hasMin) range.push('f.duration >= ?');
+  if (hasMax) range.push('f.duration <= ?');
+  const inRange = `f.duration IS NOT NULL AND ${range.join(' AND ')}`;
+  sql += opts.allowUnknownDuration === true ? ` AND (f.duration IS NULL OR (${inRange}))` : ` AND (${inRange})`;
+  if (hasMin) params.push(Number(opts.minDuration));
+  if (hasMax) params.push(Number(opts.maxDuration));
   return sql;
 }
 
