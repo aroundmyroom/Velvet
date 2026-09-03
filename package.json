@@ -35,7 +35,7 @@
     "@simplewebauthn/browser": "^13.3.0",
     "@simplewebauthn/server": "^13.3.3",
     "archiver": "^8.0.0",
-    "axios": "^1.19.0",
+    "axios": "^1.20.0",
     "busboy": "^1.6.0",
     "commander": "^15.0.0",
     "compression": "^1.8.1",
