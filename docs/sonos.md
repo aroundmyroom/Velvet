@@ -47,6 +47,12 @@ When at least one additional audio output is available (Server Speaker or Sonos)
 
 Selecting a Sonos room immediately casts the current track at the current position. Crossfade is automatically disabled while casting to Sonos and restored when you switch back to Browser.
 
+### Lookahead queue synchronization
+
+Velvet sends the current track and a lookahead window to Sonos so playback can continue gaplessly even when the browser tab is backgrounded or briefly delayed. The browser polls Sonos transport status and follows normal advances through that Velvet-owned window. It only cedes control when Sonos reports a track that does not match the queued title and artist, which indicates that the Sonos app or another controller changed playback.
+
+This keeps the player bar, Recently Played, and the audible Sonos track aligned when Sonos advances before the browser's muted playback mirror reaches its own `ended` event.
+
 The output picker is also available in the **Server Remote** at `/server-remote/`.
 
 ### Device readiness indicator

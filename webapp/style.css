@@ -230,6 +230,8 @@ button, a, .song-row, .artist-row, .album-card, .album-row,
   background:var(--surface);border-right:1px solid var(--border);
   min-height:0;
 }
+.sidebar-collapse-ico{transition:transform .2s ease;}
+body.sidebar-collapsed .sidebar-collapse-ico{transform:rotate(180deg);}
 .sidebar-brand{
   display:flex;align-items:center;gap:10px;padding:18px 16px 14px;flex-shrink:0;
 }
@@ -319,6 +321,26 @@ button, a, .song-row, .artist-row, .album-card, .album-row,
   font-size:12px;color:var(--t2);transition:background .15s,color .15s;
 }
 .footer-link:hover,.footer-action:hover{background:var(--hover);color:var(--t1);}
+
+/* ── SIDEBAR ICON-RAIL COLLAPSE — icons only, native title tooltip on hover ── */
+body.sidebar-collapsed .brand-text,
+body.sidebar-collapsed .sidebar-clock,
+body.sidebar-collapsed .theme-seg,
+body.sidebar-collapsed .nav-label,
+body.sidebar-collapsed .nav-section[data-section="playlists"],
+body.sidebar-collapsed .nav-section[data-section="smart-playlists"],
+body.sidebar-collapsed .lang-picker-wrap,
+body.sidebar-collapsed .nav-btn span,
+body.sidebar-collapsed .footer-link span,
+body.sidebar-collapsed .footer-action span,
+body.sidebar-collapsed .nav-pin-btn{display:none!important;}
+body.sidebar-collapsed .sidebar-brand{flex-direction:column;justify-content:center;gap:10px;padding:18px 0 14px;}
+body.sidebar-collapsed .sidenav{padding:0 6px;align-items:center;}
+/* Icon rail always shows every button — overrides the per-section chevron-collapsed state */
+body.sidebar-collapsed .nav-section .sidenav{display:flex!important;}
+body.sidebar-collapsed .nav-btn{justify-content:center;width:44px;height:44px;padding:0;gap:0;}
+body.sidebar-collapsed .sidebar-footer{align-items:center;}
+body.sidebar-collapsed .footer-link,body.sidebar-collapsed .footer-action{justify-content:center;width:36px;padding:8px;}
 
 /* ── THEME SEGMENTED PILL (Velvet / Dark / Light / High-contrast / Colourblind) ── */
 /* Wraps to a second row when more than three themes are present. */

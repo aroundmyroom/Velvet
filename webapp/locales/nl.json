@@ -1371,6 +1371,8 @@
   "player.nav.scanLibrary": "Bibliotheek scannen",
   "player.nav.adminPanel": "Admin configuratie",
   "player.nav.logout": "Uitloggen",
+  "player.nav.collapseSidebar": "Zijbalk inklappen",
+  "player.nav.expandSidebar": "Zijbalk uitklappen",
   "player.queue.nowPlaying": "Nu aan het draaien",
   "player.queue.nothingPlaying": "Niets aan het afspelen",
   "player.queue.upNext": "Hierna",

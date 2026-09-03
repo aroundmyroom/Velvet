@@ -1371,6 +1371,8 @@
   "player.nav.scanLibrary": "Scan Library",
   "player.nav.adminPanel": "Admin Panel",
   "player.nav.logout": "Logout",
+  "player.nav.collapseSidebar": "Collapse sidebar",
+  "player.nav.expandSidebar": "Expand sidebar",
   "player.queue.nowPlaying": "Now Playing",
   "player.queue.nothingPlaying": "Nothing playing yet",
   "player.queue.upNext": "Up Next",

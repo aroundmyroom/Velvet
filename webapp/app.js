@@ -24153,15 +24153,34 @@ function _startSonosPositionSync(ip) {
         // Ceded to the Sonos app — the user is driving from there; don't sync or fight.
         // Pressing Play in the web (toggle) clears this and re-takes control.
         if (_sonosCeded) return;
-        // Detect the user taking control on the Sonos app (next/prev/shuffle): Sonos is
-        // playing a track other than our current one (we always cast current as track 1).
-        // We can't cleanly follow Sonos-side navigation, so we cede: pause the web player
-        // and stop syncing. Debounced over 2 polls so a natural-advance transient (Sonos
-        // briefly on track 2 before the browser re-pushes) doesn't trip it.
+        // st.track > 1 is ambiguous: we push up to SONOS_WIN_FWD+1 tracks in one queue,
+        // so Sonos gaplessly advancing to track 2, 3, ... on its OWN is completely
+        // normal and expected whenever it finishes a track before our local muted
+        // mirror's 'ended' fires and re-pushes a fresh window (the mirror can lag behind
+        // — background-tab timer throttling, buffering jitter — while Sonos itself
+        // never stalls). That is NOT the user taking control on the Sonos app; only a
+        // reported track/title that ISN'T the one we actually queued at that position
+        // is. Check the reported title/artist against our own queue before assuming
+        // a takeover — if it matches, follow Sonos (sync forward) instead of ceding
+        // and freezing the UI on a track that finished minutes ago (issue: player bar
+        // stuck on a stale song while a later one was audibly playing).
         {
           const _grace = (Date.now() - _sonosCastTime) < 8000;
           const _recent = (Date.now() - _sonosLocalControlAt) < 4000;
           if (!_grace && !_recent && !_sonosLoadingSong && (st.track || 0) > 1) {
+            const _expected = S.queue[S.idx + (st.track - 1)];
+            const _norm = x => (x || '').trim().toLowerCase();
+            const _matchesOwnQueue = _expected && !_expected.isRadio &&
+              _norm(st.trackTitle) === _norm(_expected.title) &&
+              _norm(st.trackArtist) === _norm(_expected.artist);
+            if (_matchesOwnQueue) {
+              // Natural gapless advance within our own pushed window — catch up
+              // rather than diverge-count toward a cede.
+              _sonosDivergeCount = 0;
+              _wrappedEndedNaturally = true; // the song genuinely finished, not a skip
+              Player.playAt(S.idx + (st.track - 1));
+              return;
+            }
             if (++_sonosDivergeCount >= 2) {
               _sonosCeded = true;
               _sonosDivergeCount = 0;
@@ -25976,6 +25995,27 @@ function _openCmdK() {
         .map(s => s.dataset.section);
       localStorage.setItem(KEY, JSON.stringify(collapsed));
     });
+  });
+}());
+
+// ── SIDEBAR ICON-RAIL COLLAPSE (whole-sidebar, not per-section) ──
+const SIDEBAR_COLLAPSED_KEY = 'ms2_sidebar_collapsed'; // gitleaks:allow
+function _applySidebarCollapsed(on) {
+  document.body.classList.toggle('sidebar-collapsed', on);
+  if (on) document.documentElement.style.setProperty('--sidebar', '68px');
+  else document.documentElement.style.removeProperty('--sidebar');
+  const btn = document.getElementById('sidebar-collapse-btn');
+  if (!btn) return;
+  const key = on ? 'player.nav.expandSidebar' : 'player.nav.collapseSidebar';
+  btn.setAttribute('data-i18n', key);
+  btn.title = t(key);
+}
+(function initSidebarCollapse() {
+  _applySidebarCollapsed(localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === '1');
+  document.getElementById('sidebar-collapse-btn')?.addEventListener('click', () => {
+    const on = !document.body.classList.contains('sidebar-collapsed');
+    localStorage.setItem(SIDEBAR_COLLAPSED_KEY, on ? '1' : '0');
+    _applySidebarCollapsed(on);
   });
 }());
 

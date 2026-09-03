@@ -13,7 +13,7 @@
   <script defer src="../assets/js/lib/butterchurn.min.js"></script>
   <script defer src="../assets/js/lib/audiomotion-analyzer.js"></script>
   <script defer src="../assets/js/lib/qr.js"></script>
-  <link rel="stylesheet" href="/style.css?v=0.4.24-f47e976b">
+  <link rel="stylesheet" href="/style.css?v=0.4.24-7c225fa8">
   <script src="/assets/js/lib/simplewebauthn-browser.js"></script>
   <script src="/assets/js/i18n.js"></script>
 </head>
@@ -428,15 +428,15 @@
       <div class="nav-section" data-section="now-playing">
       <div class="nav-label nav-toggle"><span data-i18n="player.nav.nowPlayingSection">Now Playing</span><svg class="nav-chevron" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6,9 12,15 18,9"/></svg></div>
       <nav class="sidenav">
-        <button class="nav-btn" data-view="playing-now" id="playing-now-nav-btn">
+        <button class="nav-btn" data-view="playing-now" id="playing-now-nav-btn" data-i18n="player.nav.playingNow" data-i18n-attr="title">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polygon points="10,8 16,12 10,16"/></svg>
           <span data-i18n="player.nav.playingNow">Playing Now</span>
         </button>
-        <button class="nav-btn" data-view="autodj">
+        <button class="nav-btn" data-view="autodj" data-i18n="player.nav.autoDj" data-i18n-attr="title">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M8 14s1.5 2 4 2 4-2 4-2"/><line x1="9" y1="9" x2="9.01" y2="9"/><line x1="15" y1="9" x2="15.01" y2="9"/></svg>
           <span data-i18n="player.nav.autoDj">Auto-DJ</span>
         </button>
-        <button class="nav-btn" data-view="jukebox">
+        <button class="nav-btn" data-view="jukebox" data-i18n="player.nav.jukebox" data-i18n-attr="title">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="5" y="2" width="14" height="20" rx="2" ry="2"/><line x1="12" y1="18" x2="12.01" y2="18"/></svg>
           <span data-i18n="player.nav.jukebox">Jukebox</span>
         </button>
@@ -446,35 +446,35 @@
       <div class="nav-section" data-section="browse">
       <div class="nav-label nav-toggle"><span data-i18n="player.nav.browse">Browse</span><svg class="nav-chevron" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6,9 12,15 18,9"/></svg></div>
       <nav class="sidenav">
-        <button class="nav-btn active" data-view="home">
+        <button class="nav-btn active" data-view="home" data-i18n="player.nav.home" data-i18n-attr="title">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9,22 9,12 15,12 15,22"/></svg>
           <span data-i18n="player.nav.home">Home</span>
         </button>
-        <button class="nav-btn" data-view="search">
+        <button class="nav-btn" data-view="search" data-i18n="player.nav.search" data-i18n-attr="title">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
           <span data-i18n="player.nav.search">Search</span>
         </button>
-        <button class="nav-btn" data-view="files">
+        <button class="nav-btn" data-view="files" data-i18n="player.nav.fileExplorer" data-i18n-attr="title">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
           <span data-i18n="player.nav.fileExplorer">File Explorer</span>
         </button>
-        <button class="nav-btn hidden" data-view="artists_old">
+        <button class="nav-btn hidden" data-view="artists_old" data-i18n="player.nav.artists" data-i18n-attr="title">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
           <span data-i18n="player.nav.artists">Artists</span>
         </button>
-        <button class="nav-btn" data-view="artists">
+        <button class="nav-btn" data-view="artists" data-i18n="player.nav.artists" data-i18n-attr="title">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/><circle cx="20" cy="8" r="2" fill="currentColor"/></svg>
           <span data-i18n="player.nav.artists">Artists</span>
         </button>
-        <button class="nav-btn" data-view="album-library">
+        <button class="nav-btn" data-view="album-library" data-i18n="player.nav.albums" data-i18n-attr="title">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
           <span data-i18n="player.nav.albums">Albums</span>
         </button>
-        <button class="nav-btn" data-view="genres">
+        <button class="nav-btn" data-view="genres" data-i18n="player.nav.genres" data-i18n-attr="title">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>
           <span data-i18n="player.nav.genres">Genres</span>
         </button>
-        <button class="nav-btn" data-view="decades">
+        <button class="nav-btn" data-view="decades" data-i18n="player.nav.decades" data-i18n-attr="title">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
           <span data-i18n="player.nav.decades">Decades</span>
         </button>
@@ -484,11 +484,11 @@
       <div class="nav-section" data-section="my-library">
       <div class="nav-label nav-toggle"><span data-i18n="player.nav.myLibrary">My Library</span><svg class="nav-chevron" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6,9 12,15 18,9"/></svg></div>
       <nav class="sidenav">
-        <button class="nav-btn" data-view="rated">
+        <button class="nav-btn" data-view="rated" data-i18n="player.nav.starred" data-i18n-attr="title">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="12,2 15.09,8.26 22,9.27 17,14.14 18.18,21.02 12,17.77 5.82,21.02 7,14.14 2,9.27 8.91,8.26"/></svg>
           <span data-i18n="player.nav.starred">Starred</span>
         </button>
-        <button class="nav-btn" data-view="shortcuts">
+        <button class="nav-btn" data-view="shortcuts" data-i18n="player.nav.shortcuts" data-i18n-attr="title">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
           <span data-i18n="player.nav.shortcuts">Shortcuts</span>
         </button>
@@ -496,7 +496,7 @@
 
       <div class="sidenav-separator"></div>
       <nav class="sidenav">
-        <button class="nav-btn hidden" id="ml-playlist-nav-btn" data-view="ml-playlist">
+        <button class="nav-btn hidden" id="ml-playlist-nav-btn" data-view="ml-playlist" data-i18n="player.nav.mlPlaylist" data-i18n-attr="title">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2z"/><path d="M12 8v4l3 3"/></svg>
           <span data-i18n="player.nav.mlPlaylist">Listening Habits</span>
         </button>
@@ -540,23 +540,23 @@
       <div class="nav-section" data-section="history-stats">
       <div class="nav-label nav-toggle"><span data-i18n="player.nav.historyAndStats">History &amp; Stats</span><svg class="nav-chevron" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6,9 12,15 18,9"/></svg></div>
       <nav class="sidenav">
-        <button class="nav-btn" data-view="recent">
+        <button class="nav-btn" data-view="recent" data-i18n="player.nav.recentlyAdded" data-i18n-attr="title">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12,6 12,12 16,14"/></svg>
           <span data-i18n="player.nav.recentlyAdded">Recently Added</span>
         </button>
-        <button class="nav-btn" data-view="played">
+        <button class="nav-btn" data-view="played" data-i18n="player.nav.recentlyPlayed" data-i18n-attr="title">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23,4 23,10 17,10"/><path d="M20.49 15a9 9 0 1 1-.18-4.9"/></svg>
           <span data-i18n="player.nav.recentlyPlayed">Recently Played</span>
         </button>
-        <button class="nav-btn" data-view="play-history">
+        <button class="nav-btn" data-view="play-history" data-i18n="player.nav.playHistory" data-i18n-attr="title">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 .49-4.95"/></svg>
           <span data-i18n="player.nav.playHistory">Play History</span>
         </button>
-        <button class="nav-btn" data-view="most-played">
+        <button class="nav-btn" data-view="most-played" data-i18n="player.nav.mostPlayed" data-i18n-attr="title">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22,12 18,12 15,21 9,3 6,12 2,12"/></svg>
           <span data-i18n="player.nav.mostPlayed">Most Played</span>
         </button>
-        <button class="nav-btn" data-view="wrapped">
+        <button class="nav-btn" data-view="wrapped" data-i18n="player.nav.yourStats" data-i18n-attr="title">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 8v4l3 3"/></svg>
           <span data-i18n="player.nav.yourStats">Your Stats</span>
         </button>
@@ -566,23 +566,23 @@
       <div class="nav-section hidden" id="podcasts-section" data-section="podcasts">
       <div class="nav-label nav-toggle"><span data-i18n="player.nav.streamsAndFeeds">Streams &amp; Feeds</span><svg class="nav-chevron" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6,9 12,15 18,9"/></svg></div>
       <nav class="sidenav">
-        <button class="nav-btn" id="podcasts-nav-btn" data-view="podcasts">
+        <button class="nav-btn" id="podcasts-nav-btn" data-view="podcasts" data-i18n="player.nav.audioContent" data-i18n-attr="title">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 18v-6a9 9 0 0 1 18 0v6"/><path d="M21 19a2 2 0 0 1-2 2h-1a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h3z"/><path d="M3 19a2 2 0 0 0 2 2h1a2 2 0 0 0 2-2v-3a2 2 0 0 0-2-2H3z"/></svg>
           <span data-i18n="player.nav.audioContent">Audio Content</span>
         </button>
-        <button class="nav-btn" id="podcast-feeds-nav-btn" data-view="podcast-feeds">
+        <button class="nav-btn" id="podcast-feeds-nav-btn" data-view="podcast-feeds" data-i18n="player.nav.podcastFeeds" data-i18n-attr="title">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 11a9 9 0 0 1 9 9"/><path d="M4 4a16 16 0 0 1 16 16"/><circle cx="5" cy="19" r="1" fill="currentColor"/></svg>
           <span data-i18n="player.nav.podcastFeeds">Podcast Feeds</span>
         </button>
-        <button class="nav-btn hidden" id="youtube-nav-btn" data-view="youtube">
+        <button class="nav-btn hidden" id="youtube-nav-btn" data-view="youtube" data-i18n="player.nav.youtube" data-i18n-attr="title">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor"><path d="M23.498 6.186a3.016 3.016 0 0 0-2.122-2.136C19.505 3.545 12 3.545 12 3.545s-7.505 0-9.377.505A3.017 3.017 0 0 0 .502 6.186C0 8.07 0 12 0 12s0 3.93.502 5.814a3.016 3.016 0 0 0 2.122 2.136c1.871.505 9.376.505 9.376.505s7.505 0 9.377-.505a3.015 3.015 0 0 0 2.122-2.136C24 15.93 24 12 24 12s0-3.93-.502-5.814zM9.545 15.568V8.432L15.818 12l-6.273 3.568z"/></svg>
           <span data-i18n="player.nav.youtube">YouTube</span>
         </button>
-        <button class="nav-btn hidden" id="radio-nav-btn" data-view="radio">
+        <button class="nav-btn hidden" id="radio-nav-btn" data-view="radio" data-i18n="player.nav.radioStreams" data-i18n-attr="title">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="2"/><path d="M4.93 4.93a10 10 0 0 0 0 14.14"/><path d="M7.76 7.76a6 6 0 0 0 0 8.49"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/><path d="M16.24 7.76a6 6 0 0 1 0 8.49"/></svg>
           <span data-i18n="player.nav.radioStreams">Radio Streams</span>
         </button>
-        <button class="nav-btn hidden" id="sonos-radio-nav-btn" data-view="sonos-radio">
+        <button class="nav-btn hidden" id="sonos-radio-nav-btn" data-view="sonos-radio" data-i18n="player.nav.sonosRadio" data-i18n-attr="title">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="4" width="12" height="16" rx="2"/><path d="M9 4v16"/><path d="M15 4v16"/><circle cx="9" cy="12" r="1"/><circle cx="15" cy="12" r="1"/></svg>
           <span data-i18n="player.nav.sonosRadio">Sonos Radio</span>
         </button>
@@ -592,19 +592,19 @@
       <div class="nav-section" id="connectors-section" data-section="connectors">
       <div class="nav-label nav-toggle"><span data-i18n="player.nav.connectors">Connectors</span><svg class="nav-chevron" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6,9 12,15 18,9"/></svg></div>
       <nav class="sidenav">
-        <button class="nav-btn hidden" id="lastfm-nav-btn" data-view="lastfm">
+        <button class="nav-btn hidden" id="lastfm-nav-btn" data-view="lastfm" data-i18n="player.nav.lastfm" data-i18n-attr="title">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M8 14s1.5 2 4 2 4-2 4-2"/><line x1="9" y1="9" x2="9.01" y2="9"/><line x1="15" y1="9" x2="15.01" y2="9"/></svg>
           <span data-i18n="player.nav.lastfm">Last.fm</span>
         </button>
-        <button class="nav-btn hidden" id="listenbrainz-nav-btn" data-view="listenbrainz">
+        <button class="nav-btn hidden" id="listenbrainz-nav-btn" data-view="listenbrainz" data-i18n="player.nav.listenbrainz" data-i18n-attr="title">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>
           <span data-i18n="player.nav.listenbrainz">ListenBrainz</span>
         </button>
-        <button class="nav-btn hidden" id="discogs-nav-btn" data-view="discogs">
+        <button class="nav-btn hidden" id="discogs-nav-btn" data-view="discogs" data-i18n="player.nav.discogs" data-i18n-attr="title">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="3"/><line x1="12" y1="2" x2="12" y2="5"/><line x1="12" y1="19" x2="12" y2="22"/><line x1="2" y1="12" x2="5" y2="12"/><line x1="19" y1="12" x2="22" y2="12"/></svg>
           <span data-i18n="player.nav.discogs">Discogs</span>
         </button>
-        <button class="nav-btn" data-view="subsonic">
+        <button class="nav-btn" data-view="subsonic" data-i18n="player.nav.subsonicApi" data-i18n-attr="title">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="4"/><line x1="21.17" y1="8" x2="12" y2="8"/><line x1="3.95" y1="6.06" x2="8.54" y2="14"/><line x1="10.88" y1="21.94" x2="15.46" y2="14"/></svg>
           <span data-i18n="player.nav.subsonicApi">Subsonic API</span>
         </button>
@@ -614,23 +614,23 @@
       <div class="nav-section" data-section="tools-settings">
       <div class="nav-label nav-toggle"><span data-i18n="player.nav.toolsAndSettings">Tools &amp; Settings</span><svg class="nav-chevron" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6,9 12,15 18,9"/></svg></div>
       <nav class="sidenav">
-        <button class="nav-btn" data-view="shared-links">
+        <button class="nav-btn" data-view="shared-links" data-i18n="player.nav.sharedLinks" data-i18n-attr="title">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/></svg>
           <span data-i18n="player.nav.sharedLinks">Shared Links</span>
         </button>
-        <button class="nav-btn" data-view="transcode">
+        <button class="nav-btn" data-view="transcode" data-i18n="player.nav.transcode" data-i18n-attr="title">
           <svg width="15" height="15" viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"><path d="M8.5 8.5h9l-9 9v11l20-20h11l-31 31h11l20-20v11l-9 9h9"/></svg>
           <span data-i18n="player.nav.transcode">Transcode</span>
         </button>
-        <button class="nav-btn" data-view="playback">
+        <button class="nav-btn" data-view="playback" data-i18n="player.nav.settings" data-i18n-attr="title">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
           <span data-i18n="player.nav.settings">Audio Settings</span>
         </button>
-        <button class="nav-btn" data-view="user-settings">
+        <button class="nav-btn" data-view="user-settings" data-i18n="player.nav.userSettings" data-i18n-attr="title">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
           <span data-i18n="player.nav.userSettings">User Settings</span>
         </button>
-        <button class="nav-btn" data-view="apps">
+        <button class="nav-btn" data-view="apps" data-i18n="player.nav.mobileApps" data-i18n-attr="title">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
           <span data-i18n="player.nav.mobileApps">Mobile Apps</span>
         </button>
@@ -640,15 +640,19 @@
     </div><!-- .sidebar-scroll -->
 
     <div class="sidebar-footer">
-      <button id="scan-btn" class="footer-action hidden">
+      <button id="sidebar-collapse-btn" class="footer-link" data-i18n="player.nav.collapseSidebar" data-i18n-attr="title">
+        <svg class="sidebar-collapse-ico" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="15,18 9,12 15,6"/></svg>
+        <span data-i18n="player.nav.collapseSidebar">Collapse sidebar</span>
+      </button>
+      <button id="scan-btn" class="footer-action hidden" data-i18n="player.nav.scanLibrary" data-i18n-attr="title">
         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23,4 23,10 17,10"/><path d="M20.49 15a9 9 0 1 1-.18-4.9"/></svg>
         <span data-i18n="player.nav.scanLibrary">Scan Library</span>
       </button>
-      <span id="admin-panel-btn" class="footer-link hidden" style="cursor:pointer;">
+      <span id="admin-panel-btn" class="footer-link hidden" style="cursor:pointer;" data-i18n="player.nav.adminPanel" data-i18n-attr="title">
         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><polyline points="9,12 11,14 15,10"/></svg>
         <span data-i18n="player.nav.adminPanel">Admin Panel</span>
       </span>
-      <button id="logout-btn" class="footer-link">
+      <button id="logout-btn" class="footer-link" data-i18n="player.nav.logout" data-i18n-attr="title">
         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16,17 21,12 16,7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
         <span data-i18n="player.nav.logout">Logout</span>
       </button>
@@ -1059,7 +1063,7 @@
 
 <div id="tip-box"></div>
 <script src="/assets/js/player-locale.js"></script>
-  <script src="/app.js?v=0.4.24-a0feb014"></script>
+  <script src="/app.js?v=0.4.24-675ea922"></script>
 
 </body>
 </html>

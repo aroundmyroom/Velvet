@@ -9,6 +9,17 @@ Auto-DJ track-length window — skip short interludes/skits and long DJ mixes/co
 - New `idx_files_duration` index so the filter seeks instead of scanning.
 - Docs: `docs/API.md`, `docs/API/db_random-songs.md`, `docs/autodj-scoring.md` updated. i18n keys added to all 12 locales (NL translated, others English placeholder).
 
+### Added: Collapsible sidebar (icon-only rail)
+- New collapse toggle at the bottom of the sidebar (above Scan Library / Admin Panel / Logout) shrinks the left menu to an icon-only rail (68px) so the main content area gets the full screen width.
+- Every nav/footer button already has a native hover tooltip (reuses the existing i18n key via `data-i18n-attr="title"`), so icon meaning is never lost when collapsed.
+- Playlists and Smart Playlists sections (user-named entries, not icon-friendly) are hidden entirely in collapsed mode rather than shown as ambiguous icons.
+- State persists per-browser via `localStorage` and is restored before first paint (no flash of the expanded sidebar).
+- i18n keys added to all 12 locales (NL translated, others English placeholder).
+
+### Fixed: Sonos player bar could freeze on a stale song while a later one was audibly playing
+- Root cause: casting pushes a lookahead queue of up to 31 tracks to Sonos in one go (`SONOS_WIN_FWD=30`), so the device gaplessly advances through several tracks entirely on its own whenever it finishes one before the browser's local muted mirror re-pushes a fresh window (mirror can lag — backgrounded/throttled tab, buffering jitter). The poll that watches Sonos's transport state treated *any* `track > 1` report as the user taking control on the Sonos app and froze the web player (paused the mirror, stopped syncing) — leaving the player bar and Now Playing stuck on an old track while Sonos had already moved on naturally.
+- Fix: before ceding, compare the title/artist Sonos actually reports against what we queued at that position in our own queue. A match means it's a normal in-window advance — the player now catches up (`Player.playAt()`, re-pushing a fresh window) instead of freezing. Only a genuine mismatch (no corresponding track in our queue) is still treated as external control.
+
 ## v0.4.23 (2026-09-01)
 
 WebAuthn / Passkey authentication — sign in without a password using biometrics, security keys or synced passkeys.
