@@ -47,7 +47,7 @@
     "file-type": "22.0.2",
     "helmet": "^8.3.0",
     "http-proxy": "^1.18.1",
-    "joi": "^18.2.3",
+    "joi": "^18.2.5",
     "jsonwebtoken": "^9.0.3",
     "m3u8-parser": "^7.2.0",
     "make-dir": "^5.0.0",
