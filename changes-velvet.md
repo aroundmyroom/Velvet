@@ -1,3 +1,12 @@
+## v0.4.26 (2026-09-03)
+
+Security maintenance release for the `qs` query-string dependency.
+
+### Fixed: two moderate `qs` denial-of-service advisories
+- Updated the repository-wide `qs` override from `6.15.2` to patched `6.16.0`.
+- Resolves `CVE-2026-82417` / `GHSA-4mjr-xmp4-gh2g` (attacker-controlled `constructor.isBuffer` can cause an uncaught exception during parsing/stringifying) and `CVE-2026-82562` / `GHSA-x5fp-wj9c-mxmx` (bracket-key comma parsing can bypass array limits and cause excessive allocation).
+- Regenerated `package-lock.json`; `npm audit --omit=dev --audit-level=moderate` reports zero vulnerabilities and the Docker `npm ci --omit=dev` install path validates successfully.
+
 ## v0.4.25 (2026-09-03)
 
 Dependency and Docker release maintenance.
