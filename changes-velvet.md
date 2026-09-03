@@ -5,6 +5,7 @@ Dependency and Docker release maintenance.
 ### Updated: dependency and build tooling maintenance
 - Merged Dependabot PRs #84–#91: `music-metadata` 11.15.0, `joi` 18.2.5, `@humanfs/node` 0.16.8, `sharp` 0.35.4, `fast-xml-parser` 5.11.1, `axios` 1.20.0, `eslint` 10.9.1, and the Hadolint GitHub Action 3.5.0.
 - Updated the Docker publishing workflow through the merged Hadolint maintenance PR; the `v0.4.25` tag publishes the versioned and `latest` Docker images.
+- Corrected the dependency lockfile after the first Docker build detected it was behind the merged package requirements; `npm ci --omit=dev` now validates against the release manifests.
 - No user-facing feature changes are re-announced here; the Auto-DJ track-length filter, Sonos synchronization fix, and collapsible sidebar shipped in `v0.4.24`.
 
 ## v0.4.24 (2026-09-02)
