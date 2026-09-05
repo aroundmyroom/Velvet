@@ -89,6 +89,8 @@
 
 * **Notes**
 
-  - The Auto-DJ pre-fetches the next track `max(25, crossfade + 15)` seconds
-    before the current track ends to ensure gapless playback.
+  - The Auto-DJ pre-fetches the next track ~2 seconds after the current track
+    starts (when it is the last queue item), so manual skips advance instantly.
+    A near-end prefetch `max(25, crossfade + 15)` seconds before the track ends
+    remains as a backstop for gapless playback.
   - Only one song is returned per call; call again for the next track.

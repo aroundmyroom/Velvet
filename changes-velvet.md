@@ -1,3 +1,15 @@
+## v0.4.28 (2026-09-05)
+
+Auto-DJ queue-end fixes — NEXT no longer wraps to the first song, and skips are instant.
+
+### Fixed: NEXT on the last queue track wrapped to song #1 with Auto-DJ on
+- `Player.next()` checked `repeat === 'all'` before the Auto-DJ branch, so with repeat-all enabled the queue wrapped back to the first track instead of fetching a fresh DJ pick. Auto-DJ now owns the end of the queue — a new DJ song always beats the repeat-all wrap.
+- Shuffle is now genuinely inactive while Auto-DJ drives (the UI already said "Shuffle: On — but inactive, Auto-DJ is on", but `next()` still picked a random queue index first).
+
+### Fixed: 5–6 second delay when skipping with Auto-DJ enabled
+- The next DJ pick was only prefetched ~25–45 s before a track's natural end, so a manual NEXT earlier in the track had to run the full fetch+score round-trip (Last.fm lookup + 500-candidate batch + scoring) before anything played.
+- The prefetch now fires ~2 s after a track starts (when it's the last queue item), so the next DJ song is already queued and a manual skip is an instant queue advance. Applied to both the normal play path and the crossfade/gapless handoff path; the near-end prefetch remains as a backstop.
+
 ## v0.4.27 (2026-09-05)
 
 Playing Now scrobble status indicators — real-time Last.fm and ListenBrainz status badges.

@@ -1,5 +1,5 @@
 'use strict';
-const VELVET_VERSION = '0.4.27';
+const VELVET_VERSION = '0.4.28';
 // ── SERVER IDENTITY GUARD ────────────────────────────────────────────────────
 // Detects when this browser's localStorage belongs to a different Velvet
 // instance (fresh install, IP change, reverse-proxy swap, second server).
@@ -1703,6 +1703,16 @@ const Player = {
       }
     }
     _scheduleScrobble(s);
+    // Early Auto-DJ prefetch: fetch the next DJ pick shortly after a track
+    // STARTS (not only ~25-45 s before its end) so a manual NEXT press is an
+    // instant queue advance instead of a 5-6 s fetch+score round-trip. The
+    // small delay lets track-start work (art, waveform, metadata) settle and
+    // debounces rapid skipping; the queue[S.idx]===s guard drops stale timers.
+    if (S.autoDJ && S.idx === S.queue.length - 1 && _isMusicSong(s)) {
+      setTimeout(() => {
+        if (S.autoDJ && S.queue[S.idx] === s && S.idx === S.queue.length - 1) autoDJPrefetch();
+      }, 2000);
+    }
     persistQueue();
     _syncQueueToDb();
   },
@@ -1822,7 +1832,9 @@ const Player = {
         eventId: eid, listenedMs: Date.now() - _wrappedRadioStartMs,
       }).catch(() => {});
     }
-    if (S.shuffle) {
+    // Shuffle is documented as inactive while Auto-DJ drives (see _shuffleStripHtml)
+    const _djDrives = S.autoDJ && _isMusicSong(S.queue[S.idx]);
+    if (S.shuffle && !_djDrives) {
       const next = Math.floor(Math.random() * S.queue.length);
       this.playAt(next);
     } else if (S.repeat === 'one') {
@@ -1831,15 +1843,13 @@ const Player = {
       audioEl.play().catch(() => {});
     } else if (S.idx < S.queue.length - 1) {
       this.playAt(S.idx + 1);
+    } else if (_djDrives) {
+      // Auto-DJ owns the end of the queue: a fresh DJ pick always beats wrapping
+      // back to the first track (repeat all). Without this precedence, NEXT on
+      // the last track with repeat-all on jumped to song #1 instead of fetching.
+      autoDJFetch();
     } else if (S.repeat === 'all') {
       this.playAt(0);
-    } else if (S.autoDJ && _isMusicSong(S.queue[S.idx])) {
-      // If autoDJPrefetch already queued a song, just advance; otherwise fetch now
-      if (S.queue.length > S.idx + 1) {
-        this.playAt(S.idx + 1);
-      } else {
-        autoDJFetch();
-      }
     }
   },
   prev() {
@@ -21400,6 +21410,14 @@ function _doXfadeHandoff(nextIdx) {
     }).then(r => { _wrappedEventId = r?.eventId ?? null; }).catch(() => {});
   }
   _scheduleScrobble(s);
+  // Early Auto-DJ prefetch — same rationale as Player.playAt: have the next DJ
+  // pick queued right away so a manual NEXT after a crossfade/gapless handoff
+  // is instant.
+  if (S.autoDJ && S.idx === S.queue.length - 1 && _isMusicSong(s)) {
+    setTimeout(() => {
+      if (S.autoDJ && S.queue[S.idx] === s && S.idx === S.queue.length - 1) autoDJPrefetch();
+    }, 2000);
+  }
   persistQueue();
   _syncQueueToDb();
 }
