@@ -25768,23 +25768,27 @@ window.EGG = (() => {
 })();
 
 // Playing-Now album art becomes a spinning 33⅓-RPM vinyl on an SL-1200 deck.
-// Spin follows play/pause, tonearm sweeps with song progress, and the pitch
-// fader is live: drag ±10% → audioEl.playbackRate with preservesPitch off,
-// so it bends pitch like a real turntable. Capture-phase listeners on document
-// survive the crossfade element swap (_doXfadeHandoff reassigns audioEl).
+// Spin follows play/pause, tonearm sweeps with song progress. All controls are
+// live: START·STOP toggles playback, 33/45 sets platter speed (45 plays the
+// song at 1.35× — a 33⅓ record on 45), and the pitch fader bends ±10%. The
+// effective playbackRate is speed × fader with preservesPitch off, like real
+// vinyl. Capture-phase listeners survive the crossfade element swap.
 (() => {
   let active = false;
-  let rate = 1;
+  let fader = 1;          // pitch fader multiplier 0.90..1.10
+  let speed = 1;          // 33 rpm = 1, 45 rpm = 45/33.333 = 1.35
+  const RPM45 = 1.35;
   const ARM_START = -3.4, ARM_SWEEP = 19.8; // deg: lead-in groove → run-out
   const F_CY = 135, F_HALF = 40.5, F_H = 9; // fader slot centre/travel, art px
   const _sync = () => document.body.classList.toggle('vinyl-paused', audioEl.paused);
   function _applyRate() {
-    audioEl.preservesPitch = rate === 1;
-    if ('webkitPreservesPitch' in audioEl) audioEl.webkitPreservesPitch = rate === 1;
-    if (Math.abs(audioEl.playbackRate - rate) > 0.0005) audioEl.playbackRate = rate;
+    const r = Math.round(speed * fader * 1000) / 1000;
+    audioEl.preservesPitch = r === 1;
+    if ('webkitPreservesPitch' in audioEl) audioEl.webkitPreservesPitch = r === 1;
+    if (Math.abs(audioEl.playbackRate - r) > 0.0005) audioEl.playbackRate = r;
   }
-  const _faderTop = () => F_CY + ((1 - rate) / 0.10) * F_HALF - F_H / 2;
-  const _faderTitle = f => { f.title = 'Pitch ' + ((rate - 1) * 100).toFixed(1) + '%'; };
+  const _faderTop = () => F_CY + ((1 - fader) / 0.10) * F_HALF - F_H / 2;
+  const _faderTitle = f => { f.title = 'Pitch ' + ((fader - 1) * 100).toFixed(1) + '%'; };
   function _mkFader(art) {
     const f = document.createElement('i');
     f.className = 'vinyl-fader';
@@ -25798,9 +25802,9 @@ window.EGG = (() => {
         let top = startTop + (ev.clientY - startY);
         top = Math.max(F_CY - F_HALF - F_H / 2, Math.min(F_CY + F_HALF - F_H / 2, top));
         const p = (top + F_H / 2 - F_CY) / F_HALF;
-        rate = 1 - 0.10 * p;
-        if (Math.abs(rate - 1) < 0.005) rate = 1; // centre detent, like the real click-stop
-        rate = Math.round(rate * 1000) / 1000;
+        fader = 1 - 0.10 * p;
+        if (Math.abs(fader - 1) < 0.005) fader = 1; // centre detent, like the real click-stop
+        fader = Math.round(fader * 1000) / 1000;
         f.style.top = top + 'px';
         _faderTitle(f);
         _applyRate();
@@ -25815,12 +25819,34 @@ window.EGG = (() => {
     });
     f.addEventListener('dblclick', e => {
       e.stopPropagation();
-      rate = 1;
+      fader = 1;
       f.style.top = _faderTop() + 'px';
       _faderTitle(f);
       _applyRate();
     });
     art.appendChild(f);
+  }
+  function _mkDeckButtons(art) {
+    const ss = document.createElement('i');
+    ss.className = 'vinyl-btn vinyl-ss';
+    ss.title = 'Start / Stop';
+    ss.addEventListener('click', e => { e.stopPropagation(); Player.toggle(); });
+    const b33 = document.createElement('i');
+    b33.className = 'vinyl-btn vinyl-b33' + (speed === 1 ? ' on' : '');
+    b33.title = '33⅓ rpm';
+    const b45 = document.createElement('i');
+    b45.className = 'vinyl-btn vinyl-b45' + (speed === 1 ? '' : ' on');
+    b45.title = '45 rpm';
+    const setSpeed = s => {
+      speed = s;
+      document.body.classList.toggle('vinyl-45', s !== 1);
+      b33.classList.toggle('on', s === 1);
+      b45.classList.toggle('on', s !== 1);
+      _applyRate();
+    };
+    b33.addEventListener('click', e => { e.stopPropagation(); setSpeed(1); });
+    b45.addEventListener('click', e => { e.stopPropagation(); setSpeed(RPM45); });
+    art.appendChild(ss); art.appendChild(b33); art.appendChild(b45);
   }
   function _tick(e) {
     if (!active || e.target !== audioEl) return;
@@ -25839,6 +25865,7 @@ window.EGG = (() => {
       art.appendChild(sp);
     }
     if (art && !art.querySelector('.vinyl-fader')) _mkFader(art);
+    if (art && !art.querySelector('.vinyl-ss')) _mkDeckButtons(art);
   }
   const _vpx = document.getElementById('vinyl-ctrl');
   // Pin to the content-area top-right: queue panel's left edge (or window edge),
@@ -25866,8 +25893,9 @@ window.EGG = (() => {
     if (active) {
       _tick({ target: audioEl });
     } else {
-      document.body.classList.remove('vinyl-paused');
-      rate = 1;
+      document.body.classList.remove('vinyl-paused', 'vinyl-45');
+      fader = 1;
+      speed = 1;
       _applyRate(); // restore normal speed + pitch preservation
     }
   });

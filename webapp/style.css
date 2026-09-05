@@ -2958,6 +2958,26 @@ body.vinyl-mode .pnow-art .vinyl-fader::after{
   height:1.5px; margin-top:-1px;
   background:#e8e8ec;
 }
+/* deck button hotspots over the SVG: START·STOP + 33/45 (LED glow when active) */
+.pnow-art .vinyl-btn{ display:none; }
+body.vinyl-mode .pnow-art .vinyl-btn{
+  display:block;
+  position:absolute;
+  cursor:pointer;
+  pointer-events:auto;
+  border-radius:3px;
+  z-index:5;
+}
+body.vinyl-mode .pnow-art .vinyl-btn:active{ background:rgba(255,255,255,.14); }
+body.vinyl-mode .pnow-art .vinyl-btn.on{
+  box-shadow:inset 0 0 5px rgba(57,255,136,.45), 0 0 5px rgba(57,255,136,.35);
+}
+body.vinyl-mode .pnow-art .vinyl-ss { left:-10px; top:179px; width:30px; height:17px; border-radius:4px; }
+body.vinyl-mode .pnow-art .vinyl-b33{ left:22px; top:194px; width:15px; height:9px; }
+body.vinyl-mode .pnow-art .vinyl-b45{ left:41px; top:194px; width:15px; height:9px; }
+/* 45 rpm: platter and label spin at 45/33⅓ speed */
+body.vinyl-mode.vinyl-45 .pnow-art::before,
+body.vinyl-mode.vinyl-45 .pnow-art img{ animation-duration:1.333s; }
 body.vinyl-mode .pnow-art .vinyl-spindle{
   display:block;
   position:absolute; left:50%; top:50%;
