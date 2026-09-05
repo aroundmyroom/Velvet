@@ -2886,6 +2886,112 @@ body.audiobook-mode #ab-speed-btn{color:var(--primary);}
 }
 :root.light .pnow-art{ box-shadow:0 8px 28px rgba(0,0,0,.22); }
 .pnow-art img{width:100%;height:100%;object-fit:cover;object-position:top;display:block;}
+
+/* Playing-Now art → spinning vinyl on an SL-1200-style deck (body.vinyl-mode) */
+body.vinyl-mode .pnow-art,
+:root.light body.vinyl-mode .pnow-art{
+  border-radius:0;
+  background:transparent;
+  overflow:visible;
+  box-shadow:none;
+}
+body.vinyl-mode .pnow-art::before{
+  content:'';
+  position:absolute; inset:0;
+  border-radius:50%;
+  background:
+    conic-gradient(rgba(255,255,255,.12) 0 12deg, transparent 12deg 168deg,
+                   rgba(255,255,255,.08) 168deg 192deg, transparent 192deg 348deg,
+                   rgba(255,255,255,.12) 348deg 360deg),
+    repeating-radial-gradient(circle at 50% 50%, #121216 0 2px, #1d1d22 2px 3px);
+  box-shadow:0 12px 40px rgba(0,0,0,.7), 0 0 0 1px rgba(255,255,255,.06);
+  animation:vinyl-spin 1.8s linear infinite; /* 33⅓ RPM */
+  z-index:1;
+}
+body.vinyl-mode .pnow-art img{
+  position:absolute; left:50%; top:50%;
+  width:38%; height:38%;
+  border-radius:50%;
+  object-fit:cover; object-position:center;
+  box-shadow:0 0 0 2px rgba(0,0,0,.85);
+  transform:translate(-50%,-50%); /* centred even when the spin animation is off (reduced motion) */
+  animation:vinyl-spin-label 1.8s linear infinite;
+  z-index:2;
+}
+/* Static overlay: SL-1200 S-shaped tonearm — does not spin with the platter;
+   pivots from lead-in groove to run-out as the song progresses (--vinyl-arm).
+   Same 453×353 coordinate space as the deck; pivot at (395,90) → 87.2%/25.5% */
+body.vinyl-mode .pnow-art::after{
+  content:'';
+  position:absolute;
+  left:-12.5%; top:-13.2%;
+  width:166.6%; height:129.8%;
+  background:url('/assets/img/sl1200-arm.svg') center/100% 100% no-repeat;
+  filter:drop-shadow(2px 3px 3px rgba(0,0,0,.55));
+  transform:rotate(var(--vinyl-arm, -3.4deg));
+  transform-origin:87.2% 25.5%;
+  transition:transform .5s linear;
+  pointer-events:none;
+  z-index:3;
+}
+.pnow-art .vinyl-spindle,
+.pnow-art .vinyl-deck,
+.pnow-art .vinyl-fader{ display:none; }
+/* draggable pitch-fader knob — slot centre x≈260px in art coords */
+body.vinyl-mode .pnow-art .vinyl-fader{
+  display:block;
+  position:absolute;
+  left:249px; width:22px; height:9px;
+  border-radius:2px;
+  background:linear-gradient(#3d3d45,#26262c);
+  border:1px solid #6a6a74;
+  box-shadow:0 2px 5px rgba(0,0,0,.6);
+  cursor:grab;
+  pointer-events:auto;
+  touch-action:none;
+  z-index:5;
+}
+body.vinyl-mode .pnow-art .vinyl-fader:active{ cursor:grabbing; }
+body.vinyl-mode .pnow-art .vinyl-fader::after{
+  content:'';
+  position:absolute; left:1px; right:1px; top:50%;
+  height:1.5px; margin-top:-1px;
+  background:#e8e8ec;
+}
+body.vinyl-mode .pnow-art .vinyl-spindle{
+  display:block;
+  position:absolute; left:50%; top:50%;
+  width:9px; height:9px;
+  transform:translate(-50%,-50%);
+  border-radius:50%;
+  background:#0b0b0d;
+  box-shadow:0 0 0 2px rgba(255,255,255,.22);
+  z-index:4;
+}
+/* MK2 deck plinth behind the platter — platter r150 at (170,172), record
+   footprint r136 = the 180px spinning art, scale 0.662 px/unit */
+body.vinyl-mode .pnow-art{ margin-right:102px; }
+body.vinyl-mode .pnow-art .vinyl-deck{
+  display:block;
+  position:absolute;
+  left:-12.5%; top:-13.2%;
+  width:166.6%; height:129.8%;
+  background:url('/assets/img/sl1200-deck.svg') center/100% 100% no-repeat;
+  filter:drop-shadow(0 14px 30px rgba(0,0,0,.65));
+  pointer-events:none;
+  z-index:0;
+}
+body.vinyl-mode.vinyl-paused .pnow-art::before,
+body.vinyl-mode.vinyl-paused .pnow-art img{ animation-play-state:paused; }
+@keyframes vinyl-spin{ from{transform:rotate(0)} to{transform:rotate(360deg)} }
+@keyframes vinyl-spin-label{
+  from{transform:translate(-50%,-50%) rotate(0)}
+  to{transform:translate(-50%,-50%) rotate(360deg)}
+}
+@media (prefers-reduced-motion: reduce){
+  body.vinyl-mode .pnow-art::before,
+  body.vinyl-mode .pnow-art img{ animation:none; }
+}
 .pnow-hero-info{
   position:relative;z-index:1;
   flex:1;min-width:0;

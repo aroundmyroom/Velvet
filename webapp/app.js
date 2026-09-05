@@ -1,5 +1,5 @@
 'use strict';
-const VELVET_VERSION = '0.4.29';
+const VELVET_VERSION = '0.5.0';
 // ── SERVER IDENTITY GUARD ────────────────────────────────────────────────────
 // Detects when this browser's localStorage belongs to a different Velvet
 // instance (fresh install, IP change, reverse-proxy swap, second server).
@@ -25766,6 +25766,117 @@ window.EGG = (() => {
   }
   document.addEventListener('mousemove', () => { if (active) hide(); });
 })();
+
+// Playing-Now album art becomes a spinning 33⅓-RPM vinyl on an SL-1200 deck.
+// Spin follows play/pause, tonearm sweeps with song progress, and the pitch
+// fader is live: drag ±10% → audioEl.playbackRate with preservesPitch off,
+// so it bends pitch like a real turntable. Capture-phase listeners on document
+// survive the crossfade element swap (_doXfadeHandoff reassigns audioEl).
+(() => {
+  let active = false;
+  let rate = 1;
+  const ARM_START = -3.4, ARM_SWEEP = 19.8; // deg: lead-in groove → run-out
+  const F_CY = 135, F_HALF = 40.5, F_H = 9; // fader slot centre/travel, art px
+  const _sync = () => document.body.classList.toggle('vinyl-paused', audioEl.paused);
+  function _applyRate() {
+    audioEl.preservesPitch = rate === 1;
+    if ('webkitPreservesPitch' in audioEl) audioEl.webkitPreservesPitch = rate === 1;
+    if (Math.abs(audioEl.playbackRate - rate) > 0.0005) audioEl.playbackRate = rate;
+  }
+  const _faderTop = () => F_CY + ((1 - rate) / 0.10) * F_HALF - F_H / 2;
+  const _faderTitle = f => { f.title = 'Pitch ' + ((rate - 1) * 100).toFixed(1) + '%'; };
+  function _mkFader(art) {
+    const f = document.createElement('i');
+    f.className = 'vinyl-fader';
+    f.style.top = _faderTop() + 'px';
+    _faderTitle(f);
+    f.addEventListener('pointerdown', e => {
+      e.preventDefault(); e.stopPropagation();
+      f.setPointerCapture(e.pointerId);
+      const startY = e.clientY, startTop = parseFloat(f.style.top);
+      const move = ev => {
+        let top = startTop + (ev.clientY - startY);
+        top = Math.max(F_CY - F_HALF - F_H / 2, Math.min(F_CY + F_HALF - F_H / 2, top));
+        const p = (top + F_H / 2 - F_CY) / F_HALF;
+        rate = 1 - 0.10 * p;
+        if (Math.abs(rate - 1) < 0.005) rate = 1; // centre detent, like the real click-stop
+        rate = Math.round(rate * 1000) / 1000;
+        f.style.top = top + 'px';
+        _faderTitle(f);
+        _applyRate();
+      };
+      const up = () => {
+        f.removeEventListener('pointermove', move);
+        f.removeEventListener('pointerup', up);
+        f.style.top = _faderTop() + 'px'; // settle on the exact rate position
+      };
+      f.addEventListener('pointermove', move);
+      f.addEventListener('pointerup', up);
+    });
+    f.addEventListener('dblclick', e => {
+      e.stopPropagation();
+      rate = 1;
+      f.style.top = _faderTop() + 'px';
+      _faderTitle(f);
+      _applyRate();
+    });
+    art.appendChild(f);
+  }
+  function _tick(e) {
+    if (!active || e.target !== audioEl) return;
+    _sync();
+    _applyRate(); // re-assert after crossfade swaps in a fresh element
+    const d = audioEl.duration;
+    const p = (Number.isFinite(d) && d > 0) ? Math.min(audioEl.currentTime / d, 1) : 0;
+    document.body.style.setProperty('--vinyl-arm', (ARM_START + ARM_SWEEP * p).toFixed(2) + 'deg');
+    const art = document.querySelector('.pnow-art');
+    if (art && !art.querySelector('.vinyl-spindle')) {
+      const deck = document.createElement('i');
+      deck.className = 'vinyl-deck';
+      art.appendChild(deck);
+      const sp = document.createElement('i');
+      sp.className = 'vinyl-spindle';
+      art.appendChild(sp);
+    }
+    if (art && !art.querySelector('.vinyl-fader')) _mkFader(art);
+  }
+  const _vpx = document.getElementById('vinyl-ctrl');
+  // Pin to the content-area top-right: queue panel's left edge (or window edge),
+  // vertically aligned with fun-pixel. Re-pinned on timers and every tick —
+  // the queue panel opens during boot without firing a transitionend.
+  function _posVinylPx() {
+    if (!_vpx) return;
+    const qEl = document.getElementById('queue-panel');
+    const qRect = qEl ? qEl.getBoundingClientRect() : null;
+    const x = (qRect && qRect.width > 20) ? qRect.left : window.innerWidth;
+    _vpx.style.left = (x - _vpx.offsetWidth) + 'px';
+    const hdrEl = document.querySelector('.content-header');
+    if (hdrEl) _vpx.style.top = Math.round(hdrEl.getBoundingClientRect().bottom + 2) + 'px';
+  }
+  _posVinylPx();
+  setTimeout(_posVinylPx, 400);
+  setTimeout(_posVinylPx, 1500);
+  setInterval(_posVinylPx, 4000);
+  window.addEventListener('resize', _posVinylPx);
+  document.getElementById('queue-panel')?.addEventListener('transitionend', _posVinylPx);
+  if (_vpx) _vpx.addEventListener('click', e => {
+    e.stopPropagation();
+    active = !active;
+    document.body.classList.toggle('vinyl-mode', active);
+    if (active) {
+      _tick({ target: audioEl });
+    } else {
+      document.body.classList.remove('vinyl-paused');
+      rate = 1;
+      _applyRate(); // restore normal speed + pitch preservation
+    }
+  });
+  document.addEventListener('play',  e => { if (active && e.target === audioEl) _sync(); }, true);
+  document.addEventListener('pause', e => { if (active && e.target === audioEl) _sync(); }, true);
+  document.addEventListener('timeupdate', _tick, true);
+  document.addEventListener('seeked', _tick, true);
+})();
+
 
 // Keyboard shortcuts
 document.addEventListener('keydown', e => {

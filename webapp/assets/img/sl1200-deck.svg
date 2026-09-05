@@ -1,0 +1,91 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 453 353">
+  <!-- SL-1200MK2 top view, 1 unit = 1 mm. Platter centre (181,176) r166. -->
+  <defs>
+    <linearGradient id="plinth" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#1c1c21"/>
+      <stop offset="1" stop-color="#131317"/>
+    </linearGradient>
+    <radialGradient id="platter" cx=".5" cy=".5" r=".5">
+      <stop offset="0" stop-color="#101014"/>
+      <stop offset=".85" stop-color="#0a0a0d"/>
+      <stop offset="1" stop-color="#1a1a20"/>
+    </radialGradient>
+    <radialGradient id="lampGlow" cx=".5" cy=".5" r=".5">
+      <stop offset="0" stop-color="#ff6a55" stop-opacity=".9"/>
+      <stop offset="1" stop-color="#ff6a55" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+
+  <!-- plinth -->
+  <rect x="3" y="3" width="447" height="347" rx="14" fill="url(#plinth)" stroke="#33333a" stroke-width="4"/>
+  <rect x="10" y="10" width="433" height="333" rx="10" fill="none" stroke="#26262c" stroke-width="1.5"/>
+
+  <!-- platter + strobe dot rings (r150 — shrunk from true scale for a usable front strip) -->
+  <circle cx="170" cy="172" r="150" fill="url(#platter)" stroke="#3a3a41" stroke-width="2"/>
+  <circle cx="170" cy="172" r="145" fill="none" stroke="#55555e" stroke-width="3" stroke-dasharray="2 5.9"/>
+  <circle cx="170" cy="172" r="139" fill="none" stroke="#46464e" stroke-width="3" stroke-dasharray="2 6.9"/>
+
+  <!-- power rotary (top-left corner, recessed) -->
+  <circle cx="40" cy="36" r="16" fill="#000" stroke="#2c2c33" stroke-width="2.5"/>
+  <circle cx="40" cy="36" r="11" fill="#1e1e24" stroke="#7d7d86" stroke-width="1.5"/>
+  <line x1="40" y1="27" x2="40" y2="33" stroke="#d2d2d8" stroke-width="2"/>
+
+  <!-- 45 rpm adapter well -->
+  <circle cx="34" cy="82" r="12" fill="#08080a" stroke="#2c2c33" stroke-width="2"/>
+  <circle cx="34" cy="82" r="7.5" fill="#232329" stroke="#4c4c54" stroke-width="1"/>
+  <circle cx="34" cy="82" r="2.6" fill="#0a0a0c"/>
+
+  <!-- brand, clear of the strobe collar and the platter edge -->
+  <text x="64" y="19" font-family="Arial,Helvetica,sans-serif" font-size="10" font-style="italic" font-weight="900" fill="#b9b9c1">Velvet</text>
+  <text x="64" y="30" font-family="Arial,Helvetica,sans-serif" font-size="5" letter-spacing=".8" fill="#77777f">SL-1200MK2</text>
+
+  <!-- stroboscope dome (front-left corner, edge touches the platter rim) -->
+  <circle cx="34" cy="262" r="13" fill="#101014" stroke="#3a3a40" stroke-width="2"/>
+  <circle cx="34" cy="262" r="8" fill="#1a1a1f" stroke="#4a4a52" stroke-width="1"/>
+  <circle cx="43" cy="254" r="8" fill="url(#lampGlow)"/>
+  <circle cx="41" cy="255" r="3" fill="#ff4a3d"/>
+
+  <!-- START / STOP -->
+  <rect x="20" y="306" width="44" height="26" rx="5" fill="#212127" stroke="#43434b" stroke-width="2"/>
+  <text x="42" y="322" text-anchor="middle" font-family="Arial,Helvetica,sans-serif" font-size="5.5" letter-spacing=".4" fill="#9a9aa2">START·STOP</text>
+
+  <!-- 33 / 45 speed buttons -->
+  <rect x="68" y="330" width="22" height="12" rx="2.5" fill="#1d1d23" stroke="#3a3a42" stroke-width="1.5"/>
+  <text x="79" y="339" text-anchor="middle" font-family="Arial,Helvetica,sans-serif" font-size="7" fill="#a8a8b0">33</text>
+  <rect x="96" y="330" width="22" height="12" rx="2.5" fill="#1d1d23" stroke="#3a3a42" stroke-width="1.5"/>
+  <text x="107" y="339" text-anchor="middle" font-family="Arial,Helvetica,sans-serif" font-size="7" fill="#a8a8b0">45</text>
+
+  <!-- tonearm base: plate, height-adjust ring (arm itself is a separate layer) -->
+  <rect x="360" y="55" width="72" height="72" rx="9" fill="#1b1b20" stroke="#3a3a42" stroke-width="2"/>
+  <circle cx="395" cy="90" r="25" fill="#141419" stroke="#50505a" stroke-width="2.5" stroke-dasharray="2 2.4"/>
+  <circle cx="395" cy="90" r="19" fill="#1e1e24" stroke="#63636d" stroke-width="1.5"/>
+
+  <!-- arm rest clip (empty — arm is on the record) -->
+  <rect x="366" y="136" width="7" height="18" rx="2.5" fill="#26262d" stroke="#4a4a52" stroke-width="1.5"/>
+  <path d="M363,136 h13" stroke="#5c5c66" stroke-width="2.5" stroke-linecap="round"/>
+
+  <!-- anti-skate dial + cueing lever (right of base) -->
+  <circle cx="438" cy="70" r="7.5" fill="#1e1e24" stroke="#6c6c76" stroke-width="1.5"/>
+  <line x1="438" y1="64.5" x2="438" y2="70" stroke="#d2d2d8" stroke-width="1.3"/>
+  <rect x="431" y="96" width="15" height="9" rx="2" fill="#1b1b21" stroke="#43434b" stroke-width="1.3"/>
+  <line x1="434" y1="96" x2="428" y2="88" stroke="#9d9da5" stroke-width="2.5" stroke-linecap="round"/>
+
+  <!-- pitch fader, right side (knob is a live DOM element) -->
+  <g stroke="#4b4b53" stroke-width="1.2">
+    <line x1="407" y1="178" x2="419" y2="178"/>
+    <line x1="410" y1="192" x2="419" y2="192"/>
+    <line x1="410" y1="206" x2="419" y2="206"/>
+    <line x1="410" y1="220" x2="419" y2="220"/>
+    <line x1="405" y1="240" x2="419" y2="240" stroke="#c8c8ce"/>
+    <line x1="410" y1="260" x2="419" y2="260"/>
+    <line x1="410" y1="274" x2="419" y2="274"/>
+    <line x1="410" y1="288" x2="419" y2="288"/>
+    <line x1="407" y1="302" x2="419" y2="302"/>
+  </g>
+  <text x="401" y="181" text-anchor="end" font-family="Arial,Helvetica,sans-serif" font-size="5.5" fill="#77777f">+10</text>
+  <text x="401" y="243" text-anchor="end" font-family="Arial,Helvetica,sans-serif" font-size="5.5" fill="#9a9aa2">0</text>
+  <text x="401" y="305" text-anchor="end" font-family="Arial,Helvetica,sans-serif" font-size="5.5" fill="#77777f">−10</text>
+  <rect x="425" y="172" width="5" height="136" rx="2" fill="#000" stroke="#33333a" stroke-width="1.2"/>
+
+  <text x="430" y="340" text-anchor="end" font-family="Arial,Helvetica,sans-serif" font-size="6" letter-spacing="1" fill="#63636b">QUARTZ DIRECT DRIVE</text>
+</svg>

@@ -1,3 +1,14 @@
+## v0.5.0 (2026-09-05)
+
+Velvet keeps secrets — four discoveries hide in plain sight, and this release
+adds the fourth. No spoilers here or anywhere.
+
+### Changed
+- The interface hides more than it shows: three long-sleeping surprises get a
+brand-new sibling. Bring music, watch the corners, tell no one.
+- Fixed an artwork alignment issue in Playing Now on systems with reduced
+motion enabled (centring no longer depended on the animation running).
+
 ## v0.4.29 (2026-09-05)
 
 Diacritic folding in similar-artist matching — accented and unaccented artist

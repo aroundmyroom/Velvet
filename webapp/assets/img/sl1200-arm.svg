@@ -1,0 +1,29 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 453 353">
+  <!-- Rotating tonearm layer — same coordinate space as sl1200-deck.svg.
+       Pivot (395,90); stylus (233.5,271.5); effective length ≈ 242 mm. -->
+  <g fill="none" stroke-linecap="round" stroke-linejoin="round">
+    <!-- counterweight behind the pivot, opposite the tube's rear tangent -->
+    <line x1="395" y1="90" x2="420" y2="61" stroke="#4c4c54" stroke-width="7"/>
+    <circle cx="428" cy="53" r="15" fill="#33333a" stroke="#8b8b93" stroke-width="2"/>
+    <circle cx="428" cy="53" r="15" stroke="#22222a" stroke-width="2" stroke-dasharray="1.6 2.2"/>
+    <circle cx="428" cy="53" r="6.5" fill="#1a1a20" stroke="#6c6c76" stroke-width="1.2"/>
+
+    <!-- gimbal collar over the base -->
+    <circle cx="395" cy="90" r="12" fill="#26262c" stroke="#8b8b93" stroke-width="1.8"/>
+    <circle cx="395" cy="90" r="5" fill="#d8d8de" stroke="none"/>
+
+    <!-- S-tube, traced from the real arm: single dominant east bow (max 12%
+         of chord at t=0.52), long left hook to the headshell, never west of
+         the pivot-stylus chord -->
+    <path d="M395,90 C381,110 366,131 353,154 C344,175 340,192 333,204 C324,219 300,232 282,237 C270,241 262,247 256,252" stroke="#c9c9d0" stroke-width="7"/>
+    <path d="M395,90 C381,110 366,131 353,154 C344,175 340,192 333,204 C324,219 300,232 282,237 C270,241 262,247 256,252" stroke="#ffffff" stroke-opacity=".3" stroke-width="2.2"/>
+
+    <!-- headshell, angled inward (offset angle), with finger lift -->
+    <line x1="254" y1="254" x2="264" y2="261" stroke="#cfcfd6" stroke-width="2.5"/>
+    <line x1="256" y1="252" x2="238" y2="268" stroke="#9a9aa2" stroke-width="11"/>
+    <line x1="256" y1="252" x2="238" y2="268" stroke="#d0d0d6" stroke-width="4"/>
+    <!-- cartridge + stylus -->
+    <line x1="238" y1="268" x2="234" y2="271" stroke="#6a6a72" stroke-width="7.5"/>
+    <circle cx="233.5" cy="271.5" r="2.5" fill="#ff5050" stroke="none"/>
+  </g>
+</svg>
