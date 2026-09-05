@@ -2894,8 +2894,61 @@ body.audiobook-mode #ab-speed-btn{color:var(--primary);}
 .pnow-label{
   font-size:10px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;
   color:rgba(255,255,255,.7);margin-bottom:6px;
+  display:flex;align-items:center;gap:10px;flex-wrap:wrap;
 }
 :root.light .pnow-label{ color:rgba(12,12,26,.55); }
+
+/* Playing Now scrobble status badges */
+.pnow-scrobble-badges{display:inline-flex;align-items:center;gap:6px;}
+.pnow-scrobble-badge{
+  display:inline-flex;align-items:center;gap:4px;
+  padding:2px 8px;border-radius:99px;
+  font-size:10px;font-weight:600;letter-spacing:normal;
+  text-transform:none;line-height:1.4;
+  transition:color .2s ease,background .2s ease,border-color .2s ease;
+  user-select:none;
+}
+.pnow-scrobble-badge--off{
+  color:rgba(255,255,255,.4);
+  background:rgba(255,255,255,.07);
+  border:1px solid rgba(255,255,255,.12);
+}
+.pnow-scrobble-badge--pending{
+  color:#fb923c;
+  background:rgba(249,115,22,.18);
+  border:1px solid rgba(249,115,22,.45);
+}
+.pnow-scrobble-badge--ok{
+  color:#34d399;
+  background:rgba(52,211,153,.18);
+  border:1px solid rgba(52,211,153,.45);
+}
+.pnow-scrobble-badge--err{
+  color:#f87171;
+  background:rgba(248,113,113,.18);
+  border:1px solid rgba(248,113,113,.45);
+}
+
+:root.light .pnow-scrobble-badge--off{
+  color:rgba(12,12,26,.4);
+  background:rgba(0,0,0,.05);
+  border:1px solid rgba(0,0,0,.12);
+}
+:root.light .pnow-scrobble-badge--pending{
+  color:#ea580c;
+  background:rgba(234,88,12,.12);
+  border:1px solid rgba(234,88,12,.35);
+}
+:root.light .pnow-scrobble-badge--ok{
+  color:#16a34a;
+  background:rgba(22,163,74,.12);
+  border:1px solid rgba(22,163,74,.35);
+}
+:root.light .pnow-scrobble-badge--err{
+  color:#dc2626;
+  background:rgba(220,38,38,.12);
+  border:1px solid rgba(220,38,38,.35);
+}
 .pnow-title{
   font-size:clamp(22px,4vw,42px);font-weight:700;color:#fff;
   white-space:nowrap;overflow:hidden;text-overflow:ellipsis;

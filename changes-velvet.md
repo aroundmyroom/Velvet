@@ -1,3 +1,13 @@
+## v0.4.27 (2026-09-05)
+
+Playing Now scrobble status indicators — real-time Last.fm and ListenBrainz status badges.
+
+### Added: Scrobble status badges in Playing Now view
+- Added real-time Last.fm and ListenBrainz scrobble status badges right after the "NOW PLAYING" header in the Playing Now hero section.
+- Badges display greyed out when a service is disabled or unlinked, orange when enabled and waiting for the 30-second playback threshold, and green with a checkmark (`✓`) once successfully scrobbled (or red `✗` on failure).
+- Status updates automatically when tracks change, after 30 seconds of playback, or when services are connected/disconnected in settings.
+- Added i18n keys across all 12 locales (`nl` translated, others English placeholder).
+
 ## v0.4.26 (2026-09-03)
 
 Security maintenance release for the `qs` query-string dependency.

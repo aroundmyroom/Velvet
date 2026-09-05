@@ -1,5 +1,5 @@
 'use strict';
-const VELVET_VERSION = '0.4.26';
+const VELVET_VERSION = '0.4.27';
 // ── SERVER IDENTITY GUARD ────────────────────────────────────────────────────
 // Detects when this browser's localStorage belongs to a different Velvet
 // instance (fresh install, IP change, reverse-proxy swap, second server).
@@ -85,6 +85,7 @@ const S = {
   _recordingTimer: null,        // setInterval handle
   lastfmEnabled: false,
   lastfmHasApiKey: false,
+  lastfmLinked: false,
   listenbrainzEnabled: false,
   listenbrainzLinked: false,
   discordWebhookServerEnabled: false,
@@ -1638,9 +1639,6 @@ const Player = {
     highlightRow();
     refreshQueueUI();
     _syncQueueLabel();   // update BPM/key anchor chips on track change
-    // Always log play after 30 s — independent of whether scrobbling is enabled
-    clearTimeout(scrobbleTimer);
-    (function(){ const el = document.getElementById('np-scrobble-status'); if (el) { el.textContent = ''; el.className = 'np-scrobble-status'; } })();
     if (!s.isRadio && !s.isPodcast) {
       api('POST', 'api/v1/db/stats/log-play', { filePath: s.filepath }).catch(() => {});
       // Wrapped: stop any active radio or podcast event, then log play-start
@@ -1704,42 +1702,7 @@ const Player = {
         }).then(r => { _wrappedPodcastEventId = r?.eventId ?? null; }).catch(() => {});
       }
     }
-    if ((S.lastfmEnabled || (S.listenbrainzEnabled && S.listenbrainzLinked) || S.discordWebhookEnabled || S.customWebhooksEnabled.some(Boolean)) && !s.isRadio && !s.isPodcast) {
-      if (S.listenbrainzEnabled && S.listenbrainzLinked) {
-        api('POST', 'api/v1/listenbrainz/playing-now', { filePath: s.filepath }).catch(() => {});
-      }
-      scrobbleTimer = setTimeout(async () => {
-        const scrobbleEl = document.getElementById('np-scrobble-status');
-        const msgs = [];
-        if (S.lastfmEnabled) {
-          try {
-            await api('POST', 'api/v1/lastfm/scrobble-by-filepath', { filePath: s.filepath });
-            msgs.push('Last.fm ✓');
-          } catch (e) {
-            msgs.push('Last.fm: ' + (e?.message || 'failed'));
-          }
-        }
-        if (S.listenbrainzEnabled && S.listenbrainzLinked) {
-          try {
-            await api('POST', 'api/v1/listenbrainz/scrobble-by-filepath', { filePath: s.filepath });
-            msgs.push('ListenBrainz ✓');
-          } catch (e) {
-            msgs.push('ListenBrainz: ' + (e?.message || 'failed'));
-          }
-        }
-        if (S.discordWebhookEnabled) {
-          api('POST', 'api/v1/discord-webhook/scrobble-by-filepath', { filePath: s.filepath }).catch(() => {});
-        }
-        S.customWebhooksEnabled.forEach((on, i) => {
-          if (on) api('POST', 'api/v1/custom-webhooks/scrobble-by-filepath', { filePath: s.filepath, slot: i }).catch(() => {});
-        });
-        if (scrobbleEl && msgs.length) {
-          const ok = msgs.every(m => m.endsWith('✓'));
-          scrobbleEl.textContent = msgs.join(' · ');
-          scrobbleEl.className = 'np-scrobble-status ' + (ok ? 'np-scrobble-ok' : 'np-scrobble-err');
-        }
-      }, 30000);
-    }
+    _scheduleScrobble(s);
     persistQueue();
     _syncQueueToDb();
   },
@@ -11663,6 +11626,123 @@ function _launchPinnedViewOrHome() {
   viewHome(); // default — 'home' or no pin set
 }
 
+// ── SCROBBLE TRACKING & STATUS ──────────────────────────────
+let _scrobbleState = {
+  filepath: '',
+  lastfm: 'off',
+  listenbrainz: 'off',
+};
+
+function _initScrobbleState(song) {
+  if (!song || song.isRadio || song.isPodcast) {
+    _scrobbleState = { filepath: '', lastfm: 'off', listenbrainz: 'off' };
+  } else {
+    const lfmActive = !!(S.lastfmEnabled && S.lastfmHasApiKey && S.lastfmLinked);
+    const lbActive  = !!(S.listenbrainzEnabled && S.listenbrainzLinked);
+    _scrobbleState = {
+      filepath: song.filepath,
+      lastfm:       lfmActive ? 'pending' : 'off',
+      listenbrainz: lbActive     ? 'pending' : 'off',
+    };
+  }
+}
+
+function _renderPnowScrobbleBadges() {
+  const s = S.queue[S.idx];
+  if (!s || s.isRadio || s.isPodcast) return '';
+  if (_scrobbleState.filepath !== s.filepath) {
+    _initScrobbleState(s);
+  }
+
+  const lfmState = _scrobbleState.lastfm;
+  const lbState  = _scrobbleState.listenbrainz;
+
+  const lfmTitle = lfmState === 'ok' ? t('player.pnow.scrobbledLastfm')
+                 : lfmState === 'err' ? t('player.pnow.scrobbleFailedLastfm')
+                 : lfmState === 'pending' ? t('player.pnow.scrobblePendingLastfm')
+                 : t('player.pnow.scrobbleDisabledLastfm');
+
+  const lbTitle  = lbState === 'ok' ? t('player.pnow.scrobbledLb')
+                 : lbState === 'err' ? t('player.pnow.scrobbleFailedLb')
+                 : lbState === 'pending' ? t('player.pnow.scrobblePendingLb')
+                 : t('player.pnow.scrobbleDisabledLb');
+
+  const lfmLabel = 'Last.fm' + (lfmState === 'ok' ? ' ✓' : lfmState === 'err' ? ' ✗' : '');
+  const lbLabel  = 'ListenBrainz' + (lbState === 'ok' ? ' ✓' : lbState === 'err' ? ' ✗' : '');
+
+  return `<div class="pnow-scrobble-badges" id="pnow-scrobble-badges">
+    <span class="pnow-scrobble-badge pnow-scrobble-badge--${lfmState}" title="${esc(lfmTitle)}">${esc(lfmLabel)}</span>
+    <span class="pnow-scrobble-badge pnow-scrobble-badge--${lbState}" title="${esc(lbTitle)}">${esc(lbLabel)}</span>
+  </div>`;
+}
+
+function _updateScrobbleUI() {
+  const scrobbleEl = document.getElementById('np-scrobble-status');
+  if (scrobbleEl) {
+    const msgs = [];
+    if (_scrobbleState.lastfm === 'ok') msgs.push('Last.fm ✓');
+    else if (_scrobbleState.lastfm === 'err') msgs.push('Last.fm: failed');
+    if (_scrobbleState.listenbrainz === 'ok') msgs.push('ListenBrainz ✓');
+    else if (_scrobbleState.listenbrainz === 'err') msgs.push('ListenBrainz: failed');
+
+    if (msgs.length) {
+      const ok = msgs.every(m => m.endsWith('✓'));
+      scrobbleEl.textContent = msgs.join(' · ');
+      scrobbleEl.className = 'np-scrobble-status ' + (ok ? 'np-scrobble-ok' : 'np-scrobble-err');
+    } else {
+      scrobbleEl.textContent = '';
+      scrobbleEl.className = 'np-scrobble-status';
+    }
+  }
+
+  const badgesEl = document.getElementById('pnow-scrobble-badges');
+  if (badgesEl) {
+    badgesEl.outerHTML = _renderPnowScrobbleBadges();
+  }
+}
+
+function _scheduleScrobble(s) {
+  clearTimeout(scrobbleTimer);
+  _initScrobbleState(s);
+  _updateScrobbleUI();
+
+  if ((S.lastfmEnabled || (S.listenbrainzEnabled && S.listenbrainzLinked) || S.discordWebhookEnabled || S.customWebhooksEnabled.some(Boolean)) && !s.isRadio && !s.isPodcast) {
+    if (S.listenbrainzEnabled && S.listenbrainzLinked) {
+      api('POST', 'api/v1/listenbrainz/playing-now', { filePath: s.filepath }).catch(() => {});
+    }
+    scrobbleTimer = setTimeout(async () => {
+      const msgs = [];
+      if (S.lastfmEnabled) {
+        try {
+          await api('POST', 'api/v1/lastfm/scrobble-by-filepath', { filePath: s.filepath });
+          _scrobbleState.lastfm = 'ok';
+          msgs.push('Last.fm ✓');
+        } catch (e) {
+          _scrobbleState.lastfm = 'err';
+          msgs.push('Last.fm: ' + (e?.message || 'failed'));
+        }
+      }
+      if (S.listenbrainzEnabled && S.listenbrainzLinked) {
+        try {
+          await api('POST', 'api/v1/listenbrainz/scrobble-by-filepath', { filePath: s.filepath });
+          _scrobbleState.listenbrainz = 'ok';
+          msgs.push('ListenBrainz ✓');
+        } catch (e) {
+          _scrobbleState.listenbrainz = 'err';
+          msgs.push('ListenBrainz: ' + (e?.message || 'failed'));
+        }
+      }
+      if (S.discordWebhookEnabled) {
+        api('POST', 'api/v1/discord-webhook/scrobble-by-filepath', { filePath: s.filepath }).catch(() => {});
+      }
+      S.customWebhooksEnabled.forEach((on, i) => {
+        if (on) api('POST', 'api/v1/custom-webhooks/scrobble-by-filepath', { filePath: s.filepath, slot: i }).catch(() => {});
+      });
+      _updateScrobbleUI();
+    }, 30000);
+  }
+}
+
 // ── PLAYING NOW VIEW ──────────────────────────────────────────────────────────
 // Full-page "Spotify-style" view for the currently playing track:
 //   hero (big art + title + artist), metadata table, artist bio (Last.fm),
@@ -11761,7 +11841,10 @@ async function _renderPlayingNow(fade) {
       <div class="pnow-hero-bg" id="pnow-bg" ${artU ? `style="background-image:url(${artU})"` : ''}></div>
       <div class="pnow-art">${artHtml}</div>
       <div class="pnow-hero-info">
-        <div class="pnow-label">${t('player.pnow.nowPlaying')}</div>
+        <div class="pnow-label">
+          <span>${t('player.pnow.nowPlaying')}</span>
+          ${_renderPnowScrobbleBadges()}
+        </div>
         <div class="pnow-title">${esc(s.title || s.filepath?.split('/').pop() || '—')}</div>
         ${artistLine}
         ${albumLine ? `<div class="pnow-album">${esc(albumLine)}</div>` : ''}
@@ -15856,7 +15939,7 @@ async function viewLastFM() {
 
   // Fetch current linked account
   let linkedUser = null;
-  try { const d = await api('GET', 'api/v1/lastfm/status'); linkedUser = d.linkedUser; } catch(_) {}
+  try { const d = await api('GET', 'api/v1/lastfm/status'); linkedUser = d.linkedUser; S.lastfmLinked = !!d.linkedUser; } catch(_) {}
 
   setBody(`
     <div class="playback-panel">
@@ -15905,6 +15988,8 @@ async function viewLastFM() {
   document.getElementById('lfm-disconnect-btn')?.addEventListener('click', async () => {
     try {
       await api('POST', 'api/v1/lastfm/disconnect', {});
+      S.lastfmLinked = false;
+      _updateScrobbleUI();
       toast(t('player.toast.lastfmDisconnected'));
       viewLastFM();
     } catch(e) { toast(t('player.toast.errorMsg', { error: e.message })); }
@@ -15919,6 +16004,8 @@ async function viewLastFM() {
     btn.disabled = true; btn.textContent = 'Connecting…';
     try {
       await api('POST', 'api/v1/lastfm/connect', { lastfmUser: user, lastfmPassword: pass });
+      S.lastfmLinked = true;
+      _updateScrobbleUI();
       toast(t('player.toast.lastfmConnected', { user }));
       viewLastFM();
     } catch(e) {
@@ -15984,6 +16071,7 @@ async function viewListenBrainz() {
     try {
       await api('POST', 'api/v1/listenbrainz/disconnect', {});
       S.listenbrainzLinked = false;
+      _updateScrobbleUI();
       toast(t('player.toast.listenbrainzRemoved'));
       viewListenBrainz();
     } catch(e) { toast(t('player.toast.errorMsg', { error: e.message })); }
@@ -15997,6 +16085,7 @@ async function viewListenBrainz() {
     try {
       await api('POST', 'api/v1/listenbrainz/connect', { lbToken: token });
       S.listenbrainzLinked = true;
+      _updateScrobbleUI();
       toast(t('player.toast.listenbrainzConnected'));
       viewListenBrainz();
     } catch(e) {
@@ -21310,38 +21399,7 @@ function _doXfadeHandoff(nextIdx) {
       source:    _wrappedSource(),
     }).then(r => { _wrappedEventId = r?.eventId ?? null; }).catch(() => {});
   }
-  if ((S.lastfmEnabled || (S.listenbrainzEnabled && S.listenbrainzLinked) || S.discordWebhookEnabled || S.customWebhooksEnabled.some(Boolean)) && !s.isRadio && !s.isPodcast) {
-    if (S.listenbrainzEnabled && S.listenbrainzLinked) {
-      api('POST', 'api/v1/listenbrainz/playing-now', { filePath: s.filepath }).catch(() => {});
-    }
-    scrobbleTimer = setTimeout(async () => {
-      const scrobbleEl = document.getElementById('np-scrobble-status');
-      const msgs = [];
-      if (S.lastfmEnabled) {
-        try {
-          await api('POST', 'api/v1/lastfm/scrobble-by-filepath', { filePath: s.filepath });
-          msgs.push('Last.fm ✓');
-        } catch (e) { msgs.push('Last.fm: ' + (e?.message || 'failed')); }
-      }
-      if (S.listenbrainzEnabled && S.listenbrainzLinked) {
-        try {
-          await api('POST', 'api/v1/listenbrainz/scrobble-by-filepath', { filePath: s.filepath });
-          msgs.push('ListenBrainz ✓');
-        } catch (e) { msgs.push('ListenBrainz: ' + (e?.message || 'failed')); }
-      }
-      if (S.discordWebhookEnabled) {
-        api('POST', 'api/v1/discord-webhook/scrobble-by-filepath', { filePath: s.filepath }).catch(() => {});
-      }
-      S.customWebhooksEnabled.forEach((on, i) => {
-        if (on) api('POST', 'api/v1/custom-webhooks/scrobble-by-filepath', { filePath: s.filepath, slot: i }).catch(() => {});
-      });
-      if (scrobbleEl && msgs.length) {
-        const ok = msgs.every(m => m.endsWith('✓'));
-        scrobbleEl.textContent = msgs.join(' · ');
-        scrobbleEl.className = 'np-scrobble-status ' + (ok ? 'np-scrobble-ok' : 'np-scrobble-err');
-      }
-    }, 30000);
-  }
+  _scheduleScrobble(s);
   persistQueue();
   _syncQueueToDb();
 }
@@ -21716,7 +21774,7 @@ async function tryLogin(username, password) {
     S.isAdmin = true;
     try { const dc = await api('GET', 'api/v1/admin/discogs/config'); S.discogsEnabled = dc?.enabled === true; S.discogsAllowUpdate = dc?.allowArtUpdate === true; S.allowId3Edit = dc?.allowId3Edit === true; S.itunesEnabled = dc?.itunesEnabled !== false; S.deezerEnabled = dc?.deezerEnabled !== false; } catch(_) { S.discogsEnabled = false; S.discogsAllowUpdate = false; S.allowId3Edit = false; S.itunesEnabled = false; S.deezerEnabled = false; }
   } catch(_) { S.isAdmin = false; S.discogsEnabled = false; S.discogsAllowUpdate = false; S.allowId3Edit = false; S.itunesEnabled = false; S.deezerEnabled = false; }
-  try { const ls = await api('GET', 'api/v1/lastfm/status'); S.lastfmEnabled = ls?.serverEnabled !== false; S.lastfmHasApiKey = ls?.hasApiKey === true; } catch(_) { S.lastfmEnabled = true; S.lastfmHasApiKey = false; }
+  try { const ls = await api('GET', 'api/v1/lastfm/status'); S.lastfmEnabled = ls?.serverEnabled !== false; S.lastfmHasApiKey = ls?.hasApiKey === true; S.lastfmLinked = !!ls?.linkedUser; } catch(_) { S.lastfmEnabled = true; S.lastfmHasApiKey = false; S.lastfmLinked = false; }
   // If similar-artists was saved on but there's no API key, clear it so AutoDJ doesn't try to use it
   if (!S.lastfmHasApiKey && S.djSimilar) { S.djSimilar = false; localStorage.removeItem(_uKey('dj_similar')); }
   try { const lb = await api('GET', 'api/v1/listenbrainz/status'); S.listenbrainzEnabled = lb?.serverEnabled === true; S.listenbrainzLinked = lb?.linked === true; } catch(_) { S.listenbrainzEnabled = false; S.listenbrainzLinked = false; }
@@ -21776,6 +21834,7 @@ async function checkSession() {
       ]);
       S.lastfmEnabled        = ls?.serverEnabled !== false;
       S.lastfmHasApiKey      = ls?.hasApiKey === true;
+      S.lastfmLinked         = !!ls?.linkedUser;
       S.listenbrainzEnabled  = lb?.serverEnabled === true;
       S.listenbrainzLinked   = lb?.linked === true;
       S.discordWebhookServerEnabled = dw?.serverEnabled === true;
@@ -22098,6 +22157,7 @@ function showApp() {
       const ls = await api('GET', 'api/v1/lastfm/status');
       S.lastfmEnabled = ls?.serverEnabled !== false;
       S.lastfmHasApiKey = ls?.hasApiKey === true;
+      S.lastfmLinked = !!ls?.linkedUser;
       const lastfmBtn = document.getElementById('lastfm-nav-btn');
       if (lastfmBtn) {
         if (S.lastfmEnabled) lastfmBtn.classList.remove('hidden');
