@@ -2174,6 +2174,41 @@ function _normArtist(name) {
     .trim();
 }
 
+// Diacritic + typographic folding on top of _normArtist. Last.fm and library
+// tags frequently disagree on accents ("Tiësto" vs "Tiesto", "André" vs
+// "Andre"), curly apostrophes ("O’Neal" vs "O'Neal") and Unicode hyphens
+// ("All‐4‐One" vs "All-4-One") — without folding those artists silently drop
+// out of the Auto-DJ similar-artists pool. NFD strips combining marks; the
+// map covers letters NFD cannot decompose plus typographic punctuation.
+const _FOLD_CHARS = { 'ø':'o', 'æ':'ae', 'ß':'ss', 'đ':'d', 'ł':'l', 'ð':'d', 'þ':'th', '’':"'", '‘':"'", '‐':'-', '‑':'-', '–':'-', '—':'-' };
+function _foldArtistKey(name) {
+  return _normArtist(name)
+    .normalize('NFD')
+    .replaceAll(/[\u0300-\u036f]/g, '')
+    .replaceAll(/[øæßđłðþ’‘‐‑–—]/g, ch => _FOLD_CHARS[ch]);
+}
+
+// Lazily-built folded-name index over artists_normalized, rebuilt when the
+// row count changes (a scan added/removed artists). Count-based invalidation
+// can miss same-count edits — acceptable for a last-resort fuzzy tier.
+let _foldedArtistIndex = null;
+let _foldedArtistIndexCount = -1;
+function _getFoldedArtistIndex() {
+  const count = db.prepare('SELECT COUNT(*) AS c FROM artists_normalized').get().c;
+  if (_foldedArtistIndex && count === _foldedArtistIndexCount) return _foldedArtistIndex;
+  const idx = new Map();
+  for (const row of db.prepare('SELECT artist_clean, artist_raw_variants FROM artists_normalized').all()) {
+    const key = _foldArtistKey(row.artist_clean || '');
+    if (!key) continue;
+    let set = idx.get(key);
+    if (!set) { set = new Set(); idx.set(key, set); }
+    try { for (const v of JSON.parse(row.artist_raw_variants)) set.add(v); } catch { set.add(row.artist_clean); }
+  }
+  _foldedArtistIndex = idx;
+  _foldedArtistIndexCount = count;
+  return idx;
+}
+
 /**
  * Given a list of artist names from an external source (e.g. Last.fm similar-artists),
  * resolve each against the library's artists_normalized table using fuzzy normalization.
@@ -2183,6 +2218,11 @@ function _normArtist(name) {
  * Matching strategy (in order):
  *   1. Exact case-insensitive match on artist_clean
  *   2. Normalized match: '&' ↔ 'and', whitespace collapsed (both sides normalized)
+ *   3. Diacritic-folded match (always unioned in): accents stripped, curly
+ *      quotes / Unicode hyphens folded ("Tiësto" ↔ "Tiesto") — JS-side via a
+ *      cached folded index, since SQLite cannot fold diacritics natively.
+ *      Unioned rather than fallback-only because the library may hold both
+ *      spellings as separate artist rows.
  *
  * Artists not found in the library are silently dropped so the caller gets only
  * names that will actually match rows in the files table.
@@ -2204,11 +2244,16 @@ export function resolveArtistNamesForDJ(names) {
     if (!name || typeof name !== 'string') continue;
     let row = exactStmt.get(name.trim());
     if (!row) row = normStmt.get(_normArtist(name));
-    if (!row) continue;
-    try {
-      const variants = JSON.parse(row.artist_raw_variants);
-      for (const v of variants) result.add(v);
-    } catch (e) { console.debug('[velvet]', e?.message ?? e); }
+    if (row) {
+      try {
+        const variants = JSON.parse(row.artist_raw_variants);
+        for (const v of variants) result.add(v);
+      } catch (e) { console.debug('[velvet]', e?.message ?? e); }
+    }
+    // Always union folded matches too — the library may hold BOTH spellings
+    // ("Alizée" and "Alizee") as separate artist rows for the same artist.
+    const folded = _getFoldedArtistIndex().get(_foldArtistKey(name));
+    if (folded) for (const v of folded) result.add(v);
   }
   return [...result];
 }

@@ -2,6 +2,8 @@
 
 Velvet implements the **Subsonic REST API 1.16.1** plus the **Open Subsonic** extensions, making it compatible with the large ecosystem of Subsonic-compatible clients.
 
+> The upstream project removed its Subsonic API in September 2026. Velvet's implementation is its own code and is maintained independently — Subsonic client support is here to stay.
+
 ### Tested clients (confirmed working)
 
 | Client | Platform | Notes |
@@ -11,6 +13,7 @@ Velvet implements the **Subsonic REST API 1.16.1** plus the **Open Subsonic** ex
 | **Substreamer** | iOS | ✅ |
 | **Ultrasonic** | Android | ✅ |
 | **Feishin** | Desktop | ✅ |
+| **KSub** (Astiga) | Android / iOS | Endpoint audit verified — all 14 endpoints it calls are implemented, including `enc:` hex password auth and `.view` suffixes. Requires a per-user Subsonic password (no token/apiKey auth in the client) |
 | Clementine / Strawberry | Desktop | ✅ |
 | Nautiline | iOS | ✅ |
 | Any Subsonic 1.16.1 client | — | Should work |

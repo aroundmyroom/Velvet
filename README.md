@@ -119,11 +119,11 @@ Velvet streams your local music collection to any browser, phone, **Samsung Smar
 
 Three independent filters that work together and fall back gracefully:
 
-1. **Similar Artists** — Last.fm API, musically related artists to what's playing now
+1. **Similar Artists** — Last.fm API, musically related artists to what's playing now — diacritic-tolerant name matching ("Tiësto" ↔ "Tiesto", "André" ↔ "Andre")
 2. **BPM Continuity** — ±N BPM tolerance (configurable), with octave equivalence (72 BPM ≈ 145 BPM)
 3. **Harmonic Mixing** — Camelot wheel, six compatible keys per track
 
-Additional controls: keyword filter, genre whitelist/blacklist, minimum star rating, artist cooldown, library scope. Genre drift prevention kicks in when one genre dominates three consecutive tracks or 40% of the last 25 — an escape pick is queued automatically.
+Additional controls: keyword filter, genre whitelist/blacklist, minimum star rating, track-length window (min/max duration), artist cooldown, library scope. Genre drift prevention kicks in when one genre dominates three consecutive tracks or 40% of the last 25 — an escape pick is queued automatically.
 
 BPM and key session anchors lock to the first filtered pick and persist across page refresh. [Full docs →](docs/bpm-harmonic.md)
 
@@ -182,12 +182,12 @@ Dynamic filter-based playlists that re-evaluate every time you open them:
 
 | Integration | What it does |
 |---|---|
-| **Last.fm** | Scrobbling + Now Playing + Similar Artists for Auto-DJ. Per-user session keys, batch scrobble. [Docs →](docs/listenbrainz.md) |
-| **ListenBrainz** | Listening Now + scrobble events. Per-user token, runs alongside Last.fm. [Docs →](docs/listenbrainz.md) |
+| **Last.fm** | Scrobbling + Now Playing + Similar Artists for Auto-DJ. Per-user session keys, batch scrobble, live scrobble-status badges in Playing Now. [Docs →](docs/listenbrainz.md) |
+| **ListenBrainz** | Listening Now + scrobble events. Per-user token, runs alongside Last.fm, live scrobble-status badges in Playing Now. [Docs →](docs/listenbrainz.md) |
 | **Discogs** | Artist images, genre suggestions, album art. Needs API credentials. |
 | **Sonos** | Auto-discovery, cast current track, queue mirroring, bidirectional pause/resume, hi-res transcoding, favourites playback (Spotify, Apple Music, TuneIn). [Docs →](docs/audio-output.md) |
 | **DLNA / UPnP** | Browse and stream over LAN to Smart TVs, Kodi, BubbleUPnP, AV receivers. [Docs →](docs/dlna.md) |
-| **Subsonic API** | Full 1.16.1 + Open Subsonic compatibility. Works with Symfonium, DSub, Ultrasonic, and more. [Docs →](docs/subsonic.md) |
+| **Subsonic API** | Full 1.16.1 + Open Subsonic compatibility. Works with Symfonium, DSub, Ultrasonic, KSub (Astiga), and more. [Docs →](docs/subsonic.md) |
 | **Samsung Smart TV** | Native **Velvet TV** app for Tizen 5.5+ — full remote/D-pad navigation, albums (CUE + multi-disc), A–Z quick-jump, VU meter and visualizer. Side-load the `.wgt` with Apps2Samsung. [Docs →](docs/tizen-tv.md) |
 | **Sharesonic (Android)** | Community Android app for Velvet. [GitHub →](https://github.com/Tiritibambix/Sharesonic) |
 
@@ -236,6 +236,7 @@ Full local play history — no external calls, no historical imports needed:
 ### UI & Accessibility
 
 - Five themes: Velvet (default), Dark, Light, High-contrast (WCAG AAA), Colorblind-safe
+- Collapsible sidebar — one click shrinks it to an icon-only rail, remembered across sessions
 - Dynamic accent colour extracted from album art
 - ARIA live regions (track changes announced to screen readers)
 - Full keyboard navigation — all controls reachable, focus ring on keyboard use

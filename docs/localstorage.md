@@ -42,6 +42,7 @@ These identify the session itself or are set outside `app.js`:
 | `ms2_user` | string | Username matching the token payload |
 | `ms2_logged_out` | `'1'` / absent | Set on explicit logout; prevents cookie-auth re-entry |
 | `ms2_show_classic` | `'1'` / absent | Written by the admin panel; shows classic-UI links |
+| `ms2_sidebar_collapsed` | `'1'` / `'0'` | Sidebar collapsed to the icon-only rail; applied on script load, toggled via the sidebar collapse button |
 
 ---
 

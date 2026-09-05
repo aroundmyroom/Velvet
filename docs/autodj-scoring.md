@@ -84,6 +84,24 @@ into BPM/genre/harmonic instead of being wasted — those signals become the
 primary basis for the pick, matching the intent that when one "nice to have"
 signal has nothing to offer, the others should matter more, not less.
 
+## Similar-artist name resolution (diacritic folding)
+
+Last.fm names are matched against the library by `resolveArtistNamesForDJ()`
+in [src/db/sqlite-backend.js](../src/db/sqlite-backend.js) using three
+unioned tiers:
+
+1. Exact case-insensitive match on `artist_clean`.
+2. Normalized match — `&` ↔ `and`, whitespace collapsed (SQL-side).
+3. Diacritic-folded match — Unicode NFD strips accents (é→e, ö→o), a small
+   map folds letters NFD can't decompose (ø, æ, ß, đ, ł, ð, þ) and
+   typographic punctuation (curly apostrophes, Unicode hyphens). JS-side via
+   a cached folded index over `artists_normalized` (SQLite cannot fold
+   diacritics natively; the index is rebuilt when the artist count changes).
+
+Tier 3 is unioned rather than fallback-only, so "Tiësto" and "Tiesto" — or
+"Alizée" and "Alizee" held as two separate artist rows — merge into one
+variant pool.
+
 ## Backward compatibility
 
 `returnAll` is opt-in. `webapp/tizen/app.js` (Samsung TV) and

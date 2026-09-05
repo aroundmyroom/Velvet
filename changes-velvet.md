@@ -1,3 +1,25 @@
+## v0.4.29 (2026-09-05)
+
+Diacritic folding in similar-artist matching — accented and unaccented artist
+spellings now resolve to the same library artist.
+
+### Improved: Auto-DJ similar-artist name resolution folds diacritics
+- `resolveArtistNamesForDJ()` gained a third matching tier: names are folded
+via Unicode NFD (accents stripped: é→e, ö→o, ü→u), plus a small map for letters
+NFD can't decompose (ø, æ, ß, đ, ł, ð, þ) and typographic punctuation (curly
+apostrophes ’ → ', Unicode hyphens ‐ ‑ – — → -).
+- Previously, when Last.fm returned "Tiësto" but the library tag said "Tiesto"
+(or "André Hazes" vs "Andre Hazes"), the match failed silently and the artist
+was dropped from the Auto-DJ similar-artists pool. This library has 409 artists
+with non-ASCII names.
+- The folded tier is unioned with the exact/normalized tiers, so libraries that
+hold both spellings as separate artist rows ("Alizée" and "Alizee") get all
+variants merged into one pool.
+- Implemented JS-side with a lazily-built folded index over
+`artists_normalized` (rebuilt when the artist count changes), since SQLite
+cannot fold diacritics natively. Ported from an upstream mStream Velvet-cleanup
+improvement.
+
 ## v0.4.28 (2026-09-05)
 
 Auto-DJ queue-end fixes — NEXT no longer wraps to the first song, and skips are instant.
