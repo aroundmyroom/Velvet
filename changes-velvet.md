@@ -1,3 +1,8 @@
+## v0.5.1 (2026-09-06)
+
+Maintenance — fine-tuning and precision fixes for recent work. If you know,
+you know.
+
 ## v0.5.0 (2026-09-05)
 
 Velvet keeps secrets — four discoveries hide in plain sight, and this release

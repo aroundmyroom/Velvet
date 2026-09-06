@@ -2903,6 +2903,12 @@ body.vinyl-mode .pnow-art::before{
     conic-gradient(rgba(255,255,255,.12) 0 12deg, transparent 12deg 168deg,
                    rgba(255,255,255,.08) 168deg 192deg, transparent 192deg 348deg,
                    rgba(255,255,255,.12) 348deg 360deg),
+    radial-gradient(circle closest-side at 50% 50%, transparent 0 93.2%, #08080b 93.2% 94.6%, transparent 94.6%),
+    radial-gradient(circle closest-side at 50% 50%, transparent 0 96.2%, #08080b 96.2% 97.6%, transparent 97.6%),
+    radial-gradient(circle closest-side at 50% 50%, transparent 0 92%, #1a1a20 92% 100%),
+    radial-gradient(circle closest-side at 50% 50%, transparent 0 40.6%, #08080b 40.6% 41.6%, transparent 41.6%),
+    radial-gradient(circle closest-side at 50% 50%, transparent 0 43.4%, rgba(255,255,255,.10) 43.4% 44%, transparent 44.6%),
+    radial-gradient(circle closest-side at 50% 50%, #1a1a20 0 46%, rgba(26,26,32,0) 46.5%),
     repeating-radial-gradient(circle at 50% 50%, #121216 0 2px, #1d1d22 2px 3px);
   box-shadow:0 12px 40px rgba(0,0,0,.7), 0 0 0 1px rgba(255,255,255,.06);
   animation:vinyl-spin 1.8s linear infinite; /* 33⅓ RPM */
@@ -2928,7 +2934,7 @@ body.vinyl-mode .pnow-art::after{
   width:166.6%; height:129.8%;
   background:url('/assets/img/sl1200-arm.svg') center/100% 100% no-repeat;
   filter:drop-shadow(2px 3px 3px rgba(0,0,0,.55));
-  transform:rotate(var(--vinyl-arm, -3.4deg));
+  transform:rotate(var(--vinyl-arm, -3.7deg));
   transform-origin:87.2% 25.5%;
   transition:transform .5s linear;
   pointer-events:none;

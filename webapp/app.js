@@ -1,5 +1,5 @@
 'use strict';
-const VELVET_VERSION = '0.5.0';
+const VELVET_VERSION = '0.5.1';
 // ── SERVER IDENTITY GUARD ────────────────────────────────────────────────────
 // Detects when this browser's localStorage belongs to a different Velvet
 // instance (fresh install, IP change, reverse-proxy swap, second server).
@@ -25778,7 +25778,7 @@ window.EGG = (() => {
   let fader = 1;          // pitch fader multiplier 0.90..1.10
   let speed = 1;          // 33 rpm = 1, 45 rpm = 45/33.333 = 1.35
   const RPM45 = 1.35;
-  const ARM_START = -3.4, ARM_SWEEP = 19.8; // deg: lead-in groove → run-out
+  const ARM_START = -3.7, ARM_SWEEP = 18.5; // deg: outer lead-in ring → run-out ring (cartridge-tip calibrated)
   const F_CY = 135, F_HALF = 40.5, F_H = 9; // fader slot centre/travel, art px
   const _sync = () => document.body.classList.toggle('vinyl-paused', audioEl.paused);
   function _applyRate() {
