@@ -653,6 +653,8 @@ export function init(dbDirectory) {
   try { db.exec("ALTER TABLE artists_normalized ADD COLUMN genre         TEXT"); }             catch { /* already exists */ }
   try { db.exec("ALTER TABLE artists_normalized ADD COLUMN country       TEXT"); }             catch { /* already exists */ }
   try { db.exec("ALTER TABLE artists_normalized ADD COLUMN formed_year   INTEGER"); }          catch { /* already exists */ }
+  try { db.exec("ALTER TABLE artists_normalized ADD COLUMN sort_name     TEXT"); }             catch { /* already exists */ }
+  db.exec('CREATE INDEX IF NOT EXISTS idx_artists_normalized_sort_name ON artists_normalized(sort_name)');
 
   // ── ReplayGain 2.0 / EBU R128 measurement columns (added v6.14.0) ─────────
   // Worker-measured values (rsgain / ffmpeg ebur128)
@@ -817,7 +819,7 @@ export function init(dbDirectory) {
     // Artist search — static SQL (all vpath filtering done in JS); cached here
     // to avoid re-prepare on every keystroke.
     searchArtists: db.prepare(`
-      SELECT an.id, an.artist_clean, an.artist_raw_variants, an.vpaths_json
+      SELECT an.id, an.artist_clean, an.artist_raw_variants, an.vpaths_json, an.sort_name
       FROM artists_normalized an
       JOIN fts_artists fa ON an.id = fa.rowid
       WHERE fts_artists MATCH ?
@@ -1935,12 +1937,12 @@ export function getArtistsByLetter(letter, includeFilepathPrefixes) {
   let rows;
   if (letter === '0') {
     rows = db.prepare(
-      "SELECT * FROM artists_normalized WHERE artist_clean != '' AND artist_clean GLOB '[0-9]*' ORDER BY artist_clean COLLATE NOCASE"
+      "SELECT * FROM artists_normalized WHERE artist_clean != '' AND artist_clean GLOB '[0-9]*' ORDER BY sort_name COLLATE NOCASE, artist_clean COLLATE NOCASE"
     ).all();
   } else {
     const l = letter.toUpperCase();
     rows = db.prepare(
-      "SELECT * FROM artists_normalized WHERE artist_clean != '' AND upper(substr(artist_clean,1,1)) = ? ORDER BY artist_clean COLLATE NOCASE"
+      "SELECT * FROM artists_normalized WHERE artist_clean != '' AND upper(substr(artist_clean,1,1)) = ? ORDER BY sort_name COLLATE NOCASE, artist_clean COLLATE NOCASE"
     ).all(l);
   }
   // For child-only users restrict to artists that have files in the allowed prefix.

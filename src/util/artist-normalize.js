@@ -130,8 +130,13 @@ function stripDigitPrefix(raw) {
   return r ? r.stripped : null;
 }
 
+const FOLD_MAP = { 'ø': 'o', 'æ': 'ae', 'ß': 'ss', 'đ': 'd', 'ł': 'l', 'ð': 'd', 'þ': 'th' };
+
 function toKey(raw) {
-  return raw.toLowerCase().trim();
+  return String(raw || '').toLowerCase().trim()
+    .normalize('NFD')
+    .replaceAll(/[\u0300-\u036f]/g, '')
+    .replaceAll(/[øæßđłðþ]/g, ch => FOLD_MAP[ch]);
 }
 
 // Some malformed tags contain stacked prefixes, e.g. "02 B1.Tom Hooker".
@@ -155,8 +160,13 @@ function stripNestedPaddedPrefixes(name) {
  */
 function pickCanonicalName(variants) {
   const clean = variants.filter(v => !parseDigitPrefix(v.name) && !parseUnderscorePrefix(v.name));
-  const pool  = clean.length ? clean : variants;
-  pool.sort((a, b) => b.count - a.count || a.name.localeCompare(b.name));
+  const pool  = (clean.length ? clean : variants).toSorted((a, b) => {
+    if (b.count !== a.count) return b.count - a.count;
+    const ak = toKey(a.name);
+    const bk = toKey(b.name);
+    if (ak !== bk) return ak < bk ? -1 : 1;
+    return a.name < b.name ? -1 : a.name > b.name ? 1 : 0;
+  });
   const winner = pool[0].name;
   if (!clean.length) {
     const prefix = parseDigitPrefix(winner) || parseUnderscorePrefix(winner);

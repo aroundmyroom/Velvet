@@ -13,7 +13,7 @@
 
 import { workerData, parentPort } from 'node:worker_threads';
 import { DatabaseSync } from 'node:sqlite';
-import { buildArtistGroups } from './artist-normalize.js';
+import { buildArtistGroups, toKey } from './artist-normalize.js';
 
 const { dbPath, vpaths, includeFilepathPrefixes, excludeFilepathPrefixes } = workerData;
 
@@ -87,7 +87,7 @@ try {
   const groups = buildArtistGroups(countRows);
 
   const existing = db.prepare(
-    'SELECT artist_clean, bio, image_file, image_source, last_fetched, image_flag_wrong, name_override, fanart_file, mbid, genre, country, formed_year FROM artists_normalized'
+    'SELECT artist_clean, bio, image_file, image_source, last_fetched, image_flag_wrong, name_override, fanart_file, mbid, genre, country, formed_year, sort_name FROM artists_normalized'
   ).all();
   const existingMap = new Map(existing.map(r => [r.artist_clean.toLowerCase(), r]));
   // Secondary index by sanitized key (same formula as image filenames):
@@ -107,8 +107,8 @@ try {
     INSERT INTO artists_normalized
       (artist_clean, artist_raw_variants, vpaths_json, bio, image_file, image_source,
        last_fetched, image_flag_wrong, name_override, song_count,
-       fanart_file, mbid, genre, country, formed_year)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       fanart_file, mbid, genre, country, formed_year, sort_name)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
 
   for (const [, group] of groups) {
@@ -122,6 +122,7 @@ try {
       || existingBySanitized.get(prevKey.replaceAll(/[^a-z0-9_-]/g, '_'))
       || null;
     const displayName = (prev?.name_override) ? prev.artist_clean : group.canonicalName;
+    const sortName = toKey(displayName);
     ins.run(
       displayName,
       JSON.stringify(group.rawVariants.map(v => v.name)),
@@ -137,7 +138,8 @@ try {
       prev ? (prev.mbid || null) : null,
       prev ? (prev.genre || null) : null,
       prev ? (prev.country || null) : null,
-      prev ? (prev.formed_year || null) : null
+      prev ? (prev.formed_year || null) : null,
+      sortName
     );
   }
 

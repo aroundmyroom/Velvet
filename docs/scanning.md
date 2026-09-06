@@ -195,6 +195,13 @@ Velvet supports two database backends:
 
 `artist_id` and `album_id` are computed at scan time and backfilled on startup for any records that predate their introduction.
 
+**Multi-value artist tags are never split.** music-metadata pre-splits some
+artist tags (ID3v2.3 `/` separators, multiple Vorbis `ARTIST` comments,
+NUL-separated ID3v2.4 frames); when a split is detected the scanner restores
+the as-written value from the container's native frame (`TPE1` / `ARTIST` /
+`©ART`), joining genuinely multi-valued frames with `", "` — so `AC/DC` stays
+`AC/DC` and a two-value `ARTIST` frame becomes `A, B`, exactly as tagged.
+
 The engine can be changed in Admin → DB.  A rescan is required after switching engines.
 
 ---

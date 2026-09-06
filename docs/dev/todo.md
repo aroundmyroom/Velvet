@@ -4,6 +4,16 @@
 
 ## NOW — In Progress / Remaining
 
+### Artist and Album Identity Improvements
+
+- [x] Fold diacritics in the existing artist grouping key so accented and
+  unaccented tags share one identity while display names and raw variants stay
+  unchanged.
+- [x] Make canonical artist display-name selection deterministic and
+  non-mutating; preserve admin overrides.
+- [x] Add a separate artist sort-name field/election for navigation without
+  changing the displayed canonical name.
+
 ### Scheduled Backup — Velvet Data (Admin → Directories)
 
 Automated daily backup of all Velvet cache and data to a user-chosen folder (NAS, external drive, etc.), with independently-extractable zip snapshots and configurable retention.

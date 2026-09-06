@@ -1187,6 +1187,26 @@ async function _parseFileWithFallback(thisSong) {
   }
 }
 
+// Raw as-written artist text from the container's primary tag frame
+// (ID3v2 TPE1 / TP1, Vorbis/APE ARTIST, MP4 ©ART) — bypasses music-metadata's
+// "/" pre-split. Multi-value frames (real arrays) are joined with ", ".
+function _nativeArtistText(nativeInfo) {
+  const FRAME_IDS = new Set(['TPE1', 'TP1', 'ARTIST', 'Artist', 'artist', '©ART', '----:com.apple.iTunes:ARTIST']);
+  for (const fmt of Object.keys(nativeInfo || {})) {
+    const parts = [];
+    for (const item of nativeInfo[fmt] || []) {
+      if (!FRAME_IDS.has(item.id)) continue;
+      const v = item.value;
+      const s = Array.isArray(v) ? v.map(x => String(x).trim()).filter(Boolean).join(', ')
+        : (v && typeof v === 'object' && v.text != null) ? String(v.text)
+        : v != null ? String(v) : '';
+      for (const p of s.split('\0')) { const t = p.trim(); if (t) parts.push(t); }
+    }
+    if (parts.length) return parts.join(', ');
+  }
+  return null;
+}
+
 function _applyFolderNameFallbacks(songInfo, thisSong) {
   const _segs = songInfo.filePath.split('/');
   const parentFolder = _segs.length >= 2 ? _segs[_segs.length - 2] : null;
@@ -1249,6 +1269,14 @@ async function _extractCuePoints(songInfo, fmtInfo, thisSong) {
 
 async function parseMyFile(thisSong, modified) {
   const { songInfo, fmtInfo, nativeInfo } = await _parseFileWithFallback(thisSong);
+
+  // music-metadata pre-splits ID3v2.3 "/"-separated artist frames ("AC/DC" →
+  // ["AC","DC"]) and common.artist keeps only the first part. When a split is
+  // detected, restore the as-written value from the native frame (never the
+  // Vorbis ARTISTS list tag).
+  if (Array.isArray(songInfo.artists) && songInfo.artists.length > 1) {
+    songInfo.artist = _nativeArtistText(nativeInfo) || songInfo.artists.join(', ');
+  }
 
   songInfo.modified  = modified;
   songInfo.filePath  = path.relative(loadJson.directory, thisSong);

@@ -1,3 +1,23 @@
+## v0.5.2 (unreleased)
+
+### Fixed: multi-value artist tags collapsed to the first value at scan
+- music-metadata pre-splits multi-value artist tags (ID3v2.3 "/" separators,
+multiple Vorbis ARTIST comments, NUL-separated v2.4 frames) and the scanner
+stored only the first part — "AC/DC" could land in the DB as artist "AC".
+- The scanner now detects a split (`common.artists.length > 1`) and restores
+the as-written value from the container's native frame (TPE1 / ARTIST / ©ART),
+joining genuinely multi-valued frames with ", ". Velvet never splits artist
+tags — this keeps the tag as the tagger wrote it.
+- Existing mangled rows fix themselves on the next rescan of those files.
+- The scanner keeps the single-artist, as-written model while recovering all
+  native artist values when a reader exposes a split.
+- Artist grouping keys now fold diacritics (`Beyoncé` and `Beyonce` share an
+identity) without changing the displayed canonical name or raw tag variants.
+- Canonical artist selection is now non-mutating and deterministic for equal
+count variants, independent of the runtime locale.
+- Artist Library navigation now uses a persisted normalized sort key, keeping
+large-library letter and search results stable without changing displayed names.
+
 ## v0.5.1 (2026-09-06)
 
 Maintenance — fine-tuning and precision fixes for recent work. If you know,
@@ -33,8 +53,7 @@ hold both spellings as separate artist rows ("Alizée" and "Alizee") get all
 variants merged into one pool.
 - Implemented JS-side with a lazily-built folded index over
 `artists_normalized` (rebuilt when the artist count changes), since SQLite
-cannot fold diacritics natively. Ported from an upstream mStream Velvet-cleanup
-improvement.
+cannot fold diacritics natively.
 
 ## v0.4.28 (2026-09-05)
 
