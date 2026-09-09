@@ -1,5 +1,5 @@
 'use strict';
-const VELVET_VERSION = '0.5.2';
+const VELVET_VERSION = '0.5.3';
 // ── SERVER IDENTITY GUARD ────────────────────────────────────────────────────
 // Detects when this browser's localStorage belongs to a different Velvet
 // instance (fresh install, IP change, reverse-proxy swap, second server).
@@ -25777,6 +25777,7 @@ window.EGG = (() => {
   let active = false;
   let fader = 1;          // pitch fader multiplier 0.90..1.10
   let speed = 1;          // 33 rpm = 1, 45 rpm = 45/33.333 = 1.35
+  let silver = false;
   const RPM45 = 1.35;
   const ARM_START = -3.7, ARM_SWEEP = 18.5; // deg: outer lead-in ring → run-out ring (cartridge-tip calibrated)
   const F_CY = 135, F_HALF = 40.5, F_H = 9; // fader slot centre/travel, art px
@@ -25827,6 +25828,14 @@ window.EGG = (() => {
     art.appendChild(f);
   }
   function _mkDeckButtons(art) {
+    const finish = document.createElement('i');
+    finish.className = 'vinyl-btn vinyl-finish';
+    finish.addEventListener('click', e => {
+      e.stopPropagation();
+      silver = !silver;
+      document.body.classList.toggle('vinyl-silver', silver);
+      finish.classList.toggle('on', silver);
+    });
     const ss = document.createElement('i');
     ss.className = 'vinyl-btn vinyl-ss';
     ss.title = 'Start / Stop';
@@ -25846,7 +25855,7 @@ window.EGG = (() => {
     };
     b33.addEventListener('click', e => { e.stopPropagation(); setSpeed(1); });
     b45.addEventListener('click', e => { e.stopPropagation(); setSpeed(RPM45); });
-    art.appendChild(ss); art.appendChild(b33); art.appendChild(b45);
+    art.appendChild(finish); art.appendChild(ss); art.appendChild(b33); art.appendChild(b45);
   }
   function _tick(e) {
     if (!active || e.target !== audioEl) return;
@@ -25860,6 +25869,9 @@ window.EGG = (() => {
       const deck = document.createElement('i');
       deck.className = 'vinyl-deck';
       art.appendChild(deck);
+      const strobe = document.createElement('i');
+      strobe.className = 'vinyl-strobe-led';
+      art.appendChild(strobe);
       const sp = document.createElement('i');
       sp.className = 'vinyl-spindle';
       art.appendChild(sp);
@@ -25894,8 +25906,10 @@ window.EGG = (() => {
       _tick({ target: audioEl });
     } else {
       document.body.classList.remove('vinyl-paused', 'vinyl-45');
+      document.body.classList.remove('vinyl-silver');
       fader = 1;
       speed = 1;
+      silver = false;
       _applyRate(); // restore normal speed + pitch preservation
     }
   });

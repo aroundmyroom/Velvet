@@ -2851,7 +2851,7 @@ body.audiobook-mode #ab-speed-btn{color:var(--primary);}
 .pnow-hero{
   position:relative;
   overflow:hidden;
-  padding:32px 28px 28px;
+  padding:30px 28px;
   display:flex;
   gap:28px;
   align-items:flex-end;
@@ -2930,7 +2930,7 @@ body.vinyl-mode .pnow-art img{
 body.vinyl-mode .pnow-art::after{
   content:'';
   position:absolute;
-  left:-12.5%; top:-13.2%;
+  left:-12.5%; top:-14.9%;
   width:166.6%; height:129.8%;
   background:url('/assets/img/sl1200-arm.svg') center/100% 100% no-repeat;
   filter:drop-shadow(2px 3px 3px rgba(0,0,0,.55));
@@ -2942,7 +2942,19 @@ body.vinyl-mode .pnow-art::after{
 }
 .pnow-art .vinyl-spindle,
 .pnow-art .vinyl-deck,
+.pnow-art .vinyl-strobe-led,
 .pnow-art .vinyl-fader{ display:none; }
+body.vinyl-mode .pnow-art .vinyl-strobe-led{
+  display:block;
+  position:absolute;
+  left:1px; top:138px;
+  width:7px; height:7px;
+  border-radius:50%;
+  background:#ff4035;
+  box-shadow:0 0 4px 2px rgba(255,64,53,.72);
+  pointer-events:none;
+  z-index:2;
+}
 /* draggable pitch-fader knob — slot centre x≈260px in art coords */
 body.vinyl-mode .pnow-art .vinyl-fader{
   display:block;
@@ -2978,6 +2990,14 @@ body.vinyl-mode .pnow-art .vinyl-btn:active{ background:rgba(255,255,255,.14); }
 body.vinyl-mode .pnow-art .vinyl-btn.on{
   box-shadow:inset 0 0 5px rgba(57,255,136,.45), 0 0 5px rgba(57,255,136,.35);
 }
+/* The MK2 finish switch is the round upper-left power rotary. */
+body.vinyl-mode .pnow-art .vinyl-finish{
+  left:-7px; top:-14px; width:22px; height:22px; border-radius:50%;
+}
+body.vinyl-mode .pnow-art .vinyl-finish.on{ box-shadow:none; }
+body.vinyl-mode.vinyl-silver .pnow-art .vinyl-deck{
+  filter:grayscale(1) brightness(1.55) contrast(.58) drop-shadow(0 14px 30px rgba(0,0,0,.65));
+}
 body.vinyl-mode .pnow-art .vinyl-ss { left:-10px; top:179px; width:30px; height:17px; border-radius:4px; }
 body.vinyl-mode .pnow-art .vinyl-b33{ left:22px; top:194px; width:15px; height:9px; }
 body.vinyl-mode .pnow-art .vinyl-b45{ left:41px; top:194px; width:15px; height:9px; }
@@ -3000,7 +3020,7 @@ body.vinyl-mode .pnow-art{ margin-right:102px; }
 body.vinyl-mode .pnow-art .vinyl-deck{
   display:block;
   position:absolute;
-  left:-12.5%; top:-13.2%;
+  left:-12.5%; top:-14.9%;
   width:166.6%; height:129.8%;
   background:url('/assets/img/sl1200-deck.svg') center/100% 100% no-repeat;
   filter:drop-shadow(0 14px 30px rgba(0,0,0,.65));

@@ -9,11 +9,32 @@ fallback → free pick) that had to keep growing every time a combination of
 hard filters (BPM + key + genre + similar-artist) proved too restrictive for
 a real library.
 
+## Candidate batches are not queue batches
+
+Velvet deliberately separates **finding candidates** from **committing the
+next song**:
+
+1. The server returns a broad pool of up to 500 possible tracks.
+2. The client evaluates the whole pool against the current musical context.
+3. Exactly one winner is added as the next queue item.
+4. When playback advances, the next decision starts again from the new current
+   song and the updated rolling history.
+
+This preserves pairwise continuity. Similar-artist relationships can move from
+artist to artist, BPM and era can drift smoothly, harmonic compatibility follows
+the current key, and genre escape reacts to what was actually selected. A large
+precommitted queue would freeze all of those decisions against an old reference
+track and make setting changes slow to take effect.
+
+The one-track lookahead is prefetched shortly after playback starts. NEXT is
+therefore immediate in normal use without exposing network batch size as a user
+preference or trading away fresh musical context.
+
 ## Philosophy
 
-Every signal is "nice to have" — if a candidate matches, it earns more
+Every musical signal is "nice to have" — if a candidate matches, it earns more
 points; if not, it just scores lower, it is never removed from the pool.
-Only three things are true hard filters:
+Only four things are true hard filters:
 
 1. **Collections / paths** — the selected Auto-DJ vpath scope.
 2. **Minimum rating** — songs below the floor are never candidates.
@@ -75,6 +96,12 @@ candidate list if the floor would empty the pool, so Auto-DJ never stalls.
    from the currently playing track (blended with a rolling anchor for
    smooth drift), so a change in similar-artist results, BPM, or key on the
    next pick is free to move independently.
+
+Only the single winner is committed to the queue and fed into the next decision
+cycle. Lower-ranked candidates remain candidates; they are not appended merely
+to fill a requested batch size. This prevents declining-quality queue tails,
+unheard songs consuming cooldown history, and stale future picks surviving a
+filter change.
 
 ## Why similar-artist mode gets its own escape hatch
 

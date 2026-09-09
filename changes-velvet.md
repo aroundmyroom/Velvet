@@ -1,4 +1,17 @@
-## v0.5.2 (unreleased)
+## v0.5.3 (2026-09-09)
+
+### Improved: clearer Auto-DJ design documentation
+- README now explains why Auto-DJ fetches a broad candidate pool but commits
+  only one next song: every transition is reconsidered from the current track
+  instead of freezing a long queue against stale musical context.
+- Documented the listener benefits: pairwise continuity, immediately responsive
+  settings, honest cooldown history, one-track lookahead for instant NEXT, and
+  graceful handling of incomplete metadata.
+- Corrected outdated anchor wording: BPM and era use rolling anchors while
+  harmonic compatibility follows the currently playing song.
+- Added minor client-side presentation refinements.
+
+## v0.5.2 (2026-09-06)
 
 ### Fixed: multi-value artist tags collapsed to the first value at scan
 - music-metadata pre-splits multi-value artist tags (ID3v2.3 "/" separators,

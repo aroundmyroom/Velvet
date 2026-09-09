@@ -91,7 +91,7 @@ Velvet streams your local music collection to any browser, phone, **Samsung Smar
 
 | | |
 |---|---|
-| **Auto-DJ that thinks** | Similar artists (Last.fm), BPM continuity, harmonic mixing — all three at once, with genre drift prevention so you don't get locked into a single genre cluster |
+| **Auto-DJ that listens** | Hundreds of candidates are compared, but only one next song is committed. Every transition is reconsidered from what is playing now: similar artists, BPM, key, genre, era and recent history all move with the music |
 | **Metadata that works** | Genre Enricher, Album-Art Workshop, AcoustID fingerprinting, and Tag Workshop pull from Last.fm, MusicBrainz, and Discogs — always with a human in the loop |
 | **Album library first** | Multi-disc detection, series grouping, category folders, per-disc cover art, CUE sheet support — your classical and box-set collections look right |
 | **Listening analytics** | Full play history, skip rates, hourly heat charts, personality type, fun facts — all local, no external calls |
@@ -117,7 +117,28 @@ Velvet streams your local music collection to any browser, phone, **Samsung Smar
 
 ### Auto-DJ
 
-Three independent filters that work together and fall back gracefully:
+Velvet does not generate a long queue from one frozen snapshot. It fetches a
+broad, artist-balanced candidate pool, scores every song, and commits only the
+single best next track. Once that track becomes current, the whole decision is
+made again from its artist, BPM, key, genre and era. This creates an evolving
+set rather than 20 songs that all resemble the track that happened to be
+playing when the queue was filled.
+
+That one-song commitment matters:
+
+- **Real continuity** — each transition is judged against the song immediately
+  before it, blended with rolling session anchors to prevent abrupt jumps.
+- **Responsive controls** — changes to filters and scope affect the next pick,
+  not only after a precomputed queue has drained.
+- **Honest cooldowns** — artist, genre and recently played history advances one
+  selected song at a time rather than counting a batch of unheard tracks.
+- **Instant NEXT** — one-track lookahead is prefetched shortly after playback
+  starts, giving immediate skips without sacrificing fresh context.
+- **Graceful imperfection** — missing BPM, key or similarity data lowers
+  confidence instead of stopping the music or silently abandoning every other
+  preference.
+
+The musical signals work together and fall back gracefully:
 
 1. **Similar Artists** — Last.fm API, musically related artists to what's playing now — diacritic-tolerant name matching ("Tiësto" ↔ "Tiesto", "André" ↔ "Andre")
 2. **BPM Continuity** — ±N BPM tolerance (configurable), with octave equivalence (72 BPM ≈ 145 BPM)
@@ -125,7 +146,9 @@ Three independent filters that work together and fall back gracefully:
 
 Additional controls: keyword filter, genre whitelist/blacklist, minimum star rating, track-length window (min/max duration), artist cooldown, library scope. Genre drift prevention kicks in when one genre dominates three consecutive tracks or 40% of the last 25 — an escape pick is queued automatically.
 
-BPM and key session anchors lock to the first filtered pick and persist across page refresh. [Full docs →](docs/bpm-harmonic.md)
+BPM and era use rolling anchors while key compatibility follows the currently
+playing song. The result is direction without lock-in: the set can travel, but
+it does not lurch. [Auto-DJ scoring →](docs/autodj-scoring.md) · [BPM and harmonic mixing →](docs/bpm-harmonic.md)
 
 ### Library & Scanning
 
