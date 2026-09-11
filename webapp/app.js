@@ -1,5 +1,5 @@
 'use strict';
-const VELVET_VERSION = '0.5.3';
+const VELVET_VERSION = '0.5.4';
 // ── SERVER IDENTITY GUARD ────────────────────────────────────────────────────
 // Detects when this browser's localStorage belongs to a different Velvet
 // instance (fresh install, IP change, reverse-proxy swap, second server).
@@ -2307,8 +2307,8 @@ function _djScoreSong(song) {
 
   // ── Artist diversity (10%, fixed) ───────────────────────────────────────
   const recent = S.djArtistHistory.slice(-DJ_ARTIST_COOLDOWN);
-  const aNorm  = a => (a || '').trim().toLowerCase();
-  const aidx   = recent.findIndex(a => aNorm(a) === aNorm(song.artist));
+  const songArtistKeys = _djArtistKeys(song.artist);
+  const aidx = recent.findIndex(a => _djArtistsOverlap(songArtistKeys, _djArtistKeys(a)));
   score += 0.10 * (aidx === -1             ? 1.0   // not in recent window
                  : aidx >= recent.length - 5  ? 0.0   // very recent → penalise
                  : aidx >= recent.length - 10 ? 0.4   // 6–10 songs ago
@@ -2445,6 +2445,36 @@ async function _djFetchBatch(escapeOpts = {}) {
 // Falls back to the full candidate list if it would empty the pool, so
 // Auto-DJ never stalls.
 const DJ_ARTIST_HARD_FLOOR = 3; // never repeat the same artist within this many songs
+const DJ_ARTIST_PART_MIN = 3;
+const DJ_ARTIST_PART_STOP = new Set(['the', 'and', 'of', 'de', 'la', 'le', 'les', 'los', 'las', 'van', 'von', 'fire', 'wind', 'earth']);
+function _djArtistKey(s) {
+  return (s || '').toLowerCase()
+    .normalize('NFD')
+    .replaceAll(/[\u0300-\u036f]/g, '')
+    .replaceAll(/\./g, '')
+    .replaceAll(/[^a-z0-9]+/g, ' ')
+    .trim();
+}
+function _djArtistKeys(name) {
+  const out = new Set();
+  const add = v => {
+    const key = _djArtistKey(v);
+    if (!key || key.length < DJ_ARTIST_PART_MIN || DJ_ARTIST_PART_STOP.has(key)) return;
+    out.add(key);
+  };
+  add(name);
+  const chunks = String(name || '').split(/\s+(?:feat\.?|ft\.?|featuring|vs\.?|pres\.?|presents?\b|\bx\b)\s+/i);
+  for (const chunk of chunks) {
+    add(chunk);
+    for (const part of chunk.split(/\s+(?:&|and)\s+/i)) add(part);
+  }
+  return out;
+}
+function _djArtistsOverlap(a, b) {
+  if (!a?.size || !b?.size) return false;
+  for (const key of a) if (b.has(key)) return true;
+  return false;
+}
 async function _djPickSong(escapeOpts = {}) {
   const d = await _djFetchBatch(escapeOpts);
   _persistDjIgnore(d.ignoreList);
@@ -2455,9 +2485,12 @@ async function _djPickSong(escapeOpts = {}) {
   if (deduped.length > 0) candidates = deduped;
   // Hard artist-repeat floor — independent of (and a backstop for) the
   // server-side cooldown list, see DJ_ARTIST_HARD_FLOOR comment above.
-  const floorArtists = new Set(S.djArtistHistory.slice(-DJ_ARTIST_HARD_FLOOR).map(a => (a || '').trim().toLowerCase()));
-  if (floorArtists.size > 0) {
-    const beyondFloor = candidates.filter(c => !floorArtists.has((c.artist || '').trim().toLowerCase()));
+  const floorArtists = S.djArtistHistory.slice(-DJ_ARTIST_HARD_FLOOR).map(_djArtistKeys);
+  if (floorArtists.some(keys => keys.size > 0)) {
+    const beyondFloor = candidates.filter(c => {
+      const candidateKeys = _djArtistKeys(c.artist);
+      return !floorArtists.some(keys => _djArtistsOverlap(candidateKeys, keys));
+    });
     if (beyondFloor.length > 0) candidates = beyondFloor;
   }
   // Genre-drift soft escape: prefer candidates outside the overrepresented genre.
@@ -2486,9 +2519,8 @@ function _djCooldownList() {
 }
 function _djPushArtistHistory(artist) {
   if (!artist) return;
-  // Normalize for dedup: lowercase + strip dots so "M.C. Sar" == "MC Sar"
-  const norm = a => a.trim().toLowerCase().replaceAll(/\./g, '');
-  S.djArtistHistory = S.djArtistHistory.filter(a => norm(a) !== norm(artist));
+  const artistKeys = _djArtistKeys(artist);
+  S.djArtistHistory = S.djArtistHistory.filter(a => !_djArtistsOverlap(_djArtistKeys(a), artistKeys));
   S.djArtistHistory.push(artist.trim());
   S.djArtistHistory = S.djArtistHistory.slice(-500);
   const _djHistoryJson = JSON.stringify(S.djArtistHistory);

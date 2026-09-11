@@ -1,3 +1,25 @@
+## v0.5.4 (2026-09-11)
+
+Auto-DJ collaboration intelligence — canonical duo/group names now survive
+Last.fm lookup and repeat-artist protection.
+
+### Fixed: Auto-DJ Last.fm lookup split canonical duo names too early
+- Similar-artist lookup now queries the full credited artist first, then falls
+  back to split parts only when the full name has no usable result. Canonical
+  duos/groups such as "Mel & Kim" now reach Last.fm as the artist Last.fm knows
+  instead of being split into unrelated solo searches.
+- Collaboration tags now keep canonical duo/group names together during
+  fallback: "Mel & Kim vs. Frantique" tries "Mel & Kim" before individual
+  names, and fallback continues when a Last.fm response has no usable library
+  matches.
+
+### Fixed: Auto-DJ artist repeat guard missed collaborations
+- The 3-song hard artist floor, 15-song diversity score, and artist-history
+  dedup now compare collaboration-aware artist keys instead of only exact full
+  credit strings. A pick such as "Eric Prydz & Steve Angello" is now blocked
+  immediately after "Eric Prydz", and "Mel & Kim vs. Frantique" overlaps
+  "Mel & Kim".
+
 ## v0.5.3 (2026-09-09)
 
 ### Improved: clearer Auto-DJ design documentation

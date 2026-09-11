@@ -83,17 +83,26 @@ export function setup(velvet) {
       console.warn('[lastfm] similar-artists: no API key configured — set lastFM.apiKey in config');
       return res.json({ artists: [] });
     }
-    // Split compound artist names into individual artists so Last.fm gets a
-    // recognisable primary name.  Try in order until one yields results.
-    // Handles: feat./ft./featuring, vs., &, pres./presents, x (standalone), and
-    function _splitArtists(name) {
-      const parts = name
-        .split(/\s+(?:feat\.|ft\.|featuring|vs\.?|&|pres\.?|presents?\b|\bx\b|\band\b)\s+/i)
-        .map(p => p.trim())
-        .filter(Boolean);
-      return parts.length > 1 ? parts : [name];
+    // Query exact first, then collaboration halves, then individual duo parts.
+    function _artistLookupCandidates(name) {
+      const seen = new Set();
+      const out = [];
+      const add = v => {
+        const s = String(v || '').trim();
+        const key = s.toLowerCase();
+        if (s && !seen.has(key)) { seen.add(key); out.push(s); }
+      };
+      add(name);
+      const collabParts = String(name).split(/\s+(?:feat\.?|ft\.?|featuring|vs\.?|pres\.?|presents?\b|\bx\b)\s+/i);
+      if (collabParts.length > 1) for (const p of collabParts) add(p);
+      for (const p of collabParts) {
+        const duoParts = p.split(/\s+(?:&|and)\s+/i);
+        if (duoParts.length > 1) for (const d of duoParts) add(d);
+      }
+      return out;
     }
-    const parts = _splitArtists(String(req.query.artist));
+    const originalArtist = String(req.query.artist).trim();
+    const parts = _artistLookupCandidates(originalArtist);
 
     function _queryAndRespond(artistName, fallbackParts) {
       Scrobbler.GetSimilarArtists(
@@ -127,6 +136,9 @@ export function setup(velvet) {
             const displayArtists = [];
             // variantRankMap: DB artist variant → 1-indexed rank (lower = more similar)
             const variantRankMap = {};
+            if (allVariantsSet.size === 0 && fallbackParts.length > 0) {
+              return _queryAndRespond(fallbackParts[0], fallbackParts.slice(1));
+            }
             for (const [i, name] of rawNames.entries()) {
               const variants = nameVariantsMap.get(name);
               if (!variants) continue;

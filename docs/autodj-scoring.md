@@ -66,7 +66,9 @@ harmonic (Camelot) mixing — is additive scoring only:
 On top of the scoring above, `_djPickSong()` also applies one **hard**
 artist-repeat floor (`DJ_ARTIST_HARD_FLOOR = 3`): candidates whose artist
 matches one of the last 3 played artists are excluded outright, regardless of
-score. This exists because `_batchRandomSongs()` can legitimately drop the
+score. The match is collaboration-aware: `Eric Prydz` overlaps
+`Eric Prydz & Steve Angello`, and `Mel & Kim` overlaps
+`Mel & Kim vs. Frantique`. This exists because `_batchRandomSongs()` can legitimately drop the
 server-side cooldown list entirely when the similar-artist pool is too narrow
 to satisfy both filters at once — without this backstop, the 10% diversity
 scoring bonus alone wasn't always enough to outweigh a strong similar-artist/
@@ -103,6 +105,10 @@ to fill a requested batch size. This prevents declining-quality queue tails,
 unheard songs consuming cooldown history, and stale future picks surviving a
 filter change.
 
+Artist cooldown history uses the same overlap keys as the hard floor, so a
+collaboration cannot immediately reintroduce a just-played main artist under a
+different full credit string.
+
 ## Why similar-artist mode gets its own escape hatch
 
 If Last.fm returns no similar artists for the current track (or the artist
@@ -128,6 +134,14 @@ unioned tiers:
 Tier 3 is unioned rather than fallback-only, so "Tiësto" and "Tiesto" — or
 "Alizée" and "Alizee" held as two separate artist rows — merge into one
 variant pool.
+
+For similar-artist lookup, Velvet queries the full credited artist first. This
+matters for canonical duos/groups such as "Mel & Kim": splitting on `&` before
+calling Last.fm turns a real artist into two unrelated solo searches. If the
+full credit is a collaboration, Velvet then tries the collaboration halves
+before splitting duo/group names: `Mel & Kim vs. Frantique` tries `Mel & Kim`
+before `Mel` or `Kim`. Fallback also continues when Last.fm returns names that
+do not map to library artists.
 
 ## Backward compatibility
 
