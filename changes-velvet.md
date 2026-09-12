@@ -6,6 +6,10 @@
 - Sonos casting continues to use the browser's existing wrapped event lifecycle,
   avoiding duplicate history rows while keeping start, pause, skip, and end
   semantics identical to browser playback.
+- Playback from the browser, Server Remote, Server Speaker, Sonos, and other
+  authenticated clients now contributes to the same user-scoped statistics:
+  Recently Played, play counts, History, Wrapped totals, completion and skip
+  rates, and Auto-DJ listening history.
 
 ### Fixed: DLNA SQL safety tests now exit cleanly
 - SQL search and sort helpers now live in a side-effect-free module, so their

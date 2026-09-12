@@ -74,6 +74,7 @@ Intensity: lighter = fewer plays, stronger blue = more plays.
 - Hour chips inside a selected day are ordered latest-to-earliest.
 - The date picker lets you fetch any specific calendar day on demand (uses `fromMs`/`toMs` bounded queries).
 - Reset returns to the normal rolling week list and clears calendar override mode.
+- Playback recorded by the browser, Server Remote, Server Speaker, Sonos, and other authenticated clients uses the same user-scoped event ledger. Recently Played, play counts, Wrapped statistics, completion/skip rates, listening totals, and Auto-DJ history therefore stay aligned across clients.
 
 ### Personality
 
