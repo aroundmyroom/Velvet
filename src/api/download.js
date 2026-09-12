@@ -205,7 +205,7 @@ export function setup(velvet) {
 
       // 2. Fall back to a folder image in the same directory
       const folderDir   = path.dirname(pathInfo.fullPath);
-      const candidates  = ['cover.jpg', 'cover.jpeg', 'cover.png', 'folder.jpg', 'folder.jpeg', 'folder.png', 'front.jpg', 'front.jpeg', 'front.png', 'artwork.jpg', 'artwork.jpeg', 'artwork.png'];
+      const candidates  = ['cover.jpg', 'cover.jpeg', 'cover.png', 'folder.jpg', 'folder.jpeg', 'folder.png', 'front.jpg', 'front.jpeg', 'front.png', 'frente.jpg', 'frente.jpeg', 'frente.png', 'artwork.jpg', 'artwork.jpeg', 'artwork.png'];
       for (const name of candidates) {
         const imgPath = resolvePathWithinRoot(folderDir, name);
         if (fsSync.existsSync(imgPath)) {

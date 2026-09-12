@@ -8,9 +8,10 @@
 
 const { describe, it } = require('node:test');
 const assert = require('node:assert/strict');
+const dlnaHelpersPromise = import('../../src/api/dlna-query.js');
 
 async function loadDlnaHelpers() {
-  return import('../../src/api/dlna.js');
+  return dlnaHelpersPromise;
 }
 
 describe('DLNA SQL safety', () => {

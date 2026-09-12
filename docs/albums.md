@@ -182,9 +182,10 @@ For every album the system looks for cover art in this priority order:
 1. **Image file in the album folder** — scanned top-down:
    ```
    cover.jpg   Cover.jpg   front.jpg   Front.jpg
+  frente.jpg  Frente.jpg  frente.png  Frente.png
    Folder.jpg  folder.jpg
    cover.png   Cover.png   front.png   Front.png
-   cover.webp  Cover.webp
+  frente.webp Frente.webp cover.webp  Cover.webp
    ```
 2. **Image file inside the first disc sub-folder** — for multi-disc albums that store art per-disc.
 3. **Embedded art from the DB** (`aaFile`) — extracted during file scanning, cached in `image-cache/`.

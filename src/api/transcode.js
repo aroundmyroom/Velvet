@@ -39,6 +39,10 @@ function initHeaders(res, audioTypeId, contentLength) {
 
 let lockInit = false;
 
+function binariesExist() {
+  return fs.existsSync(ffmpegBin()) && fs.existsSync(ffprobeBin());
+}
+
 async function init() {
   await ensureFfmpeg();
   try {
@@ -78,7 +82,7 @@ export function isDownloaded() {
   // ensureFfmpeg() is async — if it hasn't resolved yet (e.g. admin panel
   // opened immediately after boot) check synchronously so the UI shows the
   // correct Ready status instead of waiting for the next page load.
-  if (fs.existsSync(ffmpegBin()) && fs.existsSync(ffprobeBin())) {
+  if (binariesExist()) {
     lockInit = true;
     return true;
   }
@@ -122,7 +126,7 @@ export function setup(velvet) {
     // panel shows the correct "Ready"/"Not ready" status without triggering
     // a download. In Docker the binary is pre-bundled; this removes the need
     // for the user to click "Verify / Download" to get the correct status.
-    fsp.access(ffmpegBin()).then(() => {
+    Promise.all([fsp.access(ffmpegBin()), fsp.access(ffprobeBin())]).then(() => {
       lockInit = true;
       winston.info('FFmpeg OK!');
     }).catch(() => { /* binary absent — lockInit stays false */ });

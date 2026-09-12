@@ -340,8 +340,6 @@ The tag mode is **server-wide** (not per-user), stored in a new `server_settings
 - [ ] Optional multi-art gallery model (multiple covers per album, user picks the default) — larger schema change
 - [ ] Wire the album-art suggestion pass into the shared media-enrichment budget limiter (see Performance section)
 
-### Listening Analytics — Play Events
-
 ### Smart Auto-DJ — Personal Weights
 - [ ] Re-rank candidates by `completion_rate × recency_decay`
 - [ ] Penalise songs skipped >2× in the last 30 days

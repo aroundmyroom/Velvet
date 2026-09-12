@@ -137,9 +137,10 @@ const _collNumeric = new Intl.Collator(undefined, { sensitivity: 'base', numeric
 const ART_NAMES = [
   'cover.jpg', 'Cover.jpg', 'cover.jpeg', 'Cover.jpeg',
   'front.jpg', 'Front.jpg', 'front.jpeg', 'Front.jpeg',
+  'frente.jpg', 'Frente.jpg', 'frente.jpeg', 'Frente.jpeg',
   'Folder.jpg', 'folder.jpg', 'Folder.jpeg', 'folder.jpeg',
-  'cover.png', 'Cover.png', 'front.png', 'Front.png',
-  'cover.webp', 'Cover.webp',
+  'cover.png', 'Cover.png', 'front.png', 'Front.png', 'frente.png', 'Frente.png',
+  'cover.webp', 'Cover.webp', 'frente.webp', 'Frente.webp',
 ];
 const CACHE_TTL = 5 * 60 * 1000; // 5 minutes
 

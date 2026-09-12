@@ -281,6 +281,7 @@ export function getGenreGroups() { return backend.getGenreGroups(); }
 export function saveGenreGroups(groups) { return backend.saveGenreGroups(groups); }
 // Wrapped / Play Events
 export function insertPlayEvent(e) { return backend.insertPlayEvent(e); }
+export function recordPlaybackStart(e) { return backend.recordPlaybackStart(e); }
 export function findRecentPlayEvent(userId, fileHash, windowMs) { return backend.findRecentPlayEvent(userId, fileHash, windowMs); }
 export function getPlayEventById(id, userId) { return backend.getPlayEventById(id, userId); }
 export function hasPlayEventBefore(userId, hash, beforeMs) { return backend.hasPlayEventBefore(userId, hash, beforeMs); }

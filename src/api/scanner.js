@@ -21,6 +21,7 @@ const _NAMED_ART_FILES = new Set([
   'cover.jpg',  'cover.jpeg',  'cover.png',
   'album.jpg',  'album.jpeg',  'album.png',
   'front.jpg',  'front.jpeg',  'front.png',
+  'frente.jpg', 'frente.jpeg', 'frente.png',
 ]);
 
 // Returns true if the given directory now contains a cover image. Used to

@@ -1535,7 +1535,7 @@ function checkDirectoryForAlbumArt(songInfo) {
   // Search for a named file
   for (const imgFile of imageArray) {
     const imgMod = imgFile.toLowerCase();
-    if (imgMod === 'folder.jpg' || imgMod === 'folder.jpeg' || imgMod === 'cover.jpg' || imgMod === 'cover.jpeg' || imgMod === 'album.jpg' || imgMod === 'album.jpeg' || imgMod === 'front.jpg' || imgMod === 'front.jpeg' || imgMod === 'folder.png' || imgMod === 'cover.png' || imgMod === 'album.png' || imgMod === 'front.png') {
+    if (imgMod === 'folder.jpg' || imgMod === 'folder.jpeg' || imgMod === 'cover.jpg' || imgMod === 'cover.jpeg' || imgMod === 'album.jpg' || imgMod === 'album.jpeg' || imgMod === 'front.jpg' || imgMod === 'front.jpeg' || imgMod === 'frente.jpg' || imgMod === 'frente.jpeg' || imgMod === 'folder.png' || imgMod === 'cover.png' || imgMod === 'album.png' || imgMod === 'front.png' || imgMod === 'frente.png') {
       try {
         imageBuffer = readArtFile(imgFile);
         picFormat = getFileType(imgFile);

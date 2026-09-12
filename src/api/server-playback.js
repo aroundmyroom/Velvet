@@ -64,6 +64,7 @@ const SERVER_AUDIO_CTRL_CANDIDATES = ['Master', 'Speaker', 'PCM', 'Headphone'];
 let serverQueue  = [];
 let currentIndex = -1;
 let _pendingSeek = null; // seconds to seek to once the next file-loaded event fires
+let _activePlayback = null;
 
 // ── Cast heartbeat watchdog ───────────────────────────────────────────────
 // While a client is casting, it sends POST /api/v1/server-playback/heartbeat
@@ -384,6 +385,7 @@ export function bootMpv() {
 }
 
 export function killMpv() {
+  void finishActivePlayback(false);
   if (ipcSock) { try { ipcSock.destroy(); } catch (e) { console.debug('[velvet]', e?.message ?? e); } ipcSock = null; }
   if (mpvProc) { try { mpvProc.kill('SIGTERM'); } catch (e) { console.debug('[velvet]', e?.message ?? e); } mpvProc = null; }
   serverQueue  = [];
@@ -497,6 +499,10 @@ function handleIpcMessage(msg) {
     }
   }
 
+  if (msg.event === 'end-file') {
+    void finishActivePlayback(msg.reason === 'eof');
+  }
+
   // File has loaded and playback started — apply any pending seek position and RG gain.
   // This replaces the old client-side hardcoded 2500 ms delay and fires at
   // exactly the right moment regardless of file size or network latency.
@@ -509,6 +515,7 @@ function handleIpcMessage(msg) {
     // Apply ReplayGain + balance via mpv af filter, and restore the user's volume.
     // Both are persisted in _currentBalance/_currentVolumePct so they survive track changes.
     const entry = serverQueue[currentIndex] ?? serverQueue.at(-1);
+    void startActivePlayback(entry);
     const chain = _buildAfChain(entry?.gainDb ?? null, _currentBalance);
     ipcCommand(['af', 'set', chain]).catch(() => {});
     ipcCommand(['set_property', 'volume', _currentVolumePct]).catch(() => {});
@@ -631,6 +638,9 @@ export async function addToQueue(relPath, meta = {}) {
     'sample-rate': sampleRate,
     channels,
     gainDb: meta.rgEnabled === false ? null : _resolveRgGain(relPath, meta),
+    historyUser: meta.historyUser || null,
+    historySessionId: meta.historySessionId || null,
+    historyEventId: null,
   };
 
   serverQueue.push(entry);
@@ -654,6 +664,7 @@ export async function addToQueue(relPath, meta = {}) {
 }
 
 export async function clearQueue() {
+  await finishActivePlayback(false);
   _pendingSeek = null; // cancel any pending seek from a previous load
   _clearHeartbeat();   // no client casting anymore
   serverQueue  = [];
@@ -666,6 +677,64 @@ export async function clearQueue() {
     // persists through stop and causes the next file load to start paused.
     await ipcCommand(['set_property', 'pause', false]).catch(() => {});
   }
+}
+
+async function logServerPlaybackStart(user, filepath, overrideSource = 'server-playback', sessionId = null) {
+  if (!user?.username || !filepath) return null;
+  const relPath = String(filepath).replace(/^\/+/, '');
+  const parts = relPath.split('/');
+  if (parts.length < 2) return null;
+
+  const fileRow = db.findFileByPath(parts.slice(1).join('/'), parts[0]);
+  if (!fileRow?.hash) return null;
+
+  return db.recordPlaybackStart({
+    user_id: user.username,
+    file_hash: fileRow.hash,
+    started_at: Date.now(),
+    duration_ms: fileRow.duration ? Math.round(fileRow.duration * 1000) : null,
+    source: overrideSource,
+    session_id: sessionId || `server-playback:${user.username}:${Date.now()}`,
+  });
+}
+
+async function finishActivePlayback(completed) {
+  if (!_activePlayback) return;
+  const active = _activePlayback;
+  _activePlayback = null;
+  active.entry.historyEventId = null;
+  const [position, duration] = await Promise.all([
+    ipcCommand(['get_property', 'time-pos']).catch(() => 0),
+    ipcCommand(['get_property', 'duration']).catch(() => 0),
+  ]);
+  const playedMs = Math.max(0, Math.round(Number(completed ? duration : position) * 1000));
+  const isCompleted = completed || (duration > 0 && playedMs >= duration * 1000 * 0.9);
+  db.updatePlayEvent(active.eventId, active.userId, {
+    ended_at: Date.now(),
+    played_ms: playedMs,
+    completed: isCompleted,
+    skipped: false,
+  });
+  db.updateListeningSession(active.sessionId, active.userId, { ended_at: Date.now() });
+}
+
+async function startActivePlayback(entry) {
+  if (!entry?.historyUser || _activePlayback?.entry === entry) return;
+  await finishActivePlayback(false);
+  const eventId = entry.historyEventId ?? await logServerPlaybackStart(
+    { username: entry.historyUser },
+    entry.relPath,
+    'server-playback',
+    entry.historySessionId,
+  );
+  if (eventId == null) return;
+  entry.historyEventId = eventId;
+  _activePlayback = {
+    entry,
+    eventId,
+    userId: entry.historyUser,
+    sessionId: entry.historySessionId,
+  };
 }
 
 export async function removeAtIndex(index) {
@@ -715,7 +784,7 @@ export function setup(velvet) {
     const { filepath, title, artist, album, albumArt, seekTo, rgEnabled, rgMode, rgPreamp, rgClip } = req.body;
     if (!filepath) return res.status(400).json({ error: 'filepath required' });
     try {
-      const index = await addToQueue(filepath, { title, artist, album, albumArt, seekTo: seekTo || 0, rgEnabled, rgMode, rgPreamp, rgClip });
+      const index = await addToQueue(filepath, { title, artist, album, albumArt, seekTo: seekTo || 0, rgEnabled, rgMode, rgPreamp, rgClip, historyUser: req.user?.username, historySessionId: `server-playback:${req.user.username}:${Date.now()}` });
       _resetHeartbeat(); // a song was loaded — start the watchdog
       res.json({ index });
     } catch (e) { res.status(400).json({ error: e.message }); }
@@ -727,10 +796,11 @@ export function setup(velvet) {
     if (!Array.isArray(files) || files.length === 0) return res.status(400).json({ error: 'files array required' });
     try {
       const indices = [];
+      const historySessionId = `server-playback:${req.user.username}:${Date.now()}`;
       for (const f of files) {
         const { filepath, title, artist, album, albumArt, seekTo, rgEnabled, rgMode, rgPreamp, rgClip } = f;
         if (!filepath) return res.status(400).json({ error: 'each file must have filepath' });
-        indices.push(await addToQueue(filepath, { title, artist, album, albumArt, seekTo: seekTo || 0, rgEnabled, rgMode, rgPreamp, rgClip }));
+        indices.push(await addToQueue(filepath, { title, artist, album, albumArt, seekTo: seekTo || 0, rgEnabled, rgMode, rgPreamp, rgClip, historyUser: req.user?.username, historySessionId }));
       }
       _resetHeartbeat();
       res.json({ indices });
@@ -745,7 +815,8 @@ export function setup(velvet) {
     try {
       await clearQueue();
       const { filepath, title, artist, album, albumArt, seekTo, rgEnabled, rgMode, rgPreamp, rgClip } = f;
-      await addToQueue(filepath, { title, artist, album, albumArt, seekTo: seekTo || 0, rgEnabled, rgMode, rgPreamp, rgClip });
+      const historySessionId = `server-playback:${req.user.username}:${Date.now()}`;
+      await addToQueue(filepath, { title, artist, album, albumArt, seekTo: seekTo || 0, rgEnabled, rgMode, rgPreamp, rgClip, historyUser: req.user?.username, historySessionId });
       await playAtIndex(0);
       _resetHeartbeat();
       res.json({});
@@ -777,8 +848,17 @@ export function setup(velvet) {
   velvet.post('/api/v1/server-playback/queue/play-index', async (req, res) => {
     const { index } = req.body;
     if (index === undefined) return res.status(400).json({ error: 'index required' });
-    try { await playAtIndex(Number(index)); _touchHeartbeat(); res.json({}); }
-    catch (e) { res.status(400).json({ error: e.message }); }
+    try {
+      const idx = Number(index);
+      const current = serverQueue[idx];
+      if (current && !current.historyUser) {
+        current.historyUser = req.user?.username;
+        current.historySessionId = `server-playback:${req.user.username}:${Date.now()}`;
+      }
+      await playAtIndex(idx);
+      _touchHeartbeat();
+      res.json({});
+    } catch (e) { res.status(400).json({ error: e.message }); }
   });
 
   // POST /api/v1/server-playback/next

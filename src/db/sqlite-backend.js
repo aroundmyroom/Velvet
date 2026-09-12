@@ -4006,6 +4006,32 @@ export function insertPlayEvent({ user_id, file_hash, started_at, duration_ms, s
   return Number(result.lastInsertRowid);
 }
 
+export function recordPlaybackStart({ user_id, file_hash, started_at, duration_ms, source, session_id }) {
+  if (!user_id || !file_hash) return null;
+  const now = Number(started_at ?? Date.now());
+  const recent = findRecentPlayEvent(user_id, file_hash, 10 * 60 * 1000);
+  if (recent && !recent.completed) return Number(recent.id);
+
+  const eventId = insertPlayEvent({
+    user_id,
+    file_hash,
+    started_at: now,
+    duration_ms: duration_ms ?? null,
+    source: source ?? null,
+    session_id: session_id ?? null,
+  });
+
+  if (session_id) {
+    upsertListeningSession({
+      session_id,
+      user_id,
+      started_at: now,
+    });
+  }
+
+  return eventId;
+}
+
 // Deduplication for page-reload resume: find the most recent play event for
 // this user+hash within windowMs. Returns { id, completed } or null.
 // Caller decides: if completed=0 → it's an interrupted (reload) play, reuse it.

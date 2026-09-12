@@ -53,6 +53,11 @@ Velvet sends the current track and a lookahead window to Sonos so playback can c
 
 This keeps the player bar, Recently Played, and the audible Sonos track aligned when Sonos advances before the browser's muted playback mirror reaches its own `ended` event.
 
+Sonos playback uses the same wrapped history event as the controlling browser
+session. Track changes, pauses, skips, and natural completion therefore remain
+one consistent history lifecycle, with no duplicate event created by the cast
+transport request itself.
+
 The output picker is also available in the **Server Remote** at `/server-remote/`.
 
 ### Device readiness indicator

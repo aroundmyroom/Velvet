@@ -38,6 +38,12 @@ The `alsa-utils` package provides `amixer`, `aplay`, and `alsamixer` — all use
 3. Any browser that can reach the server opens `/server-remote` to control playback.
 4. The remote page polls the server every 2 seconds for playback state.
 
+Server Speaker playback is also included in the user's play history. An event
+starts when mpv confirms that a file has loaded, then closes with the observed
+played position when the track ends, is interrupted, or the queue is cleared.
+This keeps server-output history aligned with browser playback without relying
+on the remote page staying open.
+
 ```
 Browser ──(HTTPS)──▶ Velvet API ──(Unix socket)──▶ mpv ──▶ server speakers
 ```

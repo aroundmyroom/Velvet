@@ -1,3 +1,35 @@
+## v0.5.5 (unreleased)
+
+### Fixed: playback history now follows server-side output
+- Server Speaker playback now creates one play-history event when mpv actually
+  loads a track and closes it on completion, interruption, or queue clear.
+- Sonos casting continues to use the browser's existing wrapped event lifecycle,
+  avoiding duplicate history rows while keeping start, pause, skip, and end
+  semantics identical to browser playback.
+
+### Fixed: DLNA SQL safety tests now exit cleanly
+- SQL search and sort helpers now live in a side-effect-free module, so their
+  safety tests do not initialize the full DLNA server dependency graph or leave
+  the test process waiting after all assertions pass.
+
+### Improved: album art discovery recognises `frente.*` front covers
+- Folder cover discovery now treats `frente.jpg`, `frente.jpeg`, and
+  `frente.png` like existing `cover.*`, `front.*`, `folder.*`, and `album.*`
+  images, so Spanish/Portuguese front-cover filenames do not need to be
+  renamed before scanning.
+- Album Library filesystem art lookup also recognises `Frente.*` case variants
+  and `frente.webp` / `Frente.webp` alongside the existing WebP cover names.
+- ZIP/download album-art fallback now checks `frente.*` before generic artwork
+  filenames.
+
+### Fixed: Docker admin panel could still show FFmpeg as not ready after update
+- The disabled-transcoding startup probe checked only `ffmpeg`, while the admin
+  status correctly requires both `ffmpeg` and `ffprobe`. Docker updates with a
+  stale or partially mounted binary directory could therefore leave the admin
+  panel showing **Not ready** until the user clicked **Verify / Download**.
+  The lightweight boot probe now checks both binaries, matching the real
+  readiness test.
+
 ## v0.5.4 (2026-09-11)
 
 Auto-DJ collaboration intelligence — canonical duo/group names now survive
