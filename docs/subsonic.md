@@ -113,9 +113,11 @@ Supported extensions returned by `getOpenSubsonicExtensions`:
 - `albumArtist` — `albumArtist` field on song/album objects
 - `apiKeyAuth` — API key authentication via `?apiKey=` parameter
 - `songLyrics` — structured lyrics via `getLyricsBySongId` (reads embedded file tags)
-- `playbackReport` — `reportPlayback` endpoint for timeline state updates
 
-Extensions **not** advertised: `transcoding` (extension flow not needed — `stream` handles `format`/`maxBitRate` natively), `indexBasedQueue`.
+Extensions **not** advertised: `playbackReport` (some clients prefer it over
+classic `scrobble` while setting `ignoreScrobble=true`, suppressing play counts
+and Last.fm/ListenBrainz forwarding), `transcoding` (extension flow not needed —
+`stream` handles `format`/`maxBitRate` natively), `indexBasedQueue`.
 
 ---
 
@@ -128,7 +130,7 @@ Extensions **not** advertised: `transcoding` (extension flow not needed — `str
 | `getLicense` | ✅ | Returns `valid: true`, expires 2099 |
 | `getScanStatus` | ✅ | Live data from task queue — real `scanning` bool and scanned `count` |
 | `startScan` | ✅ | Admin only — triggers a full library rescan |
-| `getOpenSubsonicExtensions` | ✅ | Lists `formPost`, `noAuth`, `albumArtist`, `apiKeyAuth`, `songLyrics`, `playbackReport` |
+| `getOpenSubsonicExtensions` | ✅ | Lists `formPost`, `noAuth`, `albumArtist`, `apiKeyAuth`, `songLyrics`, `transcodeOffset` |
 | `tokenInfo` | ✅ | Returns `{ username, authMethod }` for the current session |
 
 ### Library — Folder browsing
@@ -182,7 +184,7 @@ Song results in `search2`/`search3` match the query against **title, artist, or 
 | `getLyrics` | ✅ | Legacy v1 stub (returns empty) |
 | `getLyricsBySongId` | ✅ | OpenSubsonic `songLyrics` extension — reads embedded lyrics (USLT/plain) from file tags on demand via music-metadata; cached per content hash |
 | `scrobble` | ✅ | Updates play count + last played; forwards to Last.fm / ListenBrainz |
-| `reportPlayback` | ✅ | OpenSubsonic `playbackReport` extension — `state: started/playing/paused/completed`; updates now-playing; triggers scrobble on completion unless `ignoreScrobble=true` |
+| `reportPlayback` | ✅ | Available to explicit callers but not advertised; updates timeline state and honours `ignoreScrobble`. Clients use classic `scrobble` for reliable play counts and Last.fm/ListenBrainz forwarding. |
 | `setRating` | ✅ | Stores 1–5 rating in user_metadata |
 | `getAvatar` | ✅ | Returns 404 (no avatar storage) |
 

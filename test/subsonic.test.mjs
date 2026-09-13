@@ -236,6 +236,12 @@ describe('Subsonic – scrobble', () => {
 
   after(async () => { await srv.stop(); });
 
+  it('does not advertise playbackReport to clients that would bypass scrobble', async () => {
+    const sr = await subGet(srv.subsonicBaseUrl, 'getOpenSubsonicExtensions');
+    const names = [].concat(sr.openSubsonicExtensions ?? []).map(extension => extension.name);
+    assert.ok(!names.includes('playbackReport'));
+  });
+
   it('scrobble an existing song without error', async () => {
     // Resolve a real song ID first
     const listSr = await subGet(srv.subsonicBaseUrl, 'getAlbumList2', { type: 'newest', size: 1 });

@@ -1,4 +1,16 @@
-## v0.5.5 (unreleased)
+## v0.5.6 (2026-09-13)
+
+### Fixed: external client scrobbling stopped after playbackReport advertisement
+- Tempus, Naviamp, and other OpenSubsonic clients are again directed to the
+  classic `scrobble` endpoint, restoring play counts and Last.fm/ListenBrainz
+  forwarding for client playback.
+- The `reportPlayback` endpoint remains available to explicit callers, but its
+  extension is no longer advertised because clients may prefer it while sending
+  `ignoreScrobble=true`, which correctly suppresses every scrobble side effect.
+- Added regression coverage for the advertised extension set and the classic
+  client scrobble path.
+
+## v0.5.5 (2026-09-12)
 
 ### Fixed: playback history now follows server-side output
 - Server Speaker playback now creates one play-history event when mpv actually

@@ -2333,8 +2333,10 @@ export function setup(velvet) {
         { name: 'albumArtist',      versions: [1] },
         { name: 'apiKeyAuth',       versions: [1] },
         { name: 'songLyrics',       versions: [1] },
-        { name: 'playbackReport',   versions: [1] },
         { name: 'transcodeOffset',  versions: [1] },
+        // 'playbackReport' remains implemented but is intentionally not
+        // advertised: Tempus/Naviamp may prefer it over classic scrobble while
+        // sending ignoreScrobble=true, suppressing play counts and forwarding.
         // 'transcoding' extension intentionally not advertised: clients that
         // partially implement the Dec-2025 spec (getTranscodeDecision but not
         // getTranscodeStream) fall back to stream?format=raw when they receive
