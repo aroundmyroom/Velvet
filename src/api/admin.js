@@ -307,6 +307,7 @@ export function setup(velvet) {
 
     // Handle home directory
     let thisDirectory = req.body.directory;
+    if (thisDirectory.includes('\0')) { throw new WebError('Invalid path', 400); }
     if (req.body.directory === '~') {
       thisDirectory = os.homedir();
     }

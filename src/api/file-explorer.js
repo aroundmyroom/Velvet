@@ -25,7 +25,12 @@ async function recursiveFileScan(directory, fileList, relativePath, vPath) {
     }
 
     if (stat.isDirectory()) {
-      await recursiveFileScan(resolvePathWithinRoot(directory, file), fileList, path.join(relativePath, file), vPath);
+      try {
+        await recursiveFileScan(resolvePathWithinRoot(directory, file), fileList, path.join(relativePath, file), vPath);
+      } catch (err) {
+        // Unreadable subfolder — skip it instead of failing the whole listing
+        winston.warn(`Failed to read directory ${file} in ${directory}, skipping.`, { stack: err });
+      }
     } else {
       const extension = fileExplorer.getFileType(file).toLowerCase();
       if (config.program.supportedAudioFiles[extension] === true) {

@@ -10,6 +10,7 @@ import * as logger from '../logger.js';
 import * as db from '../db/manager.js';
 import * as syncthing from '../state/syncthing.js';
 import { getDirname } from './esm-helpers.js';
+import WebError from './web-error.js';
 
 const __dirname = getDirname(import.meta.url);
 
@@ -114,7 +115,7 @@ export async function removeDirectory(vpath) {
 }
 
 export async function addUser(username, password, admin, vpaths) {
-  if (config.program.users[username]) { throw new Error(`'${username}' is already loaded into memory`); }
+  if (config.program.users[username]) { throw new WebError(`'${username}' already exists`, 409); }
 
   // hash password
   const hash = await auth.hashPassword(password);
@@ -142,7 +143,7 @@ export async function addUser(username, password, admin, vpaths) {
 }
 
 export async function deleteUser(username) {
-  if (!config.program.users[username]) { throw new Error(`'${username}' does not exist`); }
+  if (!config.program.users[username]) { throw new WebError(`'${username}' does not exist`, 404); }
 
   const memClone = structuredClone(config.program.users);
   delete memClone[username];
@@ -166,7 +167,7 @@ export async function deleteUser(username) {
 }
 
 export async function editUserPassword(username, password) {
-  if (!config.program.users[username]) { throw new Error(`'${username}' does not exist`); }
+  if (!config.program.users[username]) { throw new WebError(`'${username}' does not exist`, 404); }
 
   const hash = await auth.hashPassword(password);
 
@@ -183,7 +184,7 @@ export async function editUserPassword(username, password) {
 }
 
 export async function editSubsonicPassword(username, password) {
-  if (!config.program.users[username]) { throw new Error(`'${username}' does not exist`); }
+  if (!config.program.users[username]) { throw new WebError(`'${username}' does not exist`, 404); }
 
   const memClone = structuredClone(config.program.users);
   memClone[username]['subsonic-password'] = password;
@@ -196,7 +197,7 @@ export async function editSubsonicPassword(username, password) {
 }
 
 export async function editUserVPaths(username, vpaths) {
-  if (!config.program.users[username]) { throw new Error(`'${username}' does not exist`); }
+  if (!config.program.users[username]) { throw new WebError(`'${username}' does not exist`, 404); }
 
   const memClone = structuredClone(config.program.users);
   memClone[username].vpaths = vpaths;
@@ -209,7 +210,7 @@ export async function editUserVPaths(username, vpaths) {
 }
 
 export async function editUserAccess(username, admin) {
-  if (!config.program.users[username]) { throw new Error(`'${username}' does not exist`); }
+  if (!config.program.users[username]) { throw new WebError(`'${username}' does not exist`, 404); }
 
   const memClone = structuredClone(config.program.users);
   memClone[username].admin = admin;
@@ -222,7 +223,7 @@ export async function editUserAccess(username, admin) {
 }
 
 export async function setUserLastFM(username, lastfmUser, lastfmPassword) {
-  if (!config.program.users[username]) { throw new Error(`'${username}' does not exist`); }
+  if (!config.program.users[username]) { throw new WebError(`'${username}' does not exist`, 404); }
 
   const memClone = structuredClone(config.program.users);
   memClone[username]['lastfm-user'] = lastfmUser;
@@ -405,7 +406,7 @@ export async function editMaxZipMb(val) {
 
 export async function editAllowRadioRecording(username, val) {
   const loadConfig = await loadFile(config.configFile);
-  if (!loadConfig.users?.[username]) { throw new Error(`User '${username}' not found`); }
+  if (!loadConfig.users?.[username]) { throw new WebError(`User '${username}' not found`, 404); }
   loadConfig.users[username]['allow-radio-recording'] = val;
   await saveFile(loadConfig, config.configFile);
 
@@ -414,7 +415,7 @@ export async function editAllowRadioRecording(username, val) {
 
 export async function editAllowYoutubeDownload(username, val) {
   const loadConfig = await loadFile(config.configFile);
-  if (!loadConfig.users?.[username]) { throw new Error(`User '${username}' not found`); }
+  if (!loadConfig.users?.[username]) { throw new WebError(`User '${username}' not found`, 404); }
   loadConfig.users[username]['allow-youtube-download'] = val;
   await saveFile(loadConfig, config.configFile);
 
@@ -423,7 +424,7 @@ export async function editAllowYoutubeDownload(username, val) {
 
 export async function editAllowUpload(username, val) {
   const loadConfig = await loadFile(config.configFile);
-  if (!loadConfig.users?.[username]) { throw new Error(`User '${username}' not found`); }
+  if (!loadConfig.users?.[username]) { throw new WebError(`User '${username}' not found`, 404); }
   loadConfig.users[username]['allow-upload'] = val;
   await saveFile(loadConfig, config.configFile);
 
@@ -432,7 +433,7 @@ export async function editAllowUpload(username, val) {
 
 export async function editAllowServerRemote(username, val) {
   const loadConfig = await loadFile(config.configFile);
-  if (!loadConfig.users?.[username]) { throw new Error(`User '${username}' not found`); }
+  if (!loadConfig.users?.[username]) { throw new WebError(`User '${username}' not found`, 404); }
   loadConfig.users[username]['allow-server-remote'] = val;
   await saveFile(loadConfig, config.configFile);
   config.program.users[username]['allow-server-remote'] = val;
@@ -440,7 +441,7 @@ export async function editAllowServerRemote(username, val) {
 
 export async function editAllowMpvCast(username, val) {
   const loadConfig = await loadFile(config.configFile);
-  if (!loadConfig.users?.[username]) { throw new Error(`User '${username}' not found`); }
+  if (!loadConfig.users?.[username]) { throw new WebError(`User '${username}' not found`, 404); }
   loadConfig.users[username]['allow-mpv-cast'] = val;
   await saveFile(loadConfig, config.configFile);
   config.program.users[username]['allow-mpv-cast'] = val;

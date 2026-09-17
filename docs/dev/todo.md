@@ -179,6 +179,7 @@ Audit completed 2026-03-26. Strategy: **Option A — separate `mobile.css`** loa
 - [ ] Global `-webkit-tap-highlight-color: transparent` in `mobile.css`
 - [ ] Enhance inline Blob manifest: add `orientation:"portrait"`, `id`, `scope`
 - [ ] (Optional) Service worker for offline caching
+- [ ] Library sync manifest — `POST /api/v1/sync/manifest`: server returns a library manifest (hashes, paths, mtimes) so a client can diff and sync offline content. Idea from upstream mStream branch `claude/sync-manifest` (Sep 2026); pairs with the Service Worker offline caching above (see `docs/mobile-app-plan.md`).
 
 ### Sonos — reliable seeking into unbuffered audio — PLANNED (approved, not started)
 

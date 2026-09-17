@@ -1,5 +1,6 @@
 import path from 'node:path';
 import * as config from '../state/config.js';
+import WebError from './web-error.js';
 
 export function getVPathInfo(url, user) {
   if (!config.program) { throw new Error('Not Configured'); }
@@ -13,7 +14,7 @@ export function getVPathInfo(url, user) {
   const vpath = url.split('/').shift();
   const folders = config.program.folders;
 
-  if (!folders[vpath]) throw new Error(`Unknown vpath: ${vpath}`);
+  if (!folders[vpath]) throw new WebError(`Unknown vpath: ${vpath}`, 404);
 
   // Verify user has access to this vpath (direct or via a child vpath).
   if (user && !user.vpaths.includes(vpath)) {
@@ -27,7 +28,7 @@ export function getVPathInfo(url, user) {
       const childPrefix = childRoot.slice(parentRoot.length);
       return relativePath === childPrefix.replace(/\/$/, '') || relativePath.startsWith(childPrefix);
     });
-    if (!allowed) throw new Error(`User does not have access to path ${vpath}`);
+    if (!allowed) throw new WebError(`User does not have access to path ${vpath}`, 404);
   }
 
   const baseDir = folders[vpath].root;

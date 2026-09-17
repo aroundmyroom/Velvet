@@ -1,3 +1,18 @@
+## v0.5.7 (2026-09-17)
+
+### Improved: correct HTTP status codes instead of 500 (upstream-inspired hardening)
+- Unknown or ungranted vpath/library requests now answer **404** instead of a
+  generic 500 "Server Error" (`getVPathInfo` throws `WebError`).
+- Admin user management answers **409** when adding a username that already
+  exists and **404** for operations on a non-existent user (delete, password,
+  Subsonic password, vpaths, access, Last.fm link, and all allow-* toggles).
+- Admin file explorer rejects a path containing a NUL byte with **400**.
+
+### Fixed: recursive file listing no longer fails on an unreadable subfolder
+- `POST /api/v1/file-explorer/recursive` skips a subfolder it cannot read
+  (permission error) and continues, instead of aborting the whole listing
+  with a 500.
+
 ## v0.5.6 (2026-09-13)
 
 ### Fixed: external client scrobbling stopped after playbackReport advertisement
