@@ -1,3 +1,21 @@
+## v0.5.9 (2026-09-18)
+
+### Security: @simplewebauthn/server 13.3.3 → 14.0.2
+- Fixes a moderate (CVSS 5.4) certificate-revocation vulnerability in passkey
+  attestation verification (GHSA-2g3p-m8c9-hhwh). No API changes — passkey
+  login and registration work unchanged; adds PQC (ML-DSA) passkey support.
+
+### Dependencies (all 7 open Dependabot PRs integrated and verified)
+- @simplewebauthn/browser 13.3.0 → 14.0.0
+- joi 18.2.8 → 18.2.9, file-type 22.0.2 → 22.1.0, compression 1.8.1 → 1.8.2
+- dev: eslint 10.9.1 → 10.10.0, globals 17.11.0 → 17.12.0
+- Verified: 216 tests green, lint clean, server boots without errors.
+
+### Fixed: lint error blocking PR CI
+- `src/api/dlna-query.js` — un-braced conditional flagged by
+  `sonarjs/no-unenclosed-multiline-block` made the CI lint gate fail on every
+  pull request; all Dependabot PRs showed red because of it.
+
 ## v0.5.8 (2026-09-18)
 
 ### Added: Music Assistant support (verified) + setup guide

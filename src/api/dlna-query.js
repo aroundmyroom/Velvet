@@ -52,7 +52,7 @@ class SearchParser {
     return left;
   }
   parseRelational() {
-    if (this.peek() === '(') { this.next(); const node = this.parseOr(); if (this.peek() === ')') this.next(); return node; }
+    if (this.peek() === '(') { this.next(); const node = this.parseOr(); if (this.peek() === ')') { this.next(); } return node; }
     const property = this.next();
     const relOp = this.next();
     let value = this.next() || '';
