@@ -14,6 +14,24 @@ Velvet streams your local music collection to any browser, phone, **Samsung Smar
 
 ---
 
+## Quick Start
+
+```shell
+docker run -d \
+  --name velvet \
+  --restart unless-stopped \
+  -p 3000:3000 \
+  -v ./save:/app/save \
+  -v /path/to/your/music:/music \
+  -v ./waveform-cache:/app/waveform-cache \
+  -v ./image-cache:/app/image-cache \
+  ghcr.io/aroundmyroom/velvet:latest
+```
+
+Open `http://localhost:3000`, point Velvet at `/music`, and press play. Full guides: [Docker](docs/docker.md) · [bare-metal/systemd](docs/install.md) · [reverse proxy](docs/deploy.md).
+
+---
+
 ## Look and feel
 
 **Now playing** — queue panel, waveform scrubber, album art, and full transport controls in one view:
@@ -96,7 +114,7 @@ Velvet streams your local music collection to any browser, phone, **Samsung Smar
 | **Album library first** | Multi-disc detection, series grouping, category folders, per-disc cover art, CUE sheet support — your classical and box-set collections look right |
 | **Listening analytics** | Full play history, skip rates, hourly heat charts, personality type, fun facts — all local, no external calls |
 | **Real audio quality** | EBU R128 loudness normalization, gapless playback, crossfade, BPM/harmonic mixing, on-demand transcoding |
-| **Plays everywhere** | Browser, **Samsung Smart TV (Tizen app)**, Sonos, DLNA/UPnP, Subsonic API (Symfonium, DSub, Ultrasonic), shared playlist links |
+| **Plays everywhere** | Browser, **Samsung Smart TV (Tizen app)**, Sonos, DLNA/UPnP, Subsonic API (Symfonium, DSub, Ultrasonic), **Music Assistant / Home Assistant**, shared playlist links |
 
 ---
 
@@ -211,6 +229,7 @@ Dynamic filter-based playlists that re-evaluate every time you open them:
 | **Sonos** | Auto-discovery, cast current track, queue mirroring, bidirectional pause/resume, hi-res transcoding, favourites playback (Spotify, Apple Music, TuneIn). [Docs →](docs/audio-output.md) |
 | **DLNA / UPnP** | Browse and stream over LAN to Smart TVs, Kodi, BubbleUPnP, AV receivers. [Docs →](docs/dlna.md) |
 | **Subsonic API** | Full 1.16.1 + Open Subsonic compatibility. Works with Symfonium, DSub, Ultrasonic, KSub (Astiga), and more. [Docs →](docs/subsonic.md) |
+| **Music Assistant / Home Assistant** | Use Velvet as an Open Subsonic source in [Music Assistant](https://www.music-assistant.io/) — stream your library to Chromecast, AirPlay, Squeezelite and more, with Home Assistant automations and voice control. [Setup →](docs/subsonic.md#music-assistant) |
 | **Samsung Smart TV** | Native **Velvet TV** app for Tizen 5.5+ — full remote/D-pad navigation, albums (CUE + multi-disc), A–Z quick-jump, VU meter and visualizer. Side-load the `.wgt` with Apps2Samsung. [Docs →](docs/tizen-tv.md) |
 | **Sharesonic (Android)** | Community Android app for Velvet. [GitHub →](https://github.com/Tiritibambix/Sharesonic) |
 

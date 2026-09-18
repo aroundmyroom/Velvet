@@ -1740,7 +1740,9 @@ export function setup(velvet) {
       owner: req.subsonicUser,
       public: false,
       songCount: pl.songCount || 0,
-      duration: pl.totalDuration || 0
+      duration: pl.totalDuration || 0,
+      created: new Date(pl.created ?? Date.now()).toISOString(),
+      changed: new Date(pl.created ?? Date.now()).toISOString()
     }));
     sendResponse(req, res, makeResponse('ok', { playlists: { playlist: playlists } }));
   });
@@ -1773,10 +1775,13 @@ export function setup(velvet) {
     }
 
     const duration = songs.reduce((s, r) => s + (r.duration || 0), 0);
+    const plRow = db.findPlaylist(req.subsonicUser, id);
+    const createdIso = new Date(plRow?.created ?? Date.now()).toISOString();
     sendResponse(req, res, makeResponse('ok', {
       playlist: {
         id, name: id, owner: req.subsonicUser, public: false,
         songCount: songs.length, duration: Math.round(duration),
+        created: createdIso, changed: createdIso,
         entry: songs
       }
     }));

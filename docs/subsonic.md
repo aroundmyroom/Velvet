@@ -8,6 +8,7 @@ Velvet implements the **Subsonic REST API 1.16.1** plus the **Open Subsonic** ex
 
 | Client | Platform | Notes |
 |---|---|---|
+| **Music Assistant** | Server (Home Assistant) | Verified against MA's provider stack (py-opensonic 10.4) — all calls the Open Subsonic provider makes pass, incl. empty-query `search3` pagination, API-key auth, lyrics, similar songs. See [Music Assistant setup](#music-assistant) below |
 | **Symfonium** | Android | Full library sync verified (v6.10.0+) |
 | **DSub** | Android | ✅ |
 | **Substreamer** | iOS | ✅ |
@@ -19,12 +20,33 @@ Velvet implements the **Subsonic REST API 1.16.1** plus the **Open Subsonic** ex
 | Any Subsonic 1.16.1 client | — | Should work |
 
 
+## Music Assistant
+
+[Music Assistant](https://www.music-assistant.io/) (the Open Home Foundation's music library manager, tightly integrated with Home Assistant) can use Velvet as an **Open Subsonic** music source. This unlocks playback of your Velvet library on everything MA streams to — Chromecast, AirPlay, Squeezelite, Sonos, DLNA players — plus Home Assistant automations and voice control.
+
+### Setup
+
+1. In Velvet: create a Subsonic API key — **Admin → Users → Password button → Subsonic API Keys**
+2. In Music Assistant: **Settings → Music Sources → Add → Open Subsonic** and fill in:
+   - **Base URL** — `https://<your-server>` (no port here)
+   - **Port** — your Velvet port (default `3000`)
+   - **API Token** — the key from step 1 (leave username/password empty)
+3. Recommended settings:
+   - **Enable Podcasts: off** — Velvet serves podcasts through its own player, not the Subsonic podcast endpoints
+   - Leave **Enable Legacy Auth** off — Velvet supports modern token and API-key auth
+
+### Notes
+
+- **Endless Mix / similar tracks** work when Velvet has a Last.fm API key configured (same requirement as Navidrome/Gonic).
+- MA cannot play some **opus/m4a/VBR** files over a Subsonic connection (a known MA limitation). Workaround: enable Velvet transcoding (`transcode.enabled: true`) so MA can request a compatible format.
+- Verified against MA's exact client stack (py-opensonic): library sync (artists, albums, playlists, empty-query `search3` pagination), streaming, cover art, lyrics, similar songs, top songs, radio stations, star/unstar, and scrobbling all pass.
+
+
 ## Base URL
 
 ```
 https://<your-server>:<port>/rest/
 ```
-
 All endpoints are available both with and without the `.view` extension, e.g.:
 
 ```
@@ -197,7 +219,7 @@ Song results in `search2`/`search3` match the query against **title, artist, or 
 ### Playlists
 | Endpoint | Status | Notes |
 |---|---|---|
-| `getPlaylists` | ✅ | All playlists visible to the current user |
+| `getPlaylists` | ✅ | All playlists visible to the current user; includes `created`/`changed` timestamps (required by spec — verified against py-opensonic strict parsing) |
 | `getPlaylist` | ✅ | Full playlist with song list |
 | `createPlaylist` | ✅ | Create new or replace existing |
 | `updatePlaylist` | ✅ | Rename (`name` param), append songs (`songIdToAdd`), remove by index (`songIndexToRemove`) |

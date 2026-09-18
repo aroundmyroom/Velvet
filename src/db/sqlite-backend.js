@@ -209,6 +209,11 @@ export function init(dbDirectory) {
   `);
   // Silent migration: add sort_order column if it doesn't exist yet
   try { db.exec('ALTER TABLE playlists ADD COLUMN sort_order INTEGER'); } catch { /* already exists */ }
+  // Silent migration: created timestamp (required by Subsonic getPlaylists spec)
+  try {
+    db.exec('ALTER TABLE playlists ADD COLUMN created INTEGER');
+    db.prepare('UPDATE playlists SET created = ? WHERE created IS NULL').run(Date.now());
+  } catch { /* already exists */ }
   db.exec(`
 
     CREATE TABLE IF NOT EXISTS shared_playlists (
@@ -3103,6 +3108,7 @@ export function getUserPlaylists(username) {
   // doing a full-table concat scan on 130 k+ rows (was 7 s, now <5 ms).
   return db.prepare(`
     SELECT p.name,
+           MIN(p.created) AS created,
            COUNT(f.rowid) AS songCount,
            CAST(COALESCE(SUM(f.duration), 0) AS INTEGER) AS totalDuration
     FROM playlists p
@@ -3121,8 +3127,8 @@ export function findPlaylist(username, playlistName) {
 }
 
 export function createPlaylistEntry(entry) {
-  db.prepare('INSERT INTO playlists (name, filepath, user, live) VALUES (?, ?, ?, ?)').run(
-    entry.name, entry.filepath ?? null, entry.user, entry.live ? 1 : 0
+  db.prepare('INSERT INTO playlists (name, filepath, user, live, created) VALUES (?, ?, ?, ?, ?)').run(
+    entry.name, entry.filepath ?? null, entry.user, entry.live ? 1 : 0, Date.now()
   );
 }
 

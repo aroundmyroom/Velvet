@@ -1,3 +1,26 @@
+## v0.5.8 (2026-09-18)
+
+### Added: Music Assistant support (verified) + setup guide
+- Velvet now works as an **Open Subsonic** music source in
+  [Music Assistant](https://www.music-assistant.io/) — verified against MA's
+  exact client stack (py-opensonic): library sync, empty-query `search3`
+  pagination, API-key auth, streaming, cover art, lyrics, similar songs, top
+  songs, radio stations, star/unstar, and scrobbling all pass.
+- New "Music Assistant" setup section in `docs/subsonic.md` with recommended
+  settings and known MA-side limitations.
+
+### Fixed: Subsonic getPlaylists/getPlaylist missing required `created` field
+- The Subsonic spec requires `created` on playlist objects; strict clients
+  (py-opensonic / Music Assistant) refused to parse Velvet's playlists without
+  it. Playlists now carry `created`/`changed` ISO timestamps.
+- New `created` column on the `playlists` table (silent migration; existing
+  playlists are backfilled once, new playlists record their real creation time).
+
+### Improved: GitHub visibility
+- README: new Quick Start (Docker one-liner), Music Assistant / Home Assistant
+  listed in integrations and "Plays everywhere".
+- Repository topics (20) and description set for discoverability.
+
 ## v0.5.7 (2026-09-17)
 
 ### Improved: correct HTTP status codes instead of 500 (upstream-inspired hardening)
