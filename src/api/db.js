@@ -100,12 +100,12 @@ function renderMetadataObj(row) {
       "genre": row.genre || null,
       "replaygain-track-db": row.replaygainTrackDb ?? null,
       "duration": row.duration ?? null,
-      "bitrate": row.bitrate ?? null,
+      "bitrate": Number.isFinite(row.bitrate) ? row.bitrate * 1000 : null,
       "sample-rate": row.sample_rate ?? null,
       "channels": row.channels ?? null,
       "bit-depth": row.bit_depth ?? null,
       "album-version": row.album_version || null,
-      "bpm": row.bpm ?? null,
+      "bpm": row.bpm == null ? null : Math.round(row.bpm),
       "musical-key": row.musical_key || null
     },
     "rg": rgObj

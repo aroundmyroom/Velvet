@@ -34,6 +34,17 @@ This is the **only** concession made for legacy browsers.  Any further regressio
 on CleverShare or other older environments should be investigated case-by-case; we
 will not broadly lower the baseline.
 
+## Native iOS Players
+
+Native iOS players use standard percent-encoded media URLs. Velvet decodes the
+library name and every remaining path segment before resolving the requested file
+inside its configured library root. This supports library names with spaces,
+including child libraries, while retaining the same root-confinement and access
+checks as other media requests.
+
+Velvet reports track bitrate in bits per second. Compatible players convert this
+to a human-readable kbps label.
+
 ## Web Audio failure handling
 
 If a browser does not expose `AudioContext` or `webkitAudioContext` at all, the app

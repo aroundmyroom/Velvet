@@ -490,6 +490,37 @@ export async function serveIt(configFile) {
     if (filePath.toLowerCase().endsWith('.flac')) res.setHeader('Content-Type', 'audio/flac');
   };
 
+  // Express static matching does not decode a mount path, so a client that
+  // correctly sends a vpath's spaces as %20 misses its literal static mount.
+  velvet.use('/media/', (req, res, next) => {
+    const parts = req.path.split('/').filter(Boolean);
+    if (parts.length < 2) return next();
+
+    let mediaVpath;
+    let relativePath;
+    try {
+      mediaVpath = decodeURIComponent(parts[0]);
+      relativePath = parts.slice(1).map(decodeURIComponent).join('/');
+    } catch {
+      return next();
+    }
+
+    const mediaRoot = config.program.folders[mediaVpath]?.root;
+    if (!mediaRoot) return next();
+
+    let filePath;
+    try {
+      filePath = resolvePathWithinRoot(mediaRoot, relativePath);
+    } catch {
+      return next();
+    }
+
+    setMediaHeaders(res, filePath);
+    return res.sendFile(filePath, error => {
+      if (error && !res.headersSent) next(error);
+    });
+  });
+
   const escapeMediaVpathRoute = value => value.replace(/[()[\]?+*!:]/g, '\\$&');
 
   Object.keys(config.program.folders).forEach(key => {

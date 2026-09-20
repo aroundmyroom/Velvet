@@ -1,3 +1,12 @@
+## v0.5.10 (2026-09-20)
+
+### Fixed: third-party iOS player compatibility
+- Media URLs whose library name contains spaces now work when clients correctly
+  percent-encode them. This restores streaming from child libraries such as
+  `Unidisc 12-inch classics` without changing the existing media URL contract.
+- Track metadata now returns bitrate in bits per second, matching the established
+  API wire format and restoring correct kbps labels in compatible players.
+
 ## v0.5.9 (2026-09-18)
 
 ### Security: @simplewebauthn/server 13.3.3 → 14.0.2
