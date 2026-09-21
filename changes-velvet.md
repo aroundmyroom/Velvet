@@ -1,3 +1,15 @@
+## v0.5.13 (2026-09-21)
+
+Pausing on the Sonos app is reflected in the web player again.
+
+### Fixed
+- **Pause or play pressed on the Sonos app now updates the web player immediately.**
+  v0.5.12 moved track changes onto live events from the speaker but left play/pause
+  handling behind on the slower polling path, and then slowed that path down because
+  events were expected to cover it. The player bar could sit there showing playback
+  while the speaker was paused. Transport state now travels on the same live events as
+  everything else — measured at around a tenth of a second.
+
 ## v0.5.12 (2026-09-21)
 
 ### Fixed: Sonos casting wiped the queue and restarted every track

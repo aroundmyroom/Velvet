@@ -19813,6 +19813,29 @@ function _sonosReconcileTrack(st) {
   return 'insync';
 }
 
+// Reflect a play/pause made on the Sonos app back to the (muted) web player. Shared by
+// the poll and the pushed-event path — a pause that only the poll could see left the
+// player bar showing "playing" until the next tick. Without it the browser also keeps
+// running against a paused device and never reaches a paused state, so the sleep
+// LED-off never fires. Returns true when it acted.
+function _sonosApplyPlayState(st) {
+  if (!S.castingToSonos || !S.sonosRoom || _sonosCeded) return false;
+  if (_sonosLoadingSong) return false;
+  if ((Date.now() - _sonosCastTime) < 8000) return false;       // cast grace — device still settling
+  if ((Date.now() - _sonosLocalControlAt) < 4000) return false; // don't race our own set-pause
+  if (st.paused && !audioEl.paused) {
+    audioEl.pause();
+    if (_sonosSleepEnabled()) api('POST', 'api/v1/sonos/led', { ip: S.sonosRoom.ip, state: 'Off' }).catch(() => {});
+    return true;
+  }
+  if (st.playing && audioEl.paused) {
+    audioEl.play().catch(() => {});
+    if (_sonosSleepEnabled()) api('POST', 'api/v1/sonos/led', { ip: S.sonosRoom.ip, state: 'On' }).catch(() => {});
+    return true;
+  }
+  return false;
+}
+
 // Live transport events pushed by the speaker (GENA → server → SSE). This removes the
 // poll-interval blind window in which a normal track change could not be told apart
 // from a takeover. The poll keeps running as the fallback and owns position sync —
@@ -19828,7 +19851,10 @@ function _startSonosEventStream() {
       try { ev = JSON.parse(e.data); } catch { return; }
       if (!ev || ev.ip !== S.sonosRoom.ip) return; // another room — not ours
       _sonosLastEventAt = Date.now();
-      _sonosReconcileTrack(ev);
+      const verdict = _sonosReconcileTrack(ev);
+      // A pushed pause/play must be applied here too — the poll is the fallback, and
+      // it deliberately backs off while events are flowing.
+      if (verdict !== 'ceded' && verdict !== 'diverging') _sonosApplyPlayState(ev);
     };
     // EventSource reconnects on its own; nothing to do but keep the poll running.
     _sonosEventSrc.onerror = () => {};
@@ -24507,18 +24533,7 @@ function _startSonosPositionSync(ip) {
           }
           return;
         }
-        if (!_castGrace && !_recentLocal && !_sonosLoadingSong) {
-          if (st.paused && !audioEl.paused) {
-            audioEl.pause();
-            if (_sonosSleepEnabled()) api('POST', 'api/v1/sonos/led', { ip: S.sonosRoom.ip, state: 'Off' }).catch(() => {});
-            return;
-          }
-          if (st.playing && audioEl.paused) {
-            audioEl.play().catch(() => {});
-            if (_sonosSleepEnabled()) api('POST', 'api/v1/sonos/led', { ip: S.sonosRoom.ip, state: 'On' }).catch(() => {});
-            return;
-          }
-        }
+        if (_sonosApplyPlayState(st)) return;
         // Drift correction — skip right after a local seek/control so the poll doesn't
         // snap the UI back to the device's pre-seek position while it is still catching up.
         if (!_castGrace && !_recentLocal && (st.playing || st.paused) &&
