@@ -1,7 +1,7 @@
 ## v0.5.11 (2026-09-21)
 
 ### Fixed: slow UI behind a reverse proxy and during library scans
-- Album art (`/album-art/:file`) is now sent with `Cache-Control: public, max-age=31536000, immutable`.
+- Album art is now cached for a year by browsers and proxies (immutable Cache-Control).
   Cover filenames are content hashes, so browsers and proxies no longer revalidate every cover
   on each folder view. The "no art" fallback image stays `no-store`.
 - The scanner's per-file art checks (`get-file`, `get-files-batch`) no longer use synchronous
