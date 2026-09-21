@@ -20,6 +20,13 @@
 - **Skipping no longer rebuilds the Sonos queue either.** Picking a track that is already
   queued on the speaker now jumps straight to it, so the queue and its history survive a
   burst of next/previous presses instead of being flushed and rebuilt on every press.
+- **Sonos now tells Velvet what it is doing, instead of Velvet asking every 3 seconds.**
+  Pauses, skips and track changes made on the Sonos app show up in the player within a
+  few hundred milliseconds. Where a speaker cannot reach Velvet directly, it falls back
+  to the previous polling behaviour automatically.
+- **Small seeks made on the Sonos app are no longer ignored.** Velvet now tells a real
+  seek apart from ordinary playback drift, so nudging the position a few seconds on the
+  Sonos app is picked up instead of being discarded as noise.
 - Long queues are topped up as they play down, without interrupting playback.
 
 ## v0.5.11 (2026-09-21)

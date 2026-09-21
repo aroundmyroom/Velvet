@@ -540,6 +540,123 @@ function _resolveStreamUrl(track, baseUrl, streamToken, seekTo = 0) {
   return `${baseUrl}/media/${encodeURIComponent(track.vpath)}/${encodedPath}?token=${streamToken}`;
 }
 
+// ── UPnP eventing (GENA) ─────────────────────────────────────────────────────
+// Sonos pushes an AVTransport LastChange NOTIFY the moment anything changes, instead
+// of us noticing up to a poll interval later. That blind window is what made a normal
+// track change look like it might be a takeover. Polling stays as the fallback: the
+// callback needs the speaker to reach us over plain HTTP, which is not true of every
+// install (HTTPS-only, Docker bridge networking, multiple interfaces).
+const GENA_TIMEOUT_SECS = 1800;
+const _genaSubs = new Map(); // ip → { sid, renewTimer, lastEventAt }
+const _sseClients = new Set(); // open text/event-stream responses (players)
+
+// Push a parsed transport event to every connected player. Each one ignores events
+// for a room it is not casting to, so no per-client routing is needed here.
+function _dispatchSonosEvent(ev) {
+  if (!_sseClients.size) return;
+  const frame = `data: ${JSON.stringify(ev)}\n\n`;
+  for (const res of _sseClients) {
+    try { res.write(frame); } catch { _sseClients.delete(res); }
+  }
+}
+
+function _lanIpv4() {
+  for (const iface of Object.values(os.networkInterfaces())) {
+    for (const net of iface || []) {
+      if (net.family === 'IPv4' && !net.internal) return net.address;
+    }
+  }
+  return null;
+}
+
+// Eventing requires a plain-HTTP port the speaker can POST back to. Sonos will not
+// accept a self-signed HTTPS callback, so without localHttpPort we stay on polling.
+function _genaCallbackUrl() {
+  const lanIp = _lanIpv4();
+  if (!lanIp || !config.program?.localHttpPort) return null;
+  return `http://${lanIp}:${config.program.localHttpPort}/api/v1/sonos/event`;
+}
+
+function _genaRequest(ip, method, headers) {
+  return new Promise((resolve, reject) => {
+    const req = http.request({
+      hostname: ip, port: 1400, path: '/MediaRenderer/AVTransport/Event', method, headers,
+    }, res => {
+      res.resume(); // drain, we only need the headers
+      res.on('end', () => resolve({ statusCode: res.statusCode, headers: res.headers }));
+    });
+    req.on('error', reject);
+    req.setTimeout(6000, () => req.destroy(new Error(`GENA ${method} timeout`)));
+    req.end();
+  });
+}
+
+async function _genaSubscribe(ip) {
+  const callback = _genaCallbackUrl();
+  if (!callback) return null;
+  const existing = _genaSubs.get(ip);
+  // Renew in place when we already hold a subscription — a fresh SUBSCRIBE would
+  // leave the old one registered on the device until it times out.
+  const headers = existing?.sid
+    ? { SID: existing.sid, TIMEOUT: `Second-${GENA_TIMEOUT_SECS}` }
+    : { CALLBACK: `<${callback}>`, NT: 'upnp:event', TIMEOUT: `Second-${GENA_TIMEOUT_SECS}` };
+  const res = await _genaRequest(ip, 'SUBSCRIBE', headers);
+  if (res.statusCode === 412 && existing) {
+    // Subscription expired or was dropped by the device — start a fresh one.
+    _genaSubs.delete(ip);
+    clearTimeout(existing.renewTimer);
+    return _genaSubscribe(ip);
+  }
+  if (res.statusCode >= 400) throw new Error(`SUBSCRIBE HTTP ${res.statusCode}`);
+  const sid = res.headers.sid || existing?.sid;
+  if (!sid) throw new Error('SUBSCRIBE returned no SID');
+  const granted = Number.parseInt(String(res.headers.timeout || '').replace(/\D+/g, ''), 10) || GENA_TIMEOUT_SECS;
+  clearTimeout(existing?.renewTimer);
+  const renewTimer = setTimeout(() => {
+    _genaSubscribe(ip).catch(e => console.warn('[sonos] GENA renew failed:', e.message));
+  }, Math.max(30, granted - 60) * 1000);
+  renewTimer.unref?.();
+  _genaSubs.set(ip, { sid, renewTimer, lastEventAt: existing?.lastEventAt || 0 });
+  if (!existing) console.log(`[sonos] GENA subscribed → ${ip} (sid ${sid}, ${granted}s)`);
+  return sid;
+}
+
+async function _genaUnsubscribe(ip) {
+  const sub = _genaSubs.get(ip);
+  if (!sub) return;
+  clearTimeout(sub.renewTimer);
+  _genaSubs.delete(ip);
+  try { await _genaRequest(ip, 'UNSUBSCRIBE', { SID: sub.sid }); } catch { /* device gone — the subscription lapses on its own */ }
+  console.log(`[sonos] GENA unsubscribed → ${ip}`);
+}
+
+// LastChange is XML escaped inside XML: <propertyset><property><LastChange>&lt;Event…
+// Pull out the InstanceID val="…" attributes we care about.
+function _parseLastChange(body) {
+  const raw = (String(body).match(/<LastChange>([\s\S]*?)<\/LastChange>/i) || [])[1];
+  if (!raw) return null;
+  const ev = _decodeXmlEntitiesSimple(raw);
+  const val = name => {
+    const m = ev.match(new RegExp(`<${name}\\b[^>]*\\bval="([^"]*)"`, 'i'));
+    return m ? _decodeXmlEntitiesSimple(m[1]) : null;
+  };
+  const state = val('TransportState');
+  if (!state) return null;
+  const trackUri = val('CurrentTrackURI');
+  const nr = Number.parseInt(val('NumberOfTracks'), 10);
+  const trk = Number.parseInt(val('CurrentTrack'), 10);
+  return {
+    state,
+    playing: state === 'PLAYING',
+    paused:  state === 'PAUSED_PLAYBACK',
+    stopped: state === 'STOPPED',
+    track:    Number.isInteger(trk) ? trk : 0,
+    nrTracks: Number.isInteger(nr) ? nr : 0,
+    trackUri,
+    trackFp: _streamUriToFp(trackUri),
+  };
+}
+
 const _tagOf = (xml, t) => {
   const m = String(xml || '').match(new RegExp(`<${t}[^>]*>([^<]*)</${t}>`, 'i'));
   return m ? m[1].trim() : '';
@@ -955,6 +1072,43 @@ async function _discoverRooms(seedIp) {
   }
 }
 
+// Registered BEFORE the auth middleware: the speaker is not a logged-in user and
+// cannot present a token. It is locked down instead by (a) only accepting private-LAN
+// peers, (b) requiring an SID we ourselves handed out, and (c) a hard body cap.
+export function setupPublic(velvet) {
+  velvet.all('/api/v1/sonos/event', (req, res) => {
+    if (req.method !== 'NOTIFY') return res.status(405).end();
+    const peer = String(req.socket?.remoteAddress || '').replace(/^::ffff:/, '');
+    try { assertPrivateIp(peer); } catch { return res.status(403).end(); }
+    const sid = req.headers.sid;
+    const entry = sid ? [..._genaSubs.entries()].find(([, s]) => s.sid === sid) : null;
+    if (!entry) return res.status(412).end(); // not a subscription we opened
+    const ip = entry[0];
+
+    const MAX = 256 * 1024;
+    let body = '', tooBig = false;
+    req.setEncoding('utf8');
+    req.on('data', chunk => {
+      if (tooBig) return;
+      if (body.length + chunk.length > MAX) { tooBig = true; body = ''; return; }
+      body += chunk;
+    });
+    req.on('end', () => {
+      res.status(200).end(); // always ack — a device that gets an error may drop the subscription
+      if (tooBig) { console.warn(`[sonos] GENA NOTIFY from ${ip} exceeded ${MAX} bytes — ignored`); return; }
+      const sub = _genaSubs.get(ip);
+      if (sub) sub.lastEventAt = Date.now();
+      let parsed = null;
+      try { parsed = _parseLastChange(body); } catch (e) { console.debug('[velvet]', e?.message ?? e); }
+      if (parsed) {
+        console.log(`[sonos] GENA event ← ${ip}: ${parsed.state} track=${parsed.track}/${parsed.nrTracks}${parsed.trackFp ? ` fp=${parsed.trackFp.split('/').pop()}` : ''}`);
+        _dispatchSonosEvent({ ip, ...parsed });
+      }
+    });
+    req.on('error', () => { try { res.status(200).end(); } catch { /* already sent */ } });
+  });
+}
+
 export function setup(velvet) {
   // ── GET /api/v1/sonos/devices ─────────────────────────────────────────
   // Returns cached room list. If cache is stale (>5 min) or empty, triggers a fresh scan.
@@ -1306,6 +1460,10 @@ export function setup(velvet) {
       if (soapSeekTo > 1) await soapCall(resolvedIp, 'Seek', `<Unit>REL_TIME</Unit><Target>${secsToTime(soapSeekTo)}</Target>`);
       await soapCall(resolvedIp, 'Play', '<Speed>1</Speed>');
       if (paused) await soapCall(resolvedIp, 'Pause', '');
+      // Start (or renew) eventing for this speaker so track changes reach the player
+      // immediately instead of on the next poll. Best-effort: polling covers us if the
+      // speaker cannot reach the callback.
+      _genaSubscribe(resolvedIp).catch(e => console.warn('[sonos] GENA subscribe failed:', e.message));
       const cur = items[0];
       const hiResNote = (cur.sampleRate ?? 0) > 48000 ? ` ${cur.sampleRate}Hz` : '';
       console.log(`[sonos] cast-queue ▶ ${cur.label} [${cur.fp}]${cur.isTranscode ? ` (transcoded${hiResNote})` : hiResNote ? ` (DIRECT${hiResNote} — Sonos may not decode)` : ''} → ${resolvedIp}`);
@@ -1358,6 +1516,29 @@ export function setup(velvet) {
       console.error('[sonos] /queue/append error:', e);
       res.status(500).json({ ok: false, error: String(e.message || e) });
     }
+  });
+
+  // ── GET /api/v1/sonos/events/stream ──────────────────────────────────
+  // Server-sent events: transport changes the speaker pushes to us (GENA) are
+  // forwarded here, so the player learns about a track change immediately instead
+  // of up to a poll interval later. Polling continues regardless — this stream is
+  // an accelerator, not a replacement, and stays empty on installs where the
+  // speaker cannot reach our callback.
+  velvet.get('/api/v1/sonos/events/stream', (req, res) => {
+    res.writeHead(200, {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache, no-transform',
+      'Connection': 'keep-alive',
+      'X-Accel-Buffering': 'no', // tell nginx not to buffer the stream
+    });
+    res.write(': connected\n\n');
+    _sseClients.add(res);
+    const keepAlive = setInterval(() => {
+      try { res.write(': ka\n\n'); } catch { /* closed — cleaned up below */ }
+    }, 25000);
+    const done = () => { clearInterval(keepAlive); _sseClients.delete(res); };
+    req.on('close', done);
+    req.on('error', done);
   });
 
   // ── POST /api/v1/sonos/queue/jump ────────────────────────────────────
@@ -1413,6 +1594,7 @@ export function setup(velvet) {
         return res.json({ ok: true, wiped: false, reason: 'foreign-queue', count: uris.length });
       }
       await soapCall(resolvedIp, 'RemoveAllTracksFromQueue', '');
+      _genaUnsubscribe(resolvedIp).catch(() => {}); // no longer our output — stop eventing
       console.log(`[sonos] queue/clear: wiped ${uris.length} Velvet track(s) → ${resolvedIp}`);
       res.json({ ok: true, wiped: true, count: uris.length });
     } catch (e) {

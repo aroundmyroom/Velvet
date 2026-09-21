@@ -300,6 +300,11 @@ export async function serveIt(configFile) {
     res.sendFile(_ARTIST_PLACEHOLDER_DEFAULT);
   });
 
+  // Public — Sonos UPnP event callback. The speaker POSTs NOTIFY here and cannot
+  // authenticate; the handler only accepts private-LAN peers with a subscription ID
+  // Velvet itself issued. Must be registered before the auth middleware.
+  sonosApi.setupPublic(velvet);
+
   // Everything below this line requires authentication
   authPasskeyApi.setupPublic(velvet);
   authApi.setup(velvet);

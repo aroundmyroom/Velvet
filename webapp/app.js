@@ -19518,6 +19518,7 @@ async function _activateSonosCast(room) {
     _sonosCeded = false; _sonosDivergeCount = 0; // fresh cast — we are driving again
     _sonosWindowBase = S.idx;            // device track 1 == S.queue[S.idx]
     _sonosWindowLen  = tracks.length;
+    _startSonosEventStream();
     // Sleep mode: align the LED with playback — paused (e.g. re-selected after a
     // force refresh) keeps it asleep (LED off); playing wakes it (LED on).
     if (_sonosSleepEnabled()) api('POST', 'api/v1/sonos/led', { ip: activeRoom.ip, state: paused ? 'Off' : 'On' }).catch(() => {});
@@ -19564,6 +19565,7 @@ function _deactivateSonosCast(notify = true) {
   _sonosCeded = false; _sonosDivergeCount = 0;
   _sonosWindowBase = 0; _sonosWindowLen = 0; _sonosToppingUp = false;
   clearTimeout(_sonosEndedWatchdog); _sonosEndedWatchdog = null;
+  _stopSonosEventStream();
   localStorage.removeItem(_uKey('casting_sonos'));
   VIZ.setCastMute(false);
   // Resume browser audio only when the user manually switched output (notify=true).
@@ -19742,12 +19744,100 @@ async function _sonosPushWindow(seekTo = 0, paused = false) {
   _sonosLoadingSong = true;
   setTimeout(() => { _sonosLoadingSong = false; }, 2500);
   _sonosCastTime = Date.now();
+  _sonosLastPosAt = 0;    // fresh cast — drop the seek-detection baseline
   try {
     const r = await api('POST', 'api/v1/sonos/cast-queue', { ip: S.sonosRoom.ip, tracks, index: 0, seekTo: Math.floor(seekTo) || 0, paused });
     _sonosWindowBase = S.idx;          // device track 1 == S.queue[S.idx]
     _sonosWindowLen  = tracks.length;
     _handleCastResponse(r);
   } catch (e) { /* device busy/offline — the position-sync poll self-heals */ }
+}
+
+// Reconcile what the device says it is playing against our queue. Shared by the
+// position poll and by the pushed GENA events, so both classify a transition the
+// same way. Returns:
+//   'followed'  — the device moved inside our window; the UI has been moved to match
+//   'insync'    — the device is on our current track
+//   'diverging' — reported track is not ours; debouncing before ceding
+//   'ceded'     — control handed to the Sonos app
+//   'idle'      — guards active (cast grace, local control, no window yet)
+function _sonosReconcileTrack(st) {
+  if (!S.castingToSonos || !S.sonosRoom || _sonosCeded) return 'idle';
+  // TRANSITIONING is the device mid-switch; its track/URI are momentarily stale.
+  if (st.state === 'TRANSITIONING') return 'idle';
+  // After a page refresh this session never pushed, so the mapping is unknown. The
+  // device is still playing our queue, so rebuild it from what it reports rather than
+  // guessing an index and following the wrong row.
+  if (!_sonosWindowLen && st.trackFp && (st.nrTracks || 0) > 0) {
+    const hits = [];
+    for (let i = 0; i < S.queue.length; i++) {
+      if (S.queue[i]?.filepath === st.trackFp) hits.push(i);
+    }
+    if (hits.length) {
+      const pick = hits.reduce((a, b) => Math.abs(b - S.idx) < Math.abs(a - S.idx) ? b : a);
+      _sonosWindowBase = Math.max(0, pick - ((st.track || 1) - 1));
+      _sonosWindowLen  = st.nrTracks;
+    }
+  }
+  const grace  = (Date.now() - _sonosCastTime) < 8000;
+  const recent = (Date.now() - _sonosLocalControlAt) < 4000;
+  if (grace || recent || _sonosLoadingSong || !_sonosWindowLen) return 'idle';
+
+  const qi = _sonosWindowBase + ((st.track || 1) - 1);
+  const expected = S.queue[qi];
+  const mine = expected && !expected.isRadio && !!st.trackFp && st.trackFp === expected.filepath;
+  if (!mine) {
+    // Not the track we queued at that position — the Sonos app is playing something
+    // else. Debounced so a single odd reading cannot cede on its own.
+    if (++_sonosDivergeCount >= 2) {
+      _sonosCeded = true;
+      _sonosDivergeCount = 0;
+      _sonosNeedsRecast = true; // next web Play re-pushes the window from our current track
+      if (!audioEl.paused) audioEl.pause();
+      toast(t('player.output.sonosExternalControl'));
+      return 'ceded';
+    }
+    return 'diverging';
+  }
+  _sonosDivergeCount = 0;
+  if ((_sonosWindowLen - (st.track || 1)) < SONOS_TOPUP_AT) _sonosTopUpWindow();
+  if (qi !== S.idx) {
+    // The device moved inside the window we pushed — a natural advance, or next/prev
+    // on the Sonos app. Follow it in the UI only; do NOT re-push. /cast-queue flushes
+    // the device queue, so re-pushing here wiped the upcoming tracks and restarted the
+    // song the device had already begun (measured: nrTracks 2→1, position 1s→0s).
+    _wrappedEndedNaturally = true; // the song genuinely finished, not a skip
+    Player.playAt(qi, { fromSonos: true });
+    return 'followed';
+  }
+  return 'insync';
+}
+
+// Live transport events pushed by the speaker (GENA → server → SSE). This removes the
+// poll-interval blind window in which a normal track change could not be told apart
+// from a takeover. The poll keeps running as the fallback and owns position sync —
+// LastChange does not carry a continuously updating position.
+let _sonosEventSrc = null;
+function _startSonosEventStream() {
+  if (_sonosEventSrc || typeof EventSource === 'undefined' || !S.token) return;
+  try {
+    _sonosEventSrc = new EventSource('/api/v1/sonos/events/stream?token=' + encodeURIComponent(S.token));
+    _sonosEventSrc.onmessage = e => {
+      if (!S.castingToSonos || !S.sonosRoom) return;
+      let ev = null;
+      try { ev = JSON.parse(e.data); } catch { return; }
+      if (!ev || ev.ip !== S.sonosRoom.ip) return; // another room — not ours
+      _sonosLastEventAt = Date.now();
+      _sonosReconcileTrack(ev);
+    };
+    // EventSource reconnects on its own; nothing to do but keep the poll running.
+    _sonosEventSrc.onerror = () => {};
+  } catch (e) { _sonosEventSrc = null; }
+}
+function _stopSonosEventStream() {
+  try { _sonosEventSrc?.close(); } catch (e) { console.debug('[velvet]', e?.message ?? e); }
+  _sonosEventSrc = null;
+  _sonosLastEventAt = 0;
 }
 
 // Move the device to a track already in its queue. Leaves the queue (and the
@@ -19759,6 +19849,7 @@ async function _sonosJumpToTrack(deviceTrack) {
   setTimeout(() => { _sonosLoadingSong = false; }, 2500);
   _sonosCastTime = Date.now();
   _sonosStreamOffset = 0; // a jump always starts the track at 0
+  _sonosLastPosAt = 0;    // new track — drop the seek-detection baseline
   try {
     const r = await api('POST', 'api/v1/sonos/queue/jump', { ip: S.sonosRoom.ip, track: deviceTrack });
     if (!r?.ok) { _sonosPushWindow(); return; }
@@ -19806,6 +19897,7 @@ function _clearSonosCastClientState() {
   _sonosCeded = false; _sonosDivergeCount = 0;
   _sonosWindowBase = 0; _sonosWindowLen = 0; _sonosToppingUp = false;
   clearTimeout(_sonosEndedWatchdog); _sonosEndedWatchdog = null;
+  _stopSonosEventStream();
   localStorage.removeItem(_uKey('casting_sonos'));
 }
 
@@ -24308,6 +24400,9 @@ let _sonosWindowBase = 0;     // S.queue index that device track 1 corresponds t
 let _sonosWindowLen  = 0;     // how many tracks we have queued on the device
 let _sonosToppingUp  = false; // in-flight guard for the queue/append top-up
 let _sonosEndedWatchdog = null; // armed when the muted mirror ends while casting — see _onAudioEnded
+let _sonosLastEventAt = 0;    // last pushed GENA event — while these flow the poll can back off
+let _sonosLastPos = 0;        // previous polled device position, for seek-vs-drift classification
+let _sonosLastPosAt = 0;      // when that position was sampled
 let _sonosAnchored = false;       // false during the lead-in: hold the muted UI clock to the device until it confirms streaming, so the clock never runs ahead of the speaker
 let _sonosAnchorCastTime = 0;     // the _sonosCastTime the lead-in was last armed for — re-arms on every fresh cast/track
 
@@ -24320,6 +24415,9 @@ let _sonosAnchorCastTime = 0;     // the _sonosCastTime the lead-in was last arm
 // false cede on a natural advance, so it is deliberately never done.
 function _sonosNextPollDelay() {
   if (!_sonosAnchored && (Date.now() - _sonosCastTime) < 10000) return 1000;
+  // Track changes arrive as pushed events; the poll is then only needed for position
+  // drift, so it can run less often. Falls straight back to 3 s if the stream dies.
+  if ((Date.now() - _sonosLastEventAt) < 20000) return 6000;
   return 3000;
 }
 function _startSonosPositionSync(ip) {
@@ -24346,59 +24444,13 @@ function _startSonosPositionSync(ip) {
         // Ceded to the Sonos app — the user is driving from there; don't sync or fight.
         // Pressing Play in the web (toggle) clears this and re-takes control.
         if (_sonosCeded) return;
-        // Sonos advances through the window we pushed entirely on its own, so a device
-        // track number that is not our current one is normal, not a takeover. Device
-        // track N is S.queue[_sonosWindowBase + N - 1] by construction; trackFp (the
-        // filepath recovered from the stream URI the device reports) confirms it.
-        // Only a track that is NOT the one we queued at that position means the user
-        // took over on the Sonos app.
-        {
-          const _grace = (Date.now() - _sonosCastTime) < 8000;
-          const _recent = (Date.now() - _sonosLocalControlAt) < 4000;
-          // After a page refresh this session never pushed, so the mapping is unknown.
-          // The device is still playing our queue, so rebuild it from what it reports
-          // rather than guessing an index and following the wrong row.
-          if (!_sonosWindowLen && st.trackFp && (st.nrTracks || 0) > 0) {
-            const _hits = [];
-            for (let i = 0; i < S.queue.length; i++) {
-              if (S.queue[i]?.filepath === st.trackFp) _hits.push(i);
-            }
-            if (_hits.length) {
-              const _pick = _hits.reduce((a, b) => Math.abs(b - S.idx) < Math.abs(a - S.idx) ? b : a);
-              _sonosWindowBase = Math.max(0, _pick - ((st.track || 1) - 1));
-              _sonosWindowLen  = st.nrTracks;
-            }
-          }
-          if (!_grace && !_recent && !_sonosLoadingSong && _sonosWindowLen > 0) {
-            const _qi = _sonosWindowBase + ((st.track || 1) - 1);
-            const _expected = S.queue[_qi];
-            const _matchesOwnQueue = _expected && !_expected.isRadio &&
-              !!st.trackFp && st.trackFp === _expected.filepath;
-            if (_matchesOwnQueue) {
-              _sonosDivergeCount = 0;
-              if ((_sonosWindowLen - (st.track || 1)) < SONOS_TOPUP_AT) _sonosTopUpWindow();
-              if (_qi !== S.idx) {
-                // The device moved inside the window we pushed — a natural advance, or a
-                // next/prev on the Sonos app. Follow it in the UI only; do NOT re-push.
-                // /cast-queue flushes the device queue, so re-pushing here wiped the
-                // upcoming tracks and restarted the song the device had already begun
-                // playing (measured on hardware: nrTracks 2→1, position 1s→0s).
-                _wrappedEndedNaturally = true; // the song genuinely finished, not a skip
-                Player.playAt(_qi, { fromSonos: true });
-                return; // track just changed — no drift correction this tick
-              }
-              // Same track as ours: fall through to the position/pause sync below.
-            } else {
-              if (++_sonosDivergeCount >= 2) {
-                _sonosCeded = true;
-                _sonosDivergeCount = 0;
-                _sonosNeedsRecast = true; // next web Play re-pushes the window from our current track
-                if (!audioEl.paused) audioEl.pause();
-                toast(t('player.output.sonosExternalControl'));
-              }
-              return; // skip position drift while diverging
-            }
-          }
+        // Track reconciliation (shared with the pushed-event path).
+        switch (_sonosReconcileTrack(st)) {
+          case 'followed':  // track changed — no drift correction this tick
+          case 'diverging':
+          case 'ceded':
+            return;
+          default: break;   // 'insync' / 'idle' — fall through to position sync
         }
         // Self-heal: device is reachable but STOPPED while we should be playing
         // (the HTTP stream dropped or the device idled). Re-cast the current track
@@ -24418,6 +24470,16 @@ function _startSonosPositionSync(ip) {
         }
         const sonosPos = (st.position || 0) + _sonosStreamOffset; // compensate transcoded-stream offset
         const browserPos = audioEl.currentTime || 0;
+        // Classify the position change: a SEEK moves the device somewhere wall-clock
+        // time cannot explain, while DRIFT accumulates slowly from buffering jitter.
+        // Telling them apart lets a small scrub on the Sonos app be followed at once,
+        // which a plain drift threshold could only do by also fighting normal jitter.
+        const _nowMs = Date.now();
+        const _elapsed = _sonosLastPosAt ? (_nowMs - _sonosLastPosAt) / 1000 : 0;
+        const _projected = _sonosLastPos + (st.playing ? _elapsed : 0);
+        const _deviceSeeked = !!_sonosLastPosAt && _elapsed < 30 && Math.abs(sonosPos - _projected) > 2.5;
+        _sonosLastPos = sonosPos;
+        _sonosLastPosAt = _nowMs;
         // Only sync position when Sonos is actively playing or paused — NOT when
         // stopped/loading (e.g. device has empty queue after page refresh, or is
         // transitioning between tracks). Syncing in stopped state would zero out
@@ -24459,7 +24521,8 @@ function _startSonosPositionSync(ip) {
         }
         // Drift correction — skip right after a local seek/control so the poll doesn't
         // snap the UI back to the device's pre-seek position while it is still catching up.
-        if (!_castGrace && !_recentLocal && (st.playing || st.paused) && Math.abs(sonosPos - browserPos) > 5) {
+        if (!_castGrace && !_recentLocal && (st.playing || st.paused) &&
+            (_deviceSeeked || Math.abs(sonosPos - browserPos) > 5)) {
           _sonosSyncFromDevice = true;
           audioEl.currentTime = sonosPos;
           setTimeout(() => { _sonosSyncFromDevice = false; }, 2000);

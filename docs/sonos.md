@@ -57,6 +57,12 @@ Velvet sends the current track and a lookahead window to Sonos so playback can c
 
 When the queue runs low, Velvet appends more tracks with `queue/append`, which leaves playback, the device's queue history and its track number untouched. Skipping to a track that is already queued uses `queue/jump` (a single `Seek TRACK_NR`) rather than rebuilding, so rapid next/previous presses leave the Sonos queue intact. A full `cast-queue` rebuild is only needed when the target track is not on the device, or when playback has to start part-way into a track.
 
+**Live transport events.** Velvet subscribes to the speaker's UPnP AVTransport service (GENA) while casting, so pauses, skips and track changes arrive as a push within a few hundred milliseconds rather than on the next 3-second poll. That blind window was what made a normal advance briefly indistinguishable from someone taking over in the Sonos app. The speaker POSTs `NOTIFY` to `/api/v1/sonos/event`, and the player receives the parsed events over `GET /api/v1/sonos/events/stream`.
+
+Eventing needs the speaker to reach Velvet over plain HTTP, so it requires `localHttpPort` to be configured; Sonos will not accept a self-signed HTTPS callback. Where that is not available — HTTPS-only setups, Docker bridge networking — nothing breaks: polling continues exactly as before, and the poll also still owns position tracking, because `LastChange` does not carry a continuously updating position.
+
+**Seeks are classified, not thresholded.** A position change that wall-clock time cannot explain is treated as a seek and followed immediately; slow divergence from buffering jitter is treated as drift and corrected only when it grows past five seconds. A small scrub on the Sonos app used to fall under the drift threshold and be ignored entirely.
+
 This keeps the player bar, Recently Played, and the audible Sonos track aligned — including when Sonos advances before the browser's muted mirror reaches its own `ended` event, and when the user presses next or previous in the Sonos app.
 
 Sonos playback uses the same wrapped history event as the controlling browser
