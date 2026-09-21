@@ -373,7 +373,10 @@ export async function serveIt(configFile) {
     res.end(ALBUM_ART_FALLBACK_SVG);
   }
 
-  velvet.get('/album-art/:file', (req, res) => {
+  const _ART_SEND_OPTS = { maxAge: '365d', immutable: true };
+  const _artExists = f => fs.promises.access(f).then(() => true, () => false);
+
+  velvet.get('/album-art/:file', async (req, res) => {
     if (!req.params.file) { return sendArtFallback(res); }
 
     const filename = sanitizeFilename(req.params.file);
@@ -390,8 +393,8 @@ export async function serveIt(configFile) {
       } catch {
         return sendArtFallback(res);
       }
-      if (fs.existsSync(compressedTarget)) {
-        return res.sendFile(path.basename(compressedTarget), { root: albumArtRoot });
+      if (await _artExists(compressedTarget)) {
+        return res.sendFile(path.basename(compressedTarget), { root: albumArtRoot, ..._ART_SEND_OPTS });
       }
     }
 
@@ -401,8 +404,8 @@ export async function serveIt(configFile) {
     } catch {
       return sendArtFallback(res);
     }
-    if (!fs.existsSync(fullPath)) { return sendArtFallback(res); }
-    res.sendFile(path.basename(fullPath), { root: albumArtRoot }, err => {
+    if (!(await _artExists(fullPath))) { return sendArtFallback(res); }
+    res.sendFile(path.basename(fullPath), { root: albumArtRoot, ..._ART_SEND_OPTS }, err => {
       if (err && !res.headersSent) sendArtFallback(res);
     });
   });
