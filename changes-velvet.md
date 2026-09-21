@@ -17,6 +17,9 @@
   before, leaving the player bar showing the wrong song.
 - **The player recovers after a page refresh.** It rebuilds its picture of the Sonos queue
   from the device instead of waiting for the next manual play.
+- **Skipping no longer rebuilds the Sonos queue either.** Picking a track that is already
+  queued on the speaker now jumps straight to it, so the queue and its history survive a
+  burst of next/previous presses instead of being flushed and rebuilt on every press.
 - Long queues are topped up as they play down, without interrupting playback.
 
 ## v0.5.11 (2026-09-21)

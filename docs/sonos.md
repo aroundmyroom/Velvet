@@ -55,7 +55,7 @@ Velvet sends the current track and a lookahead window to Sonos so playback can c
 
 **Track identity is the stream URL, not the tags.** `transport-status` returns `trackFp` — the `vpath/filepath` recovered from the URI the device reports — plus `nrTracks`. Device track *N* is player-queue entry `windowBase + N - 1`, confirmed against `trackFp`. Matching on title and artist could not tell apart the same track queued twice, or two files that both have an empty artist tag. Control is ceded to the Sonos app only when the reported track is not the one Velvet queued at that position, which includes any non-Velvet content (`trackFp` is `null` for Spotify, radio and other services).
 
-When the queue runs low, Velvet appends more tracks with `queue/append`, which leaves playback, the device's queue history and its track number untouched.
+When the queue runs low, Velvet appends more tracks with `queue/append`, which leaves playback, the device's queue history and its track number untouched. Skipping to a track that is already queued uses `queue/jump` (a single `Seek TRACK_NR`) rather than rebuilding, so rapid next/previous presses leave the Sonos queue intact. A full `cast-queue` rebuild is only needed when the target track is not on the device, or when playback has to start part-way into a track.
 
 This keeps the player bar, Recently Played, and the audible Sonos track aligned — including when Sonos advances before the browser's muted mirror reaches its own `ended` event, and when the user presses next or previous in the Sonos app.
 

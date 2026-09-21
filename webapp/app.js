@@ -1629,7 +1629,16 @@ const Player = {
     // device itself advanced into this track — it is already playing it, and re-pushing
     // would flush its queue and restart the song from zero.
     if (S.castingToSonos && S.sonosRoom && !s.isRadio && !opts.fromSonos) {
-      _sonosPushWindow(_cueSeek > 0 ? _cueSeek : 0);
+      const _startAt = _cueSeek > 0 ? _cueSeek : 0;
+      const _devTrack = idx - _sonosWindowBase + 1;
+      // Already queued on the device (the usual case for next/prev and picking a nearby
+      // row): jump to it instead of rebuilding. One SOAP call, and the Sonos queue and
+      // its history survive. A mid-track start needs the rebuild, which can seek.
+      if (!_startAt && _sonosWindowLen > 0 && _devTrack >= 1 && _devTrack <= _sonosWindowLen) {
+        _sonosJumpToTrack(_devTrack);
+      } else {
+        _sonosPushWindow(_startAt);
+      }
     }
     if (!s.isRadio) {
       loadCuePoints(s.filepath);
@@ -19739,6 +19748,24 @@ async function _sonosPushWindow(seekTo = 0, paused = false) {
     _sonosWindowLen  = tracks.length;
     _handleCastResponse(r);
   } catch (e) { /* device busy/offline — the position-sync poll self-heals */ }
+}
+
+// Move the device to a track already in its queue. Leaves the queue (and the
+// windowBase/windowLen mapping) untouched — only the device's track number changes.
+// Falls back to a full rebuild if the device rejects the jump.
+async function _sonosJumpToTrack(deviceTrack) {
+  if (!S.castingToSonos || !S.sonosRoom) return;
+  _sonosLoadingSong = true;
+  setTimeout(() => { _sonosLoadingSong = false; }, 2500);
+  _sonosCastTime = Date.now();
+  _sonosStreamOffset = 0; // a jump always starts the track at 0
+  try {
+    const r = await api('POST', 'api/v1/sonos/queue/jump', { ip: S.sonosRoom.ip, track: deviceTrack });
+    if (!r?.ok) { _sonosPushWindow(); return; }
+    if ((_sonosWindowLen - deviceTrack) < SONOS_TOPUP_AT) _sonosTopUpWindow();
+  } catch (e) {
+    _sonosPushWindow(); // device busy or queue changed underneath us — rebuild
+  }
 }
 
 // Top up the device queue when it is running out, WITHOUT wiping it. Appending keeps

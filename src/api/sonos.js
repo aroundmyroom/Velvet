@@ -540,6 +540,11 @@ function _resolveStreamUrl(track, baseUrl, streamToken, seekTo = 0) {
   return `${baseUrl}/media/${encodeURIComponent(track.vpath)}/${encodedPath}?token=${streamToken}`;
 }
 
+const _tagOf = (xml, t) => {
+  const m = String(xml || '').match(new RegExp(`<${t}[^>]*>([^<]*)</${t}>`, 'i'));
+  return m ? m[1].trim() : '';
+};
+
 // Build the DIDL/stream items for a batch of player-queue tracks. Shared by
 // /cast-queue (which wipes and replays) and /queue/append (which only tops up).
 // Only the track at seekIndex gets seekTo applied; -1 seeks nothing.
@@ -1351,6 +1356,31 @@ export function setup(velvet) {
       res.json({ ok: true, added });
     } catch (e) {
       console.error('[sonos] /queue/append error:', e);
+      res.status(500).json({ ok: false, error: String(e.message || e) });
+    }
+  });
+
+  // ── POST /api/v1/sonos/queue/jump ────────────────────────────────────
+  // Jump to a track already sitting in the Sonos queue, by 1-based queue position.
+  // One SOAP call, and the queue survives — picking a track that is already queued
+  // does not need /cast-queue, which would flush and rebuild the whole thing.
+  // Body: { ip, track }
+  velvet.post('/api/v1/sonos/queue/jump', async (req, res) => {
+    const ip    = req.body?.ip || config.program?.sonos?.defaultRoom?.ip;
+    const track = Number.parseInt(req.body?.track, 10);
+    if (!ip) return res.status(400).json({ error: 'ip required' });
+    if (!Number.isInteger(track) || track < 1) return res.status(400).json({ error: 'track must be a positive integer' });
+    try {
+      const resolvedIp = _resolveIp(ip);
+      assertPrivateIp(resolvedIp);
+      const nrTracks = Number.parseInt(_tagOf(await soapCall(resolvedIp, 'GetMediaInfo', ''), 'NrTracks'), 10) || 0;
+      if (track > nrTracks) return res.status(409).json({ error: 'track beyond queue length', nrTracks });
+      await soapCall(resolvedIp, 'Seek', `<Unit>TRACK_NR</Unit><Target>${track}</Target>`);
+      await soapCall(resolvedIp, 'Play', '<Speed>1</Speed>');
+      console.log(`[sonos] queue/jump ▶ track ${track}/${nrTracks} → ${resolvedIp}`);
+      res.json({ ok: true, track, nrTracks });
+    } catch (e) {
+      console.error('[sonos] /queue/jump error:', e);
       res.status(500).json({ ok: false, error: String(e.message || e) });
     }
   });
