@@ -49,9 +49,15 @@ Selecting a Sonos room immediately casts the current track at the current positi
 
 ### Lookahead queue synchronization
 
-Velvet sends the current track and a lookahead window to Sonos so playback can continue gaplessly even when the browser tab is backgrounded or briefly delayed. The browser polls Sonos transport status and follows normal advances through that Velvet-owned window. It only cedes control when Sonos reports a track that does not match the queued title and artist, which indicates that the Sonos app or another controller changed playback.
+Velvet sends the current track and a lookahead window to Sonos so playback can continue gaplessly even when the browser tab is backgrounded or briefly delayed.
 
-This keeps the player bar, Recently Played, and the audible Sonos track aligned when Sonos advances before the browser's muted playback mirror reaches its own `ended` event.
+**The device owns advancement.** Sonos plays through that window by itself; the browser polls transport status and follows in the UI only. It never rebuilds the Sonos queue just because the track changed — `cast-queue` flushes the queue, so re-pushing on a normal advance wiped the upcoming tracks and restarted the song the speaker had already started. The muted local player is a UI clock, not a controller: while casting, its own `ended` does not advance either. If the device has not moved on 8 seconds after that (queue exhausted, stream dropped), the browser takes over and drives the next track, so playback can never stall silently.
+
+**Track identity is the stream URL, not the tags.** `transport-status` returns `trackFp` — the `vpath/filepath` recovered from the URI the device reports — plus `nrTracks`. Device track *N* is player-queue entry `windowBase + N - 1`, confirmed against `trackFp`. Matching on title and artist could not tell apart the same track queued twice, or two files that both have an empty artist tag. Control is ceded to the Sonos app only when the reported track is not the one Velvet queued at that position, which includes any non-Velvet content (`trackFp` is `null` for Spotify, radio and other services).
+
+When the queue runs low, Velvet appends more tracks with `queue/append`, which leaves playback, the device's queue history and its track number untouched.
+
+This keeps the player bar, Recently Played, and the audible Sonos track aligned — including when Sonos advances before the browser's muted mirror reaches its own `ended` event, and when the user presses next or previous in the Sonos app.
 
 Sonos playback uses the same wrapped history event as the controlling browser
 session. Track changes, pauses, skips, and natural completion therefore remain

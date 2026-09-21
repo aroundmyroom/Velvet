@@ -1,3 +1,24 @@
+## v0.5.12 (2026-09-21)
+
+### Fixed: Sonos casting wiped the queue and restarted every track
+
+- **The upcoming queue no longer disappears while casting.** Every time Sonos moved to the
+  next track, Velvet rebuilt the whole Sonos queue from scratch. Because that flushes the
+  device queue, the Sonos app lost all upcoming tracks and the current song always showed as
+  track 1 of 1. Measured on a real speaker: the queue collapsed from 2 tracks to 1 on a
+  single normal track change.
+- **Tracks no longer jump back to the start.** The same rebuild restarted the song Sonos had
+  already begun playing — you heard roughly a second and a half of the new track, then it
+  snapped back to zero. The device now advances on its own and the player just follows it.
+- **Skips and track changes are identified exactly.** Which track Sonos is playing is now
+  read from the stream URL rather than guessed by comparing title and artist, so a track
+  queued twice, or two files with no artist tag, can no longer be mistaken for one another.
+- **Next and Previous on the Sonos app are both followed.** Previous was silently ignored
+  before, leaving the player bar showing the wrong song.
+- **The player recovers after a page refresh.** It rebuilds its picture of the Sonos queue
+  from the device instead of waiting for the next manual play.
+- Long queues are topped up as they play down, without interrupting playback.
+
 ## v0.5.11 (2026-09-21)
 
 ### Fixed: slow UI behind a reverse proxy and during library scans

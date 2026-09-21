@@ -8,6 +8,7 @@
  *   POST /api/v1/sonos/save-default         — save a room as the default cast target
  *   POST /api/v1/sonos/cast                 — cast a specific track to a Sonos device (player use)
  *   POST /api/v1/sonos/cast-queue           — mirror a window of the player queue onto the Sonos queue
+ *   POST /api/v1/sonos/queue/append         — top up the Sonos queue without wiping it
  *   POST /api/v1/sonos/queue/clear          — wipe the Sonos queue, only if it belongs to Velvet
  *   GET  /api/v1/sonos/transcode-stream     — dedicated ffmpeg pipe for Sonos-incompatible formats
  *   POST /api/v1/sonos/test-play            — play a random song on a Sonos device (admin test)
@@ -537,6 +538,64 @@ function _resolveStreamUrl(track, baseUrl, streamToken, seekTo = 0) {
   if (isWav)   console.warn('[sonos] WAV file sent to Sonos but Sonos transcoding is disabled — enable it in Admin → Sonos.');
   if (isHiRes) console.warn(`[sonos] Hi-res ${track.sample_rate} Hz file sent to Sonos but Sonos transcoding is disabled — enable it in Admin → Sonos.`);
   return `${baseUrl}/media/${encodeURIComponent(track.vpath)}/${encodedPath}?token=${streamToken}`;
+}
+
+// Build the DIDL/stream items for a batch of player-queue tracks. Shared by
+// /cast-queue (which wipes and replays) and /queue/append (which only tops up).
+// Only the track at seekIndex gets seekTo applied; -1 seeks nothing.
+function _buildQueueItems(rawTracks, baseUrl, artBase, streamToken, seekIndex = -1, seekTo = 0) {
+  const items = [];
+  for (let i = 0; i < rawTracks.length; i++) {
+    const raw = rawTracks[i];
+    const fp = String(raw?.filepath || '').replace(/^\/+/, '');
+    const slash = fp.indexOf('/');
+    if (slash < 1) continue;
+    const track = { vpath: fp.slice(0, slash), filepath: fp.slice(slash + 1), title: raw.title || '', artist: raw.artist || '', album: raw.album || '', aaFile: raw.aaFile || null };
+    try {
+      const row = _findRowWithVpathFallback(track.vpath, track.filepath);
+      if (row?.aaFile && !track.aaFile) track.aaFile = row.aaFile;
+      if (row?.duration) track.duration = row.duration;
+      if (row?.sample_rate != null) track.sample_rate = row.sample_rate;
+    } catch (e) { console.debug('[velvet]', e?.message ?? e); }
+    const trackSeek = i === seekIndex ? seekTo : 0;
+    const streamUrl = _resolveStreamUrl(track, baseUrl, streamToken, trackSeek);
+    // Per-row art: controllers (CLIC, Sonos app) only render queue-row art that the
+    // speaker serves via its own /getaa proxy — not external URLs. /getaa?u=<stream>
+    // makes the speaker extract the embedded cover from our stream (relative URL, so
+    // it resolves against the speaker). Transcoded streams drop the cover (-vn), so
+    // fall back to the cached /album-art/ URL there (no per-row art, but now-playing works).
+    const isTranscode = streamUrl.includes('/api/v1/sonos/transcode-stream');
+    const artUrl = isTranscode
+      ? (track.aaFile ? `${artBase}/album-art/${encodeURIComponent(track.aaFile)}` : null)
+      : `/getaa?u=${encodeURIComponent(streamUrl)}`;
+    const label = [track.artist, track.title].filter(Boolean).join(' - ') || track.filepath.split('/').pop();
+    items.push({ streamUrl, didl: buildDidl(track, streamUrl, artUrl, String(i + 1)), label, fp, isTranscode, sampleRate: track.sample_rate ?? null });
+  }
+  return items;
+}
+
+// Inverse of _resolveStreamUrl: recover "<vpath>/<filepath>" from a stream URI the
+// device reports back. Exact track identity — title/artist matching cannot tell apart
+// a track queued twice, or two tracks that both have an empty artist tag.
+// Returns null for anything that is not one of our own stream URLs (radio, Spotify, …).
+function _streamUriToFp(rawUri) {
+  if (!rawUri || typeof rawUri !== 'string') return null;
+  try {
+    // The device returns the URI XML-escaped inside the SOAP envelope, so a filepath
+    // containing ' or & arrives as &apos; / &amp; — decode before any URL parsing.
+    const uri = _decodeXmlEntitiesSimple(rawUri);
+    const q = uri.indexOf('?');
+    const path = q < 0 ? uri : uri.slice(0, q);
+    if (path.endsWith('/api/v1/sonos/transcode-stream')) {
+      const fp = new URLSearchParams(uri.slice(q + 1)).get('fp');
+      return fp || null;
+    }
+    const m = path.match(/\/media\/(.+)$/);
+    if (!m) return null;
+    return m[1].split('/').map(decodeURIComponent).join('/');
+  } catch {
+    return null;
+  }
 }
 
 // Look up a file's DB row by (vpath, relPath), with a child-vpath fallback:
@@ -1211,33 +1270,7 @@ export function setup(velvet) {
       const baseUrl = buildBaseUrl(req);
       const artBase = buildArtBaseUrl(req);
 
-      const items = [];
-      for (let i = 0; i < rawTracks.length; i++) {
-        const raw = rawTracks[i];
-        const fp = String(raw?.filepath || '').replace(/^\/+/, '');
-        const slash = fp.indexOf('/');
-        if (slash < 1) continue;
-        const track = { vpath: fp.slice(0, slash), filepath: fp.slice(slash + 1), title: raw.title || '', artist: raw.artist || '', album: raw.album || '', aaFile: raw.aaFile || null };
-        try {
-          const row = _findRowWithVpathFallback(track.vpath, track.filepath);
-          if (row?.aaFile && !track.aaFile) track.aaFile = row.aaFile;
-          if (row?.duration) track.duration = row.duration;
-          if (row?.sample_rate != null) track.sample_rate = row.sample_rate;
-        } catch (e) { console.debug('[velvet]', e?.message ?? e); }
-        const trackSeek = i === index ? seekTo : 0;
-        const streamUrl = _resolveStreamUrl(track, baseUrl, streamToken, trackSeek);
-        // Per-row art: controllers (CLIC, Sonos app) only render queue-row art that the
-        // speaker serves via its own /getaa proxy — not external URLs. /getaa?u=<stream>
-        // makes the speaker extract the embedded cover from our stream (relative URL, so
-        // it resolves against the speaker). Transcoded streams drop the cover (-vn), so
-        // fall back to the cached /album-art/ URL there (no per-row art, but now-playing works).
-        const isTranscode = streamUrl.includes('/api/v1/sonos/transcode-stream');
-        const artUrl = isTranscode
-          ? (track.aaFile ? `${artBase}/album-art/${encodeURIComponent(track.aaFile)}` : null)
-          : `/getaa?u=${encodeURIComponent(streamUrl)}`;
-        const label = [track.artist, track.title].filter(Boolean).join(' - ') || track.filepath.split('/').pop();
-        items.push({ streamUrl, didl: buildDidl(track, streamUrl, artUrl, String(i + 1)), label, fp, isTranscode, sampleRate: track.sample_rate ?? null });
-      }
+      const items = _buildQueueItems(rawTracks, baseUrl, artBase, streamToken, index, seekTo);
       if (!items.length) return res.status(400).json({ error: 'no valid tracks' });
       // The currently-playing track is sent first (items[0]); upcoming tracks follow.
       // We add the current track, start playback immediately, then append the rest in
@@ -1283,6 +1316,41 @@ export function setup(velvet) {
       })();
     } catch (e) {
       console.error('[sonos] /cast-queue error:', e);
+      res.status(500).json({ ok: false, error: String(e.message || e) });
+    }
+  });
+
+  // ── POST /api/v1/sonos/queue/append ──────────────────────────────────
+  // Top up the Sonos queue with more upcoming tracks WITHOUT wiping it.
+  // The device keeps playing; its queue, history and track number are untouched.
+  // This is what keeps a long player queue mirrored while Sonos advances on its own —
+  // /cast-queue flushes the queue, so it must never be used just to slide the window.
+  // Body: { ip, tracks:[{filepath,title,artist,album,aaFile}] }
+  velvet.post('/api/v1/sonos/queue/append', async (req, res) => {
+    const ip        = req.body?.ip || config.program?.sonos?.defaultRoom?.ip;
+    const rawTracks = Array.isArray(req.body?.tracks) ? req.body.tracks : [];
+    if (!ip)               return res.status(400).json({ error: 'ip required' });
+    if (!rawTracks.length) return res.status(400).json({ error: 'tracks required' });
+    try {
+      const resolvedIp = _resolveIp(ip);
+      assertPrivateIp(resolvedIp);
+      const streamToken = jwt.sign({ username: req.user.username }, config.program.secret, { expiresIn: '8h' });
+      const items = _buildQueueItems(rawTracks, buildBaseUrl(req), buildArtBaseUrl(req), streamToken);
+      if (!items.length) return res.status(400).json({ error: 'no valid tracks' });
+      let added = 0;
+      for (const it of items) {
+        await soapCall(resolvedIp, 'AddURIToQueue', [
+          `<EnqueuedURI>${xmlEsc(it.streamUrl)}</EnqueuedURI>`,
+          `<EnqueuedURIMetaData>${xmlEsc(it.didl)}</EnqueuedURIMetaData>`,
+          '<DesiredFirstTrackNumberEnqueued>0</DesiredFirstTrackNumberEnqueued>',
+          '<EnqueueAsNext>0</EnqueueAsNext>',
+        ].join(''));
+        added++;
+      }
+      console.log(`[sonos] queue/append: +${added} track(s) → ${resolvedIp}`);
+      res.json({ ok: true, added });
+    } catch (e) {
+      console.error('[sonos] /queue/append error:', e);
       res.status(500).json({ ok: false, error: String(e.message || e) });
     }
   });
@@ -1496,9 +1564,10 @@ export function setup(velvet) {
     if (!ip) return res.status(400).json({ error: 'ip required' });
     try {
       assertPrivateIp(ip);
-      const [transportXml, posXml] = await Promise.all([
+      const [transportXml, posXml, mediaXml] = await Promise.all([
         soapCall(ip, 'GetTransportInfo', ''),
         soapCall(ip, 'GetPositionInfo',  ''),
+        soapCall(ip, 'GetMediaInfo',     ''),
       ]);
       const tag = (xml, t) => { const m = xml.match(new RegExp(`<${t}[^>]*>([^<]+)</${t}>`, 'i')); return m ? m[1].trim() : ''; };
       const parseTime = t => {
@@ -1523,7 +1592,9 @@ export function setup(velvet) {
         position: parseTime(tag(posXml, 'RelTime')),
         duration: parseTime(tag(posXml, 'TrackDuration')),
         track:    Number.parseInt(tag(posXml, 'Track'), 10) || 0,
+        nrTracks: Number.parseInt(tag(mediaXml, 'NrTracks'), 10) || 0,
         trackUri,
+        trackFp:  _streamUriToFp(trackUri),
         trackTitle:  didlTag('dc:title') || streamContent || '',
         trackArtist: didlTag('upnp:artist') || didlTag('dc:creator') || (didlTag('dc:title') ? streamContent : '') || '',
         trackAlbum:  didlTag('upnp:album') || '',
