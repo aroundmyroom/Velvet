@@ -1,5 +1,6 @@
 import path from 'node:path';
 import fs from 'node:fs';
+import fsp from 'node:fs/promises';
 import * as db from '../db/manager.js';
 import * as config from '../state/config.js';
 import * as scanProgress from '../state/scan-progress.js';
@@ -11,11 +12,22 @@ import { resolveChildPath, resolvePathWithinRoot } from '../util/path-security.j
 // last scanned. Two cases:
 //   1. The stored cover_file no longer exists — user renamed or replaced it
 //   2. The stored cover_file still exists but its mtime is newer than last scan
-// Per-scan cache for _dirHasNewArt — avoids repeated readdirSync calls when
-// many tracks share the same album directory. Reset whenever a new scanId is
-// observed so a fresh scan re-reads the filesystem.
-let _newArtCacheScanId = null;
-const _newArtCache = new Map();
+// Per-scan filesystem caches (promises, so concurrent tracks of one album share
+// a single readdir/stat). All fs access is async so a slow network mount
+// (NFS, CIFS/Samba, Docker bind mounts) never blocks the event loop, and
+// nothing relies on kernel attribute caching. Keyed by scanId; only the most
+// recent scans are kept.
+const _MAX_SCAN_CACHES = 4;
+const _scanCaches = new Map();
+function _scanCache(scanId) {
+  let c = _scanCaches.get(scanId);
+  if (!c) {
+    if (_scanCaches.size >= _MAX_SCAN_CACHES) _scanCaches.delete(_scanCaches.keys().next().value);
+    c = { newArt: new Map(), coverMtime: new Map() };
+    _scanCaches.set(scanId, c);
+  }
+  return c;
+}
 const _NAMED_ART_FILES = new Set([
   'folder.jpg', 'folder.jpeg', 'folder.png',
   'cover.jpg',  'cover.jpeg',  'cover.png',
@@ -30,34 +42,44 @@ const _NAMED_ART_FILES = new Set([
 // into it. Matches the filename set checked by scanner.mjs's
 // checkDirectoryForAlbumArt(): named cover files first, then any .jpg/.png.
 function _dirHasNewArt(audioDir, scanId) {
-  if (scanId !== _newArtCacheScanId) {
-    _newArtCache.clear();
-    _newArtCacheScanId = scanId;
+  const cache = _scanCache(scanId).newArt;
+  let p = cache.get(audioDir);
+  if (!p) {
+    p = _scanDirForArt(audioDir);
+    cache.set(audioDir, p);
   }
-  if (_newArtCache.has(audioDir)) return _newArtCache.get(audioDir);
-  let result = false;
-  try {
-    const files = fs.readdirSync(audioDir);
-    for (const f of files) {
-      if (_NAMED_ART_FILES.has(f.toLowerCase())) { result = true; break; }
-    }
-    if (!result) {
-      for (const f of files) {
-        const ext = path.extname(f).toLowerCase();
-        if (ext === '.jpg' || ext === '.jpeg' || ext === '.png') {
-          // Confirm it's a regular file before counting it
-          try {
-            if (fs.statSync(resolvePathWithinRoot(audioDir, f)).isFile()) { result = true; break; }
-          } catch { /* ignore */ }
-        }
-      }
-    }
-  } catch { result = false; }
-  _newArtCache.set(audioDir, result);
-  return result;
+  return p;
 }
 
-function _dirCoverChanged(dbFileInfo, vpathRoot) {
+async function _scanDirForArt(audioDir) {
+  try {
+    const files = await fsp.readdir(audioDir);
+    if (files.some(f => _NAMED_ART_FILES.has(f.toLowerCase()))) return true;
+    for (const f of files) {
+      const ext = path.extname(f).toLowerCase();
+      if (ext === '.jpg' || ext === '.jpeg' || ext === '.png') {
+        // Confirm it's a regular file before counting it
+        try {
+          if ((await fsp.stat(resolvePathWithinRoot(audioDir, f))).isFile()) return true;
+        } catch { /* ignore */ }
+      }
+    }
+    return false;
+  } catch { return false; }
+}
+
+// Resolves to the cover file's mtimeMs, or null when it no longer exists.
+function _coverMtime(coverPath, scanId) {
+  const cache = _scanCache(scanId).coverMtime;
+  let p = cache.get(coverPath);
+  if (!p) {
+    p = fsp.stat(coverPath).then(st => st.mtimeMs, () => null);
+    cache.set(coverPath, p);
+  }
+  return p;
+}
+
+async function _dirCoverChanged(dbFileInfo, vpathRoot, scanId) {
   try {
     if (dbFileInfo.art_source !== 'directory') return false;
     const audioDir = resolvePathWithinRoot(vpathRoot, path.dirname(dbFileInfo.filepath));
@@ -65,9 +87,9 @@ function _dirCoverChanged(dbFileInfo, vpathRoot) {
     // Case 1: stored cover_file is gone — art was likely replaced with a new file
     if (dbFileInfo.cover_file) {
       const oldCoverPath = resolveChildPath(audioDir, dbFileInfo.cover_file);
-      if (!fs.existsSync(oldCoverPath)) return true;
+      const coverMtimeMs = await _coverMtime(oldCoverPath, scanId);
+      if (coverMtimeMs === null) return true;
       // Case 2: cover_file still exists but was modified after last audio scan
-      const coverMtimeMs = fs.statSync(oldCoverPath).mtimeMs;
       if (coverMtimeMs > (dbFileInfo.modified || 0)) return true;
     }
     return false;
@@ -100,7 +122,7 @@ export function setup(velvet) {
     next();
   });
 
-  velvet.post('/api/v1/scanner/get-file', (req, res) => {
+  velvet.post('/api/v1/scanner/get-file', async (req, res) => {
     if (req.body.scanId) { scanProgress.tick(req.body.scanId, req.body.filepath); }
     const dbFileInfo = db.findFileByPath(req.body.filepath, req.body.vpath);
 
@@ -117,7 +139,7 @@ export function setup(velvet) {
     }
 
     db.updateFileScanId(dbFileInfo, req.body.scanId);
-    const flags = _buildFileFlags(dbFileInfo, req.body.vpath, req.body.scanId);
+    const flags = await _buildFileFlags(dbFileInfo, req.body.vpath, req.body.scanId);
 
     if (Object.keys(flags).length > 0) {
       return res.json({ ...flags, filepath: dbFileInfo.filepath, vpath: dbFileInfo.vpath });
@@ -141,7 +163,9 @@ export function setup(velvet) {
     res.json({});
   });
 
-  velvet.post('/api/v1/scanner/get-files-batch', (req, res) => {
+  const _BATCH_FS_CONCURRENCY = 8;
+
+  velvet.post('/api/v1/scanner/get-files-batch', async (req, res) => {
     const { items, vpath, scanId } = req.body;
     if (!Array.isArray(items) || !items.length || !vpath || !scanId) {
       return res.status(400).json({ error: 'Invalid batch request' });
@@ -152,24 +176,24 @@ export function setup(velvet) {
       const results = {};
       const batchScanIdUpdates = [];
 
-      for (const item of items) {
+      const processItem = async item => {
         scanProgress.tick(scanId, item.filepath);
         const dbFileInfo = dbMap.get(item.filepath);
-        if (!dbFileInfo) { results[item.filepath] = {}; continue; }
-        if (dbFileInfo.sID === scanId) { results[item.filepath] = { _alreadyDone: true }; continue; }
+        if (!dbFileInfo) { results[item.filepath] = {}; return; }
+        if (dbFileInfo.sID === scanId) { results[item.filepath] = { _alreadyDone: true }; return; }
 
         if (item.modTime !== dbFileInfo.modified) {
           db.removeFileByPath(item.filepath, vpath);
           results[item.filepath] = { ..._makeStaleResult(dbFileInfo), _oldHash: dbFileInfo.hash || null };
-          continue;
+          return;
         }
         if (dbFileInfo.hash === null || dbFileInfo.hash === undefined) {
           db.removeFileByPath(item.filepath, vpath);
           results[item.filepath] = _makeStaleResult(dbFileInfo);
-          continue;
+          return;
         }
 
-        const flags = _buildFileFlags(dbFileInfo, vpath, scanId);
+        const flags = await _buildFileFlags(dbFileInfo, vpath, scanId);
         if (Object.keys(flags).length > 0) {
           db.updateFileScanId(dbFileInfo, scanId);
           results[item.filepath] = { ...flags, filepath: dbFileInfo.filepath, vpath: dbFileInfo.vpath };
@@ -177,7 +201,13 @@ export function setup(velvet) {
           batchScanIdUpdates.push(item.filepath);
           results[item.filepath] = dbFileInfo;
         }
-      }
+      };
+
+      let next = 0;
+      const worker = async () => {
+        while (next < items.length) await processItem(items[next++]);
+      };
+      await Promise.all(Array.from({ length: Math.min(_BATCH_FS_CONCURRENCY, items.length) }, worker));
 
       if (batchScanIdUpdates.length > 0) db.batchUpdateScanIds(batchScanIdUpdates, vpath, scanId);
       res.json(results);
@@ -416,7 +446,7 @@ function _makeStaleResult(dbFileInfo) {
   };
 }
 
-function _buildFileFlags(dbFileInfo, vpath, scanId) {
+async function _buildFileFlags(dbFileInfo, vpath, scanId) {
   const flags = {};
   if (dbFileInfo.aaFile === null || dbFileInfo.aaFile === undefined) {
     flags._needsArt = true;
@@ -429,18 +459,18 @@ function _buildFileFlags(dbFileInfo, vpath, scanId) {
     }
     // The empty-string sentinel means "no art was found on a previous scan".
     // Re-check the directory in case the user has since dropped a cover image in.
-    const sidecarAdded = dbFileInfo.aaFile === '' && audioDir && _dirHasNewArt(audioDir, scanId);
+    const sidecarAdded = dbFileInfo.aaFile === '' && audioDir && await _dirHasNewArt(audioDir, scanId);
     let artMissing = false;
     if (dbFileInfo.aaFile) {
       try {
-        artMissing = !fs.existsSync(resolveChildPath(config.program.storage.albumArtDirectory, dbFileInfo.aaFile));
+        await fsp.access(resolveChildPath(config.program.storage.albumArtDirectory, dbFileInfo.aaFile));
       } catch {
         artMissing = true;
       }
     }
     if (
       artMissing ||
-      _dirCoverChanged(dbFileInfo, vpathRoot) ||
+      await _dirCoverChanged(dbFileInfo, vpathRoot, scanId) ||
       sidecarAdded
     ) {
       flags._needsArt = true;

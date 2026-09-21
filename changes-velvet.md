@@ -1,3 +1,14 @@
+## v0.5.11 (2026-09-21)
+
+### Fixed: slow UI behind a reverse proxy and during library scans
+- Album art (`/album-art/:file`) is now sent with `Cache-Control: public, max-age=31536000, immutable`.
+  Cover filenames are content hashes, so browsers and proxies no longer revalidate every cover
+  on each folder view. The "no art" fallback image stays `no-store`.
+- The scanner's per-file art checks (`get-file`, `get-files-batch`) no longer use synchronous
+  filesystem calls on the library. They are async, share one `readdir`/`stat` per album folder
+  per scan, and run with bounded concurrency, so browsing stays responsive while a scan runs on
+  NFS, Samba/CIFS or Docker bind mounts. Behaviour and `_needsArt` semantics are unchanged.
+
 ## v0.5.10 (2026-09-20)
 
 ### Fixed: third-party iOS player compatibility
