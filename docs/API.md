@@ -897,7 +897,7 @@ small local window for instant boot, then lazy-loads the rest from here.
 
 | Method | Endpoint | Body | Description |
 |---|---|---|---|
-| `POST` | `/api/v1/admin/backup` | `{ includeDb?, includeConfig?, includeAlbumArt? }` | Create a server backup ZIP. |
+| `POST` | `/api/v1/admin/backup` | — | Create a server backup ZIP (database + config). Takes no body; the contents are fixed. |
 | `GET` | `/api/v1/admin/backups` | — | List available backup files. |
 | `GET` | `/api/v1/admin/backup/download/:filename` | — | Download a backup file. |
 

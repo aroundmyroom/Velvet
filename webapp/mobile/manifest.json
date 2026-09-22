@@ -1,6 +1,7 @@
 {
   "name": "Velvet",
   "short_name": "Velvet",
+  "id": "/mobile/",
   "description": "Your personal music player",
   "display": "standalone",
   "orientation": "portrait-primary",
@@ -8,7 +9,9 @@
   "scope": "/mobile/",
   "background_color": "#0D0D0D",
   "theme_color": "#0D0D0D",
-  "categories": ["music"],
+  "categories": [
+    "music"
+  ],
   "icons": [
     {
       "src": "/mobile/icons/icon-192.png",

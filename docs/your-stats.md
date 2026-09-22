@@ -40,7 +40,7 @@ Choose the time window at the top:
 
 Use **← Earlier** / **Later →** to navigate between period offsets.
 
-- **Earlier** goes further back in time (up to 60 offsets).
+- **Earlier** goes further back in time (up to 260 offsets).
 - **Later** moves toward the current period.
 - For **Week**, this means week-by-week navigation (ISO weeks).
 - **⇐ (back 1 year)** and **⇒ (forward 1 year)** buttons allow jumping by one full year at a time (period-aware: 52 for weekly, 12 for monthly, 4 for quarterly, 2 for half-yearly, 1 for yearly).

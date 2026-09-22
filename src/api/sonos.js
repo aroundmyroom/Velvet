@@ -102,7 +102,21 @@ function buildArtBaseUrl(req) {
  *   use the same DIDL metadata (art + title + artist + album).
  * artUrl (optional): full URL to album art image.
  */
-function buildDidl({ title, artist, album, duration }, streamUrl, artUrl = null, itemId = '1') {
+// Sonos picks its decoder from the <res> protocolInfo MIME type. Everything was
+// announced as audio/mpeg, so FLAC/WAV/ALAC were handed to the MP3 decoder and the
+// S2 app showed the wrong format. Transcoded streams really are MP3, so the caller
+// passes the mime it is actually sending rather than us guessing from the source.
+const _MIME_BY_EXT = {
+  mp3: 'audio/mpeg', flac: 'audio/flac', wav: 'audio/wav', aiff: 'audio/x-aiff', aif: 'audio/x-aiff',
+  m4a: 'audio/mp4', mp4: 'audio/mp4', aac: 'audio/aac', alac: 'audio/mp4',
+  ogg: 'audio/ogg', oga: 'audio/ogg', opus: 'audio/ogg', wma: 'audio/x-ms-wma',
+};
+export function mimeForPath(filepath) {
+  const ext = String(filepath || '').split('.').pop().toLowerCase();
+  return _MIME_BY_EXT[ext] || 'audio/mpeg';
+}
+
+function buildDidl({ title, artist, album, duration }, streamUrl, artUrl = null, itemId = '1', mime = 'audio/mpeg') {
   // dlna: namespace MUST be declared on the root element, not inline on the child tag.
   // No dlna:profileID attribute — many iOS/Android DLNA stacks silently skip
   // the image when dlna:profileID is present but not negotiated via DLNA headers.
@@ -112,7 +126,7 @@ function buildDidl({ title, artist, album, duration }, streamUrl, artUrl = null,
   // duration attribute tells Sonos this is a finite track (not a live stream) —
   // without it, TrackDuration=0 and S2 app switches to radio-stream display mode.
   const durAttr = duration ? ` duration="${secsToTime(duration)}"` : '';
-  const resTag = streamUrl ? `<res protocolInfo="http-get:*:audio/mpeg:*"${durAttr}>${xmlEsc(streamUrl)}</res>` : '';
+  const resTag = streamUrl ? `<res protocolInfo="http-get:*:${mime}:*"${durAttr}>${xmlEsc(streamUrl)}</res>` : '';
   return [
     '<DIDL-Lite xmlns:dc="http://purl.org/dc/elements/1.1/"',
     ' xmlns:upnp="urn:schemas-upnp-org:metadata-1-0/upnp/"',
@@ -456,7 +470,7 @@ async function _resolveCloudPlayableUriViaSmapi(ip, cloudObjectId, authTokenHint
 }
 
 /** Format seconds as HH:MM:SS for UPnP Seek target. */
-function secsToTime(s) {
+export function secsToTime(s) {
   const t = Math.max(0, Math.floor(s));
   const h = Math.floor(t / 3600);
   const m = Math.floor((t % 3600) / 60);
@@ -465,7 +479,7 @@ function secsToTime(s) {
 }
 
 /** Parse an ISO8601 / UPnP HH:MM:SS string to seconds. Empty / NOT_IMPLEMENTED → 0. */
-function timeToSecs(t) {
+export function timeToSecs(t) {
   if (!t || t === 'NOT_IMPLEMENTED') return 0;
   const p = String(t).trim().split(':');
   if (p.length < 3) return 0;
@@ -496,7 +510,8 @@ async function castTrackToSonos({ track, ip, username, req, seekTo = 0, paused =
   console.log(`[sonos] cast → ${track.artist} — ${track.title}${seekLabel}${pauseLabel} → ${ip}`);
 
   const artUrl = track.aaFile ? `${buildArtBaseUrl(req)}/album-art/${encodeURIComponent(track.aaFile)}` : null;
-  const didl   = buildDidl(track, streamUrl, artUrl);
+  const didl   = buildDidl(track, streamUrl, artUrl, '1',
+    streamUrl.includes('/api/v1/sonos/transcode-stream') ? 'audio/mpeg' : mimeForPath(track.filepath));
 
   // For transcoded (live-pipe) streams the seek position is already embedded
   // in the stream URL via ?start=N — ffmpeg fast-seeks internally, so Sonos
@@ -632,7 +647,7 @@ async function _genaUnsubscribe(ip) {
 
 // LastChange is XML escaped inside XML: <propertyset><property><LastChange>&lt;Event…
 // Pull out the InstanceID val="…" attributes we care about.
-function _parseLastChange(body) {
+export function _parseLastChange(body) {
   const raw = (String(body).match(/<LastChange>([\s\S]*?)<\/LastChange>/i) || [])[1];
   if (!raw) return null;
   const ev = _decodeXmlEntitiesSimple(raw);
@@ -672,11 +687,11 @@ function _buildQueueItems(rawTracks, baseUrl, artBase, streamToken, seekIndex = 
     const fp = String(raw?.filepath || '').replace(/^\/+/, '');
     const slash = fp.indexOf('/');
     if (slash < 1) continue;
-    const track = { vpath: fp.slice(0, slash), filepath: fp.slice(slash + 1), title: raw.title || '', artist: raw.artist || '', album: raw.album || '', aaFile: raw.aaFile || null };
+    const track = { vpath: fp.slice(0, slash), filepath: fp.slice(slash + 1), title: raw.title || '', artist: raw.artist || '', album: raw.album || '', aaFile: raw.aaFile || null, duration: raw.duration ?? null };
     try {
       const row = _findRowWithVpathFallback(track.vpath, track.filepath);
       if (row?.aaFile && !track.aaFile) track.aaFile = row.aaFile;
-      if (row?.duration) track.duration = row.duration;
+      if (row?.duration && !track.duration) track.duration = row.duration;
       if (row?.sample_rate != null) track.sample_rate = row.sample_rate;
     } catch (e) { console.debug('[velvet]', e?.message ?? e); }
     const trackSeek = i === seekIndex ? seekTo : 0;
@@ -691,7 +706,8 @@ function _buildQueueItems(rawTracks, baseUrl, artBase, streamToken, seekIndex = 
       ? (track.aaFile ? `${artBase}/album-art/${encodeURIComponent(track.aaFile)}` : null)
       : `/getaa?u=${encodeURIComponent(streamUrl)}`;
     const label = [track.artist, track.title].filter(Boolean).join(' - ') || track.filepath.split('/').pop();
-    items.push({ streamUrl, didl: buildDidl(track, streamUrl, artUrl, String(i + 1)), label, fp, isTranscode, sampleRate: track.sample_rate ?? null });
+    const mime = isTranscode ? 'audio/mpeg' : mimeForPath(track.filepath);
+    items.push({ streamUrl, didl: buildDidl(track, streamUrl, artUrl, String(i + 1), mime), label, fp, isTranscode, sampleRate: track.sample_rate ?? null });
   }
   return items;
 }
@@ -700,7 +716,7 @@ function _buildQueueItems(rawTracks, baseUrl, artBase, streamToken, seekIndex = 
 // device reports back. Exact track identity — title/artist matching cannot tell apart
 // a track queued twice, or two tracks that both have an empty artist tag.
 // Returns null for anything that is not one of our own stream URLs (radio, Spotify, …).
-function _streamUriToFp(rawUri) {
+export function _streamUriToFp(rawUri) {
   if (!rawUri || typeof rawUri !== 'string') return null;
   try {
     // The device returns the URI XML-escaped inside the SOAP envelope, so a filepath
@@ -728,7 +744,7 @@ function _streamUriToFp(rawUri) {
 // child-vpath files and hi-res (>48 kHz) FLAC streams directly instead of being
 // transcoded — Sonos can't decode it and plays silence.
 function _findRowWithVpathFallback(vpath, relPath) {
-  let row = db.findFileByPath(relPath, vpath);
+  const row = db.findFileByPath(relPath, vpath);
   if (row) return row;
   const sentRoot = config.program?.folders?.[vpath]?.root;
   if (!sentRoot) return null;
