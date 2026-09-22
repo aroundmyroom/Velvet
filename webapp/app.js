@@ -19747,7 +19747,10 @@ function _sonosBuildWindow() {
 // Mirror the current window onto the Sonos queue. Replaces the old single-track cast
 // on every cast point so the Sonos app always reflects the player's queue while casting.
 async function _sonosPushWindow(seekTo = 0, paused = false) {
-  if (!S.castingToSonos || !S.sonosRoom) return;
+  // Never push while ceded — the device is under external control and our S.queue
+  // position is not trustworthy relative to what it is actually playing. Only an
+  // explicit user action (Play, picking a track) clears _sonosCeded and may cast again.
+  if (!S.castingToSonos || !S.sonosRoom || _sonosCeded) return;
   const cur = S.queue[S.idx];
   if (!cur || cur.isRadio) return; // radio uses the single-URI cast path
   const tracks = _sonosBuildWindow();
@@ -19881,7 +19884,7 @@ function _stopSonosEventStream() {
 // windowBase/windowLen mapping) untouched — only the device's track number changes.
 // Falls back to a full rebuild if the device rejects the jump.
 async function _sonosJumpToTrack(deviceTrack) {
-  if (!S.castingToSonos || !S.sonosRoom) return;
+  if (!S.castingToSonos || !S.sonosRoom || _sonosCeded) return; // see _sonosPushWindow
   _sonosLoadingSong = true;
   setTimeout(() => { _sonosLoadingSong = false; }, 2500);
   _sonosCastTime = Date.now();
@@ -19900,7 +19903,7 @@ async function _sonosJumpToTrack(deviceTrack) {
 // the device playing and keeps its queue/history intact — re-pushing would not.
 const SONOS_TOPUP_AT = 5; // top up once fewer than this many queued tracks remain ahead
 async function _sonosTopUpWindow() {
-  if (_sonosToppingUp || !S.castingToSonos || !S.sonosRoom) return;
+  if (_sonosToppingUp || !S.castingToSonos || !S.sonosRoom || _sonosCeded) return; // see _sonosPushWindow
   const from = _sonosWindowBase + _sonosWindowLen;          // first track not yet on the device
   const to   = Math.min(S.queue.length, S.idx + SONOS_WIN_FWD + 1); // same horizon as _sonosBuildWindow
   const tracks = [];
@@ -23868,9 +23871,17 @@ function _onAudioEnded() {
   // 'ended' must not advance — that re-pushes, which flushes the Sonos queue and
   // restarts the track the speaker has already started. The mirror can still reach the
   // end first under tab throttling or buffering jitter, which is exactly when this bites.
-  // Watchdog: if the device has not moved on shortly (window exhausted, stream dropped),
-  // drive it from here after all, so playback can never stall silently.
-  if (S.castingToSonos && S.sonosRoom && !_sonosCeded) {
+  if (S.castingToSonos && S.sonosRoom) {
+    // Ceded: the user (or the Sonos app) is driving, not us. Do NOT call Player.next() —
+    // that re-pushes the real Sonos queue from our own (now untrusted) local position.
+    // The network-recovery stall handler resumes the muted mirror regardless of cede
+    // (it only looks at whether the USER paused, not at Sonos state), so the mirror can
+    // keep reaching its own 'ended' long after we stopped driving. Confirmed live: this
+    // fell through to a bare Player.next() and rebuilt the device queue starting from a
+    // stale S.queue index, interrupting real playback on the speaker.
+    if (_sonosCeded) return;
+    // Watchdog: if the device has not moved on shortly (window exhausted, stream dropped),
+    // drive it from here after all, so playback can never stall silently.
     clearTimeout(_sonosEndedWatchdog);
     _sonosEndedWatchdog = setTimeout(() => {
       _sonosEndedWatchdog = null;
@@ -24597,8 +24608,9 @@ function _onAudioSeeked() {
       api('POST', 'api/v1/server-playback/seek', { position: Math.floor(audioEl.currentTime) }).catch(() => {});
     }, 400);
   }
-  // Mirror seek to Sonos when casting — skip during initial track load or device-sync seeks
-  if (S.castingToSonos && S.sonosRoom && !_sonosLoadingSong && !_sonosSyncFromDevice) {
+  // Mirror seek to Sonos when casting — skip during initial track load, device-sync
+  // seeks, or while ceded (the device is under external control, not us).
+  if (S.castingToSonos && S.sonosRoom && !_sonosLoadingSong && !_sonosSyncFromDevice && !_sonosCeded) {
     // Mark a recent local control so the position poll won't snap the UI back to the
     // device's pre-seek position while the device is still catching up to the new spot.
     _sonosLocalControlAt = Date.now();
@@ -24701,7 +24713,12 @@ function _reloadFromPosition(attempt) {
       // If they had paused (playingKey='0'), do NOT auto-resume — this was
       // the exact cause of autoplay-on-refresh: stall fires during src load
       // in restoreQueue, then recovery plays unconditionally after boot completes.
-      const _wasPlaying = S.username ? localStorage.getItem(_playingKey()) === '1' : !audioEl.paused;
+      // Also don't resume while ceded from Sonos: the mirror is muted and pointless
+      // there, and letting it keep running was what let it reach its own 'ended'
+      // long after we stopped driving Sonos — a real cast-queue rebuild followed,
+      // confirmed live, interrupting playback the user never asked us to touch.
+      const _wasPlaying = _sonosCeded ? false
+        : (S.username ? localStorage.getItem(_playingKey()) === '1' : !audioEl.paused);
       if (_BOOT_DBG) console.warn('[BOOT] _reloadFromPosition onMeta: resumeAt=' + Math.round(resumeAt) + ' _wasPlaying=' + _wasPlaying + ' _bootComplete=' + _bootComplete + ' playingKey=' + localStorage.getItem(_playingKey()));
       if (_wasPlaying) audioEl.play().catch((err) => { if (_BOOT_DBG) console.warn('[BOOT] play() rejected:', err.name, err.message); _reloadFromPosition(attempt + 1); });
     };

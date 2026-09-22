@@ -1,3 +1,23 @@
+## v0.5.15 (2026-09-22)
+
+### Fixed: Sonos cede could seize control back and interrupt live playback
+
+- **Once the Sonos app took control (cede), the web player could silently take it
+  back and rebuild the device's live queue from a stale position.** The muted
+  local mirror kept resuming itself after a network stall regardless of cede
+  state, and once it eventually reached its own end, the player fell through to
+  a plain track-advance that pushed a fresh queue to the speaker — interrupting
+  whatever was actually playing and replacing the upcoming queue with an old,
+  already-played track. Confirmed live: real playback (Pet Shop Boys) was cut
+  off and replaced with a song from much earlier in the session, while the
+  on-screen progress bar had already frozen and stopped updating.
+- The player now treats a cede as inert until the user presses Play again: the
+  muted mirror no longer auto-resumes while ceded, and every path that can push
+  to the Sonos queue now refuses to act while ceded, regardless of what
+  triggered it.
+- This is a regression introduced in v0.5.12–v0.5.13's Sonos rework and does not
+  affect earlier releases.
+
 ## v0.5.14 (2026-09-22)
 
 Real translations for ten languages, and a round of fixes and cleanup across the player and Sonos casting.
