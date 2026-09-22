@@ -10042,6 +10042,7 @@ const artistsAdminView = Vue.component('artists-admin-view', {
       searchLoading: false,
       customImageUrl: '',
       customImagePreviewError: false,
+      customImageDims: null,
       applying: false,
       hydration: {
         running: false,
@@ -10222,11 +10223,16 @@ const artistsAdminView = Vue.component('artists-admin-view', {
         this.applying = false;
       }
     },
-    onCustomPreviewLoad() {
+    onCustomPreviewLoad(e) {
       this.customImagePreviewError = false;
+      const img = e?.target;
+      this.customImageDims = (img?.naturalWidth && img?.naturalHeight)
+        ? { w: img.naturalWidth, h: img.naturalHeight }
+        : null;
     },
     onCustomPreviewError() {
       this.customImagePreviewError = true;
+      this.customImageDims = null;
     },
     async setWrong(row, wrong) {
       try {
@@ -10422,6 +10428,7 @@ const artistsAdminView = Vue.component('artists-admin-view', {
                 <div style="font-size:.82rem;font-weight:600;">{{ t('admin.artists.previewTitle') }}</div>
                 <div v-if="customImagePreviewError" style="font-size:.8rem;color:var(--warn,#b45309);line-height:1.4;">{{ t('admin.artists.previewError') }}</div>
                 <div v-else style="font-size:.8rem;color:var(--t2);line-height:1.4;">{{ t('admin.artists.previewDesc', { artist: selected.canonicalName }) }}</div>
+                <div v-if="customImageDims" style="font-size:.78rem;color:var(--t2);">{{ t('admin.artists.previewDims', { w: customImageDims.w, h: customImageDims.h }) }}</div>
                 <div style="font-size:.74rem;color:var(--t3);word-break:break-all;">{{ customImagePreviewUrl }}</div>
               </div>
             </div>

@@ -1548,23 +1548,23 @@ function _leanRandomPick(db, user, body, bp, ignoreList, ignorePercentage) {
 function _similarArtistFallbacks(query, bp, artists, ignoreArtists, r) {
   // Step 2: similar + BPM only
   if (!r.length && bp.hasBpm && bp.hasKey)
-    r = query({ artists, ignoreArtists, ...bp.bpmOnlyOpts });
+    {r = query({ artists, ignoreArtists, ...bp.bpmOnlyOpts });}
   // Step 2b: similar + BPM wide + Key
   if (!r.length && bp.hasWide && bp.hasKey)
-    r = query({ artists, ignoreArtists, ...bp.bpmWideOpts });
+    {r = query({ artists, ignoreArtists, ...bp.bpmWideOpts });}
   // Step 2c: similar + BPM wide only
   if (!r.length && bp.hasWide)
-    r = query({ artists, ignoreArtists, ...bp.bpmWideOnly });
+    {r = query({ artists, ignoreArtists, ...bp.bpmWideOnly });}
   // Step 3: similar only — BPM/key constraints fully dropped. Accept any
   // non-empty result even if every match has a known-wrong BPM/key tag: a
   // real similar artist match always outranks abandoning the artist filter
   // (the downstream _qualityTierFilter still prefers in-range songs when the
   // pool contains a mix of tiers).
   if (!r.length && (bp.hasBpm || bp.hasKey))
-    r = query({ artists, ignoreArtists });
+    {r = query({ artists, ignoreArtists });}
   // Step 3b: similar (drop artist-cooldown too)
   if (!r.length && ignoreArtists?.length > 0)
-    r = query({ artists });
+    {r = query({ artists });}
   return r;
 }
 
@@ -1572,16 +1572,16 @@ function _similarArtistFallbacks(query, bp, artists, ignoreArtists, r) {
 function _noSimilarFallbacks(query, bp, ignoreArtists, hasArtistFilter, r) {
   // Step 4: no similar + BPM + Key
   if (!r.length && hasArtistFilter && (bp.hasBpm || bp.hasKey))
-    r = query({ ignoreArtists, ...bp.bpmOpts });
+    {r = query({ ignoreArtists, ...bp.bpmOpts });}
   // Step 5: no similar + BPM only
   if (!r.length && bp.hasBpm && bp.hasKey)
-    r = query({ ...bp.bpmOnlyOpts });
+    {r = query({ ...bp.bpmOnlyOpts });}
   // Step 5b: no similar + BPM wide + Key
   if (!r.length && bp.hasWide && bp.hasKey)
-    r = query({ ignoreArtists, ...bp.bpmWideOpts });
+    {r = query({ ignoreArtists, ...bp.bpmWideOpts });}
   // Step 5c: no similar + BPM wide only
   if (!r.length && bp.hasWide)
-    r = query({ ignoreArtists, ...bp.bpmWideOnly });
+    {r = query({ ignoreArtists, ...bp.bpmWideOnly });}
   // Step 6 intentionally removed: when BPM/key constraints are active and all
   // BPM-constrained steps fail, return empty so the server throws 400. The
   // client's tier-3 fallback (_djBpmFallbackCall(true)) is the correct place

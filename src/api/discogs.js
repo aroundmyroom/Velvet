@@ -696,10 +696,10 @@ function _buildPhaseAAlbumVariants(albumInfo, albumPhase, add) {
   if (cleanAlbum && cleanAlbum !== album) add(_releaseParams('release', 8, artist, cleanAlbum, null), albumPhase);
   // first segment before punctuation
   if (albumFirstSegment && albumFirstSegment !== cleanAlbum && albumFirstSegment.length > 3)
-    add(_releaseParams('release', 8, artist, albumFirstSegment, null), albumPhase);
+    {add(_releaseParams('release', 8, artist, albumFirstSegment, null), albumPhase);}
   // bare title (no trailing parenthetical)
   if (albumBareTitle && albumBareTitle !== cleanAlbum && albumBareTitle !== albumFirstSegment && albumBareTitle.length > 2)
-    add(_releaseParams('release', 8, artist, albumBareTitle, null), albumPhase);
+    {add(_releaseParams('release', 8, artist, albumBareTitle, null), albumPhase);}
   // master release
   if (album) add(_releaseParams('master', 8, artist, album, year), albumPhase);
 }

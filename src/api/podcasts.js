@@ -207,7 +207,7 @@ export function setup(velvet) {
       const parsed = new URL(url);
       if (isPrivateHost(parsed.hostname)) return res.status(400).json({ error: 'That URL is not allowed' });
       if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:')
-        return res.status(400).json({ error: 'Only http/https URLs are allowed' });
+        {return res.status(400).json({ error: 'Only http/https URLs are allowed' });}
     } catch { return res.status(400).json({ error: 'Invalid URL' }); }
     try {
       const feed = await _fetchAndParse(url);
@@ -385,9 +385,9 @@ export function setup(velvet) {
     try {
       audioUrl = new URL(ep.audio_url);
       if (audioUrl.protocol !== 'http:' && audioUrl.protocol !== 'https:')
-        return res.status(400).json({ error: 'Episode audio URL must be http or https' });
+        {return res.status(400).json({ error: 'Episode audio URL must be http or https' });}
       if (isPrivateHost(audioUrl.hostname))
-        return res.status(400).json({ error: 'Episode audio URL is not allowed' });
+        {return res.status(400).json({ error: 'Episode audio URL is not allowed' });}
     } catch { return res.status(400).json({ error: 'Invalid episode audio URL' }); }
 
     const { targetRoot, targetVpathName } = _findAudioBooksVpath(req.user.username);

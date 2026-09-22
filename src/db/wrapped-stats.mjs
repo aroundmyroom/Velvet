@@ -134,7 +134,7 @@ export async function getWrappedStats(userId, fromMs, toMs, vpaths = []) {
     if (firstSeenHashes.has(e.file_hash)) continue;
     firstSeenHashes.add(e.file_hash);
     if (!db.hasPlayEventBefore(userId, e.file_hash, fromMs))
-      newDiscoveries.push({ hash: e.file_hash, title: e.title, artist: e.artist });
+      {newDiscoveries.push({ hash: e.file_hash, title: e.title, artist: e.artist });}
   }
 
   const fun_facts   = _computeFunFacts(events, top_songs, songCounts, total_plays);

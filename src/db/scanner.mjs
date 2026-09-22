@@ -1264,7 +1264,7 @@ async function _extractCuePoints(songInfo, fmtInfo, thisSong) {
   await _extractEmbeddedCue(songInfo, fmtInfo, thisSong);
   if (!songInfo.cuepoints) await _extractSidecarCue(songInfo, thisSong);
   if (!songInfo.cuepoints && /\.m4b$/i.test(thisSong) && loadJson.ffprobePath)
-    await _extractM4bCue(songInfo, thisSong);
+    {await _extractM4bCue(songInfo, thisSong);}
 }
 
 async function parseMyFile(thisSong, modified) {

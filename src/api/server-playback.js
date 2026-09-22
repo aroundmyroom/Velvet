@@ -865,7 +865,7 @@ export function setup(velvet) {
   velvet.post('/api/v1/server-playback/next', async (req, res) => {
     try {
       if (isRunning() && ipcSock && !ipcSock.destroyed)
-        await ipcCommand(['playlist-next', 'force']);
+        {await ipcCommand(['playlist-next', 'force']);}
       _touchHeartbeat();
       res.json({});
     } catch (e) { res.status(500).json({ error: e.message }); }
@@ -875,7 +875,7 @@ export function setup(velvet) {
   velvet.post('/api/v1/server-playback/previous', async (req, res) => {
     try {
       if (isRunning() && ipcSock && !ipcSock.destroyed)
-        await ipcCommand(['playlist-prev', 'force']);
+        {await ipcCommand(['playlist-prev', 'force']);}
       _touchHeartbeat();
       res.json({});
     } catch (e) { res.status(500).json({ error: e.message }); }
@@ -885,7 +885,7 @@ export function setup(velvet) {
   velvet.post('/api/v1/server-playback/pause', async (req, res) => {
     try {
       if (isRunning() && ipcSock && !ipcSock.destroyed)
-        await ipcCommand(['cycle', 'pause']);
+        {await ipcCommand(['cycle', 'pause']);}
       _touchHeartbeat();
       res.json({});
     } catch (e) { res.status(500).json({ error: e.message }); }
@@ -896,7 +896,7 @@ export function setup(velvet) {
     const { paused } = req.body;
     try {
       if (isRunning() && ipcSock && !ipcSock.destroyed)
-        await ipcCommand(['set_property', 'pause', paused === true]);
+        {await ipcCommand(['set_property', 'pause', paused === true]);}
       _touchHeartbeat();
       res.json({});
     } catch (e) { res.status(500).json({ error: e.message }); }
@@ -908,7 +908,7 @@ export function setup(velvet) {
     if (position === undefined) return res.status(400).json({ error: 'position required' });
     try {
       if (isRunning() && ipcSock && !ipcSock.destroyed)
-        await ipcCommand(['seek', Number(position), 'absolute']);
+        {await ipcCommand(['seek', Number(position), 'absolute']);}
       _touchHeartbeat();
       res.json({});
     } catch (e) { res.status(500).json({ error: e.message }); }
@@ -922,7 +922,7 @@ export function setup(velvet) {
       const v = Math.max(0, Math.min(130, Number(volume)));
       _currentVolumePct = v; // persist for re-apply on track change
       if (isRunning() && ipcSock && !ipcSock.destroyed)
-        await ipcCommand(['set_property', 'volume', v]);
+        {await ipcCommand(['set_property', 'volume', v]);}
       _touchHeartbeat();
       res.json({});
     } catch (e) { res.status(500).json({ error: e.message }); }

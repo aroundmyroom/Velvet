@@ -49,7 +49,7 @@ function _findCuePath(dir, base, audioFilename) {
       const m = content.match(/^FILE\s+"([^"]+)"/im);
       if (m && (path.basename(m[1]).toLowerCase() === audio ||
           path.basename(m[1], path.extname(m[1])).toLowerCase() === path.basename(audio, path.extname(audio))))
-        return resolvePathWithinRoot(dir, cue);
+        {return resolvePathWithinRoot(dir, cue);}
     } catch { /* unreadable CUE — skip */ }
   }
   return null;
@@ -110,7 +110,7 @@ function _checkSidecarCue(fullPath) {
     const cueRef = path.basename(fileLines[0][1]);
     if (cueRef.toLowerCase() !== audioFilename.toLowerCase() &&
         path.basename(cueRef, path.extname(cueRef)).toLowerCase() !== base.toLowerCase())
-      return { cuepoints: [], hasCueFile: true };
+      {return { cuepoints: [], hasCueFile: true };}
     const tracks = _parseCueTracks(content);
     return { cuepoints: tracks.length > 1 ? tracks : [], hasCueFile: true };
   } catch {
