@@ -901,6 +901,7 @@
   "admin.artists.urlPlaceholder": "https://...",
   "admin.artists.btnApply": "Apply",
   "admin.artists.previewTitle": "Preview",
+  "admin.artists.previewDims": "{{w}} × {{h}} pixels",
   "admin.artists.previewError": "This URL could not be previewed as an image. Check the link before applying it.",
   "admin.artists.previewDesc": "The pasted image will be downloaded, resized, and stored for {{artist}}.",
   "admin.artists.labelDiscogsSuggestions": "Discogs suggestions",

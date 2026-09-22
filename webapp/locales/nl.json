@@ -901,6 +901,7 @@
   "admin.artists.urlPlaceholder": "https://...",
   "admin.artists.btnApply": "Toepassen",
   "admin.artists.previewTitle": "Voorbeeld",
+  "admin.artists.previewDims": "{{w}} × {{h}} pixels",
   "admin.artists.previewError": "Deze URL kon niet worden weergegeven als afbeelding. Controleer de link voor u deze toepast.",
   "admin.artists.previewDesc": "De geplakte afbeelding wordt gedownload, verkleind en opgeslagen voor {{artist}}.",
   "admin.artists.labelDiscogsSuggestions": "Discogs-suggesties",
