@@ -567,6 +567,11 @@ export async function serveIt(configFile) {
       // Client navigated away before an async response (e.g. waveform pre-fetch) completed.
       // This is normal during playback transitions — log at debug only.
       winston.debug(`Client disconnected before response on ${req.originalUrl}`);
+    } else if (error.code === 'ECONNABORTED') {
+      // The client stopped reading a stream mid-response — every skip, seek or track
+      // change on a browser or a Sonos speaker does this. Nothing failed server-side,
+      // so it does not belong at error level with a stack trace.
+      winston.debug(`Client aborted stream on ${req.originalUrl}`);
     } else {
       winston.error(`Server error on route ${req.originalUrl}: ${error.message}`, { stack: error });
     }
