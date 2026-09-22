@@ -504,7 +504,7 @@
         api('POST','api/v1/db/metadata',{filepath:cur.relPath}).then(function(meta){
           var m=meta.metadata||{},parts=[],f=(meta.filepath||cur.relPath).split('.').pop().toUpperCase();
           if(f)parts.push(f);
-          if(m.bitrate)parts.push(m.bitrate+' kbps');
+          if(m.bitrate)parts.push(Math.round(m.bitrate>=20000?m.bitrate/1000:m.bitrate)+' kbps');
           if(m['sample-rate'])parts.push((m['sample-rate']/1000).toFixed(1).replace('.0','')+'kHz');
           if(m.channels)parts.push(m.channels===2?'Stereo':m.channels===1?'Mono':m.channels+'ch');
           var str=parts.join(' · '); _metaCache[cur.relPath]=str;

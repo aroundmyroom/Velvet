@@ -673,6 +673,17 @@ const _CAMELOT = {
   'F# minor':'11A','A major':'11B',
   'C# minor':'12A','E major':'12B',
 };
+// Track bitrate arrives from the API in bits per second — the wire unit third-party
+// clients expect. Display is in kbps. Queues persisted before that unit change still
+// hold plain kbps, so accept either: a value in the bits-per-second range is scaled
+// down, one already in kbps is kept as-is. Radio (ICY `icy-br`) and radio-browser
+// stations report kbps directly and must NOT go through here.
+function fmtKbps(bitrate) {
+  const n = Number(bitrate);
+  if (!Number.isFinite(n) || n <= 0) return null;
+  return Math.round(n >= 20000 ? n / 1000 : n);
+}
+
 function toCamelot(musicalKey) {
   if (!musicalKey) return null;
   return _CAMELOT[musicalKey] ?? null;
@@ -3016,7 +3027,7 @@ function refreshQueueUI() {
         <div class="qp-np-info">
           <div class="qp-np-title">${esc(cur.title || cur.filepath?.split('/').pop() || '\u2014')}</div>
           <div class="qp-np-artist">${esc(cur.artist || '')}</div>
-          ${(() => { const parts=[]; const ext=(cur.filepath||'').split('.').pop().toUpperCase(); if(ext) parts.push(ext); if(cur.bitrate) parts.push(cur.bitrate+' kbps'); if(cur['sample-rate']) parts.push((cur['sample-rate']/1000).toFixed(1).replaceAll('.0','')+' kHz'); if(cur.channels) parts.push(cur.channels===2?'Stereo':cur.channels===1?'Mono':cur.channels+'ch'); if(cur.bpm) parts.push(cur.bpm+' BPM'); if(cur.musical_key){ const _cml=toCamelot(cur.musical_key); parts.push(_cml?cur.musical_key+' ('+_cml+')':cur.musical_key); } const s=parts.join(' \u00b7 '); return s?`<div class="qp-np-tech">${esc(s)}</div>`:''; })()}
+          ${(() => { const parts=[]; const ext=(cur.filepath||'').split('.').pop().toUpperCase(); if(ext) parts.push(ext); if(fmtKbps(cur.bitrate)) parts.push(fmtKbps(cur.bitrate)+' kbps'); if(cur['sample-rate']) parts.push((cur['sample-rate']/1000).toFixed(1).replaceAll('.0','')+' kHz'); if(cur.channels) parts.push(cur.channels===2?'Stereo':cur.channels===1?'Mono':cur.channels+'ch'); if(cur.bpm) parts.push(cur.bpm+' BPM'); if(cur.musical_key){ const _cml=toCamelot(cur.musical_key); parts.push(_cml?cur.musical_key+' ('+_cml+')':cur.musical_key); } const s=parts.join(' \u00b7 '); return s?`<div class="qp-np-tech">${esc(s)}</div>`:''; })()}
           ${cur.rating ? `<div class="qp-np-stars" style="margin-top:3px">${starsHtml(cur.rating)}</div>` : ''}
         </div>
       </div>`;
@@ -3803,7 +3814,7 @@ function renderNPModal() {
   if (techEl) {
     if (!isRadio && (s.bitrate != null || s['sample-rate'] != null || s.channels != null || s.filepath)) {
       const ext = s.filepath ? s.filepath.split('.').pop().toUpperCase() : null;
-      const kbps = s.bitrate ? s.bitrate + '\u202fkbps' : null;
+      const kbps = fmtKbps(s.bitrate) ? fmtKbps(s.bitrate) + '\u202fkbps' : null;
       const khz  = s['sample-rate'] ? (s['sample-rate'] / 1000).toFixed(1).replace(/\.0$/, '') + '\u202fkHz' : null;
       const ch   = s.channels === 1 ? t('player.modal.techMono') : s.channels === 2 ? t('player.modal.techStereo') : (s.channels != null ? s.channels + 'ch' : null);
       techEl.textContent = [ext, kbps, khz, ch].filter(Boolean).join(' \u00b7 ');
@@ -11868,7 +11879,7 @@ async function _renderPlayingNow(fade) {
   const ext = (s.filepath || '').split('.').pop().toUpperCase();
   const pills = [
     ext ? `<span class="pnow-pill pnow-pill--gray">${esc(ext)}</span>` : '',
-    s.bitrate  ? `<span class="pnow-pill pnow-pill--gray">${s.bitrate} kbps</span>` : '',
+    fmtKbps(s.bitrate) ? `<span class="pnow-pill pnow-pill--gray">${fmtKbps(s.bitrate)} kbps</span>` : '',
     s['sample-rate'] ? `<span class="pnow-pill pnow-pill--gray">${(s['sample-rate']/1000).toFixed(1)} kHz</span>` : '',
     s.bpm ? `<span class="pnow-pill pnow-pill--gray">${s.bpm} BPM</span>` : '',
     s.musical_key ? `<span class="pnow-pill pnow-pill--gray">${esc(s.musical_key)}${toCamelot(s.musical_key) ? ' (' + toCamelot(s.musical_key) + ')' : ''}</span>` : '',
@@ -19505,7 +19516,7 @@ async function _activateSonosCast(room) {
   const paused = audioEl.paused;
   try {
     const tracks = _sonosBuildWindow();
-    if (!tracks.length) tracks.push({ filepath: s.filepath, title: s.title || '', artist: s.artist || '', album: s.album || '', aaFile: s['album-art'] || null });
+    if (!tracks.length) tracks.push({ filepath: s.filepath, title: s.title || '', artist: s.artist || '', album: s.album || '', aaFile: s['album-art'] || null, duration: s.duration ?? null });
     const castResp = await api('POST', 'api/v1/sonos/cast-queue', {
       ip: room.ip, tracks, index: 0, seekTo: Math.floor(seekTo) || 0, paused,
     });
@@ -19728,7 +19739,7 @@ function _sonosBuildWindow() {
   for (let i = S.idx; i < to; i++) {
     const s = S.queue[i];
     if (!s || s.isRadio) break;
-    tracks.push({ filepath: s.filepath, title: s.title || '', artist: s.artist || '', album: s.album || '', aaFile: s['album-art'] || null });
+    tracks.push({ filepath: s.filepath, title: s.title || '', artist: s.artist || '', album: s.album || '', aaFile: s['album-art'] || null, duration: s.duration ?? null });
   }
   return tracks;
 }
@@ -19896,7 +19907,7 @@ async function _sonosTopUpWindow() {
   for (let i = from; i < to; i++) {
     const s = S.queue[i];
     if (!s || s.isRadio) break;
-    tracks.push({ filepath: s.filepath, title: s.title || '', artist: s.artist || '', album: s.album || '', aaFile: s['album-art'] || null });
+    tracks.push({ filepath: s.filepath, title: s.title || '', artist: s.artist || '', album: s.album || '', aaFile: s['album-art'] || null, duration: s.duration ?? null });
   }
   if (!tracks.length) return;
   _sonosToppingUp = true;
@@ -25987,7 +25998,12 @@ window.EGG = (() => {
   let speed = 1;          // 33 rpm = 1, 45 rpm = 45/33.333 = 1.35
   let silver = false;
   const RPM45 = 1.35;
-  const ARM_START = -3.7, ARM_SWEEP = 18.5; // deg: outer lead-in ring → run-out ring (cartridge-tip calibrated)
+  // deg: outer lead-in ring → last music groove (cartridge-tip calibrated against the
+  // record geometry in style.css). The sweep must END OUTSIDE the run-out: the label
+  // backing reaches 46% of the radius and the run-out rings sit at 40.6–44%, so the
+  // stylus has to stay beyond that while audio is still playing. -3.7° puts the tip at
+  // 95.2% (lead-in); -3.7+15.2 = 11.5° puts it at 49%, the inner edge of the grooves.
+  const ARM_START = -3.7, ARM_SWEEP = 15.2;
   const F_CY = 135, F_HALF = 40.5, F_H = 9; // fader slot centre/travel, art px
   const _sync = () => document.body.classList.toggle('vinyl-paused', audioEl.paused);
   function _applyRate() {
