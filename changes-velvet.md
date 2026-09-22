@@ -1,3 +1,35 @@
+## v0.5.14 (2026-09-22)
+
+Real translations for ten languages, and a round of fixes and cleanup across the player and Sonos casting.
+
+### Added: real translations for German, French, Spanish, Italian, Portuguese, Polish, Russian, Chinese, Japanese, Korean
+- All 12 languages carried the same set of translation keys, but ten of them were
+  almost entirely untranslated English placeholders — only Dutch and English were
+  complete. The language picker offered 12 languages and delivered 2.
+- Every string is now translated for meaning rather than literally, using the
+  wording a native user of a major music app would expect for what the control
+  actually does. Product and technical names (Velvet, Sonos, Subsonic, Last.fm,
+  ListenBrainz, Discogs, MusicBrainz, BPM, FLAC, ReplayGain, Auto-DJ, and similar)
+  are left as-is, matching how the Dutch translation already handles them.
+
+### Fixed
+- **Bitrate no longer shows an inflated number.** The queue panel, player bar,
+  Playing Now pill and Server Remote showed values like "965000 kbps" — the API
+  returns bitrate in bits per second, but the display still appended a kbps label
+  to that raw value without converting it.
+- **The vinyl Easter egg's tonearm no longer reaches the label while a track is
+  still playing.** The needle's sweep overshot the run-out groove.
+- **Sonos casting announces the real audio format.** Every stream was announced to
+  the speaker as MP3, so FLAC and WAV files were handed to the wrong decoder.
+- Routine stream interruptions (skipping, seeking) during Sonos casting no longer
+  appear in the server log as errors with a stack trace.
+
+### Changed
+- Linting is now a required check in CI.
+- Admin: the artist manual-URL preview shows the image's pixel dimensions.
+- Developer docs (`docs/dev/todo.md`) audited against the codebase — several
+  already-shipped features were marked as unfinished; corrected.
+
 ## v0.5.13 (2026-09-21)
 
 Pausing on the Sonos app is reflected in the web player again.
