@@ -1,3 +1,20 @@
+## v0.5.18 (2026-09-23)
+
+### Fixed: Sonos position tracking drifted over a long Auto-DJ session
+
+- **The player could lose track of which song Sonos was actually playing, the longer
+  an Auto-DJ session ran.** The queue is capped at 500 tracks and periodically trims
+  older entries from the front to keep it from growing without bound; the player's own
+  current-track pointer was correctly adjusted for that each time, but its separate
+  bookkeeping of where the Sonos device's queue starts within the player's queue was
+  not. Every trim left that bookkeeping a little further out of alignment, and the
+  error accumulated. Confirmed live over a long Auto-DJ session: the mismatch had grown
+  to roughly 37 positions.
+- This is very likely the underlying cause of some of the other Sonos playback issues
+  fixed earlier this week, which showed the same kind of symptom (the speaker playing
+  something other than what the player expected) without a way to distinguish this
+  cause from a timing issue until now.
+
 ## v0.5.17 (2026-09-23)
 
 ### Fixed: a natural Sonos track advance could still restart the new track, intermittently

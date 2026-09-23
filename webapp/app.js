@@ -2605,6 +2605,15 @@ function _pruneQueue() {
   if (prune > 0) {
     S.queue.splice(0, prune); _qvsVersion++;
     S.idx = Math.max(0, S.idx - prune);
+    // _sonosWindowBase is ALSO an absolute S.queue index (device track 1 ==
+    // S.queue[_sonosWindowBase]) and was never corrected here — a long Auto-DJ session
+    // that pruned the front of the queue while casting silently drifted it out of sync
+    // with S.idx, by the cumulative total of every prune since the last full re-cast.
+    // Confirmed live: a report of the device playing a track ~37 positions away from
+    // where the player expected it, on a queue built entirely by Auto-DJ over a long
+    // session — exactly the size of drift repeated small prunes accumulate over time.
+    // Harmless to adjust even when not currently casting; it is simply unused until it is.
+    _sonosWindowBase = Math.max(0, _sonosWindowBase - prune);
   }
 }
 
