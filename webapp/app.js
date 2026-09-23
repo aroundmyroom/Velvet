@@ -1,5 +1,5 @@
 'use strict';
-const VELVET_VERSION = '0.5.15';
+const VELVET_VERSION = '0.5.16';
 // ── SERVER IDENTITY GUARD ────────────────────────────────────────────────────
 // Detects when this browser's localStorage belongs to a different Velvet
 // instance (fresh install, IP change, reverse-proxy swap, second server).
@@ -24707,7 +24707,20 @@ function _reloadFromPosition(attempt) {
   _netRecoveryTimer = setTimeout(() => {
     audioEl.load(); // re-issues the HTTP GET through the proxy
     const onMeta = () => {
-      if (resumeAt > 1) audioEl.currentTime = resumeAt;
+      if (resumeAt > 1) {
+        // This seek is recovery catching the muted mirror back up after a stall —
+        // not the user seeking. _onAudioSeeked mirrors seeks to Sonos/MPV, and had no
+        // guard against this: every stall (far more frequent on a backgrounded tab, per
+        // the browser's own recovery-cadence, and stalls happen there most) sent a real
+        // REL_TIME seek to the live Sonos stream, which this codebase's own Sonos docs
+        // already note stalls the speaker or restarts the track. Confirmed live:
+        // repeated TRANSITIONING/PLAYING pairs and audible stop/start correlate exactly
+        // with stall-recovery cycles. Reuse the existing "just loaded, ignore transient
+        // jank" flags so the mirror catches up locally without touching either device.
+        _sonosLoadingSong = true; setTimeout(() => { _sonosLoadingSong = false; }, 2000);
+        _mpvLoadingSong   = true; setTimeout(() => { _mpvLoadingSong   = false; }, 2000);
+        audioEl.currentTime = resumeAt;
+      }
       VIZ.initAudio();
       // Only resume if the user was actually playing before the stall.
       // If they had paused (playingKey='0'), do NOT auto-resume — this was

@@ -1,3 +1,19 @@
+## v0.5.16 (2026-09-23)
+
+### Fixed: network recovery could send unwanted seeks to Sonos and Server Speaker
+
+- **Audible stop/start on a Sonos speaker while casting, with no seek intended.**
+  Recovering from a stalled stream — which happens more often while the browser tab
+  is in the background, since browsers throttle background tabs and that makes
+  buffering stalls more frequent — resumed the player's own internal clock at the
+  point it had reached. That resume was treated the same as a deliberate seek and
+  was sent straight to the active Sonos speaker as a live position change, which
+  this project's own Sonos notes already describe as something that can stall a
+  speaker or restart a track. The same applied to the Server Speaker output.
+- This is unrelated to yesterday's Sonos cede fix (v0.5.15) — a separate cause
+  hitting the same kind of symptom (things happening on the speaker the web
+  player did not intend).
+
 ## v0.5.15 (2026-09-22)
 
 ### Fixed: Sonos cede could seize control back and interrupt live playback
