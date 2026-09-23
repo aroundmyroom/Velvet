@@ -1,3 +1,15 @@
+## v0.5.21 (2026-09-23)
+
+### Added: search the queue
+
+- **A search box under "Up Next" finds a song already in a large queue** — type an
+  artist or title and every match is highlighted in place (a gold marker and
+  underlined matched text), while the rest of the queue stays visible and in order.
+  The list jumps straight to the first match, so a long Auto-DJ session no longer
+  needs to be scrolled through by hand to find and replay a song. Matching ignores
+  case and accents. Clicking a highlighted row plays it, same as any other row.
+  Desktop/tablet player only for now — see `docs/queue-search.md`.
+
 ## v0.5.20 (2026-09-23)
 
 ### Fixed: casting to Sonos could go silent indefinitely on a broken file

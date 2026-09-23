@@ -1025,6 +1025,14 @@ body.sidebar-collapsed .footer-link,body.sidebar-collapsed .footer-action{justif
 /* Queue multi-select — selected row highlight */
 .q-item.q-sel{background:var(--active);}
 .q-item.q-sel .q-num{color:var(--primary);}
+/* Queue search — highlight matches without hiding the rest of the queue (order matters). */
+.q-search-row{margin:8px 10px;padding:6px 10px;}
+.q-item.q-match{background:rgba(245,158,11,.14);box-shadow:inset 3px 0 0 0 #f59e0b;}
+.q-item.q-match:hover{background:rgba(245,158,11,.22);}
+.q-item.q-match.q-active{background:rgba(245,158,11,.24);}
+:root.light .q-item.q-match{background:rgba(217,119,6,.10);}
+:root.light .q-item.q-match:hover{background:rgba(217,119,6,.17);}
+.q-item.q-match .q-title mark,.q-item.q-match .q-artist mark{background:none;color:#f59e0b;font-weight:700;}
 /* Selection action bar */
 .q-sel-bar{display:flex;align-items:center;justify-content:space-between;gap:var(--sp-2);padding:var(--sp-2) var(--sp-3);background:var(--primary-d);border-bottom:1px solid var(--border);flex-shrink:0;}
 .q-sel-count{font-size:var(--type-xs);font-weight:600;color:var(--primary);white-space:nowrap;}

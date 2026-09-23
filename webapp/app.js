@@ -1344,6 +1344,7 @@ let _qvsBuiltVersion = -1;  // version when _qvsRows/_qvsCumH were last built
 let _qvsStartOffsets = [];  // estimated cumulative start time (s) for each queue index
 let _qvsSelected = new Set();  // set of selected queue indices (qi) for multi-select
 let _qvsLastClick = -1;        // last qi clicked, for shift-range selection
+let _qSearchQuery = '';        // normalised (lowercased, diacritic-folded) active queue-search term, '' = none
 let _qvsListenersInited = false; // guard against double-registration on logout+login
 const _QH_ITEM = 58;    // q-item row height px  (7+7 padding + 44 art)
 const _QH_SEP  = 28;    // q-disc-sep row height px
@@ -2176,6 +2177,32 @@ function _queueArtist(song) {
   return song?.artist || null;
 }
 
+// Queue search: lowercase + strip diacritics so "café" matches "cafe", same
+// folding used elsewhere in this file for artist grouping.
+function _qSearchNorm(s) {
+  return String(s || '').toLowerCase().normalize('NFD').replaceAll(/[̀-ͯ]/g, '');
+}
+function _qMatchesSearch(song) {
+  if (!_qSearchQuery || !song) return false;
+  return _qSearchNorm(song.title).includes(_qSearchQuery) ||
+         _qSearchNorm(_queueArtist(song)).includes(_qSearchQuery);
+}
+// Escape `text` and wrap the (case/diacritic-insensitive) matched substring in <mark>.
+// Finds the match position in the NORMALISED string, then maps it back onto the
+// original so accented characters and casing still render as written. NFD folding
+// can change string length (one precomposed char -> base + combining mark), so if the
+// title has an accented character BEFORE the match, the mapped offset can drift by a
+// character or two — the row-level highlight (.q-match) is the reliable signal either
+// way; this is a cosmetic best-effort on top of it, never throws.
+function _qHighlightMatch(text) {
+  const raw = String(text || '');
+  if (!_qSearchQuery) return esc(raw);
+  const norm = _qSearchNorm(raw);
+  const at = norm.indexOf(_qSearchQuery);
+  if (at < 0) return esc(raw);
+  return esc(raw.slice(0, at)) + '<mark>' + esc(raw.slice(at, at + _qSearchQuery.length)) + '</mark>' + esc(raw.slice(at + _qSearchQuery.length));
+}
+
 // Returns true if a song should be EXCLUDED by the active keyword filter.
 // Genre compatibility matrix — returns 0..1 for a genre transition. Every
 // transition (including a hard↔soft jump like pop→hardcore) is scored, never
@@ -2959,8 +2986,9 @@ function _qvsRender(list, force) {
       const startOffset = _qvsStartOffsets[i] || 0;
       const isActive = i === S.idx;
       const isSel = _qvsSelected.has(i);
+      const isMatch = _qMatchesSearch(s);
       const estStart = (!isActive && startOffset > 0) ? ` title="~${fmt(startOffset)}"` : '';
-      html.push(`<div class="q-item${isActive ? ' q-active' : ''}${s._dj ? ' q-dj' : ''}${isSel ? ' q-sel' : ''}" data-qi="${i}" draggable="true"${estStart}>
+      html.push(`<div class="q-item${isActive ? ' q-active' : ''}${s._dj ? ' q-dj' : ''}${isSel ? ' q-sel' : ''}${isMatch ? ' q-match' : ''}" data-qi="${i}" draggable="true"${estStart}>
         <div class="q-drag-handle" title="${t('player.ctrl.queueDragHandle')}">
           <svg width="10" height="14" viewBox="0 0 10 14" fill="currentColor" opacity=".7">
             <circle cx="3" cy="2.5" r="1.2"/><circle cx="7" cy="2.5" r="1.2"/>
@@ -2976,8 +3004,8 @@ function _qvsRender(list, force) {
         </div>
         <div class="q-art">${artOrPlaceholder(s['album-art'], 's', 'no-art-sm', true)}</div>
         <div class="q-info">
-          <div class="q-title">${esc(s.title || s.filepath?.split('/').pop() || '?')}</div>
-          <div class="q-artist">${esc(_queueArtist(s) || '')}</div>
+          <div class="q-title">${isMatch ? _qHighlightMatch(s.title || s.filepath?.split('/').pop() || '?') : esc(s.title || s.filepath?.split('/').pop() || '?')}</div>
+          <div class="q-artist">${isMatch ? _qHighlightMatch(_queueArtist(s) || '') : esc(_queueArtist(s) || '')}</div>
         </div>
         <div class="q-dj-slot">${s._dj ? '<span class="q-dj-tag">Auto&#8202;DJ</span>' : ''}</div>
         ${s.duration ? `<div class="q-dur">${fmt(s.duration)}</div>` : ''}
@@ -3155,6 +3183,36 @@ function _scrollQueueToActive(force) {
   }
 }
 
+// Scroll to the first queue-search match — same centring logic as _scrollQueueToActive,
+// targeting the first row that matches the active search term instead of S.idx.
+function _scrollQueueToFirstMatch() {
+  const list = document.getElementById('queue-list');
+  if (!list || !_qSearchQuery) return;
+  const mRow = _qvsRows.findIndex(r => r.type === 'item' && _qMatchesSearch(r.s));
+  if (mRow < 0) return;
+  const vH = list.clientHeight;
+  if (!vH) { requestAnimationFrame(_scrollQueueToFirstMatch); return; }
+  list.scrollTop = Math.max(0, _qvsCumH[mRow] - (vH - _QH_ITEM) / 2);
+  _qvsFIdx = -1; _qvsLIdx = -1;
+  _qvsRender(list, true);
+}
+
+function _qSearchApply(rawValue) {
+  const clearBtn = document.getElementById('q-search-clear');
+  const countEl  = document.getElementById('q-search-count');
+  _qSearchQuery = _qSearchNorm(rawValue);
+  clearBtn?.classList.toggle('hidden', !_qSearchQuery);
+  if (!_qSearchQuery) {
+    if (countEl) countEl.textContent = '';
+  } else {
+    const n = S.queue.reduce((acc, s) => acc + (_qMatchesSearch(s) ? 1 : 0), 0);
+    if (countEl) countEl.textContent = n === 1 ? t('player.queue.searchResult', { count: n }) : t('player.queue.searchResults', { count: n });
+  }
+  const list = document.getElementById('queue-list');
+  if (list) { _qvsFIdx = -1; _qvsLIdx = -1; _qvsRender(list, true); }
+  if (_qSearchQuery) _scrollQueueToFirstMatch();
+}
+
 // ── One-time queue event-listener setup ──────────────────────────────────────
 // showApp() calls this on every login; the guard ensures listeners are only
 // registered once so logout→login doesn't double-fire click handlers.
@@ -3166,6 +3224,16 @@ function _initQueueListeners() {
   const _clearQDropIndicators = () =>
     list.querySelectorAll('.q-drag-over, .q-drop-before, .q-drop-after')
         .forEach(el => el.classList.remove('q-drag-over', 'q-drop-before', 'q-drop-after'));
+
+  // Queue search — filters nothing, only highlights (order matters in a queue) and
+  // jumps to the first match so a large Auto-DJ queue can be searched quickly.
+  const qSearchInput = document.getElementById('q-search-input');
+  const qSearchClear = document.getElementById('q-search-clear');
+  qSearchInput?.addEventListener('input', () => _qSearchApply(qSearchInput.value));
+  qSearchInput?.addEventListener('keydown', e => {
+    if (e.key === 'Escape' && qSearchInput.value) { e.stopPropagation(); qSearchInput.value = ''; _qSearchApply(''); }
+  });
+  qSearchClear?.addEventListener('click', () => { qSearchInput.value = ''; _qSearchApply(''); qSearchInput.focus(); });
 
   // Virtual-scroll: re-render on scroll (RAF-throttled)
   list.addEventListener('scroll', () => {
@@ -23311,6 +23379,8 @@ document.getElementById('qp-clear-btn').addEventListener('click', () => {
     S.queue = []; S.idx = -1;
   }
   _qvsVersion++;
+  const qSearchInput = document.getElementById('q-search-input');
+  if (qSearchInput?.value) { qSearchInput.value = ''; _qSearchApply(''); }
   refreshQueueUI();
   toast(t('player.toast.queueCleared'));
   persistQueue();

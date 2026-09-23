@@ -13,7 +13,7 @@
   <script defer src="../assets/js/lib/butterchurn.min.js"></script>
   <script defer src="../assets/js/lib/audiomotion-analyzer.js"></script>
   <script defer src="../assets/js/lib/qr.js"></script>
-  <link rel="stylesheet" href="/style.css?v=0.5.20-2cd21ad6">
+  <link rel="stylesheet" href="/style.css?v=0.5.20-c54042f7">
   <script src="/assets/js/lib/simplewebauthn-browser.js"></script>
   <script src="/assets/js/i18n.js"></script>
 </head>
@@ -742,6 +742,16 @@
       </div>
     </div>
 
+    <!-- Queue search — finds a song already in a large queue and highlights every
+         match in place (doesn't hide the rest — order/context matters for a queue).
+         Jumps the list to the first match so you don't have to scroll manually. -->
+    <div class="fe-filter-row q-search-row">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+      <input id="q-search-input" class="fe-filter-input" type="text" data-i18n="player.queue.searchPlaceholder" data-i18n-attr="placeholder" placeholder="Search queue…" autocomplete="off">
+      <span id="q-search-count" class="fe-match-count"></span>
+      <button id="q-search-clear" class="fe-filter-clear hidden" data-i18n="player.ctrl.clearFilter" data-i18n-attr="title" title="Clear filter">✕</button>
+    </div>
+
     <!-- Multi-select action bar — visible when ≥1 queue items are selected -->
     <div id="q-sel-bar" class="q-sel-bar hidden" role="toolbar" aria-label="Queue selection">
       <span id="q-sel-count" class="q-sel-count"></span>
@@ -1064,7 +1074,7 @@
 
 <div id="tip-box"></div>
 <script src="/assets/js/player-locale.js"></script>
-  <script src="/app.js?v=0.5.20-08c5d202"></script>
+  <script src="/app.js?v=0.5.20-a07c2c9e"></script>
 
 </body>
 </html>
