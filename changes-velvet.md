@@ -1,3 +1,26 @@
+## v0.5.25 (2026-09-23)
+
+### Changed: simplified how Sonos casting works
+
+- **Sonos is now treated as a plain speaker, not a second source of truth for what's
+  playing.** The player's own queue always decides what should be playing; when that
+  decision changes — a song is picked, the queue advances, Auto-DJ moves on — the
+  speaker is simply told to play it. Nothing about what the speaker itself reports is
+  used to decide what plays next.
+- This replaces a more elaborate design, built up over several fixes this past week,
+  that tried to keep a lookahead queue synchronised on the speaker and have the player
+  follow along with whatever the speaker was doing on its own. Each fix in that design
+  closed one gap and revealed another, which was itself the clearest sign that the
+  approach, not any single bug in it, was the underlying problem.
+- The trade-off: there is a short gap between tracks now, since each one is sent to the
+  speaker individually rather than the speaker gaplessly advancing through a pre-loaded
+  window. Controlling playback directly from the Sonos app is no longer specially
+  handled — the player does not try to detect or react to it, since the player's own
+  queue is the only thing that decides what plays.
+- Verified directly against a Sonos speaker: starting a cast, switching cleanly between
+  tracks, and mirroring play, pause and seek commands all work correctly under the new,
+  much simpler design.
+
 ## v0.5.24 (2026-09-23)
 
 ### Fixed: Sonos could suddenly jump back to a much older, already-played track
