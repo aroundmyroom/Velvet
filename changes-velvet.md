@@ -1,3 +1,24 @@
+## v0.5.24 (2026-09-23)
+
+### Fixed: Sonos could suddenly jump back to a much older, already-played track
+
+- **A long Sonos session could suddenly start playing something from hours earlier,
+  with no explanation and nothing new added to the visible queue.** Keeping the
+  device's own queue intact rather than rebuilding it on every track change (shipped
+  earlier this week) has a consequence nothing was addressing: the device's queue only
+  ever grows, so its first position permanently holds whatever was cast right at the
+  very start of the session. Confirmed directly on hardware: a Sonos speaker that
+  briefly runs out of queued tracks — which can happen if adding the next tracks ever
+  lags behind for a moment — reports itself back at that first, now very old, position
+  rather than simply pausing in place.
+- The player now periodically removes already-played tracks from the device's queue
+  (keeping a small amount of recent history) once enough have built up, so that first
+  position is never far behind what's actually playing. Every fresh cast also
+  explicitly sets the speaker to normal (non-repeating, non-shuffled) playback, closing
+  a related way old content could resurface.
+- Confirmed live from a session log, then reproduced and verified directly against the
+  affected speaker before shipping.
+
 ## v0.5.23 (2026-09-23)
 
 ### Fixed: picking a song while Sonos had taken over silently did nothing on the speaker

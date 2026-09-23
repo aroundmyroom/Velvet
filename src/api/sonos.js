@@ -9,6 +9,7 @@
  *   POST /api/v1/sonos/cast                 — cast a specific track to a Sonos device (player use)
  *   POST /api/v1/sonos/cast-queue           — mirror a window of the player queue onto the Sonos queue
  *   POST /api/v1/sonos/queue/append         — top up the Sonos queue without wiping it
+ *   POST /api/v1/sonos/queue/trim           — drop already-played tracks so track 1 never goes stale
  *   POST /api/v1/sonos/queue/clear          — wipe the Sonos queue, only if it belongs to Velvet
  *   GET  /api/v1/sonos/transcode-stream     — dedicated ffmpeg pipe for Sonos-incompatible formats
  *   POST /api/v1/sonos/test-play            — play a random song on a Sonos device (admin test)
@@ -161,7 +162,7 @@ function buildDidl({ title, artist, album, duration }, streamUrl, artUrl = null,
 // events received) but never the actual SOAP conversation that produced them.
 const _SOAP_LOGGED_ACTIONS = new Set([
   'Play', 'Pause', 'Stop', 'Next', 'Previous', 'Seek',
-  'AddURIToQueue', 'RemoveAllTracksFromQueue', 'SetAVTransportURI',
+  'AddURIToQueue', 'RemoveAllTracksFromQueue', 'RemoveTrackRangeFromQueue', 'SetAVTransportURI', 'SetPlayMode',
 ]);
 // Pull out the one or two parameters worth seeing for a given action, without
 // dumping the full DIDL metadata block (large, mostly noise for a log line).
@@ -175,6 +176,8 @@ function _soapLogParams(action, extraBody) {
       return uri ? decodeURIComponent(uri).replace(/^.*\/media\//, '').replace(/\?.*$/, '') : '';
     }
     case 'SetAVTransportURI':  return tag('CurrentURI') || '';
+    case 'SetPlayMode':        return tag('NewPlayMode') || '';
+    case 'RemoveTrackRangeFromQueue': return `StartingIndex=${tag('StartingIndex')} NumberOfTracks=${tag('NumberOfTracks')}`;
     default:                   return '';
   }
 }
@@ -1507,6 +1510,12 @@ export function setup(velvet) {
         `<CurrentURI>${xmlEsc(queueUri)}</CurrentURI>`,
         `<CurrentURIMetaData>${uuid ? '' : xmlEsc(items[0].didl)}</CurrentURIMetaData>`,
       ].join(''));
+      // Force NORMAL play mode on every fresh cast. Repeat/shuffle left on from the
+      // Sonos app (or any earlier session) would let reaching the end of what we've
+      // appended so far loop or shuffle back into content that has nothing to do with
+      // what the player queue actually wants played next — belt and suspenders
+      // alongside queue/trim below, which keeps "track 1" itself from going stale.
+      await soapCall(resolvedIp, 'SetPlayMode', '<NewPlayMode>NORMAL</NewPlayMode>').catch(e => console.debug('[velvet]', e?.message ?? e));
       await soapCall(resolvedIp, 'Seek', '<Unit>TRACK_NR</Unit><Target>1</Target>');
       if (soapSeekTo > 1) await soapCall(resolvedIp, 'Seek', `<Unit>REL_TIME</Unit><Target>${secsToTime(soapSeekTo)}</Target>`);
       await soapCall(resolvedIp, 'Play', '<Speed>1</Speed>');
@@ -1565,6 +1574,51 @@ export function setup(velvet) {
       res.json({ ok: true, added });
     } catch (e) {
       console.error('[sonos] /queue/append error:', e);
+      res.status(500).json({ ok: false, error: String(e.message || e) });
+    }
+  });
+
+  // ── POST /api/v1/sonos/queue/trim ────────────────────────────────────
+  // Remove ALREADY-PLAYED tracks from the front of the device's queue, keeping
+  // playback of the current track completely undisturbed. Append-only queue
+  // management (never RemoveAllTracksFromQueue on a normal advance — see
+  // /cast-queue vs /queue/append above) has a consequence nothing was doing
+  // anything about: the device's own queue only ever grows, so "track 1" stays
+  // whatever was cast first — potentially hours old. Confirmed on hardware: when a
+  // NORMAL-mode queue runs out, Sonos's GetPositionInfo reports CurrentTrack back
+  // to 1 (position 0) rather than just stopping in place. If the topup that keeps
+  // the window fed ever lags — Auto-DJ pick latency, a slow DB during a library
+  // scan, any timing hiccup — the device can genuinely run dry for a moment, and
+  // whatever it reports as "track 1" at that instant is what a listener hears:
+  // an old, already-played track from long before, not what's actually queued next.
+  // Trimming keeps track 1 always recent, so even that edge case lands close to
+  // correct instead of arbitrarily far in the past.
+  // Body: { ip, currentTrack, keep? } — currentTrack is the device's own 1-based
+  // track number for what's playing now (from the last confirmed transport-status);
+  // removes everything before position (currentTrack - keep). keep defaults to 2.
+  velvet.post('/api/v1/sonos/queue/trim', async (req, res) => {
+    const ip           = req.body?.ip || config.program?.sonos?.defaultRoom?.ip;
+    const currentTrack = Number.parseInt(req.body?.currentTrack, 10);
+    // req.body?.keep ?? 2, not the more usual `|| 2` — keep:0 is a valid, meaningful
+    // value (trim everything already played) and `0 || 2` would silently discard it.
+    const _keepParsed  = Number.parseInt(req.body?.keep, 10);
+    const keep         = Math.max(0, Number.isInteger(_keepParsed) ? _keepParsed : 2);
+    if (!ip) return res.status(400).json({ error: 'ip required' });
+    if (!Number.isInteger(currentTrack) || currentTrack < 1) return res.status(400).json({ error: 'currentTrack must be a positive integer' });
+    const removeCount = currentTrack - 1 - keep;
+    if (removeCount < 1) return res.json({ ok: true, removed: 0 });
+    try {
+      const resolvedIp = _resolveIp(ip);
+      assertPrivateIp(resolvedIp);
+      await soapCall(resolvedIp, 'RemoveTrackRangeFromQueue', [
+        '<UpdateID>0</UpdateID>',
+        '<StartingIndex>1</StartingIndex>',
+        `<NumberOfTracks>${removeCount}</NumberOfTracks>`,
+      ].join(''));
+      console.log(`[sonos] queue/trim: removed ${removeCount} already-played track(s) → ${resolvedIp}`);
+      res.json({ ok: true, removed: removeCount });
+    } catch (e) {
+      console.error('[sonos] /queue/trim error:', e);
       res.status(500).json({ ok: false, error: String(e.message || e) });
     }
   });

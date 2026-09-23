@@ -19923,6 +19923,7 @@ function _sonosReconcileTrack(st, opts = {}) {
   }
   _sonosDivergeCount = 0;
   if ((_sonosWindowLen - (st.track || 1)) < SONOS_TOPUP_AT) _sonosTopUpWindow();
+  if ((st.track || 1) > SONOS_TRIM_AT) _sonosTrimWindow(st.track);
   if (qi !== S.idx) {
     // The device moved inside the window we pushed — a natural advance, or next/prev
     // on the Sonos app. Follow it in the UI only; do NOT re-push. /cast-queue flushes
@@ -20028,6 +20029,35 @@ async function _sonosTopUpWindow() {
     if (r?.ok) _sonosWindowLen += r.added || tracks.length;
   } catch (e) { /* device busy — retried on a later poll */ }
   finally { _sonosToppingUp = false; }
+}
+
+// Drop already-played tracks from the front of the DEVICE's queue once enough of them
+// have piled up. Append-only queue management (never a full rebuild on a normal
+// advance) means the device's own queue only ever grows — "track 1" stays whatever
+// was cast first, potentially hours old. Confirmed on hardware: when a NORMAL-mode
+// queue runs dry, Sonos reports CurrentTrack back to 1 rather than just stopping in
+// place — so if the topup above ever lags (Auto-DJ pick latency, a slow DB during a
+// library scan, any timing hiccup) and the device genuinely runs out for a moment,
+// whatever "track 1" is becomes audible. Trimming keeps that always recent.
+const SONOS_TRIM_AT  = 6; // trim once the device is this many tracks into its own queue
+const SONOS_TRIM_KEEP = 2; // ...but always leave this many already-played tracks for history
+let _sonosTrimming = false;
+async function _sonosTrimWindow(deviceTrack) {
+  if (_sonosTrimming || !S.castingToSonos || !S.sonosRoom || _sonosCeded) return;
+  _sonosTrimming = true;
+  try {
+    const r = await api('POST', 'api/v1/sonos/queue/trim', { ip: S.sonosRoom.ip, currentTrack: deviceTrack, keep: SONOS_TRIM_KEEP });
+    if (r?.ok && r.removed > 0) {
+      // Device track N is now (N - removed); shift the mapping to match, exactly the
+      // same correction _pruneQueue() applies when S.queue itself is trimmed from the
+      // front — S.idx and S.queue are untouched here, only where "device track 1"
+      // points into them.
+      _sonosWindowBase += r.removed;
+      _sonosWindowLen  -= r.removed;
+      console.log(`[sonos] trimmed ${r.removed} already-played track(s) from the device queue`);
+    }
+  } catch (e) { /* device busy — retried on a later poll */ }
+  finally { _sonosTrimming = false; }
 }
 
 // Wipe the Sonos queue when Sonos is no longer the active output — but only if the
