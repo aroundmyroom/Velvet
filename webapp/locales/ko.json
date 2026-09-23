@@ -1682,6 +1682,7 @@
   "player.toast.networkOffline": "연결이 끊겨 재생을 멈췄습니다",
   "player.toast.networkRestored": "연결이 복구되어 재생을 이어갑니다",
   "player.toast.parseErrorReported": "⚠ {{name}}을(를) 건너뜁니다 — 검색 오류 목록에 기록했습니다",
+  "player.toast.sonosSkippedStuck": "⚠ Sonos가 \"{{name}}\"에서 멈춰 다음 곡으로 건너뛰었습니다",
   "player.toast.djNoSong": "Auto-DJ: 다음 곡을 불러오지 못했습니다 — 연결을 확인하세요",
   "player.toast.djNoBpmMatch": "Auto-DJ: no songs found in BPM range — play a song manually to reset the anchor",
   "player.toast.djMusicOnly": "Auto-DJ는 음악에서만 동작합니다 — 라디오, 팟캐스트, 오디오북을 먼저 멈추세요",

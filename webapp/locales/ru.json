@@ -1682,6 +1682,7 @@
   "player.toast.networkOffline": "Нет соединения — воспроизведение приостановлено",
   "player.toast.networkRestored": "Соединение восстановлено — продолжаем",
   "player.toast.parseErrorReported": "⚠ Пропускаем {{name}} — файл отправлен в мастерскую ошибок сканирования",
+  "player.toast.sonosSkippedStuck": "⚠ Sonos завис на «{{name}}» — переход к следующему треку",
   "player.toast.djNoSong": "Auto-DJ: не удалось загрузить следующий трек — проверьте соединение",
   "player.toast.djNoBpmMatch": "Auto-DJ: no songs found in BPM range — play a song manually to reset the anchor",
   "player.toast.djMusicOnly": "Auto-DJ работает только с музыкой — сначала остановите радио, подкаст или аудиокнигу",

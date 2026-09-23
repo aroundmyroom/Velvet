@@ -1682,6 +1682,7 @@
   "player.toast.networkOffline": "网络已断开 — 播放已暂停",
   "player.toast.networkRestored": "网络已恢复 — 继续播放",
   "player.toast.parseErrorReported": "⚠ 已跳过 {{name}} — 该文件已上报到扫描错误审查",
+  "player.toast.sonosSkippedStuck": "⚠ Sonos 卡在了《{{name}}》— 已跳到下一首",
   "player.toast.djNoSong": "Auto-DJ：无法加载下一首 — 请检查网络连接",
   "player.toast.djNoBpmMatch": "Auto-DJ: no songs found in BPM range — play a song manually to reset the anchor",
   "player.toast.djMusicOnly": "Auto-DJ 仅适用于音乐 — 请先停止电台、播客或有声书",

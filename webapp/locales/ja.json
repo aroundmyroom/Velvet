@@ -1682,6 +1682,7 @@
   "player.toast.networkOffline": "接続がありません — 再生を一時停止しました",
   "player.toast.networkRestored": "接続が回復しました — 再生を再開します",
   "player.toast.parseErrorReported": "⚠ {{name}} をスキップしました — スキャンエラーに記録しました",
+  "player.toast.sonosSkippedStuck": "⚠ Sonos が「{{name}}」で止まったため、次の曲へスキップしました",
   "player.toast.djNoSong": "Auto-DJ: 次の曲を読み込めませんでした — 接続を確認してください",
   "player.toast.djNoBpmMatch": "Auto-DJ: no songs found in BPM range — play a song manually to reset the anchor",
   "player.toast.djMusicOnly": "Auto-DJ は音楽専用です — 先にラジオ、ポッドキャスト、オーディオブックを停止してください",

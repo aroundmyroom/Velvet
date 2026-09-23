@@ -1,3 +1,22 @@
+## v0.5.20 (2026-09-23)
+
+### Fixed: casting to Sonos could go silent indefinitely on a broken file
+
+- **If a track's file had gone missing since the library was last scanned, casting to
+  Sonos could get stuck there with no sound and no recovery**, even though later tracks
+  were still queued up. The existing recovery for a stalled speaker only re-tried the
+  exact same file at the exact same position, which cannot help when the file is
+  genuinely gone; it also depended on the browser tab actively trying to play that same
+  file, which a backgrounded tab may not reliably keep doing.
+- If Sonos reports it has stopped on the expected track and stays that way for 45
+  seconds, the player now treats that track as broken and skips to the next one,
+  regardless of what the browser tab itself is doing at that moment. The skipped file is
+  reported for admin review, the same way any other unplayable file already is.
+- This is a best-effort improvement, not a guarantee for every scenario — if the browser
+  tab itself is fully suspended by the operating system rather than merely slowed down,
+  none of its JavaScript can run to notice or act on the problem. A fix for that case
+  would need to live on the server instead and has not been built.
+
 ## v0.5.19 (2026-09-23)
 
 ### Fixed: a formatting mismatch could falsely hand control of Sonos back to the app

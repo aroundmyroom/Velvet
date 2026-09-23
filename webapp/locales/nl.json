@@ -1688,6 +1688,7 @@
   "player.toast.networkOffline": "Geen verbinding — afspelen gepauzeerd",
   "player.toast.networkRestored": "Verbinding hersteld — afspelen hervat",
   "player.toast.parseErrorReported": "⚠ {{name}} overgeslagen — bestand gemeld bij de Scan-foutenworkshop",
+  "player.toast.sonosSkippedStuck": "⚠ Sonos liep vast op \"{{name}}\" — overgeslagen naar het volgende nummer",
   "player.toast.djNoSong": "Auto-DJ: kon volgend nummer niet laden — controleer verbinding",
   "player.toast.djNoBpmMatch": "Auto-DJ: geen nummers met dit BPM in je bibliotheek — speel handmatig een nummer met het gewenste BPM om verder te gaan",
   "player.toast.djMusicOnly": "Auto-DJ werkt alleen met muziek — stop radio, podcasts of luisterboeken",

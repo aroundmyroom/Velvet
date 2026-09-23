@@ -1682,6 +1682,7 @@
   "player.toast.networkOffline": "Keine Verbindung – Wiedergabe pausiert",
   "player.toast.networkRestored": "Verbindung wieder da – Wiedergabe läuft weiter",
   "player.toast.parseErrorReported": "⚠ {{name}} übersprungen – Datei an die Scan-Fehler-Werkstatt gemeldet",
+  "player.toast.sonosSkippedStuck": "⚠ Sonos blieb bei „{{name}}“ hängen — zum nächsten Titel gesprungen",
   "player.toast.djNoSong": "Auto-DJ: nächster Titel konnte nicht geladen werden – prüfe die Verbindung",
   "player.toast.djNoBpmMatch": "Auto-DJ: no songs found in BPM range — play a song manually to reset the anchor",
   "player.toast.djMusicOnly": "Der Auto-DJ funktioniert nur mit Musik – beende zuerst Radio, Podcast oder Hörbuch",

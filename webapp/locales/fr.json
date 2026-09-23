@@ -1682,6 +1682,7 @@
   "player.toast.networkOffline": "Pas de connexion — lecture en pause",
   "player.toast.networkRestored": "Connexion rétablie — reprise de la lecture",
   "player.toast.parseErrorReported": "⚠ {{name}} ignoré — fichier signalé à l'atelier des erreurs d'analyse",
+  "player.toast.sonosSkippedStuck": "⚠ Sonos est resté bloqué sur « {{name}} » — passage au morceau suivant",
   "player.toast.djNoSong": "Auto-DJ : impossible de charger le titre suivant — vérifiez la connexion",
   "player.toast.djNoBpmMatch": "Auto-DJ: no songs found in BPM range — play a song manually to reset the anchor",
   "player.toast.djMusicOnly": "Auto-DJ ne fonctionne qu'avec la musique — arrêtez d'abord la radio, les podcasts ou les livres audio",

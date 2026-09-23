@@ -24491,6 +24491,7 @@ let _sonosConsecutiveFailures = 0; // counts consecutive unreachable transport-s
 let _sonosCastTime = 0;       // timestamp of last successful _activateSonosCast — position sync skips corrections during grace period
 let _sonosStreamOffset = 0;   // seconds offset for transcoded streams started mid-file: Sonos reports stream-relative position, so add this to convert to original-file position
 let _sonosLastRecastAt = 0;   // throttle for the stopped-device self-heal re-cast (resume after the stream drops/idles)
+let _sonosStuckSince   = 0;   // when the device first reported STOPPED on our expected track (0 = not currently stuck)
 let _sonosLocalControlAt = 0; // timestamp of a web-initiated play/pause — suppresses device→browser state sync briefly so the poll doesn't race our own set-pause
 let _sonosCeded = false;      // true after the user took control on the Sonos app (next/prev/shuffle) — web pauses and stops syncing until the user presses Play here again
 let _sonosDivergeCount = 0;   // consecutive polls where Sonos plays a track other than our current — debounces natural-advance transients before ceding
@@ -24569,6 +24570,35 @@ function _startSonosPositionSync(ip) {
           _sonosLastRecastAt = Date.now();
           _sonosPushWindow(Math.floor(audioEl.currentTime || 0));
           return; // skip position-drift correction this tick
+        }
+        // Escalation: the device is stuck STOPPED on the track we expect, and re-casting
+        // the SAME file (above) hasn't helped for a while — or couldn't even be tried,
+        // since that path requires the local muted mirror to be actively playing too.
+        // Neither helps a track whose file is simply gone (renamed/deleted since the
+        // last scan): re-casting the identical broken URL just fails identically, and a
+        // backgrounded/throttled tab may never attempt it at all. Confirmed live: a
+        // missing file (ENOENT on the server) left a Sonos device sitting STOPPED for
+        // 26 minutes with nothing happening — no further GENA events, since nothing
+        // device-side ever changes on its own once truly stuck.
+        // This check is intentionally independent of audioEl.paused/_sonosLoadingSong —
+        // it only needs the device's own repeated reports, polled on their own timer, to
+        // eventually give up and SKIP the track (a real Player.next(), not a re-cast of
+        // the same broken file) rather than sit there indefinitely.
+        if (st.stopped && S.castingToSonos && _cur && !_cur.isRadio) {
+          if (!_sonosStuckSince) _sonosStuckSince = Date.now();
+          if ((Date.now() - _sonosStuckSince) >= 45000) {
+            console.warn(`[sonos] device stuck STOPPED on "${_cur.filepath}" for 45s+ — skipping to the next track`);
+            _sonosStuckSince = 0;
+            toast(t('player.toast.sonosSkippedStuck', { name: _cur.title || _cur.filepath.split('/').pop() }));
+            api('POST', 'api/v1/db/scan-errors/report-playback', {
+              filepath: _cur.filepath,
+              errorMsg: 'Sonos reported STOPPED on this track for 45s+ without recovering',
+            }).catch(() => {});
+            Player.next();
+            return;
+          }
+        } else {
+          _sonosStuckSince = 0;
         }
         const sonosPos = (st.position || 0) + _sonosStreamOffset; // compensate transcoded-stream offset
         const browserPos = audioEl.currentTime || 0;
