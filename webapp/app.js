@@ -1,5 +1,5 @@
 'use strict';
-const VELVET_VERSION = '0.5.16';
+const VELVET_VERSION = '0.5.17';
 // ── SERVER IDENTITY GUARD ────────────────────────────────────────────────────
 // Detects when this browser's localStorage belongs to a different Velvet
 // instance (fresh install, IP change, reverse-proxy swap, second server).
