@@ -1642,6 +1642,17 @@ const Player = {
     // device itself advanced into this track — it is already playing it, and re-pushing
     // would flush its queue and restart the song from zero.
     if (S.castingToSonos && S.sonosRoom && !s.isRadio && !opts.fromSonos) {
+      // Picking a specific song to play is an explicit user action and must be able to
+      // retake control from a cede, exactly like pressing Play does (webapp/app.js:1806)
+      // — otherwise this write is silently refused by the guards _sonosPushWindow /
+      // _sonosJumpToTrack now carry (added to stop AUTOMATIC paths fighting a real
+      // takeover). Confirmed live: while ceded, selecting a different song updated the
+      // local player but never reached Sonos at all — the exact guard meant to protect
+      // a genuine handover was also blocking the one action that should always win it
+      // back. Without this, being ceded (even a brief, later-corrected false one) meant
+      // no queue pick could ever reach the speaker again until Play was pressed.
+      if (_sonosCeded) { _sonosCeded = false; _sonosDivergeCount = 0; }
+      _sonosLocalControlAt = Date.now();
       const _startAt = _cueSeek > 0 ? _cueSeek : 0;
       const _devTrack = idx - _sonosWindowBase + 1;
       // Already queued on the device (the usual case for next/prev and picking a nearby

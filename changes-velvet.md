@@ -1,3 +1,17 @@
+## v0.5.23 (2026-09-23)
+
+### Fixed: picking a song while Sonos had taken over silently did nothing on the speaker
+
+- **Selecting a song to play could update the player but never reach the Sonos
+  speaker**, with no error shown. This was a side effect of yesterday's protection
+  against the player fighting a genuine handover to the Sonos app: it also blocked the
+  one action that should always be able to take control back — explicitly choosing a
+  song to play, exactly like pressing Play already does.
+- Picking a song now always reaches the speaker, the same way pressing Play already
+  did. Automatic behind-the-scenes updates (queue top-up while Auto-DJ adds songs
+  ahead) are intentionally unaffected — those correctly still wait for an explicit
+  action before taking control back.
+
 ## v0.5.22 (2026-09-23)
 
 ### Improved: Sonos recovers more gently, and the server log shows what it's actually doing
