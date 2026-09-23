@@ -19777,6 +19777,17 @@ async function _sonosPushWindow(seekTo = 0, paused = false) {
   } catch (e) { /* device busy/offline — the position-sync poll self-heals */ }
 }
 
+// Normalise a filepath for comparison against Sonos's reported trackFp. Both SHOULD
+// already be "<vpath>/<filepath>" with no leading slash, but S.queue entries can pick
+// up a stray leading "/" from some source (Auto-DJ pick, DB row, etc.) that the
+// server-side stream-URL builder does not carry through to the URI it hands Sonos.
+// Confirmed live: a real, correct match was rejected by a strict === because one side
+// read "/Music/..." and the other "Music/..." — same file, different string — which
+// caused a false cede (the reconciler concluded the Sonos app must be in control),
+// froze the UI's position updates, and made pressing Play re-cast (restart) a track
+// that was already playing correctly. Strip the leading slash before ANY comparison.
+const _fpNorm = fp => String(fp || '').replace(/^\/+/, '');
+
 // Reconcile what the device says it is playing against our queue. Shared by the
 // position poll and by the pushed GENA events, so both classify a transition the
 // same way. Returns:
@@ -19794,8 +19805,9 @@ function _sonosReconcileTrack(st, opts = {}) {
   // guessing an index and following the wrong row.
   if (!_sonosWindowLen && st.trackFp && (st.nrTracks || 0) > 0) {
     const hits = [];
+    const wantFp = _fpNorm(st.trackFp);
     for (let i = 0; i < S.queue.length; i++) {
-      if (S.queue[i]?.filepath === st.trackFp) hits.push(i);
+      if (_fpNorm(S.queue[i]?.filepath) === wantFp) hits.push(i);
     }
     if (hits.length) {
       const pick = hits.reduce((a, b) => Math.abs(b - S.idx) < Math.abs(a - S.idx) ? b : a);
@@ -19815,7 +19827,7 @@ function _sonosReconcileTrack(st, opts = {}) {
 
   const qi = _sonosWindowBase + ((st.track || 1) - 1);
   const expected = S.queue[qi];
-  const mine = expected && !expected.isRadio && !!st.trackFp && st.trackFp === expected.filepath;
+  const mine = expected && !expected.isRadio && !!st.trackFp && _fpNorm(st.trackFp) === _fpNorm(expected.filepath);
   if (!mine) {
     // Not the track we queued at that position — the Sonos app is playing something
     // else. Debounced so a single odd reading cannot cede on its own.

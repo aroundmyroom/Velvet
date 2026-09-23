@@ -1,3 +1,22 @@
+## v0.5.19 (2026-09-23)
+
+### Fixed: a formatting mismatch could falsely hand control of Sonos back to the app
+
+- **The player could wrongly conclude the Sonos app had taken over, freeze its display,
+  and restart the track when you pressed Play — while Sonos itself never actually
+  stopped or changed anything.** Comparing what Sonos reported it was playing against
+  what the player expected sometimes compared two representations of the exact same
+  file that happened to be formatted slightly differently (one with a leading slash,
+  one without), which a strict comparison read as two different tracks. That falsely
+  triggered the "someone else is in control" handling: the progress display stopped
+  updating, and pressing Play, which correctly takes control back in a real handover,
+  restarted the track because it had nothing accurate to resume from.
+- Confirmed directly from a user-supplied browser console log showing the exact
+  mismatched pair — the two paths were the same file.
+- Both places this comparison happens (during playback, and when the player rebuilds
+  its picture of the Sonos queue after a page refresh) now compare the two representations
+  fairly.
+
 ## v0.5.18 (2026-09-23)
 
 ### Fixed: Sonos position tracking drifted over a long Auto-DJ session
