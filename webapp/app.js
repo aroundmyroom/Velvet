@@ -1542,6 +1542,7 @@ const Player = {
   },
   playAt(idx, opts = {}) {
     if (idx < 0 || idx >= S.queue.length) return;
+    if (_sonosEndedWatchdog) console.log('[sonos] watchdog cleared — track change caught up before it fired');
     clearTimeout(_sonosEndedWatchdog); _sonosEndedWatchdog = null; // a track change happened — watchdog no longer needed
     // Selecting a local track takes over from a playing Sonos Favourite.
     if (_sonosFav) _exitSonosFavorite({ stopDevice: true });
@@ -19775,7 +19776,7 @@ async function _sonosPushWindow(seekTo = 0, paused = false) {
 //   'diverging' — reported track is not ours; debouncing before ceding
 //   'ceded'     — control handed to the Sonos app
 //   'idle'      — guards active (cast grace, local control, no window yet)
-function _sonosReconcileTrack(st) {
+function _sonosReconcileTrack(st, opts = {}) {
   if (!S.castingToSonos || !S.sonosRoom || _sonosCeded) return 'idle';
   // TRANSITIONING is the device mid-switch; its track/URI are momentarily stale.
   if (st.state === 'TRANSITIONING') return 'idle';
@@ -19793,8 +19794,14 @@ function _sonosReconcileTrack(st) {
       _sonosWindowLen  = st.nrTracks;
     }
   }
-  const grace  = (Date.now() - _sonosCastTime) < 8000;
-  const recent = (Date.now() - _sonosLocalControlAt) < 4000;
+  // The grace/recent guards exist to stop a freshly-cast track's transient, unsettled
+  // status (position still 0, track briefly wrong) from being misread as a takeover.
+  // They're normally right to hold off — but the ended-watchdog's last-chance check
+  // (ignoreGrace) needs the opposite: it is ABOUT to conclude the device is stuck and
+  // wipe the queue, so a real advance must still be recognised even if it lands inside
+  // that window, rather than being silently swallowed until the watchdog fires anyway.
+  const grace  = !opts.ignoreGrace && (Date.now() - _sonosCastTime) < 8000;
+  const recent = !opts.ignoreGrace && (Date.now() - _sonosLocalControlAt) < 4000;
   if (grace || recent || _sonosLoadingSong || !_sonosWindowLen) return 'idle';
 
   const qi = _sonosWindowBase + ((st.track || 1) - 1);
@@ -19803,6 +19810,7 @@ function _sonosReconcileTrack(st) {
   if (!mine) {
     // Not the track we queued at that position — the Sonos app is playing something
     // else. Debounced so a single odd reading cannot cede on its own.
+    console.warn(`[sonos] reconcile: mismatch at track ${st.track}/${st.nrTracks} — expected "${expected?.filepath ?? '(none)'}", device has "${st.trackFp ?? '(none)'}" (diverge=${_sonosDivergeCount + 1}${opts.ignoreGrace ? ', last-chance check' : ''})`);
     if (++_sonosDivergeCount >= 2) {
       _sonosCeded = true;
       _sonosDivergeCount = 0;
@@ -19820,6 +19828,7 @@ function _sonosReconcileTrack(st) {
     // on the Sonos app. Follow it in the UI only; do NOT re-push. /cast-queue flushes
     // the device queue, so re-pushing here wiped the upcoming tracks and restarted the
     // song the device had already begun (measured: nrTracks 2→1, position 1s→0s).
+    console.log(`[sonos] reconcile: followed device to track ${st.track}/${st.nrTracks} → S.idx ${S.idx}→${qi}${opts.ignoreGrace ? ' (last-chance check)' : ''}`);
     _wrappedEndedNaturally = true; // the song genuinely finished, not a skip
     Player.playAt(qi, { fromSonos: true });
     return 'followed';
@@ -23882,9 +23891,33 @@ function _onAudioEnded() {
     if (_sonosCeded) return;
     // Watchdog: if the device has not moved on shortly (window exhausted, stream dropped),
     // drive it from here after all, so playback can never stall silently.
+    console.log(`[sonos] mirror ended, device not yet confirmed on the new track — watchdog armed for 8s (S.idx=${S.idx})`);
     clearTimeout(_sonosEndedWatchdog);
-    _sonosEndedWatchdog = setTimeout(() => {
+    _sonosEndedWatchdog = setTimeout(async () => {
       _sonosEndedWatchdog = null;
+      if (!S.castingToSonos || !S.sonosRoom || _sonosCeded) return;
+      // Last-chance re-check before giving up and rebuilding the queue. This watchdog's
+      // own 8s timer and the reconciler's post-cast grace window are BOTH ~8s, anchored
+      // to different moments (this mirror's 'ended' vs. our last push) — a real, correct
+      // gapless advance can land inside that grace window and get silently swallowed as
+      // 'idle', with nothing left to clear this watchdog before it fires. Confirmed live:
+      // a genuine GENA advance was logged a moment before a cast-queue rebuild restarted
+      // the very track the device had just started playing. Fetch fresh status and try
+      // once more, bypassing grace — only fall through to a real rebuild if the device
+      // genuinely has not moved on.
+      let verdict = 'idle';
+      try {
+        const room = S.sonosRoom;
+        const st = await api('GET', 'api/v1/sonos/transport-status?ip=' + encodeURIComponent(room.ip));
+        if (S.castingToSonos && S.sonosRoom === room && !_sonosCeded) {
+          verdict = _sonosReconcileTrack(st, { ignoreGrace: true });
+        }
+      } catch (e) { console.debug('[velvet]', e?.message ?? e); }
+      if (verdict === 'followed' || verdict === 'insync') {
+        console.log('[sonos] watchdog: last-chance check caught up — no rebuild needed');
+        return;
+      }
+      console.warn(`[sonos] watchdog: device genuinely stuck (verdict=${verdict}) — rebuilding the Sonos queue`);
       if (S.castingToSonos && S.sonosRoom && !_sonosCeded) Player.next();
     }, 8000);
     return;

@@ -1,3 +1,28 @@
+## v0.5.17 (2026-09-23)
+
+### Fixed: a natural Sonos track advance could still restart the new track, intermittently
+
+- **Two independent ~8-second timers could race each other.** A watchdog added in the
+  first round of Sonos fixes (v0.5.12) waits up to 8 seconds after the local player
+  reaches the end of a track for Sonos to confirm it moved on, then rebuilds the queue
+  if it hasn't — a safety net for when the device genuinely gets stuck. Separately, the
+  logic that recognises a device-reported track change holds off for up to 8 seconds
+  after every cast, to avoid misreading a freshly-cast track's still-settling status.
+  Those two windows are timed from different moments and could overlap: a real,
+  correct advance landing inside that second window was silently ignored, leaving
+  nothing to stop the watchdog — which then rebuilt the queue on top of a track Sonos
+  had already started playing correctly, producing exactly what listeners heard: audio
+  restarting from zero a fraction of a second in, with the same jump visible on the
+  waveform.
+- Before giving up and rebuilding, the watchdog now fetches the device's current state
+  one more time and gives it a genuine last chance to be recognised, regardless of that
+  settling window. Only rebuilds if the device is still, in fact, stuck.
+- Added browser-console logging at each step of this decision (previously only visible,
+  incompletely, in the server log), so a future occurrence is diagnosable directly.
+- This only affects sessions casting to Sonos on v0.5.12 through v0.5.16; it does not
+  affect earlier releases, and is unrelated to the v0.5.15 cede fix or the v0.5.16
+  network-recovery fix beyond sharing the same general area of code.
+
 ## v0.5.16 (2026-09-23)
 
 ### Fixed: network recovery could send unwanted seeks to Sonos and Server Speaker
