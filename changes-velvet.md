@@ -1,3 +1,22 @@
+## v0.5.22 (2026-09-23)
+
+### Improved: Sonos recovers more gently, and the server log shows what it's actually doing
+
+- **A dropped Sonos stream now recovers with a plain "resume playback" first**, instead
+  of jumping straight to rebuilding the whole queue. Rebuilding is still there as a
+  fallback if the gentle resume doesn't work within a few tries, but most transient
+  hiccups should now resolve silently, with nothing audible and the upcoming queue
+  never touched.
+- **The server log now shows the actual commands sent to Sonos** — which action, to
+  which speaker, with which file or setting — not just summaries of the outcome. This
+  was reported as a real gap: the log showed that something happened, but not what was
+  actually asked of the device, making anything beyond the most obvious issues hard to
+  diagnose. Failures are now logged too, even for commands the player doesn't wait on.
+- Confirms directly: Sonos already only receives incremental queue updates (appending
+  or jumping to an already-queued track) rather than being rebuilt on every track
+  change — that has been true since earlier this week — this closes the one remaining
+  case where a full rebuild was used as the very first response instead of a last resort.
+
 ## v0.5.21 (2026-09-23)
 
 ### Added: search the queue

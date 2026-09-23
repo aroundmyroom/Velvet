@@ -24560,7 +24560,8 @@ let _sonosPollTimer = null;   // interval that syncs browser position from Sonos
 let _sonosConsecutiveFailures = 0; // counts consecutive unreachable transport-status responses; auto-deactivates at 3
 let _sonosCastTime = 0;       // timestamp of last successful _activateSonosCast — position sync skips corrections during grace period
 let _sonosStreamOffset = 0;   // seconds offset for transcoded streams started mid-file: Sonos reports stream-relative position, so add this to convert to original-file position
-let _sonosLastRecastAt = 0;   // throttle for the stopped-device self-heal re-cast (resume after the stream drops/idles)
+let _sonosLastRecastAt = 0;   // throttle for the stopped-device self-heal FULL re-cast (last resort)
+let _sonosGentleResumeAt = 0; // throttle for the stopped-device self-heal's plain-Play attempt (tried first, no queue touch)
 let _sonosStuckSince   = 0;   // when the device first reported STOPPED on our expected track (0 = not currently stuck)
 let _sonosLocalControlAt = 0; // timestamp of a web-initiated play/pause — suppresses device→browser state sync briefly so the poll doesn't race our own set-pause
 let _sonosCeded = false;      // true after the user took control on the Sonos app (next/prev/shuffle) — web pauses and stops syncing until the user presses Play here again
@@ -24625,18 +24626,34 @@ function _startSonosPositionSync(ip) {
             return;
           default: break;   // 'insync' / 'idle' — fall through to position sync
         }
-        // Self-heal: device is reachable but STOPPED while we should be playing
-        // (the HTTP stream dropped or the device idled). Re-cast the current track
-        // at the current position so audio resumes on its own — without the user
-        // toggling output Web↔Sonos. Skipped near the natural end of a track so the
-        // queue's own 'ended' advance pushes the next song instead.
+        // Self-heal, staged from cheapest/least destructive to most:
+        //
+        //  1. Gentle resume — plain Play (no queue touch at all). Reaching here already
+        //     means the reconciler confirmed the device's own queue still has OUR
+        //     expected track loaded at this position ('insync') — the file just stopped
+        //     for some transient reason (brief stream hiccup, Sonos idling). A bare Play
+        //     is the least Sonos can be asked to do to recover, and Sonos IS capable of
+        //     this: nothing about the queue changes, so nothing restarts from 0.
+        //  2. Full re-cast — only once gentle Play has had real time to work and hasn't.
+        //     Rebuilds the window from the current position; audible as a brief restart,
+        //     so it stays the LAST resort, not the first response to every stopped read.
+        //  3. Skip the track entirely — handled further below, for a track that is
+        //     simply broken and where neither of the above can ever help.
         const _cur = S.queue[S.idx];
         const _dur = audioEl.duration || _cur?.duration || 0;
-        if (st.stopped && S.castingToSonos && _cur && !_cur.isRadio &&
-            !audioEl.paused && !_sonosLoadingSong &&
-            (Date.now() - _sonosCastTime) >= 8000 &&
-            (Date.now() - _sonosLastRecastAt) >= 10000 &&
-            _dur > 0 && (audioEl.currentTime || 0) < _dur - 5) {
+        const _stoppedOnOurs = st.stopped && S.castingToSonos && _cur && !_cur.isRadio &&
+          (Date.now() - _sonosCastTime) >= 8000 &&
+          _dur > 0 && (audioEl.currentTime || 0) < _dur - 5;
+        if (_stoppedOnOurs && !_sonosLoadingSong && (Date.now() - _sonosGentleResumeAt) >= 5000) {
+          _sonosGentleResumeAt = Date.now();
+          console.log(`[sonos] device stopped on "${_cur.filepath}" — trying a plain Play first (queue untouched)`);
+          api('POST', 'api/v1/sonos/set-pause', { ip: S.sonosRoom.ip, paused: false }).catch(() => {});
+          return; // skip position-drift correction this tick
+        }
+        if (_stoppedOnOurs && !audioEl.paused && !_sonosLoadingSong &&
+            (Date.now() - _sonosGentleResumeAt) >= 15000 && // gentle Play had ~3 tries first
+            (Date.now() - _sonosLastRecastAt) >= 10000) {
+          console.warn(`[sonos] gentle Play didn't recover "${_cur.filepath}" — falling back to a full re-cast`);
           _sonosLastRecastAt = Date.now();
           _sonosPushWindow(Math.floor(audioEl.currentTime || 0));
           return; // skip position-drift correction this tick

@@ -154,8 +154,36 @@ function buildDidl({ title, artist, album, duration }, streamUrl, artUrl = null,
  * Send a raw UPnP AVTransport SOAP call to a Sonos device.
  * ip: device LAN IP, action: 'SetAVTransportURI' | 'Play', extraBody: inner XML
  */
+// State-changing AVTransport actions get a log line — enough to see exactly what
+// Velvet told Sonos to do and when, without the poll's read-only GetPositionInfo /
+// GetTransportInfo / GetMediaInfo (every 3-6s while casting) drowning it out. This was
+// the debugging gap reported live: the log showed summaries ("cast-queue ▶ …", GENA
+// events received) but never the actual SOAP conversation that produced them.
+const _SOAP_LOGGED_ACTIONS = new Set([
+  'Play', 'Pause', 'Stop', 'Next', 'Previous', 'Seek',
+  'AddURIToQueue', 'RemoveAllTracksFromQueue', 'SetAVTransportURI',
+]);
+// Pull out the one or two parameters worth seeing for a given action, without
+// dumping the full DIDL metadata block (large, mostly noise for a log line).
+function _soapLogParams(action, extraBody) {
+  const body = String(extraBody || '');
+  const tag = t => (body.match(new RegExp(`<${t}>([^<]*)</${t}>`)) || [])[1];
+  switch (action) {
+    case 'Seek':               return `${tag('Unit')}=${tag('Target')}`;
+    case 'AddURIToQueue': {
+      const uri = tag('EnqueuedURI');
+      return uri ? decodeURIComponent(uri).replace(/^.*\/media\//, '').replace(/\?.*$/, '') : '';
+    }
+    case 'SetAVTransportURI':  return tag('CurrentURI') || '';
+    default:                   return '';
+  }
+}
 function soapCall(ip, action, extraBody) {
   return new Promise((resolve, reject) => {
+    if (_SOAP_LOGGED_ACTIONS.has(action)) {
+      const params = _soapLogParams(action, extraBody);
+      console.log(`[sonos] → ${ip} ${action}${params ? ' ' + params : ''}`);
+    }
     const svcType = 'urn:schemas-upnp-org:service:AVTransport:1';
     const body = [
       '<?xml version="1.0" encoding="utf-8"?>',
@@ -187,13 +215,20 @@ function soapCall(ip, action, extraBody) {
           const desc = (data.match(/<errorDescription>([^<]+)<\/errorDescription>/i) || [])[1] || '';
           const err = new Error(`Sonos SOAP ${action} HTTP ${hres.statusCode}${code ? ` code=${code}` : ''}: ${desc || data.slice(0, 800)}`);
           if (code) err.code = code;
+          // Many callers fire-and-forget with .catch(() => {}) (LED, gentle-resume Play,
+          // best-effort commands) — without this, a real UPnP failure on those was
+          // completely invisible in the log, another part of the same debugging gap.
+          if (_SOAP_LOGGED_ACTIONS.has(action)) console.warn(`[sonos] ✗ ${ip} ${action} failed: ${err.message}`);
           reject(err);
         } else {
           resolve(data);
         }
       });
     });
-    hreq.on('error', reject);
+    hreq.on('error', e => {
+      if (_SOAP_LOGGED_ACTIONS.has(action)) console.warn(`[sonos] ✗ ${ip} ${action} failed: ${e.message}`);
+      reject(e);
+    });
     // Sonos can briefly stay busy during rapid track switches (especially when
     // the previous cast used a live transcode stream). A slightly longer
     // timeout reduces false negatives while still failing fast enough for retry.
