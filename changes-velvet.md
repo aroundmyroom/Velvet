@@ -1,3 +1,15 @@
+## v0.5.26 (2026-09-24)
+
+### Fixed: refused requests no longer appear in the log as server errors
+
+- A request the server refuses before any feature runs — a body that isn't valid JSON, one
+  over the size limit, an unsupported encoding, or a web address with broken percent-escapes —
+  was already answered with the right 4xx status, but was logged as a server error with a full
+  stack trace. Those checks run before login, so anyone who could reach the port could fill
+  the log with error-level entries, and the parser's own message can quote part of what was
+  sent. They are now a single warning line naming the method, path and reason, with no stack
+  and none of the request contents.
+
 ## v0.5.25 (2026-09-23)
 
 ### Changed: simplified how Sonos casting works

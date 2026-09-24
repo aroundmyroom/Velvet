@@ -60,7 +60,7 @@ import * as sonosApi from './api/sonos.js';
 import * as authPasskeyApi from './api/auth-passkey.js';
 import * as queueApi from './api/queue.js';
 import * as smartPlaylistMlApi from './smartplaylist/routes.js';
-import WebError from './util/web-error.js';
+import WebError, { isClientRefusal } from './util/web-error.js';
 import { sanitizeFilename } from './util/validation.js';
 import { ensureFfmpeg } from './util/ffmpeg-bootstrap.js';
 import { canAccessMediaVpath } from './util/media-access.js';
@@ -572,6 +572,15 @@ export async function serveIt(configFile) {
       // change on a browser or a Sonos speaker does this. Nothing failed server-side,
       // so it does not belong at error level with a stack trace.
       winston.debug(`Client aborted stream on ${req.originalUrl}`);
+    } else if (isClientRefusal(error, status)) {
+      // The body parser / router refused the request before any route ran: invalid JSON,
+      // a body over maxRequestSize, an unsupported charset or encoding, a URL whose
+      // percent-escapes don't decode. The status is already right (4xx); what was wrong
+      // was logging it as a server error with a stack. These parsers sit ahead of the
+      // auth wall, so anyone who can reach the port could fill the log with error-level
+      // stacks — and the parser's own message can quote the request body back. Log a
+      // fixed line instead (req.path, not originalUrl: the query string can hold a token).
+      winston.warn(`Rejected request ${req.method} ${req.path} [${status}${error.type ? ' ' + error.type : ''}]`);
     } else {
       winston.error(`Server error on route ${req.originalUrl}: ${error.message}`, { stack: error });
     }
