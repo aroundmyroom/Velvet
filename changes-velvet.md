@@ -1,3 +1,19 @@
+## v0.5.27 (2026-09-24)
+
+### Fixed: admin artist-image search failed for artist names with accented capitals
+
+- Artists whose stored name had an accented capital letter (e.g. "BLØF") failed every
+  case-insensitive name lookup — the admin Discogs/TheAudioDB image-search panel, and any
+  other artist match that compares lowercased names, returned "not found" even though the
+  artist was in the library. SQLite's built-in lowercase/uppercase functions only handle
+  plain ASCII letters; non-ASCII letters passed through unchanged, so a stored "BLØF" never
+  matched a search for "bløf". Matching now correctly handles accented and other non-ASCII
+  letters everywhere artist names are compared.
+- TheAudioDB's shared public test key that background artist-image lookups and the admin
+  TheAudioDB candidate search used had stopped working, turning every search into a server
+  error. Switched to their other public test key, with an optional environment override if
+  it's ever disabled too.
+
 ## v0.5.26 (2026-09-24)
 
 ### Fixed: refused requests no longer appear in the log as server errors

@@ -136,6 +136,17 @@ export function init(dbDirectory) {
   const dbPath = path.join(dbDirectory, 'velvet.sqlite');
   _dbPath = dbPath;
   db = new DatabaseSync(dbPath);
+  // SQLite's built-in lower()/upper() only case-fold ASCII — any other codepoint (ø/Ø,
+  // and every other non-ASCII letter) passes through unchanged. An artist stored with an
+  // uppercase accented letter (e.g. "BLØF") then never matches a query built by
+  // lowercasing the same string in JS ("bløf"): lower('BLØF') stays 'blØf', not 'bløf'.
+  // Every artist_clean lookup in this file compares via lower(...)=lower(?), so this
+  // silently 404'd admin artist-image lookups for any such artist. Register real
+  // Unicode-aware versions under the SAME names so every existing and future lower()/
+  // upper() call in this file is correct with no call-site changes; ASCII behaviour is
+  // unchanged (confirmed: lower('HELLO') still 'hello').
+  db.function('lower', { deterministic: true }, s => (s == null ? null : String(s).toLowerCase()));
+  db.function('upper', { deterministic: true }, s => (s == null ? null : String(s).toUpperCase()));
   // Reset folder-name cache + its prepared statement (bound to the old db handle).
   _albumNameCache.clear();
   _albumNameStmt = null;

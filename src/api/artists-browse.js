@@ -435,6 +435,13 @@ function _parseTadbArtist(a) {
   };
 }
 
+// TheAudioDB's shared public test key. "2" is the one Velvet shipped with; TheAudioDB
+// disabled it at some point (confirmed live — search.php?s=Coldplay with key "2" now
+// 404s "Not found", with no key-specific message). "123" is their other documented
+// public test key and is currently live. Overridable via TADB_API_KEY without a code
+// change if it ever meets the same fate — see docs/artists.md.
+const TADB_API_KEY = process.env.TADB_API_KEY || '123';
+
 // Fetch artist data from TheAudioDB.
 // Strategy: if mbid is provided, try the precise MBID endpoint first
 // (artist-mb.php?i=<mbid>) — no name ambiguity. Fall back to name search.
@@ -442,14 +449,14 @@ async function fetchFromTheAudioDB(artistName, mbid = null) {
   try {
     // 1. MBID-first: precise lookup
     if (mbid) {
-      const url = `https://www.theaudiodb.com/api/v1/json/2/artist-mb.php?i=${encodeURIComponent(mbid)}`;
+      const url = `https://www.theaudiodb.com/api/v1/json/${TADB_API_KEY}/artist-mb.php?i=${encodeURIComponent(mbid)}`;
       const data = await downloadJson(url);
       const a = data?.artists?.[0];
       if (a) return _parseTadbArtist(a);
       // MBID not found in TADB — fall through to name search
     }
     // 2. Name-based fallback
-    const url = `https://www.theaudiodb.com/api/v1/json/2/search.php?s=${encodeURIComponent(artistName)}`;
+    const url = `https://www.theaudiodb.com/api/v1/json/${TADB_API_KEY}/search.php?s=${encodeURIComponent(artistName)}`;
     const data = await downloadJson(url);
     return _parseTadbArtist(data?.artists?.[0]);
   } catch {
@@ -1268,7 +1275,7 @@ export function setup(velvet) {
     if (!artistRow) return res.status(404).json({ error: 'Artist not found' });
 
     try {
-      const url = `https://www.theaudiodb.com/api/v1/json/2/search.php?s=${encodeURIComponent(artistRow.canonicalName)}`;
+      const url = `https://www.theaudiodb.com/api/v1/json/${TADB_API_KEY}/search.php?s=${encodeURIComponent(artistRow.canonicalName)}`;
       const data = await downloadJson(url);
       const artists = Array.isArray(data?.artists) ? data.artists : [];
       const candidates = artists.slice(0, 6).map(a => ({

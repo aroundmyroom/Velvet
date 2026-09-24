@@ -115,7 +115,10 @@ A naive approach would JOIN `files` with a normalisation function on every reque
 | GET | `/api/v1/admin/artists/hydration-status` | admin | Live hydration queue status, counters, delay profile, and Discogs readiness |
 | POST | `/api/v1/admin/artists/hydration-seed` | admin | Enqueue missing artists on demand (used by the Queue next 500 action) |
 | GET | `/api/v1/admin/artists/discogs-candidates?artistKey=...` | admin | Fetch Discogs artist image candidates |
+| GET | `/api/v1/admin/artists/tadb-candidates?artistKey=...` | admin | Fetch TheAudioDB artist image candidates |
 | POST | `/api/v1/admin/artists/apply-image` | admin | Apply selected Discogs/custom image URL to artist |
+
+TheAudioDB lookups (`tadb-candidates` and the background bio/image hydration pipeline) use TheAudioDB's shared public test key, `TADB_API_KEY` in `src/api/artists-browse.js` (defaults to `123`; TheAudioDB has silently killed a shared test key before — their other documented one, `2`, now 404s every query). Override with the `TADB_API_KEY` env var if `123` ever meets the same fate.
 
 ### Artist object shape (all list endpoints)
 
