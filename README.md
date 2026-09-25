@@ -263,6 +263,9 @@ Full local play history — no external calls, no historical imports needed:
 - **Per-user vpath access control** — each user sees only their assigned folders
 - **Multi-user** — isolated play history, playlists, starred songs, settings, and queue per user
 - **Subsonic password** — separate MD5-based password for Subsonic clients, independent of login
+- **Passkeys (WebAuthn)** — sign in with Face ID, fingerprint, Windows Hello, or a security key
+- **Pair a Device** — sign in a TV or kiosk by approving a short code from an already-logged-in phone or browser, no password typing on the device. [Docs →](docs/login-pairing.md)
+- **Reverse-proxy login (SSO)** — let Nginx Proxy Manager, Traefik, Caddy, or an auth layer in front of them (Authelia, Authentik, ...) sign users in via a trusted header, IP/CIDR-gated with an optional shared secret. [Docs →](docs/auth-reverse-proxy.md)
 
 ### Admin & Server Management
 
@@ -329,6 +332,8 @@ Full local play history — no external calls, no historical imports needed:
 | ListenBrainz | [docs/listenbrainz.md](docs/listenbrainz.md) |
 | Keyboard shortcuts | [docs/keyboard-shortcuts.md](docs/keyboard-shortcuts.md) |
 | Security | [docs/frontend-security.md](docs/frontend-security.md) |
+| Pair a Device (passwordless TV/kiosk sign-in) | [docs/login-pairing.md](docs/login-pairing.md) |
+| Reverse-proxy login (SSO) | [docs/auth-reverse-proxy.md](docs/auth-reverse-proxy.md) |
 | Technology choices | [docs/technology-choices.md](docs/technology-choices.md) |
 
 ---

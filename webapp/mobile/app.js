@@ -38,6 +38,8 @@ const I = {
   note: `<svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>`,
   settings: `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>`,
   logout: `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>`,
+  pair: `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="7" width="20" height="14" rx="2"/><path d="M8 21v-4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v4"/><path d="M12 7V3"/><path d="M9 3h6"/></svg>`,
+  desktop: `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>`,
   play_sm: `<svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"/></svg>`,
   music: `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>`,
   queue: `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>`,
@@ -68,6 +70,7 @@ const S = {
   searchRes: null,        // { artists:[], folders:[], albums:[], tracks:[] }
   searchVpath: 'All',     // current search vpath filter
   vpathMeta: {},          // vpathMetaData from /api/v1/ping
+  pairPollTimer: null,    // device-pairing poll interval id (connect screen), while active
   // Browse
   browseDir: '',          // current file-explorer directory path ('' = root)
   browseDirData: null,    // null = not loaded, {path, directories, files}
@@ -1050,7 +1053,7 @@ function _screenConnect() {
       <h1>Velvet</h1>
       <p>Your music, your way</p>
     </div>
-    <div class="connect-card">
+    <div class="connect-card" id="connect-form-panel">
       <label class="form-label" for="inp-url">Server URL</label>
       <input class="form-input" id="inp-url" type="url" placeholder="https://your-server:3000" value="${esc(savedUrl)}" autocapitalize="off" autocorrect="off" spellcheck="false">
       <label class="form-label" for="inp-user">Username</label>
@@ -1059,8 +1062,82 @@ function _screenConnect() {
       <input class="form-input" id="inp-pass" type="password" placeholder="••••••••">
       <button class="btn-cta" id="connect-btn">Connect</button>
       <div class="connect-err" id="connect-err" style="display:none"></div>
+      <button class="connect-pair-toggle" id="connect-pair-toggle" type="button">Pair with another device instead</button>
+      <a class="connect-pair-toggle" href="/?ui=desktop">Use desktop site instead</a>
+    </div>
+    <div class="connect-card hidden" id="connect-pair-panel">
+      <p class="connect-pair-hint">On another device that's already signed in, go to <strong>You</strong> and approve this code:</p>
+      <div class="connect-pair-code" id="connect-pair-code">------</div>
+      <div class="connect-err" id="connect-pair-err" style="display:none"></div>
+      <button class="btn-cta" id="connect-pair-cancel-btn" type="button">Cancel</button>
     </div>
   </div>`;
+}
+
+/* ── DEVICE PAIRING (sign this phone in via a code, no password) ─────────────── */
+function startDevicePairing() {
+  const url = (document.getElementById('inp-url')?.value ?? '').trim().replace(/\/$/, '');
+  const urlErrEl = document.getElementById('connect-err');
+  if (!url || !url.startsWith('http')) {
+    if (urlErrEl) { urlErrEl.textContent = 'Enter the server URL first, then pair with another device.'; urlErrEl.style.display = 'block'; }
+    return;
+  }
+  if (urlErrEl) urlErrEl.style.display = 'none';
+
+  document.getElementById('connect-form-panel')?.classList.add('hidden');
+  document.getElementById('connect-pair-panel')?.classList.remove('hidden');
+  const pairErrEl = document.getElementById('connect-pair-err');
+  if (pairErrEl) pairErrEl.style.display = 'none';
+  const codeEl = document.getElementById('connect-pair-code');
+  if (codeEl) codeEl.textContent = '......';
+
+  fetch(`${url}/api/v1/auth/pair/start`, { method: 'POST', signal: AbortSignal.timeout(6000) })
+    .then(r => { if (!r.ok) throw new Error('Pairing start failed'); return r.json(); })
+    .then(data => {
+      if (!S.pairPollTimer) return; // cancelled while the request was in flight
+      if (codeEl) codeEl.textContent = data.code.slice(0, 3) + ' ' + data.code.slice(3);
+      const deadline = Date.now() + (data.expiresInSec * 1000);
+      S.pairPollTimer = setInterval(() => pollDevicePairing(url, data.pairId, deadline), 2000);
+    })
+    .catch(() => {
+      if (pairErrEl) { pairErrEl.textContent = 'Could not start pairing. Check the server URL.'; pairErrEl.style.display = 'block'; }
+    });
+
+  // Marks pairing as "in progress" immediately so the request-in-flight guard
+  // above doesn't discard a slow response after a fast cancel.
+  S.pairPollTimer = true;
+}
+
+function pollDevicePairing(url, pairId, deadline) {
+  const pairErrEl = document.getElementById('connect-pair-err');
+  if (Date.now() > deadline) {
+    clearInterval(S.pairPollTimer);
+    S.pairPollTimer = null;
+    if (pairErrEl) { pairErrEl.textContent = 'This code expired. Try again.'; pairErrEl.style.display = 'block'; }
+    return;
+  }
+  fetch(`${url}/api/v1/auth/pair/status?pairId=${encodeURIComponent(pairId)}`, { signal: AbortSignal.timeout(6000) })
+    .then(r => r.json())
+    .then(data => {
+      if (data.status === 'approved') {
+        clearInterval(S.pairPollTimer);
+        S.pairPollTimer = null;
+        _finishLogin(url, data.username, data.token, data.vpaths);
+      } else if (data.status === 'expired') {
+        clearInterval(S.pairPollTimer);
+        S.pairPollTimer = null;
+        if (pairErrEl) { pairErrEl.textContent = 'This code expired. Try again.'; pairErrEl.style.display = 'block'; }
+      }
+      // 'pending' — keep polling
+    })
+    .catch(() => { /* transient network hiccup — next poll retries */ });
+}
+
+function cancelDevicePairing() {
+  if (S.pairPollTimer && S.pairPollTimer !== true) clearInterval(S.pairPollTimer);
+  S.pairPollTimer = null;
+  document.getElementById('connect-pair-panel')?.classList.add('hidden');
+  document.getElementById('connect-form-panel')?.classList.remove('hidden');
 }
 
 function _screenHome() {
@@ -1557,6 +1634,28 @@ function _screenYou() {
       </div>
     </div>
   </div>
+  <div class="settings-group">
+    <div class="settings-group-title">Pair a Device</div>
+    <div class="settings-card">
+      <div class="settings-row settings-row-stack">
+        <span class="settings-pair-hint">Approve a sign-in code shown on another device (like a TV) so it can sign in without a password.</span>
+        <input class="form-input settings-pair-input" id="pair-code-input" type="text" placeholder="Code" maxlength="8" autocapitalize="characters" autocomplete="off">
+      </div>
+    </div>
+    <div class="settings-btn-row" style="margin-top:8px">
+      <button class="settings-action" data-action="pair-approve">
+        ${I.pair} Approve
+      </button>
+    </div>
+    <div id="pair-status" class="settings-pair-status"></div>
+  </div>
+  <div class="settings-group">
+    <div class="settings-btn-row">
+      <a class="settings-action" href="/?ui=desktop">
+        ${I.desktop} Use Desktop Site
+      </a>
+    </div>
+  </div>
   <div class="settings-group" style="margin-top:8px">
     <div class="settings-btn-row">
       <button class="settings-action danger" data-action="logout">
@@ -1575,6 +1674,28 @@ function _screenYou() {
 }
 
 /* ── CONNECT FLOW ──────────────────────────────────────────────────────────── */
+// Shared session-establishment tail for both password login and device pairing.
+function _finishLogin(url, username, token, vpaths) {
+  S.serverUrl = url;
+  S.token     = token;
+  S.username  = username;
+  S.vpaths    = vpaths ?? [];
+  S.vpathMeta = {}; // vpathMetaData comes from /api/v1/ping, fetched below
+  LS.set('serverUrl', url);
+  LS.set('username',  username);
+  LS.set('token',     token);
+
+  fetch(`${url}/api/v1/ping`, {
+    headers: { 'x-access-token': token },
+    signal: AbortSignal.timeout(5000),
+  }).then(async r => {
+    if (r.ok) { try { const pd = await r.json(); S.vpathMeta = pd.vpathMetaData ?? {}; } catch { /* non-critical */ } }
+  }).catch(() => { /* non-critical */ });
+
+  _loadScrobbleStatus();
+  navigate('home');
+}
+
 async function handleConnect() {
   const urlEl  = document.getElementById('inp-url');
   const userEl = document.getElementById('inp-user');
@@ -1612,26 +1733,7 @@ async function handleConnect() {
     const authData = await auth.json();
     if (!auth.ok || !authData.token) throw new Error(authData.message || 'Login failed');
 
-    // 3 — store
-    S.serverUrl = url;
-    S.token     = authData.token;
-    S.username  = user;
-    S.vpaths    = authData.vpaths ?? [];
-    S.vpathMeta = {}; // vpathMetaData comes from /api/v1/ping, fetched on session restore
-    LS.set('serverUrl', url);
-    LS.set('username',  user);
-    LS.set('token',     authData.token);
-
-    // Fetch vpathMetaData from ping (login endpoint doesn't return it)
-    fetch(`${url}/api/v1/ping`, {
-      headers: { 'x-access-token': authData.token },
-      signal: AbortSignal.timeout(5000),
-    }).then(async r => {
-      if (r.ok) { try { const pd = await r.json(); S.vpathMeta = pd.vpathMetaData ?? {}; } catch { /* non-critical */ } }
-    }).catch(() => { /* non-critical */ });
-
-    _loadScrobbleStatus();
-    navigate('home');
+    _finishLogin(url, user, authData.token, authData.vpaths);
   } catch (err) {
     _showErr(err.message || 'Connection failed');
     btn.disabled = false;
@@ -1768,6 +1870,26 @@ document.addEventListener('click', e => {
         const aaFile = target.dataset.aaFile || null;
         playTrack(filepath, title, artist, album, aaFile);
       }
+      break;
+    }
+    case 'pair-approve': {
+      const input  = document.getElementById('pair-code-input');
+      const status = document.getElementById('pair-status');
+      const code = (input?.value ?? '').trim();
+      if (!code) { if (status) status.textContent = 'Enter the code shown on the other device.'; input?.focus(); break; }
+      target.disabled = true;
+      if (status) status.textContent = 'Approving…';
+      fetch(`${S.serverUrl}/api/v1/auth/pair/approve`, {
+        method: 'POST',
+        headers: { 'x-access-token': S.token, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ code }),
+      }).then(r => {
+        if (!r.ok) throw Object.assign(new Error('Invalid or expired code'), { status: r.status });
+        if (status) status.textContent = 'Approved — the other device should sign in now.';
+        if (input) input.value = '';
+      }).catch(e => {
+        if (status) status.textContent = e.status === 400 ? 'That code is invalid or has expired.' : 'Failed to approve the code.';
+      }).finally(() => { target.disabled = false; });
       break;
     }
     case 'logout': {
@@ -1911,6 +2033,8 @@ document.addEventListener('click', e => {
 // Connect button via event delegation on form
 document.addEventListener('click', e => {
   if (e.target.id === 'connect-btn') { handleConnect(); }
+  if (e.target.id === 'connect-pair-toggle') { startDevicePairing(); }
+  if (e.target.id === 'connect-pair-cancel-btn') { cancelDevicePairing(); }
 });
 
 // Search input

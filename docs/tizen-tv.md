@@ -88,6 +88,14 @@ Navigate the fields with **Up/Down**, press **OK/Enter** to move to the next
 field, and select **Sign In** when done. Your session token is kept for the
 app session so you don’t have to sign in every time you open a view.
 
+**Don't want to type a password with the remote?** Enter the **Server URL**
+field only, then select **Pair with phone instead**. The TV shows a short
+code; open **Settings → Pair a Device** on your phone or computer (already
+signed in to the same Velvet server) and enter that code there. The TV signs
+in automatically once approved — no password typing on the remote. Codes
+expire after 5 minutes; select **Cancel** (or press **Back**) to return to
+the normal sign-in fields at any time.
+
 > **Self-signed certificates:** the widget declares `access origin="*"`, so it
 > can reach any server you enter. If your Velvet server uses a self-signed
 > certificate the TV may refuse the connection — use a certificate trusted by
@@ -258,4 +266,6 @@ Privileges requested in `config.xml`:
 - [`youtube-download.md`](youtube-download.md), [`albums.md`](albums.md),
   [`smart-playlists.md`](smart-playlists.md) — server-side features surfaced in
   the TV app.
+- [`login-pairing.md`](login-pairing.md) — full walkthrough of "Pair with phone
+  instead" on the sign-in screen.
 - **Apps2Samsung** side-loader: <https://github.com/Apps2Samsung/Apps2Samsung>

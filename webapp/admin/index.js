@@ -2618,8 +2618,32 @@ const advancedView = Vue.component('advanced-view', {
     return {
       params: ADMINDATA.serverParams,
       paramsTS: ADMINDATA.serverParamsUpdated,
-      uiSelect: ADMINDATA.serverParams.ui || 'velvet'
+      uiSelect: ADMINDATA.serverParams.ui || 'velvet',
+      extAuth: {
+        enabled: false,
+        headerName: 'Remote-User',
+        trustedProxies: [],
+        secretHeaderName: 'X-Velvet-ExtAuth-Secret',
+        secretValue: '',
+        hasSecret: false,
+        autoCreateUsers: false,
+        listenAddress: '',
+      },
+      extAuthTrustedProxiesText: '',
+      extAuthLoaded: false,
+      extAuthPending: false,
     };
+  },
+  computed: {
+    extAuthExposureWarning() {
+      if (!this.extAuthLoaded || !this.extAuth.enabled) return false;
+      const noProxiesConfigured = this.extAuth.trustedProxies.length === 0;
+      const listensEverywhere = this.extAuth.listenAddress === '::' || this.extAuth.listenAddress === '0.0.0.0';
+      return noProxiesConfigured || listensEverywhere;
+    },
+  },
+  async mounted() {
+    await this.loadExtAuth();
   },
   template: `
     <div v-if="paramsTS.ts === 0" class="row">
@@ -2699,6 +2723,54 @@ const advancedView = Vue.component('advanced-view', {
                     </tr>
                   </tbody>
                 </table>
+              </div>
+            </div>
+          </div>
+          <div class="col s12">
+            <div class="card">
+              <div class="card-content">
+                <span class="card-title">{{ t('admin.extAuth.title') }}</span>
+                <p style="color:#888;font-size:12px;margin-top:-4px;margin-bottom:10px;">{{ t('admin.extAuth.hint') }}</p>
+                <table>
+                  <tbody>
+                    <tr>
+                      <td><b>{{ t('admin.extAuth.labelEnabled') }}</b> {{ extAuth.enabled ? t('admin.common.enabled') : t('admin.common.disabled') }}</td>
+                      <td><a v-on:click="extAuth.enabled = !extAuth.enabled" class="btn-sm btn-sm-edit">{{ t('admin.common.edit') }}</a></td>
+                    </tr>
+                  </tbody>
+                </table>
+                <div v-if="extAuth.enabled" style="margin-top:10px;display:flex;flex-direction:column;gap:10px;max-width:480px;">
+                  <div>
+                    <label style="font-size:12px;color:#888;display:block;">{{ t('admin.extAuth.labelHeaderName') }}</label>
+                    <input type="text" v-model="extAuth.headerName" placeholder="Remote-User">
+                  </div>
+                  <div>
+                    <label style="font-size:12px;color:#888;display:block;">{{ t('admin.extAuth.labelTrustedProxies') }}</label>
+                    <input type="text" v-model="extAuthTrustedProxiesText" placeholder="172.18.0.0/16, 10.10.0.5">
+                    <p style="color:#888;font-size:11px;margin:4px 0 0;">{{ t('admin.extAuth.hintTrustedProxies') }}</p>
+                  </div>
+                  <div>
+                    <label style="font-size:12px;color:#888;display:block;">{{ t('admin.extAuth.labelSecretHeaderName') }}</label>
+                    <input type="text" v-model="extAuth.secretHeaderName">
+                  </div>
+                  <div>
+                    <label style="font-size:12px;color:#888;display:block;">{{ t('admin.extAuth.labelSecretValue') }}</label>
+                    <div style="display:flex;gap:6px;">
+                      <input type="text" v-model="extAuth.secretValue" style="flex:1;">
+                      <a v-on:click="generateExtAuthSecret()" class="btn-sm">{{ t('admin.extAuth.btnGenerateSecret') }}</a>
+                    </div>
+                    <p style="color:#888;font-size:11px;margin:4px 0 0;">{{ t('admin.extAuth.hintSecretValue') }}</p>
+                  </div>
+                  <label style="font-size:13px;display:flex;align-items:center;gap:6px;">
+                    <input type="checkbox" v-model="extAuth.autoCreateUsers"> {{ t('admin.extAuth.labelAutoCreate') }}
+                  </label>
+                  <div v-if="extAuthExposureWarning" style="color:#e57373;font-size:12px;">
+                    ⚠ {{ t('admin.extAuth.warnExposure') }}
+                  </div>
+                </div>
+              </div>
+              <div class="card-action">
+                <a v-on:click="saveExtAuth()" class="btn">{{ extAuthPending ? t('admin.common.saving') : t('admin.common.save') }}</a>
               </div>
             </div>
           </div>
@@ -2796,6 +2868,55 @@ const advancedView = Vue.component('advanced-view', {
         this.uiSelect = ADMINDATA.serverParams.ui || 'velvet';
         iziToast.error({ title: this.t('admin.common.failed'), position: 'topCenter', timeout: 3000 });
       });
+    },
+    async loadExtAuth() {
+      try {
+        const res = await API.axios({ method: 'GET', url: `${API.url()}/api/v1/admin/ext-auth` });
+        this.extAuth = {
+          enabled: !!res.data.enabled,
+          headerName: res.data.headerName || 'Remote-User',
+          trustedProxies: res.data.trustedProxies || [],
+          secretHeaderName: res.data.secretHeaderName || '',
+          secretValue: res.data.secretValue || '',
+          hasSecret: !!res.data.hasSecret,
+          autoCreateUsers: !!res.data.autoCreateUsers,
+          listenAddress: res.data.listenAddress || '',
+        };
+        this.extAuthTrustedProxiesText = this.extAuth.trustedProxies.join(', ');
+        this.extAuthLoaded = true;
+      } catch (e) { console.debug('[velvet]', e?.message ?? e); }
+    },
+    generateExtAuthSecret: function() {
+      const bytes = new Uint8Array(24);
+      crypto.getRandomValues(bytes);
+      this.extAuth.secretValue = Array.from(bytes, b => b.toString(16).padStart(2, '0')).join('');
+    },
+    async saveExtAuth() {
+      this.extAuthPending = true;
+      const trustedProxies = this.extAuthTrustedProxiesText
+        .split(/[,\s]+/)
+        .map(s => s.trim())
+        .filter(Boolean);
+      try {
+        await API.axios({
+          method: 'POST',
+          url: `${API.url()}/api/v1/admin/ext-auth`,
+          data: {
+            enabled: this.extAuth.enabled,
+            headerName: this.extAuth.headerName || 'Remote-User',
+            trustedProxies,
+            secretHeaderName: this.extAuth.secretHeaderName || '',
+            secretValue: this.extAuth.secretValue || '',
+            autoCreateUsers: this.extAuth.autoCreateUsers,
+          },
+        });
+        iziToast.success({ title: this.t('admin.extAuth.toastSaved'), position: 'topCenter', timeout: 3000 });
+        await this.loadExtAuth();
+      } catch {
+        iziToast.error({ title: this.t('admin.extAuth.toastFailed'), position: 'topCenter', timeout: 3000 });
+      } finally {
+        this.extAuthPending = false;
+      }
     },
     toggleFileUpload: function() {
             adminConfirm(this.params.noUpload === false ? this.t('admin.settings.confirmDisableUploadTitle') : this.t('admin.settings.confirmEnableUploadTitle'), '', this.params.noUpload === false ? this.t('admin.common.disable') : this.t('admin.common.enable'), () => {

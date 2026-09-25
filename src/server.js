@@ -58,6 +58,7 @@ import * as dupWorkshopApi from './api/duplicate-workshop.js';
 import * as dlnaApi from './api/dlna.js';
 import * as sonosApi from './api/sonos.js';
 import * as authPasskeyApi from './api/auth-passkey.js';
+import * as authPairApi from './api/auth-pair.js';
 import * as queueApi from './api/queue.js';
 import * as smartPlaylistMlApi from './smartplaylist/routes.js';
 import WebError, { isClientRefusal } from './util/web-error.js';
@@ -307,11 +308,13 @@ export async function serveIt(configFile) {
 
   // Everything below this line requires authentication
   authPasskeyApi.setupPublic(velvet);
+  authPairApi.setupPublic(velvet);
   authApi.setup(velvet);
 
   scannerApi.setup(velvet);
   adminApi.setup(velvet);
   authPasskeyApi.setup(velvet);
+  authPairApi.setup(velvet);
   dbApi.setup(velvet);
   playlistApi.setup(velvet);
   downloadApi.setup(velvet);

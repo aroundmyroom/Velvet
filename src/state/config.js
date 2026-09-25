@@ -115,6 +115,26 @@ const sonosOptions = Joi.object({
   }).optional().allow(null).default(null),
 });
 
+const extAuthOptions = Joi.object({
+  enabled:          Joi.boolean().default(false),
+  // Header a trusted reverse proxy (or an auth layer in front of it) sets to the
+  // logged-in username. Matches Navidrome's default so existing proxy configs
+  // (Authelia/Authentik forward-auth, etc.) can be pointed at Velvet unchanged.
+  headerName:       Joi.string().min(1).default('Remote-User'),
+  // IPv4 addresses or CIDR ranges (e.g. "172.18.0.0/16") allowed to assert the
+  // header above. Checked against the raw TCP socket peer, never X-Forwarded-For.
+  trustedProxies:   Joi.array().items(Joi.string()).default([]),
+  // Optional shared-secret header, required in addition to the IP check — closes
+  // the gap where an untrusted container on the same Docker network could reach
+  // Velvet directly and spoof the header.
+  secretHeaderName: Joi.string().allow('').default('X-Velvet-ExtAuth-Secret'),
+  secretValue:      Joi.string().allow('').default(''),
+  // Off by default — admin must pre-create matching Velvet usernames. When on,
+  // a first-seen header username is created automatically with access to every
+  // non-excluded folder and no admin rights.
+  autoCreateUsers:  Joi.boolean().default(false),
+});
+
 const schema = Joi.object({
   address: Joi.string().ip({ cidr: 'forbidden' }).default('::'),
   port: Joi.number().default(3000),
@@ -179,6 +199,7 @@ const schema = Joi.object({
   dlna: dlnaOptions.default(dlnaOptions.validate({}).value),
   albumArt: albumArtOptions.default(albumArtOptions.validate({}).value),
   sonos: sonosOptions.default(sonosOptions.validate({}).value),
+  extAuth: extAuthOptions.default(extAuthOptions.validate({}).value),
   ui: Joi.string().valid('velvet', 'velvet-dark', 'velvet-light').default('velvet'),
   instanceId: Joi.string().optional(),
 });

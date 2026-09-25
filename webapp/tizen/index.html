@@ -21,7 +21,7 @@
       </div>
       <div class="login-subtitle">Music Server</div>
       <div id="login-version" class="login-version">v__VELVET_TV_VERSION__</div>
-      <div class="login-fields">
+      <div id="login-fields" class="login-fields">
         <div class="field-group">
           <label class="field-label">Server URL</label>
           <input id="login-url" class="field-input focusable" type="url"
@@ -39,6 +39,13 @@
         </div>
         <button id="login-btn" class="login-btn focusable">Connect</button>
         <div id="login-error" class="login-error hidden"></div>
+        <div id="login-pair-toggle" class="login-pair-toggle focusable">Pair with phone instead</div>
+      </div>
+      <div id="pair-panel" class="hidden">
+        <p class="pair-hint">On your phone or computer, go to Settings and choose &ldquo;Pair a device&rdquo;, then enter this code:</p>
+        <div id="pair-code-display" class="pair-code-display">------</div>
+        <div id="pair-error" class="login-error hidden"></div>
+        <button id="pair-cancel-btn" class="login-btn focusable">Cancel</button>
       </div>
     </div>
   </div>

@@ -1,3 +1,34 @@
+## v0.5.28 (2026-09-25)
+
+Reverse-Proxy Login, Pair a Device, and Three Fixes
+
+### Added: reverse-proxy login (SSO) and cross-device pairing
+
+- **Reverse-proxy login.** A reverse proxy — or an auth layer sitting in front of it
+  (Authelia, Authentik, tinyauth, ...) — can now sign users in by asserting a trusted
+  header, instead of everyone typing a password into Velvet's own form (which still
+  works as before). Works behind any proxy that can forward a header, including
+  Nginx Proxy Manager, Traefik and Caddy — worked examples for all three are in the new
+  `docs/auth-reverse-proxy.md`. The header is only trusted from an admin-configured list
+  of proxy IPs/CIDR ranges, plus an optional shared secret that closes the gap where
+  another container on the same Docker network could otherwise reach Velvet directly and
+  impersonate a user. Configure it under Admin → Settings.
+- **Pair a device.** Devices with an awkward keyboard — a Samsung TV remote, a kiosk —
+  can now sign in by showing a short code that's approved from an already-logged-in
+  phone or browser (User Settings → Pair a Device on the web player, or the You screen
+  on the mobile site), instead of typing a password with a D-pad. The Samsung TV app's
+  sign-in screen has a "Pair with phone instead" option, and the mobile site can be on
+  either side of a pairing — approve another device from You, or sign this phone in via
+  a code from the connect screen. Codes are single-use and expire after 5 minutes.
+
+### Fixed: no way back from the desktop site on a phone
+
+- Switching a phone to the desktop site (via "Use desktop site") is sticky by design —
+  it stays chosen across visits — but there was no way back once you'd used it; the
+  option only existed on the mobile site. Both directions now exist: "Use mobile site"
+  from the desktop login screen and User Settings, alongside the existing "Use desktop
+  site" option on the mobile site's connect screen and You page.
+
 ## v0.5.27 (2026-09-24)
 
 ### Fixed: admin artist-image search failed for artist names with accented capitals

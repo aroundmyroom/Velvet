@@ -1502,6 +1502,62 @@ export function setup(velvet) {
     res.json({});
   });
 
+  // ── Reverse-proxy trusted-header auth (ExtAuth) ──────────────────────────
+  velvet.get("/api/v1/admin/ext-auth", (req, res) => {
+    if (req.user.admin !== true) return res.status(403).json({ error: 'Admin only' });
+    const cfg = config.program.extAuth || {};
+    const secret = cfg.secretValue || '';
+    const maskedSecret = secret.length > 4
+      ? secret.slice(0, 4) + '*'.repeat(secret.length - 4)
+      : (secret ? '*'.repeat(secret.length) : '');
+    res.json({
+      enabled:          cfg.enabled === true,
+      headerName:       cfg.headerName || 'Remote-User',
+      trustedProxies:   cfg.trustedProxies || [],
+      secretHeaderName: cfg.secretHeaderName || '',
+      secretValue:      maskedSecret,
+      hasSecret:        secret.length > 0,
+      autoCreateUsers:  cfg.autoCreateUsers === true,
+      // Helps the admin UI warn when the server also listens on a non-loopback
+      // interface without a proxy allowlist — a likely direct-exposure bypass.
+      listenAddress:    config.program.address,
+    });
+  });
+
+  velvet.post("/api/v1/admin/ext-auth", async (req, res) => {
+    if (req.user.admin !== true) return res.status(403).json({ error: 'Admin only' });
+    const schema = Joi.object({
+      enabled:          Joi.boolean().required(),
+      headerName:       Joi.string().min(1).max(128).required(),
+      trustedProxies:   Joi.array().items(Joi.string().max(64)).required(),
+      secretHeaderName: Joi.string().allow('').max(128).required(),
+      // Allow empty (no secret) or the masked value (unchanged) or a new value
+      secretValue:      Joi.string().allow('').max(256).required(),
+      autoCreateUsers:  Joi.boolean().required(),
+    });
+    joiValidate(schema, req.body);
+
+    const isUnchangedMask = req.body.secretValue.includes('*') && req.body.secretValue.length > 0;
+    const newSecret = isUnchangedMask ? (config.program.extAuth?.secretValue || '') : req.body.secretValue;
+
+    const newExtAuth = {
+      enabled:          req.body.enabled,
+      headerName:       req.body.headerName,
+      trustedProxies:   req.body.trustedProxies,
+      secretHeaderName: req.body.secretHeaderName,
+      secretValue:      newSecret,
+      autoCreateUsers:  req.body.autoCreateUsers,
+    };
+
+    const loadConfig = await admin.loadFile(config.configFile);
+    loadConfig.extAuth = newExtAuth;
+    await admin.saveFile(loadConfig, config.configFile);
+
+    config.program.extAuth = newExtAuth;
+
+    res.json({});
+  });
+
   // ── Genre Groups (admin-configurable display groupings) ─────────────────
   // Mirrors GENRE_BUCKETS in webapp/app.js — used to build auto-defaults when no groups saved
   const GENRE_BUCKETS_DEFAULT = [

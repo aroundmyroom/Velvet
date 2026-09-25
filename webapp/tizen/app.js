@@ -23,6 +23,7 @@ var S = {
   waveformFp:  null,   // filepath matching S.waveform (avoids double-fetch)
   // Focus management
   focusArea:   'nav',   // 'login' | 'nav' | 'content' | 'player' | 'overlay'
+  pairPollTimer: null,  // cross-device login pairing poll interval, while active
 };
 
 /* ── Saved settings ──────────────────────────────────────────────────────────── */
@@ -324,6 +325,9 @@ document.addEventListener('keydown', function(e) {
 
   // Login screen — intercept UP/DOWN for field navigation even while typing
   if (!el('screen-login').classList.contains('hidden')) {
+    if ((key === KEY.BACK || key === 27) && !el('pair-panel').classList.contains('hidden')) {
+      cancelPairing(); e.preventDefault(); return;
+    }
     if (key === KEY.UP)   { _moveFocus('up');   e.preventDefault(); return; }
     if (key === KEY.DOWN) { _moveFocus('down'); e.preventDefault(); return; }
     if (key === KEY.ENTER && !isInput) { _activateFocused(e); return; }
@@ -467,6 +471,8 @@ function initLogin() {
   el('login-pass').addEventListener('keydown', function(e) {
     if (e.keyCode === 13) doLogin();
   });
+  el('login-pair-toggle').addEventListener('click', startPairing);
+  el('pair-cancel-btn').addEventListener('click', cancelPairing);
 
   // If we have a stored token, try it silently
   if (S.token && S.baseUrl) {
@@ -529,6 +535,83 @@ function doLogin() {
     errEl.classList.remove('hidden');
     focusFirst(el('screen-login'));
   });
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   CROSS-DEVICE LOGIN PAIRING — "Pair with phone"
+   Avoids typing a password on the TV remote: the TV shows a short code, the
+   user approves it from Settings -> "Pair a device" on an already-logged-in
+   phone/browser, and the TV polls until it's approved.
+   ────────────────────────────────────────────────────────────────────────── */
+function startPairing() {
+  var url = el('login-url').value.trim().replace(/\/$/, '');
+  var urlErrEl = el('login-error');
+  if (!url) {
+    urlErrEl.textContent = 'Enter the server URL first, then pair with phone.';
+    urlErrEl.classList.remove('hidden');
+    focusFirst(el('screen-login'));
+    return;
+  }
+  urlErrEl.classList.add('hidden');
+  S.baseUrl = url;
+
+  var pairErrEl = el('pair-error');
+  pairErrEl.classList.add('hidden');
+  el('pair-code-display').textContent = '......';
+  el('login-fields').classList.add('hidden');
+  el('pair-panel').classList.remove('hidden');
+  setTimeout(function() { focusFirst(el('screen-login')); }, 50);
+
+  fetch(url + '/api/v1/auth/pair/start', { method: 'POST' }).then(function(r) {
+    if (!r.ok) throw new Error('Pairing start failed');
+    return r.json();
+  }).then(function(data) {
+    if (S.pairPollTimer) return; // cancelled while the request was in flight
+    el('pair-code-display').textContent = data.code.slice(0, 3) + ' ' + data.code.slice(3);
+    var deadline = Date.now() + (data.expiresInSec * 1000);
+    S.pairPollTimer = setInterval(function() { pollPairing(url, data.pairId, deadline); }, 2000);
+  }).catch(function() {
+    pairErrEl.textContent = 'Could not start pairing. Check the server URL.';
+    pairErrEl.classList.remove('hidden');
+  });
+}
+
+function pollPairing(url, pairId, deadline) {
+  if (Date.now() > deadline) {
+    clearInterval(S.pairPollTimer);
+    S.pairPollTimer = null;
+    var pairErrEl = el('pair-error');
+    pairErrEl.textContent = 'This code expired. Try again.';
+    pairErrEl.classList.remove('hidden');
+    return;
+  }
+  fetch(url + '/api/v1/auth/pair/status?pairId=' + encodeURIComponent(pairId)).then(function(r) {
+    return r.json();
+  }).then(function(data) {
+    if (data.status === 'approved') {
+      clearInterval(S.pairPollTimer);
+      S.pairPollTimer = null;
+      S.token = data.token;
+      S.username = data.username;
+      _saveSettings();
+      cancelPairing();
+      enterMain();
+    } else if (data.status === 'expired') {
+      clearInterval(S.pairPollTimer);
+      S.pairPollTimer = null;
+      var pairErrEl = el('pair-error');
+      pairErrEl.textContent = 'This code expired. Try again.';
+      pairErrEl.classList.remove('hidden');
+    }
+    // 'pending' — keep polling
+  }).catch(function() { /* transient network hiccup — next poll will retry */ });
+}
+
+function cancelPairing() {
+  if (S.pairPollTimer) { clearInterval(S.pairPollTimer); S.pairPollTimer = null; }
+  el('pair-panel').classList.add('hidden');
+  el('login-fields').classList.remove('hidden');
+  setTimeout(function() { focusFirst(el('screen-login')); }, 50);
 }
 
 /* ─────────────────────────────────────────────────────────────────────────────

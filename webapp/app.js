@@ -1,5 +1,5 @@
 'use strict';
-const VELVET_VERSION = '0.5.25';
+const VELVET_VERSION = '0.5.28';
 // ── SERVER IDENTITY GUARD ────────────────────────────────────────────────────
 // Detects when this browser's localStorage belongs to a different Velvet
 // instance (fresh install, IP change, reverse-proxy swap, second server).
@@ -16573,6 +16573,24 @@ async function viewUserSettings() {
 
       <div id="us-passkey-section"></div>
 
+      <div id="us-pair-section"></div>
+
+      <div class="playback-section">
+        <div class="playback-section-hdr">
+          <div class="playback-section-icon">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="2" width="14" height="20" rx="2"/><line x1="12" y1="18" x2="12.01" y2="18"/></svg>
+          </div>
+          <div>
+            <div class="playback-section-title">${t('player.userSettings.siteTitle')}</div>
+            <div class="playback-section-desc">${t('player.userSettings.siteDesc')}</div>
+          </div>
+        </div>
+        <div class="playback-row">
+          <label class="playback-row-label"><div class="playback-row-name">${t('player.userSettings.useMobileSite')}</div></label>
+          <a class="btn-ghost" href="/?ui=mobile">${t('player.userSettings.switchBtn')}</a>
+        </div>
+      </div>
+
     </div>`);
 
   const changePwBtn = document.getElementById('us-change-pw-btn');
@@ -16707,6 +16725,61 @@ async function viewUserSettings() {
     }
 
     await _reloadPasskeys();
+  })();
+
+  // ── Pair a device (TV / kiosk code pairing) ──
+  (function _renderPairSection() {
+    const el = document.getElementById('us-pair-section');
+    if (!el || !S.username) return;
+
+    el.innerHTML = `
+      <div class="playback-section">
+        <div class="playback-section-hdr">
+          <div class="playback-section-icon">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="7" width="20" height="14" rx="2"/><path d="M8 21v-4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v4"/><path d="M12 7V3"/><path d="M9 3h6"/></svg>
+          </div>
+          <div>
+            <div class="playback-section-title">${t('player.pair.title')}</div>
+            <div class="playback-section-desc">${t('player.pair.desc')}</div>
+          </div>
+        </div>
+        <div class="playback-row">
+          <label class="playback-row-label" for="pair-code-input">
+            <div class="playback-row-name">${t('player.pair.codeLabel')}</div>
+          </label>
+          <div style="display:flex;align-items:center;gap:8px;">
+            <input id="pair-code-input" type="text" class="settings-input" placeholder="${t('player.pair.codePlaceholder')}" maxlength="8" style="max-width:220px;text-transform:uppercase;letter-spacing:.15em" autocomplete="off" autocapitalize="characters">
+            <button class="btn-primary" id="pair-approve-btn">${t('player.pair.approveBtn')}</button>
+          </div>
+        </div>
+        <div id="pair-status" style="padding:0 0 .25rem .5rem;font-size:.82rem;color:var(--t2)"></div>
+      </div>`;
+
+    const codeInput  = document.getElementById('pair-code-input');
+    const approveBtn = document.getElementById('pair-approve-btn');
+    const status      = document.getElementById('pair-status');
+
+    async function _doApprove() {
+      const code = codeInput.value.trim();
+      if (!code) { status.textContent = t('player.pair.codeRequired'); codeInput.focus(); return; }
+      approveBtn.disabled = true;
+      status.textContent = t('player.pair.statusApproving');
+      try {
+        await api('POST', 'api/v1/auth/pair/approve', { code });
+        status.textContent = t('player.pair.statusApproved');
+        codeInput.value = '';
+        toast(t('player.pair.toastApproved'));
+      } catch(e) {
+        status.textContent = e.status === 400
+          ? t('player.pair.statusInvalid')
+          : (e.message || t('player.pair.statusFailed'));
+      } finally {
+        approveBtn.disabled = false;
+      }
+    }
+
+    approveBtn.addEventListener('click', _doApprove);
+    codeInput.addEventListener('keydown', e => { if (e.key === 'Enter') _doApprove(); });
   })();
 }
 

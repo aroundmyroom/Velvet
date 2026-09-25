@@ -138,6 +138,36 @@ html, body {
   padding-top: 8px;
 }
 
+.login-pair-toggle {
+  text-align: center;
+  color: var(--text2);
+  font-size: 22px;
+  margin-top: 18px;
+  padding: 10px;
+  text-decoration: underline;
+  cursor: pointer;
+}
+.login-pair-toggle.focused, .login-pair-toggle:focus { color: var(--accent2); outline: none; }
+
+.pair-hint {
+  font-size: 22px;
+  color: var(--text2);
+  text-align: center;
+  margin-bottom: 10px;
+}
+
+.pair-code-display {
+  font-size: 60px;
+  font-weight: 800;
+  letter-spacing: 0.2em;
+  text-align: center;
+  color: var(--accent2);
+  background: var(--bg3);
+  border-radius: var(--radius);
+  padding: 26px;
+  margin: 16px 0 24px;
+}
+
 /* ────────────────────────────────────────────────────────────────────────────
    MAIN SCREEN LAYOUT
    ─────────────────────────────────────────────────────────────────────────── */

@@ -97,6 +97,20 @@ GET /media/<vpath>/<path/to/song.mp3>?token=<jwt>
 | `GET` | `/api/v1/auth/passkey/credentials` | `?username=x` (admin) | List passkeys for the current user (or `username` if admin). Returns `{ credentials: [{ id, friendlyName, deviceType, backedUp, createdAt, lastUsedAt }] }`. *(Velvet)* |
 | `DELETE` | `/api/v1/auth/passkey/credentials/:id` | `?username=x` (admin) | Remove a specific passkey by id. *(Velvet)* |
 
+### Reverse-proxy trusted-header auth (ExtAuth)
+
+Not a REST endpoint — a fallback inside the main auth middleware. When no `x-access-token`/bearer/query token is present on a request, and `extAuth.enabled` is on, Velvet checks whether the request's TCP socket peer is in `extAuth.trustedProxies` (IPv4 CIDR or exact IP) and, if a shared-secret header is configured, that it matches. If both pass, the configured header (`extAuth.headerName`, default `Remote-User`) is read as a username; a matching Velvet user gets a normal session (same JWT cookie `/auth/login` sets). See `docs/auth-reverse-proxy.md` for reverse-proxy examples (Nginx Proxy Manager, Traefik, Caddy). Config and admin endpoints: see **Reverse-Proxy Auth — Admin Config** below. *(Velvet)*
+
+### Cross-device login pairing
+
+A device with an awkward keyboard (Samsung TV remote, kiosk) shows a short code; an already-logged-in device approves it. Complements passkeys, which need a platform authenticator or WebAuthn hybrid transport the requesting device may not have. Codes are 6 characters (unambiguous alphabet, no `0/O/1/I`), single-use, and expire after 5 minutes. *(Velvet)*
+
+| Method | Endpoint | Auth | Body / Params | Description |
+|---|---|---|---|---|
+| `POST` | `/api/v1/auth/pair/start` | none | — | Starts a pairing session. Returns `{ pairId, code, expiresInSec }`. |
+| `GET` | `/api/v1/auth/pair/status` | none | `?pairId=` | Poll for approval. Returns `{ status: 'pending' \| 'expired' }`, or once approved (once only — the pairing is consumed on this response) `{ status: 'approved', token, vpaths, username }` — same session shape as `/auth/login`. |
+| `POST` | `/api/v1/auth/pair/approve` | user | `{ code }` | Approves a pairing code as the calling (already-authenticated) user. 800ms delay on an invalid/expired/already-used code, same brute-force mitigation as `/auth/login`. |
+
 ---
 
 ## Library
@@ -990,6 +1004,15 @@ Export is built in the background; poll for status before downloading.
 |---|---|---|---|
 | `GET` | `/api/v1/admin/acoustid/config` | — | Get AcoustID API key config. |
 | `POST` | `/api/v1/admin/acoustid/config` | `{ apiKey }` | Set AcoustID API key. |
+
+---
+
+## Reverse-Proxy Auth — Admin Config *(Velvet)*
+
+| Method | Endpoint | Body | Description |
+|---|---|---|---|
+| `GET` | `/api/v1/admin/ext-auth` | — | Get reverse-proxy trusted-header auth config. `secretValue` is masked (first 4 chars + asterisks); `hasSecret` reports whether one is set. `listenAddress` is included so the UI can warn when the server also listens on a non-loopback interface with no trusted proxies configured. |
+| `POST` | `/api/v1/admin/ext-auth` | `{ enabled, headerName, trustedProxies[], secretHeaderName, secretValue, autoCreateUsers }` | Save reverse-proxy trusted-header auth config. Sending back the masked `secretValue` from `GET` preserves the existing secret; any other value replaces it. |
 
 ---
 

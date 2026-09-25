@@ -6,6 +6,7 @@ import * as adminUtil from '../util/admin.js';
 import * as config from '../state/config.js';
 import * as shared from '../api/shared.js';
 import WebError from '../util/web-error.js';
+import { resolveExtAuthUser } from '../util/ext-auth.js';
 
 export function setup(velvet) {
   velvet.post('/api/v1/auth/login', async (req, res) => {
@@ -42,7 +43,7 @@ export function setup(velvet) {
     }
   });
 
-  velvet.use((req, res, next) => {
+  velvet.use(async (req, res, next) => {
     // Album art files are served to LAN devices (Sonos, DLNA) without auth.
     // The filenames are MD5 hashes — not guessable, no sensitive content.
     if (req.path.startsWith('/album-art/')) {
@@ -65,7 +66,18 @@ export function setup(velvet) {
       return next();
     }
 
-    const token = _findToken(req);
+    let token = _findToken(req);
+    if (!token) {
+      const extAuthUsername = await resolveExtAuthUser(req);
+      if (extAuthUsername) {
+        token = jwt.sign({ username: extAuthUsername }, config.program.secret);
+        res.cookie('x-access-token', token, {
+          maxAge: 30 * 24 * 60 * 60 * 1000,
+          sameSite: 'Strict',
+          secure: req.secure || req.headers['x-forwarded-proto'] === 'https',
+        });
+      }
+    }
     if (!token) { throw new WebError('Authentication Error', 401); }
     req.token = token;
 
