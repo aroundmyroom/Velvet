@@ -6,7 +6,12 @@ describe('Sonos DIDL / transport helpers', async () => {
   // bootstrap chain, which leaves an open handle somewhere and would hang the
   // runner otherwise. None of that chain runs here — only the pure helpers below
   // are exercised — so a forced exit once these tests finish is safe.
-  after(() => process.exit(0));
+  //
+  // The exit is deferred and uses process.exitCode on purpose: an immediate
+  // process.exit(0) here ran before the runner had reported the subtests or set
+  // its exit status, so the whole file showed up as a single passing test and a
+  // failing assertion still exited 0 — every test in this file was unenforced.
+  after(() => { setTimeout(() => process.exit(process.exitCode ?? 0), 1500); });
 
   const sonos = await import('../../src/api/sonos.js');
 
@@ -121,6 +126,35 @@ describe('Sonos DIDL / transport helpers', async () => {
     it('returns null when there is no transport state to act on', () => {
       assert.equal(sonos._parseLastChange('<e:propertyset></e:propertyset>'), null);
       assert.equal(sonos._parseLastChange(''), null);
+    });
+  });
+
+  describe('buildDidl — the metadata must be XML the speaker will accept', () => {
+    // Seen live (2026-09-29): a WAV whose album tag held \x17, \x05 and \x13 (mojibake
+    // of "2 × Vinyl … 33 ⅓ RPM"). Escaping alone left those bytes in the DIDL, the
+    // whole document was invalid XML, and every AddURIToQueue for that track came
+    // back UPnP 402 with no hint why — the track simply could not be cast.
+    const track = {
+      title: 'Hills Of Katmandu (Patrick Cowley Mix)',
+      artist: 'Tantra',
+      album: '2 C\u0017 Vinyl, 12", Unofficial Release, 33 b\u0005\u0013 RPM',
+      duration: 806.549,
+    };
+    const url = 'http://10.1.1.101:3001/api/v1/sonos/transcode-stream?token=abc&fp=Music%2Fx.wav';
+
+    it('strips XML-illegal control characters, lone surrogates and non-characters', () => {
+      const didl = sonos.buildDidl({ ...track, title: 'a\uD800b￾c' }, url, null, '1', 'audio/mpeg');
+      // eslint-disable-next-line no-control-regex
+      assert.doesNotMatch(didl, /[\x00-\x08\x0B\x0C\x0E-\x1F\uD800-\uDFFF￾￿]/);
+      assert.match(didl, /<upnp:album>2 C Vinyl, 12&quot;, Unofficial Release, 33 b RPM<\/upnp:album>/);
+      assert.match(didl, /<dc:title>abc<\/dc:title>/);
+    });
+
+    it('still escapes markup characters and keeps the stream URL, mime and duration', () => {
+      const didl = sonos.buildDidl({ ...track, artist: 'Love & Kisses <live>' }, url, null, '7', 'audio/mpeg');
+      assert.match(didl, /<upnp:artist>Love &amp; Kisses &lt;live&gt;<\/upnp:artist>/);
+      assert.match(didl, /<item id="7" /);
+      assert.match(didl, /<res protocolInfo="http-get:\*:audio\/mpeg:\*" duration="00:13:26">http:\/\/10\.1\.1\.101:3001\/api\/v1\/sonos\/transcode-stream\?token=abc&amp;fp=Music%2Fx\.wav<\/res>/);
     });
   });
 });

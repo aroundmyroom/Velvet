@@ -1,5 +1,5 @@
 'use strict';
-const VELVET_VERSION = '0.5.28';
+const VELVET_VERSION = '0.5.29';
 // ── SERVER IDENTITY GUARD ────────────────────────────────────────────────────
 // Detects when this browser's localStorage belongs to a different Velvet
 // instance (fresh install, IP change, reverse-proxy swap, second server).
@@ -314,6 +314,29 @@ let _gaplessTimer= null;   // setTimeout handle: starts xEl 80ms before end
 let _msPosThrottle = 0;    // timestamp of last setPositionState call — throttled to 1 Hz
 let _rgGainNode  = null;   // ReplayGain gain node — inserted before _audioGain
 let _castMuteGain = null; // GainNode: 0 when casting to MPV, 1 otherwise — keeps analysers fed
+// Inaudible keep-alive on the graph output while cast-muted. With _castMuteGain at 0 the
+// AudioContext renders exact zeros; after ~30 s of that Chromium closes the real audio
+// device and keeps the context alive on a timer-driven "fake" sink. A media element
+// connected to the graph advances only as fast as that sink pulls — and in a
+// background tab the fake sink lags or stalls, so the local mirror's clock fell behind
+// while Sonos (streaming the file itself) played on to the end (seen live 2026-09-30:
+// mirror at 2:55 when the speaker had finished; 6 min of audio in 16 min of wall
+// clock). A -100 dBFS DC offset is below anything a DAC renders but is not the exact
+// zero the silence detector looks for, so the device stays open and the clock real-time.
+let _castKeepAlive = null;
+function _setCastKeepAlive(on) {
+  if (!audioCtx || typeof audioCtx.createConstantSource !== 'function') return;
+  if (on && !_castKeepAlive) {
+    const n = audioCtx.createConstantSource();
+    n.offset.value = 1e-5;
+    n.connect(audioCtx.destination);
+    n.start();
+    _castKeepAlive = n;
+  } else if (!on && _castKeepAlive) {
+    try { _castKeepAlive.stop(); _castKeepAlive.disconnect(); } catch (_) { /* already stopped */ }
+    _castKeepAlive = null;
+  }
+}
 let _sonosNeedsRecast = false; // true after page refresh with Sonos state restored — Sonos queue is empty, first Play must re-cast
 let _sonosFav = null;          // { ip, title, service, key, artUri } when a Sonos Favourite (external content) is playing on the device
 let _sonosFavPollTimer = null; // now-playing poll for the active Sonos Favourite
@@ -1673,6 +1696,7 @@ const Player = {
         filePath:  s.filepath,
         sessionId: _wrappedSessionId,
         source:    _wrappedSource(),
+        dj:        _djTakeTrace(s.filepath), // undefined unless Auto-DJ picked this track
       }).then(r => { _wrappedEventId = r?.eventId ?? null; }).catch(() => {});
     } else if (s.isRadio) {
       // Wrapped: stop any active music/podcast event, then log radio-start
@@ -2546,6 +2570,21 @@ async function _djPickSong(escapeOpts = {}) {
     if (sc > bestScore || (sc === bestScore && Math.random() < 0.5)) { bestScore = sc; best = c; } // NOSONAR: non-security tie-break
   }
   console.debug(`[Auto-DJ] picked from ${candidates.length} candidates: ${best.artist} — ${best.title} | bpm=${best.bpm ?? '?'} key=${best.musical_key ?? '?'} score=${bestScore.toFixed(3)}`);
+  // Handed to the server with the play-start report so the decision shows up in
+  // journalctl — see _djTakeTrace. Keyed by filepath, not stored on the song
+  // object, so it never ends up in the persisted queue.
+  const cur = S.queue[S.idx] || {};
+  _djTraceByFp.set(best.filepath, {
+    cands: candidates.length,
+    score: Number(bestScore.toFixed(3)),
+    similar: (S.djSimilar && _djSimilarArtists.length) || 0,
+    escape: escapeOpts.escapeGenre || null,
+    dropArtist: !!escapeOpts.dropArtistFilter,
+    curBpm: cur.bpm ?? null,
+    curKey: cur.musical_key ?? null,
+    curYear: cur.year ?? null,
+    curGenre: cur.genre ?? null,
+  });
   return best;
 }
 
@@ -2578,6 +2617,16 @@ function _djPushArtistHistory(artist) {
 
 // ── Auto-DJ genre drift prevention ──────────────────────────────────────────
 const DJ_GENRE_WINDOW      = 25;   // rolling history length (tracks)
+// Auto-DJ decision traces waiting to ride along with the play-start report
+// (one entry per queued pick; taken — and removed — when that track starts).
+const _djTraceByFp = new Map();
+function _djTakeTrace(filepath) {
+  const t = _djTraceByFp.get(filepath);
+  if (t) _djTraceByFp.delete(filepath);
+  if (_djTraceByFp.size > 50) _djTraceByFp.clear(); // picks that never played (queue edits)
+  return t;
+}
+
 const DJ_GENRE_CONSEC_SOFT = 3;    // consecutive same-genre picks → soft escape (blacklist + retry)
 const DJ_GENRE_CONSEC_HARD = 5;    // consecutive same-genre picks → hard escape (drop artist filter too)
 const DJ_GENRE_FREQ_THRESH = 0.40; // genre share of window → overrepresented
@@ -6454,6 +6503,7 @@ const VIZ = (() => {
     _castMuteGain.gain.value = (S.castingToMpv || S.castingToSonos) ? 0 : 1;
     _pannerNode.connect(_castMuteGain);
     _castMuteGain.connect(audioCtx.destination);
+    _setCastKeepAlive(S.castingToMpv || S.castingToSonos); // graph built while already casting (page reload)
     _pannerNode.connect(splitter);        // post-pan L+R tap
     splitter.connect(analyserL, 0);       // left  channel (balance-aware)
     splitter.connect(analyserR, 1);       // right channel (balance-aware)
@@ -6484,6 +6534,10 @@ const VIZ = (() => {
       // element mute left over from the fallback path below.
       audioEl.muted = false;
       if (_xfadeEl) _xfadeEl.muted = false;
+      // …but an all-zero graph output lets Chromium park the context on a timer
+      // sink that lags in a background tab — keep the real device open (see
+      // _setCastKeepAlive) so the mirror's clock stays real-time while casting.
+      _setCastKeepAlive(muted);
     } else {
       audioEl.muted = muted;
       if (_xfadeEl) _xfadeEl.muted = muted;
@@ -19652,8 +19706,9 @@ async function _activateSonosCast(room) {
   try {
     const tracks = [{ filepath: s.filepath, title: s.title || '', artist: s.artist || '', album: s.album || '', aaFile: s['album-art'] || null, duration: s.duration ?? null }];
     const castResp = await api('POST', 'api/v1/sonos/cast-queue', {
-      ip: room.ip, tracks, index: 0, seekTo: Math.floor(seekTo) || 0, paused,
+      ip: room.ip, tracks, index: 0, seekTo: Math.floor(seekTo) || 0, paused, reason: _sonosTakeCastReason(),
     });
+    _sonosCastSeekTo = Math.floor(seekTo) || 0;
     // Server may have redirected to a different IP (SSDP re-discovery on boot).
     // Resolve the actual IP used so room.ip is always up-to-date from the start.
     const activeIp = castResp?.actualIp ?? room.ip;
@@ -19870,8 +19925,9 @@ async function _sonosCastCurrent(seekTo = 0, paused = false) {
   _sonosLoadingSong = true;
   setTimeout(() => { _sonosLoadingSong = false; }, 2500);
   _sonosCastTime = Date.now();
+  _sonosCastSeekTo = Math.floor(seekTo) || 0;
   try {
-    const r = await api('POST', 'api/v1/sonos/cast-queue', { ip: S.sonosRoom.ip, tracks, index: 0, seekTo: Math.floor(seekTo) || 0, paused });
+    const r = await api('POST', 'api/v1/sonos/cast-queue', { ip: S.sonosRoom.ip, tracks, index: 0, seekTo: Math.floor(seekTo) || 0, paused, reason: _sonosTakeCastReason() });
     _handleCastResponse(r);
   } catch (e) { /* device busy/offline — the reachability poll falls back to Browser if it stays that way */ }
 }
@@ -24368,6 +24424,17 @@ let _sonosLoadingSong = false; // true for 2.5 s after a new song is cast to Son
 let _sonosPollTimer = null;    // reachability + stuck-device heartbeat while casting
 let _sonosConsecutiveFailures = 0; // counts consecutive unreachable transport-status responses; auto-deactivates at 3
 let _sonosCastTime = 0;        // timestamp of last cast — self-heal skips corrections during grace period
+let _sonosCastSeekTo = 0;      // seekTo (s) of the last cast — with _sonosCastTime, how far the speaker must be by now
+let _sonosCastReason = null;   // one-shot note sent with the next cast-queue so the server log says why it happened
+let _sonosAdvancedFp = null;   // track already advanced past on a "speaker finished" verdict — never twice for the same one
+let _sonosMirrorProbe = null;  // { t, pos, fp } from the previous heartbeat — detects the local mirror's clock running slow
+let _sonosMirrorLagNote = null; // one-shot "mirror lagging" finding, rides along with the next cast reason
+const _sonosTakeCastReason = () => {
+  const r = [_sonosCastReason, _sonosMirrorLagNote].filter(Boolean).join('; ');
+  _sonosCastReason = null; _sonosMirrorLagNote = null;
+  return r || undefined;
+};
+const _mmss = s => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
 let _sonosStreamOffset = 0;    // seconds offset for transcoded streams started mid-file: Sonos reports stream-relative position, so add this to convert to original-file position
 let _sonosLocalControlAt = 0;  // timestamp of a web-initiated play/pause/seek — suppresses the heartbeat racing our own command
 let _sonosLastRecastAt = 0;    // throttle for the stopped-device self-heal re-cast
@@ -24399,6 +24466,22 @@ function _startSonosPositionSync(ip) {
           return;
         }
         _sonosConsecutiveFailures = 0; // reset on any successful response
+        // Mirror-lag alarm: while playing, the local element must advance at wall-clock
+        // speed. If it falls behind, say so — this is the mechanism behind "Sonos stops
+        // at the end of a track"; _setCastKeepAlive is the cure, this line is the proof
+        // if it ever isn't enough. The finding travels with the next cast's log line.
+        const _nowMs = Date.now();
+        const _pos   = audioEl.currentTime || 0;
+        const _fp    = S.queue[S.idx]?.filepath;
+        if (_sonosMirrorProbe && !audioEl.paused && _sonosMirrorProbe.fp === _fp) {
+          const wall = (_nowMs - _sonosMirrorProbe.t) / 1000;
+          const adv  = _pos - _sonosMirrorProbe.pos;
+          if (wall >= 8 && adv >= 0 && wall - adv > 5) {
+            _sonosMirrorLagNote = `local mirror lagging: advanced ${Math.round(adv)}s in ${Math.round(wall)}s of wall clock`;
+            console.warn(`[sonos] ${_sonosMirrorLagNote}`);
+          }
+        }
+        _sonosMirrorProbe = { t: _nowMs, pos: _pos, fp: _fp };
         // Self-heal: the device is reachable but STOPPED while our local mirror is
         // still playing the same track — the stream dropped or the device idled.
         // Re-cast the current track at the current position. Skipped near a track's
@@ -24407,12 +24490,29 @@ function _startSonosPositionSync(ip) {
         // settling into the stream.
         const _cur = S.queue[S.idx];
         const _dur = audioEl.duration || _cur?.duration || 0;
-        if (st.stopped && _cur && !_cur.isRadio &&
+        const _idle = st.stopped && _cur && !_cur.isRadio &&
             !audioEl.paused && !_sonosLoadingSong &&
             (Date.now() - _sonosCastTime) >= 8000 &&
             (Date.now() - _sonosLocalControlAt) >= 4000 &&
+            _dur > 0;
+        // How much of this track the speaker has had wall-clock time to play since
+        // the cast. The speaker runs in real time from seekTo; the local mirror does
+        // not always — a suspended or throttled tab, or a buffering stall, leaves it
+        // behind. Seen live (2026-09-30, all morning): Sonos finished a track, the
+        // mirror was still at 2:55, and the "device idled" re-cast below replayed the
+        // tail of a song that had already ended, track after track. A STOPPED speaker
+        // that has had the whole track's worth of time has finished it: advance, just
+        // as the mirror's own 'ended' would have, instead of re-casting.
+        const _speakerElapsed = (Date.now() - _sonosCastTime) / 1000 + _sonosCastSeekTo;
+        if (_idle && _speakerElapsed >= _dur - 3 && _sonosAdvancedFp !== _cur.filepath) {
+          _sonosAdvancedFp = _cur.filepath;
+          const _at = Math.floor(audioEl.currentTime || 0);
+          console.log(`[sonos] device finished "${_cur.filepath}" (local mirror at ${_mmss(_at)} of ${_mmss(_dur)}) — advancing`);
+          _sonosCastReason = `speaker finished the previous track; web player clock was at ${_mmss(_at)}/${_mmss(_dur)}`;
+          _onAudioEnded();
+        } else if (_idle &&
             (Date.now() - _sonosLastRecastAt) >= 10000 &&
-            _dur > 0 && (audioEl.currentTime || 0) < _dur - 5) {
+            (audioEl.currentTime || 0) < _dur - 5) {
           _sonosLastRecastAt = Date.now();
           console.log(`[sonos] device stopped while it should be playing "${_cur.filepath}" — re-casting`);
           _sonosCastCurrent(Math.floor(audioEl.currentTime || 0));

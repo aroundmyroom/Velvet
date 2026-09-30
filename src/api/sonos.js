@@ -49,7 +49,18 @@ import { DatabaseSync } from 'node:sqlite';
 const SONOS_DP_SVC = 'urn:schemas-upnp-org:service:DeviceProperties:1';
 
 /** XML-escape a string for embedding in SOAP/DIDL XML. */
+// Also strips characters XML 1.0 (§2.2) forbids outright: C0 controls other than
+// tab/LF/CR, lone UTF-16 surrogate halves, and U+FFFE/U+FFFF. Escaping alone is
+// not enough — a mojibake-ridden tag (seen live: an album tag holding \x17, \x05
+// and \x13 where "×" and "⅓" used to be) makes the whole DIDL invalid XML, and
+// the speaker answers AddURIToQueue with UPnP 402 for every cast of that track,
+// with nothing in the fault body saying why. Same rule dlna.js applies.
+// eslint-disable-next-line no-control-regex
+const XML_INVALID_CTRL = /[\x00-\x08\x0B\x0C\x0E-\x1F]/g;
+const XML_INVALID_SURR = /[\uD800-\uDFFF￾￿]/g;
 const xmlEsc = s => String(s)
+  .replaceAll(XML_INVALID_CTRL, '')
+  .replaceAll(XML_INVALID_SURR, '')
   .replaceAll('&', '&amp;')
   .replaceAll('<', '&lt;')
   .replaceAll('>', '&gt;')
@@ -117,7 +128,7 @@ export function mimeForPath(filepath) {
   return _MIME_BY_EXT[ext] || 'audio/mpeg';
 }
 
-function buildDidl({ title, artist, album, duration }, streamUrl, artUrl = null, itemId = '1', mime = 'audio/mpeg') {
+export function buildDidl({ title, artist, album, duration }, streamUrl, artUrl = null, itemId = '1', mime = 'audio/mpeg') {
   // dlna: namespace MUST be declared on the root element, not inline on the child tag.
   // No dlna:profileID attribute — many iOS/Android DLNA stacks silently skip
   // the image when dlna:profileID is present but not negotiated via DLNA headers.
@@ -1473,6 +1484,11 @@ export function setup(velvet) {
     const rawTracks = Array.isArray(req.body?.tracks) ? req.body.tracks : [];
     const seekTo    = Number(req.body?.seekTo) || 0;
     const paused    = !!req.body?.paused;
+    // Optional one-line note from the client on why this cast happened (e.g. the
+    // speaker finished the previous track while the web player's clock was behind)
+    // — goes straight into the cast log line so journalctl shows the reason, not
+    // just the effect. Bounded and stripped of control characters, log only.
+    const reason    = typeof req.body?.reason === 'string' ? req.body.reason.replaceAll(/[\x00-\x1F\x7F]/g, ' ').trim().slice(0, 160) : ''; // eslint-disable-line no-control-regex
     if (!ip)              return res.status(400).json({ error: 'ip required' });
     if (!rawTracks.length) return res.status(400).json({ error: 'tracks required' });
     const index = Math.max(0, Math.min(rawTracks.length - 1, Number.parseInt(req.body?.index, 10) || 0));
@@ -1526,7 +1542,7 @@ export function setup(velvet) {
       _genaSubscribe(resolvedIp).catch(e => console.warn('[sonos] GENA subscribe failed:', e.message));
       const cur = items[0];
       const hiResNote = (cur.sampleRate ?? 0) > 48000 ? ` ${cur.sampleRate}Hz` : '';
-      console.log(`[sonos] cast-queue ▶ ${cur.label} [${cur.fp}]${cur.isTranscode ? ` (transcoded${hiResNote})` : hiResNote ? ` (DIRECT${hiResNote} — Sonos may not decode)` : ''} → ${resolvedIp}`);
+      console.log(`[sonos] cast-queue ▶ ${cur.label} [${cur.fp}]${cur.isTranscode ? ` (transcoded${hiResNote})` : hiResNote ? ` (DIRECT${hiResNote} — Sonos may not decode)` : ''} → ${resolvedIp}${reason ? ` (${reason})` : ''}`);
       res.json({ ok: true, actualIp: resolvedIp, count: items.length, index: 0, streamStartOffset, isTranscodeStream: !!curIsTranscode });
 
       // Append the upcoming tracks in the background; abort if a newer cast-queue supersedes us.

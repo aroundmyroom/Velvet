@@ -1,3 +1,64 @@
+## v0.5.29 (2026-09-30)
+
+Sonos End-of-Track Fix, Auto-DJ in the Server Log
+
+### Fixed: Auto-DJ silently lost its similar-artist signal on "Fe." credits
+
+- When the playing track's artist was credited as e.g. "Martin Solveig Fe. Roy
+  Woods", the Last.fm similar-artist lookup asked for that exact string, got
+  nothing back, and never fell back to "Martin Solveig" — the "Fe." shorthand was
+  not one of the separators Velvet recognised (feat./ft./featuring/vs./pres./x).
+  With no similar artists, that one pick was made on BPM, key, era and genre alone
+  across the whole collection, which is how a modern dance run could jump to an
+  80s Italo track. 384 artist credits in a real library used this shorthand. "Fe."
+  is now a recognised separator, and a track number that leaked into the artist
+  tag ("12. Joel Corry Fe. MNEK") is stripped before the lookup as well.
+
+### Added: Auto-DJ decisions are now visible in the server log
+
+- `journalctl -fu music.service` now shows why Auto-DJ picked what it picked, without
+  the browser console: one line for the Last.fm similar-artist lookup (what came back
+  and via which part of the credit — or `→ 0 (tried: …)`), one for the candidate pool
+  (scope, and any fallback that widened it), and one `[autodj] ▶` line when the pick
+  starts playing: score, pool size, similar artists in play, an active genre escape,
+  and the BPM/key/year/genre change from the previous track. Bounded by construction —
+  every field is capped, text is truncated, no candidate lists — a full day of Auto-DJ
+  is a few dozen KB.
+
+### Fixed: Sonos went silent at the end of a track and replayed it instead of moving on
+
+- The speaker would finish a track and then just stop — no next track — and when the
+  browser came back it replayed the *same* song from the middle. Cause: since v0.5.25
+  the web player's own muted playback is the only clock, and a browser tab that is
+  suspended or throttled (lid closed, background window, battery saver) or stuck
+  buffering simply stops counting, while the speaker streams the file straight from the
+  server and reaches the end regardless. The speaker's "stopped" was then read as "the
+  stream dropped" and the track re-cast from the stale position. The heartbeat now checks
+  the wall clock: when the speaker is stopped and, since the cast, it has had the whole
+  track's worth of real time, it finished — Velvet advances to the next track exactly as
+  it would at the track's natural end. The next cast's log line says why
+  (`cast-queue ▶ … (speaker finished the previous track; web player clock was at 2:55/4:54)`).
+  A stop *before* that point is still treated as a dropped stream and re-cast, as before.
+- And the reason the browser's clock fell behind at all — with the browser open and only
+  the tab in the background — is fixed too: casting silenced the browser through the audio
+  graph (a gain of 0, so the VU meters keep working), and a graph producing pure silence
+  lets Chromium close the real audio device and run the graph off a timer that lags in a
+  background tab, taking the playback clock with it. An inaudible keep-alive signal now
+  keeps the device open while casting, so the clock runs in real time again. If the clock
+  ever falls behind anyway, the log says so (`local mirror lagging: advanced 4s in 30s of
+  wall clock`).
+
+### Fixed: Sonos refused a track whose tags contained control characters
+
+- A track with a mangled tag — seen live on a WAV whose album field held stray
+  control characters where "×" and "⅓" used to be — could not be cast to Sonos at
+  all: the speaker rejected every attempt (UPnP error 402) and the player kept
+  retrying with each seek. The metadata Velvet sends is XML, and those characters
+  are simply not allowed in XML, so the whole document was invalid. Characters XML
+  forbids are now stripped before the metadata is built, the same way the DLNA
+  server already does; the track casts normally and the rest of the tag text is
+  shown as-is.
+
 ## v0.5.28 (2026-09-25)
 
 Reverse-Proxy Login, Pair a Device, and Three Fixes

@@ -143,6 +143,16 @@ before splitting duo/group names: `Mel & Kim vs. Frantique` tries `Mel & Kim`
 before `Mel` or `Kim`. Fallback also continues when Last.fm returns names that
 do not map to library artists.
 
+The collaboration separators are `feat.`, `ft.`, `fe.`, `featuring`, `vs.`,
+`pres.`/`presents`, and a standalone `x`; a leading track number in the artist
+tag (`12. Joel Corry Fe. MNEK`) is stripped first. This lives in
+[src/util/artist-credit.js](../src/util/artist-credit.js). A shorthand the
+split does not know is not cosmetic: the exact credit returns nothing, no part
+is tried, and the pick is made without any similar-artist signal — which is
+exactly what a stray "Fe." did before it was added (a modern dance run jumped
+to an 80s Italo track). `F.` is intentionally not a separator: it is far more
+often an initial (`George F. Zimmer`).
+
 ## Backward compatibility
 
 `returnAll` is opt-in. `webapp/tizen/app.js` (Samsung TV) and
@@ -150,3 +160,31 @@ do not map to library artists.
 continue to use the original single-song-per-request endpoint behaviour
 (`_leanRandomPick` / `_fullLoadFallbackChain` / `_qualityTierFilter` /
 `_selectRandom` in `src/api/db.js`), unchanged.
+
+## What the server log shows (`journalctl -fu music.service`)
+
+The decision is made in the browser, so the server log carries three compact
+lines per Auto-DJ track — enough to reconstruct *why* a pick happened without
+opening the browser console:
+
+```
+[autodj] similar-artists "Martin Solveig Fe. Roy Woods" → 358 from Last.fm via "Martin Solveig", 33 in library
+[autodj] pool user=dennis → 447 candidates (similar filter: 34 artists; 896 in scope, 447 after per-artist sampling)
+[autodj] ▶ dennis: "Regard — Ride It (Franky Wah Sunset Mix)" score=0.812 cands=447 similar=34 | bpm 122→114.6 key E major→Bb major year 2020→2020 genre dance
+```
+
+- **similar-artists** — what Last.fm returned and which part of the credit
+  finally matched. `→ 0 (tried: …)` means the whole pick ran without the
+  similar-artist signal.
+- **pool** — the candidate scope the client scored, and any fallback that
+  widened it (cooldown list dropped / similar filter dropped).
+- **▶** — the pick itself, reported by the client with the play start: score,
+  pool size, how many similar artists were in play, whether a genre escape was
+  active (`escape=dance`, `(hard)` when the artist filter was dropped for it),
+  and the from→to context for BPM, key, year and genre.
+
+Log growth is bounded by construction: every field is capped server-side
+(`play-start` schema), strings are truncated and stripped of control
+characters, and there are no per-candidate dumps — a full day of Auto-DJ is a
+few dozen KB. The file logger's retention (`logRetention`, 14 days by default)
+and journald's own limits apply as usual.

@@ -14,6 +14,7 @@
  */
 
 import Joi from 'joi';
+import { formatAutoDjPick } from '../util/autodj-log.js';
 import * as vpath from '../util/vpath.js';
 import * as db from '../db/manager.js';
 import * as config from '../state/config.js';
@@ -65,6 +66,19 @@ export function setup(velvet) {
       filePath:  Joi.string().required(),
       sessionId: Joi.string().max(64).required(),
       source:    Joi.string().valid('manual','queue','shuffle','autodj','playlist','smart-playlist').default('manual'),
+      // Auto-DJ decision trace — the pick is made client-side, this is how its
+      // reasoning reaches the server log (one bounded line, see util/autodj-log.js).
+      dj: Joi.object({
+        cands:      Joi.number().integer().min(0).max(100000),
+        score:      Joi.number().min(-10).max(10),
+        similar:    Joi.number().integer().min(0).max(10000),
+        escape:     Joi.string().max(80).allow(null, ''),
+        dropArtist: Joi.boolean(),
+        curBpm:     Joi.number().min(0).max(1000).allow(null),
+        curKey:     Joi.string().max(16).allow(null, ''),
+        curYear:    Joi.number().integer().min(0).max(3000).allow(null),
+        curGenre:   Joi.string().max(120).allow(null, ''),
+      }).optional(),
     });
     joiValidate(schema, req.body);
 
@@ -88,6 +102,8 @@ export function setup(velvet) {
     const DEDUP_WINDOW_MS = 10 * 60 * 1000;
     const recent = db.findRecentPlayEvent(userId, fileRow.hash, DEDUP_WINDOW_MS);
     if (recent && !recent.completed) { return res.json({ ok: true, eventId: recent.id }); }
+
+    if (req.body.source === 'autodj' && req.body.dj) console.log(formatAutoDjPick(userId, fileRow, req.body.dj));
 
     const eventId = db.insertPlayEvent({
       user_id:    userId,

@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import winston from 'winston';
 import Joi from 'joi';
 import path from 'node:path';
 import fs from 'node:fs';
@@ -1016,9 +1017,10 @@ export function setup(velvet) {
     // returns a broad pool of candidates (scoped to collections/rating/artist/
     // cooldown/duration) instead of picking one itself. See docs/API/db_random-songs.md.
     if (req.body.returnAll) {
-      const batch = _batchRandomSongs(db, req.user, req.body);
-      if (!batch) throw new WebError('No songs that match criteria', 400);
-      return res.json({ songs: batch.map(s => renderMetadataObj(s)) });
+      const pool = _batchRandomSongs(db, req.user, req.body);
+      if (!pool) throw new WebError('No songs that match criteria', 400);
+      console.log(`[autodj] pool user=${req.user.username} → ${pool.songs.length} candidates (${pool.note})`);
+      return res.json({ songs: pool.songs.map(s => renderMetadataObj(s)) });
     }
 
     // ── Genre filter: resolve display names → raw DB genre strings ──────────
@@ -1043,7 +1045,10 @@ export function setup(velvet) {
     // Avoids loading all 100k+ rows into heap just to pick one.
     if (!hasArtistFilter) {
       const leanResult = _leanRandomPick(db, req.user, req.body, bp, ignoreList, ignorePercentage);
-      if (leanResult !== null) return res.json(leanResult);
+      if (leanResult !== null) {
+        _logSingleRandomPick(req, leanResult.songs[0]);
+        return res.json(leanResult);
+      }
       // null → fall through to full-load path (Loki or truly empty library)
     }
 
@@ -1069,7 +1074,9 @@ export function setup(velvet) {
 
     const { song, idx } = _selectRandom(finalResults, ignoreList, hasArtistFilter);
     ignoreList.push(idx);
-    res.json({ songs: [renderMetadataObj(song)], ignoreList });
+    const rendered = renderMetadataObj(song);
+    _logSingleRandomPick(req, rendered);
+    res.json({ songs: [rendered], ignoreList });
   });
 
 
@@ -1338,6 +1345,25 @@ export function setup(velvet) {
 
 // ── random-songs helpers ───────────────────────────────────────────────────────
 
+// Logs the single-pick (non-`returnAll`) branch of /api/v1/db/random-songs only —
+// the batch/soft-scoring path Velvet's own clients use for Auto-DJ never hits this.
+// This branch is what third-party/native clients get for their own "shuffle"
+// features (it's the original, unscored mstream random-song pick), so this is
+// the only place we can currently see who's calling it and with what — there is
+// no other request-level logging for the native API. Kept permanently (not a
+// temporary debug flag): call volume here is inherently low — Velvet's bundled
+// clients don't use this path for Auto-DJ, so every line here is a genuine
+// third-party/native-client (or Tizen) pick, exactly the data needed to later
+// decide whether/how to bring some Auto-DJ scoring to those clients too.
+function _logSingleRandomPick(req, songMeta) {
+  const m = songMeta?.metadata || {};
+  const hasFilters = !!(
+    req.body.artists?.length || req.body.bpmRanges?.length ||
+    req.body.requireMusicalKey || req.body._genreRawStrings?.length
+  );
+  winston.info(`[random-songs] single pick user=${req.user.username} ip=${req.ip} ua="${req.headers['user-agent'] || 'unknown'}" filtered=${hasFilters} -> "${m.artist || '?'} - ${m.title || '?'}"`);
+}
+
 // Batch mode result cap — Auto-DJ scores every candidate client-side, so this
 // just bounds the response payload/shuffle cost on very large similar-artist
 // pools; it is not a quality filter.
@@ -1402,14 +1428,22 @@ function _batchRandomSongs(db, user, body) {
     ignoreArtists,
   });
   let balanceByArtist = hasArtistFilter;
+  // `note` is the one-line explanation that reaches the server log — which
+  // scope the pool came from and which fallback (if any) widened it. Without it
+  // the log shows a pick and nothing about why the similar-artist filter didn't
+  // hold, which is the part that keeps needing explaining.
+  const note = [hasArtistFilter ? `similar filter: ${body.artists.length} artists` : 'no similar filter'];
   if (hasArtistFilter && batch.length === 0 && ignoreArtists?.length > 0) {
     batch = db.getAllFilesWithMetadata(vpaths, user.username, { ...baseOpts, artists: body.artists });
+    note.push(`cooldown list (${ignoreArtists.length}) dropped — every similar artist was in it`);
   }
   if (hasArtistFilter && batch.length === 0) {
     batch = db.getAllFilesWithMetadata(vpaths, user.username, { ...baseOpts, ignoreArtists });
     balanceByArtist = false; // artist scope dropped entirely — plain pool now
+    note.push('similar filter dropped — none of those artists in the Auto-DJ scope');
   }
   if (batch.length === 0) return null;
+  const inScope = batch.length;
 
   if (balanceByArtist) {
     const byArtist = new Map();
@@ -1421,7 +1455,9 @@ function _batchRandomSongs(db, user, body) {
     batch = [...byArtist.values()].flatMap(songs => _sampleUpTo(songs, PER_ARTIST_SAMPLE_CAP));
   }
 
-  return batch.length > RANDOM_SONGS_BATCH_CAP ? _sampleUpTo(batch, RANDOM_SONGS_BATCH_CAP) : batch;
+  const songs = batch.length > RANDOM_SONGS_BATCH_CAP ? _sampleUpTo(batch, RANDOM_SONGS_BATCH_CAP) : batch;
+  note.push(`${inScope} in scope${balanceByArtist ? `, ${batch.length} after per-artist sampling` : ''}${songs.length < batch.length ? `, capped at ${songs.length}` : ''}`);
+  return { songs, note: note.join('; ') };
 }
 
 /**

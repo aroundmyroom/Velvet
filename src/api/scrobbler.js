@@ -9,6 +9,7 @@ import * as db from '../db/manager.js';
 import { joiValidate } from '../util/validation.js';
 import { getVPathInfo } from '../util/vpath.js';
 import WebError from '../util/web-error.js';
+import { artistLookupCandidates } from '../util/artist-credit.js';
 
 const Scrobbler = new Scribble();
 
@@ -83,26 +84,10 @@ export function setup(velvet) {
       console.warn('[lastfm] similar-artists: no API key configured — set lastFM.apiKey in config');
       return res.json({ artists: [] });
     }
-    // Query exact first, then collaboration halves, then individual duo parts.
-    function _artistLookupCandidates(name) {
-      const seen = new Set();
-      const out = [];
-      const add = v => {
-        const s = String(v || '').trim();
-        const key = s.toLowerCase();
-        if (s && !seen.has(key)) { seen.add(key); out.push(s); }
-      };
-      add(name);
-      const collabParts = String(name).split(/\s+(?:feat\.?|ft\.?|featuring|vs\.?|pres\.?|presents?\b|\bx\b)\s+/i);
-      if (collabParts.length > 1) for (const p of collabParts) add(p);
-      for (const p of collabParts) {
-        const duoParts = p.split(/\s+(?:&|and)\s+/i);
-        if (duoParts.length > 1) for (const d of duoParts) add(d);
-      }
-      return out;
-    }
+    // Query exact first, then collaboration halves, then individual duo parts
+    // (see util/artist-credit.js for the separators and why).
     const originalArtist = String(req.query.artist).trim();
-    const parts = _artistLookupCandidates(originalArtist);
+    const parts = artistLookupCandidates(originalArtist);
 
     function _queryAndRespond(artistName, fallbackParts) {
       Scrobbler.GetSimilarArtists(
@@ -118,6 +103,7 @@ export function setup(velvet) {
             return _queryAndRespond(fallbackParts[0], fallbackParts.slice(1));
           }
           if (rawNames.length === 0) {
+            console.log(`[autodj] similar-artists "${originalArtist}" → 0 (tried: ${parts.map(p => `"${p}"`).join(', ')}) — pick falls back to bpm/key/genre/year`);
             return res.json({ artists: [], displayArtists: [], displayVariantMap: {}, variantRankMap: {} });
           }
 
@@ -133,6 +119,7 @@ export function setup(velvet) {
               }
             }
             const hasAlbumsSet = db.artistsWithAlbums([...allVariantsSet], req.user.vpaths);
+            console.log(`[autodj] similar-artists "${originalArtist}" → ${rawNames.length} from Last.fm${artistName !== originalArtist ? ` via "${artistName}"` : ''}, ${nameVariantsMap.size} in library`);
             const displayArtists = [];
             // variantRankMap: DB artist variant → 1-indexed rank (lower = more similar)
             const variantRankMap = {};
