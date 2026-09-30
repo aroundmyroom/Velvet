@@ -1,3 +1,44 @@
+## v0.5.30 (2026-09-30)
+
+Sonos Keeps Playing While the Browser Sleeps
+
+### Fixed: Sonos still went silent at the end of a track when the browser tab was asleep
+
+- v0.5.29 taught the player to move on when the speaker finished — but a player that
+  is not running at all cannot move on. Chrome freezes a background tab after about
+  five minutes unless it is audibly playing, and a tab that is casting (silent by
+  design) is not: no heartbeat, no end-of-track, no next cast. Seen right after the
+  release: the speaker finished a track at 14:20:04, the player's last saved state was
+  4 seconds later at 3:51, and the room stayed silent.
+- The server now carries on by itself. It remembers what it put on the speaker and
+  when; if the speaker reports it finished that track (verified against the wall
+  clock) and no player casts anything within 12 seconds, the server casts the **next
+  track from the player's own saved queue** — the same queue a page reload restores —
+  and logs it (`cast-queue ▶ … (server auto-advance: …)`). It never picks music: with
+  nothing queued after the finished track it says so and stays silent. When the
+  browser wakes up it catches up with what the server did — jumping its own queue to
+  that track and positioning its clock where the speaker is — instead of restarting
+  the track or playing something else. Each auto-advance is one track; Auto-DJ keeps
+  one pick queued ahead, so a sleeping tab still gets the music it had lined up.
+- Two follow-ups found right after, from the same fully-backgrounded session: the Now
+  Playing bar could stay stuck on the previous song even though Auto-DJ was correctly
+  working off the new one underneath — updating the bar was ordered after side-effect
+  code (loading the audio element, fetching the waveform, casting) that occasionally
+  didn't finish in a heavily throttled tab, so it never ran; the bar now updates first,
+  from the queue state alone, before any of that. And the auto-advance above only ever
+  moves through a queue the browser had already built — when Auto-DJ's own pick chain
+  (two Last.fm calls, a DB query, saving the queue) didn't finish either, the saved
+  queue simply stopped growing and the server had nothing left to advance to. The
+  server now picks one plain track itself in that case (this user's library only, no
+  scoring — the same tier a third-party client's shuffle gets) rather than leave the
+  room silent; the browser's own Auto-DJ takes back over the moment it's next alive.
+  The keep-alive from the first fix was also upgraded from a silent DC signal to an
+  actual quiet tone (17.4 kHz, well above normal hearing at normal volume) — closer
+  to what a browser's "is this tab playing audible media" check is actually looking
+  for, since a non-oscillating signal likely never qualified. Best-effort: no web page
+  can force a browser to never freeze a hidden tab; the server-side fallback above is
+  what makes the room's silence not depend on it working.
+
 ## v0.5.29 (2026-09-30)
 
 Sonos End-of-Track Fix, Auto-DJ in the Server Log

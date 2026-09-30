@@ -756,7 +756,7 @@ function _buildQueueItems(rawTracks, baseUrl, artBase, streamToken, seekIndex = 
       : `/getaa?u=${encodeURIComponent(streamUrl)}`;
     const label = [track.artist, track.title].filter(Boolean).join(' - ') || track.filepath.split('/').pop();
     const mime = isTranscode ? 'audio/mpeg' : mimeForPath(track.filepath);
-    items.push({ streamUrl, didl: buildDidl(track, streamUrl, artUrl, String(i + 1), mime), label, fp, isTranscode, sampleRate: track.sample_rate ?? null });
+    items.push({ streamUrl, didl: buildDidl(track, streamUrl, artUrl, String(i + 1), mime), label, fp, isTranscode, sampleRate: track.sample_rate ?? null, duration: Number(track.duration) || 0 });
   }
   return items;
 }
@@ -941,6 +941,190 @@ const _castInFlight = new Map(); // ip → { superseded: boolean }
 const _ipAliases    = new Map(); // oldIp → currentIp — set when /cast auto-redirects after SSDP re-discovery
 const _castStateByIp = new Map(); // ip → { ts:number, wasTranscode:boolean }
 const _queueAppendGen = new Map(); // ip → number — cancels stale background queue appends when a newer cast-queue arrives
+
+// ── Server-side auto-advance ──────────────────────────────────────────────────
+// The web player is the brain for Sonos; the speaker gets exactly one vote — that
+// it finished (docs/sonos.md). While the player is asleep that vote goes unheard:
+// Chrome freezes a hidden tab after ~5 min unless it is audibly playing, which a
+// cast-muted tab never is. The speaker then finishes its track, nobody casts the
+// next one, and the room falls silent (seen live 2026-09-30, a whole morning).
+// The server holds the same queue the player saved (user_settings.queue), so when
+// a genuine natural end is followed by nothing for AUTO_ADVANCE_GRACE_MS, the
+// server casts the next queued track itself and records that it did. The player
+// catches up from that record when it wakes: transport-status carries it, and a
+// cast-queue for that same track answers "already playing" instead of restarting
+// it. One track at a time, only ever from the player's own saved queue, never from
+// what the device reports — the queue stays the single source of truth for WHAT
+// plays; the server only steps in on WHEN, and only when the player can't.
+const _lastCastByIp = new Map();        // ip → { username, fp, castAt, seekTo, duration, baseUrl, artBase }
+const _serverAdvanceByUser = new Map(); // username → { fp, at, ip, duration } — one-shot, consumed on catch-up
+const _autoAdvanceTimers = new Map();   // ip → Timeout
+const AUTO_ADVANCE_GRACE_MS = 12000;
+
+// A STOPPED speaker that has had the whole track's worth of wall clock since the
+// cast (from its seek offset) has finished it; anything earlier is a dropped stream.
+export function _speakerFinishedVerdict({ castAt, seekTo = 0, duration, now = Date.now() }) {
+  const dur = Number(duration);
+  if (!castAt || Number.isNaN(dur) || dur <= 0) return false;
+  return (now - castAt) / 1000 + (Number(seekTo) || 0) >= dur - 3;
+}
+
+function _onSpeakerEvent(ip, ev) {
+  const last = _lastCastByIp.get(ip);
+  if (!last) return;
+  if (ev.state !== 'STOPPED') { clearTimeout(_autoAdvanceTimers.get(ip)); _autoAdvanceTimers.delete(ip); return; }
+  if (!ev.trackFp || ev.trackFp !== last.fp) return;   // a stop on something we did not cast (or the queue wipe of a new cast)
+  if (!_speakerFinishedVerdict(last)) return;          // stopped early — the player's own self-heal owns that case
+  clearTimeout(_autoAdvanceTimers.get(ip));
+  const castAt = last.castAt;
+  _autoAdvanceTimers.set(ip, setTimeout(() => {
+    _autoAdvanceTimers.delete(ip);
+    _autoAdvance(ip, castAt).catch(e => console.warn(`[sonos] auto-advance failed: ${e.message}`));
+  }, AUTO_ADVANCE_GRACE_MS));
+}
+
+async function _autoAdvance(ip, castAt) {
+  const last = _lastCastByIp.get(ip);
+  if (!last || last.castAt !== castAt) return;          // a newer cast happened — the player is awake and handled it
+  const info = await soapCall(ip, 'GetTransportInfo', '').catch(() => '');
+  const state = (info.match(/<CurrentTransportState[^>]*>([^<]+)</i) || [])[1] || '';
+  if (state !== 'STOPPED') return;                     // someone (Sonos app, the player) already moved it on
+  const saved = db.getUserSettings(last.username)?.queue;
+  const queue = Array.isArray(saved?.queue) ? saved.queue : [];
+  const idx = (Number.isInteger(saved?.idx) && queue[saved.idx]?.filepath === last.fp)
+    ? saved.idx
+    : queue.findIndex(s => s?.filepath === last.fp);
+  if (idx < 0) { console.log(`[sonos] auto-advance: "${last.fp}" is not in the player's saved queue — nothing to do`); return; }
+  let next = queue[idx + 1];
+  let newQueue = queue;
+  let fellBack = false;
+  if (!next?.filepath || next.isRadio) {
+    // The player never got far enough into its own Auto-DJ pick chain to grow the
+    // queue past this point (seen live 2026-09-30: a fully backgrounded tab can
+    // freeze mid-chain — two Last.fm calls, a DB query, saving the queue — even
+    // though the lighter reconciliation heartbeat kept working). Rather than leave
+    // Sonos silent for however long the tab stays dead, pick one plain track the
+    // same way a third-party client's shuffle would — no Auto-DJ scoring (that
+    // needs the browser's own scoring state), just this user's own library scope
+    // and rating floor. The browser reclaims full Auto-DJ control the moment it is
+    // next alive; this only ever fills a gap it could not fill itself.
+    const picked = _pickFallbackTrack(last.username);
+    if (!picked) { console.log(`[sonos] auto-advance: speaker finished "${last.fp}", the saved queue has nothing after it, and no fallback track was available — staying silent`); return; }
+    next = picked;
+    newQueue = [...queue.slice(0, idx + 1), picked, ...queue.slice(idx + 1)];
+    fellBack = true;
+  }
+  const r = await castQueue({
+    username: last.username, ip, index: 0, seekTo: 0, paused: false,
+    rawTracks: [{ filepath: next.filepath, title: next.title || '', artist: next.artist || '', album: next.album || '', aaFile: next['album-art'] || null, duration: next.duration ?? null }],
+    reason: fellBack
+      ? `server fallback pick: the saved queue ran out too, no Auto-DJ scoring — plain pick from the user's library`
+      : `server auto-advance: speaker finished the previous track and no player cast anything for ${AUTO_ADVANCE_GRACE_MS / 1000}s`,
+    baseUrl: last.baseUrl, artBase: last.artBase,
+  });
+  _serverAdvanceByUser.set(last.username, { fp: next.filepath, at: Date.now(), ip: r.actualIp, duration: Number(next.duration) || null });
+  db.saveUserSettings(last.username, { queue: { ...saved, queue: newQueue, idx: idx + 1, currentFilepath: next.filepath, time: 0, playing: true, savedAt: Date.now() } });
+}
+
+// One plain track from the user's own library — no artist/BPM/genre scoring, the
+// same tier a third-party client's shuffle gets (docs/sonos.md). Only ever used
+// when the player's own saved queue has run out and the player itself has not
+// grown it in time; the browser's next Auto-DJ pick takes over as normal.
+function _pickFallbackTrack(username) {
+  const user = config.program?.users?.[username];
+  const vpaths = user?.dbVpaths ?? user?.vpaths;
+  if (!vpaths?.length) return null;
+  try {
+    const count = db.countFilesForRandom(vpaths, username, {});
+    if (!count) return null;
+    const offset = Math.floor(Math.random() * count); // NOSONAR: non-security music selection
+    const row = db.pickFileAtOffset(vpaths, username, {}, offset);
+    if (!row) return null;
+    return {
+      filepath: `${row.vpath}/${row.filepath}`,
+      title: row.title || row.filepath.split('/').pop(),
+      artist: row.artist || '',
+      album: row.album || '',
+      duration: row.duration ?? null,
+      year: row.year ?? null,
+      genre: row.genre ?? null,
+      bpm: row.bpm ?? null,
+      musical_key: row.musical_key ?? null,
+      'album-art': row.aaFile ?? null,
+      hash: row.hash ?? null,
+    };
+  } catch (e) {
+    console.warn('[sonos] fallback track pick failed:', e.message);
+    return null;
+  }
+}
+
+// The whole cast-queue flow, callable without an HTTP request (auto-advance) or
+// with one (the route). Returns the response body; throws with `.status` for
+// client errors.
+async function castQueue({ username, ip, rawTracks, index = 0, seekTo = 0, paused = false, reason = '', baseUrl, artBase }) {
+  const resolvedIp = _resolveIp(ip);
+  assertPrivateIp(resolvedIp);
+  const streamToken = jwt.sign({ username }, config.program.secret, { expiresIn: '8h' });
+  const items = _buildQueueItems(rawTracks, baseUrl, artBase, streamToken, index, seekTo);
+  if (!items.length) throw Object.assign(new Error('no valid tracks'), { status: 400 });
+  // The currently-playing track is sent first (items[0]); upcoming tracks follow.
+  // We add the current track, start playback immediately, then append the rest in
+  // the background — so casting starts fast instead of waiting for the whole window.
+  const curIsTranscode = items[0].streamUrl.includes('/api/v1/sonos/transcode-stream');
+  const soapSeekTo = curIsTranscode ? 0 : seekTo;
+  const streamStartOffset = curIsTranscode && seekTo > 0.5 ? Math.floor(seekTo) : 0;
+  const addUri = it => soapCall(resolvedIp, 'AddURIToQueue', [
+    `<EnqueuedURI>${xmlEsc(it.streamUrl)}</EnqueuedURI>`,
+    `<EnqueuedURIMetaData>${xmlEsc(it.didl)}</EnqueuedURIMetaData>`,
+    '<DesiredFirstTrackNumberEnqueued>0</DesiredFirstTrackNumberEnqueued>',
+    '<EnqueueAsNext>0</EnqueueAsNext>',
+  ].join(''));
+
+  const gen = (_queueAppendGen.get(resolvedIp) || 0) + 1;
+  _queueAppendGen.set(resolvedIp, gen);
+
+  await soapCall(resolvedIp, 'RemoveAllTracksFromQueue', '');
+  await addUri(items[0]);
+  let uuid = _cachedRooms.find(r => r.ip === resolvedIp)?.uuid;
+  if (!uuid) { try { const room = await _fetchDeviceDescription(resolvedIp, 3000); if (room?.uuid) uuid = room.uuid; } catch (e) { console.debug('[velvet]', e?.message ?? e); } }
+  const queueUri = uuid ? `x-rincon-queue:${uuid}#0` : items[0].streamUrl;
+  await soapCall(resolvedIp, 'SetAVTransportURI', [
+    `<CurrentURI>${xmlEsc(queueUri)}</CurrentURI>`,
+    `<CurrentURIMetaData>${uuid ? '' : xmlEsc(items[0].didl)}</CurrentURIMetaData>`,
+  ].join(''));
+  // Force NORMAL play mode on every fresh cast. Repeat/shuffle left on from the
+  // Sonos app (or any earlier session) would let reaching the end of what we've
+  // appended so far loop or shuffle back into content that has nothing to do with
+  // what the player queue actually wants played next — belt and suspenders
+  // alongside queue/trim below, which keeps "track 1" itself from going stale.
+  await soapCall(resolvedIp, 'SetPlayMode', '<NewPlayMode>NORMAL</NewPlayMode>').catch(e => console.debug('[velvet]', e?.message ?? e));
+  await soapCall(resolvedIp, 'Seek', '<Unit>TRACK_NR</Unit><Target>1</Target>');
+  if (soapSeekTo > 1) await soapCall(resolvedIp, 'Seek', `<Unit>REL_TIME</Unit><Target>${secsToTime(soapSeekTo)}</Target>`);
+  await soapCall(resolvedIp, 'Play', '<Speed>1</Speed>');
+  if (paused) await soapCall(resolvedIp, 'Pause', '');
+  // Start (or renew) eventing for this speaker so track changes reach the player
+  // immediately instead of on the next poll. Best-effort: polling covers us if the
+  // speaker cannot reach the callback.
+  _genaSubscribe(resolvedIp).catch(e => console.warn('[sonos] GENA subscribe failed:', e.message));
+  const cur = items[0];
+  const hiResNote = (cur.sampleRate ?? 0) > 48000 ? ` ${cur.sampleRate}Hz` : '';
+  console.log(`[sonos] cast-queue ▶ ${cur.label} [${cur.fp}]${cur.isTranscode ? ` (transcoded${hiResNote})` : hiResNote ? ` (DIRECT${hiResNote} — Sonos may not decode)` : ''} → ${resolvedIp}${reason ? ` (${reason})` : ''}`);
+  // What is on the speaker now, for the natural-end verdict and a possible auto-advance.
+  _lastCastByIp.set(resolvedIp, { username, fp: cur.fp, castAt: Date.now(), seekTo, duration: cur.duration, baseUrl, artBase });
+  clearTimeout(_autoAdvanceTimers.get(resolvedIp)); _autoAdvanceTimers.delete(resolvedIp);
+
+  // Append the upcoming tracks in the background; abort if a newer cast-queue supersedes us.
+  (async () => {
+    for (let i = 1; i < items.length; i++) {
+      if (_queueAppendGen.get(resolvedIp) !== gen) return;
+      try { await addUri(items[i]); } catch { return; }
+    }
+    if (items.length > 1) console.log(`[sonos] cast-queue: +${items.length - 1} upcoming track(s) queued → ${resolvedIp}`);
+  })();
+
+  return { ok: true, actualIp: resolvedIp, count: items.length, index: 0, streamStartOffset, isTranscodeStream: !!curIsTranscode };
+}
 
 /**
  * Run a discovery scan with deduplication.
@@ -1168,6 +1352,7 @@ export function setupPublic(velvet) {
       if (parsed) {
         console.log(`[sonos] GENA event ← ${ip}: ${parsed.state} track=${parsed.track}/${parsed.nrTracks}${parsed.trackFp ? ` fp=${parsed.trackFp.split('/').pop()}` : ''}`);
         _dispatchSonosEvent({ ip, ...parsed });
+        _onSpeakerEvent(ip, parsed);
       }
     });
     req.on('error', () => { try { res.status(200).end(); } catch { /* already sent */ } });
@@ -1493,67 +1678,23 @@ export function setup(velvet) {
     if (!rawTracks.length) return res.status(400).json({ error: 'tracks required' });
     const index = Math.max(0, Math.min(rawTracks.length - 1, Number.parseInt(req.body?.index, 10) || 0));
     try {
-      const resolvedIp = _resolveIp(ip);
-      assertPrivateIp(resolvedIp);
-      const streamToken = jwt.sign({ username: req.user.username }, config.program.secret, { expiresIn: '8h' });
-      const baseUrl = buildBaseUrl(req);
-      const artBase = buildArtBaseUrl(req);
-
-      const items = _buildQueueItems(rawTracks, baseUrl, artBase, streamToken, index, seekTo);
-      if (!items.length) return res.status(400).json({ error: 'no valid tracks' });
-      // The currently-playing track is sent first (items[0]); upcoming tracks follow.
-      // We add the current track, start playback immediately, then append the rest in
-      // the background — so casting starts fast instead of waiting for the whole window.
-      const curIsTranscode = items[0].streamUrl.includes('/api/v1/sonos/transcode-stream');
-      const soapSeekTo = curIsTranscode ? 0 : seekTo;
-      const streamStartOffset = curIsTranscode && seekTo > 0.5 ? Math.floor(seekTo) : 0;
-      const addUri = it => soapCall(resolvedIp, 'AddURIToQueue', [
-        `<EnqueuedURI>${xmlEsc(it.streamUrl)}</EnqueuedURI>`,
-        `<EnqueuedURIMetaData>${xmlEsc(it.didl)}</EnqueuedURIMetaData>`,
-        '<DesiredFirstTrackNumberEnqueued>0</DesiredFirstTrackNumberEnqueued>',
-        '<EnqueueAsNext>0</EnqueueAsNext>',
-      ].join(''));
-
-      const gen = (_queueAppendGen.get(resolvedIp) || 0) + 1;
-      _queueAppendGen.set(resolvedIp, gen);
-
-      await soapCall(resolvedIp, 'RemoveAllTracksFromQueue', '');
-      await addUri(items[0]);
-      let uuid = _cachedRooms.find(r => r.ip === resolvedIp)?.uuid;
-      if (!uuid) { try { const room = await _fetchDeviceDescription(resolvedIp, 3000); if (room?.uuid) uuid = room.uuid; } catch (e) { console.debug('[velvet]', e?.message ?? e); } }
-      const queueUri = uuid ? `x-rincon-queue:${uuid}#0` : items[0].streamUrl;
-      await soapCall(resolvedIp, 'SetAVTransportURI', [
-        `<CurrentURI>${xmlEsc(queueUri)}</CurrentURI>`,
-        `<CurrentURIMetaData>${uuid ? '' : xmlEsc(items[0].didl)}</CurrentURIMetaData>`,
-      ].join(''));
-      // Force NORMAL play mode on every fresh cast. Repeat/shuffle left on from the
-      // Sonos app (or any earlier session) would let reaching the end of what we've
-      // appended so far loop or shuffle back into content that has nothing to do with
-      // what the player queue actually wants played next — belt and suspenders
-      // alongside queue/trim below, which keeps "track 1" itself from going stale.
-      await soapCall(resolvedIp, 'SetPlayMode', '<NewPlayMode>NORMAL</NewPlayMode>').catch(e => console.debug('[velvet]', e?.message ?? e));
-      await soapCall(resolvedIp, 'Seek', '<Unit>TRACK_NR</Unit><Target>1</Target>');
-      if (soapSeekTo > 1) await soapCall(resolvedIp, 'Seek', `<Unit>REL_TIME</Unit><Target>${secsToTime(soapSeekTo)}</Target>`);
-      await soapCall(resolvedIp, 'Play', '<Speed>1</Speed>');
-      if (paused) await soapCall(resolvedIp, 'Pause', '');
-      // Start (or renew) eventing for this speaker so track changes reach the player
-      // immediately instead of on the next poll. Best-effort: polling covers us if the
-      // speaker cannot reach the callback.
-      _genaSubscribe(resolvedIp).catch(e => console.warn('[sonos] GENA subscribe failed:', e.message));
-      const cur = items[0];
-      const hiResNote = (cur.sampleRate ?? 0) > 48000 ? ` ${cur.sampleRate}Hz` : '';
-      console.log(`[sonos] cast-queue ▶ ${cur.label} [${cur.fp}]${cur.isTranscode ? ` (transcoded${hiResNote})` : hiResNote ? ` (DIRECT${hiResNote} — Sonos may not decode)` : ''} → ${resolvedIp}${reason ? ` (${reason})` : ''}`);
-      res.json({ ok: true, actualIp: resolvedIp, count: items.length, index: 0, streamStartOffset, isTranscodeStream: !!curIsTranscode });
-
-      // Append the upcoming tracks in the background; abort if a newer cast-queue supersedes us.
-      (async () => {
-        for (let i = 1; i < items.length; i++) {
-          if (_queueAppendGen.get(resolvedIp) !== gen) return;
-          try { await addUri(items[i]); } catch { return; }
+      // A player waking up after a server auto-advance asks to play the very track
+      // the server already started — position its mirror instead of restarting the
+      // speaker. One-shot: consumed here, so a later deliberate replay is a real cast.
+      const adv = _serverAdvanceByUser.get(req.user.username);
+      const want = String(rawTracks[index]?.filepath || '').replace(/^\/+/, '');
+      if (adv && want && adv.fp === want && seekTo <= 1) {
+        const elapsed = Math.floor((Date.now() - adv.at) / 1000);
+        if (adv.duration && elapsed < adv.duration - 2) {
+          _serverAdvanceByUser.delete(req.user.username);
+          console.log(`[sonos] cast-queue ↷ ${req.user.username} caught up with the server auto-advance of "${adv.fp}" at ${secsToTime(elapsed)} — not restarting it`);
+          return res.json({ ok: true, alreadyPlaying: true, position: elapsed, actualIp: adv.ip, count: 1, index: 0, streamStartOffset: 0, isTranscodeStream: false });
         }
-        if (items.length > 1) console.log(`[sonos] cast-queue: +${items.length - 1} upcoming track(s) queued → ${resolvedIp}`);
-      })();
+      }
+      const r = await castQueue({ username: req.user.username, ip, rawTracks, index, seekTo, paused, reason, baseUrl: buildBaseUrl(req), artBase: buildArtBaseUrl(req) });
+      res.json(r);
     } catch (e) {
+      if (e.status === 400) return res.status(400).json({ error: e.message });
       console.error('[sonos] /cast-queue error:', e);
       res.status(500).json({ ok: false, error: String(e.message || e) });
     }
@@ -1932,6 +2073,15 @@ export function setup(velvet) {
         trackArtist: didlTag('upnp:artist') || didlTag('dc:creator') || (didlTag('dc:title') ? streamContent : '') || '',
         trackAlbum:  didlTag('upnp:album') || '',
         trackArt:    didlTag('upnp:albumArtURI') || '',
+        // A server auto-advance this player has not caught up with yet (see
+        // _autoAdvance): which track the server started for it, and how far in.
+        serverAdvanced: (() => {
+          const adv = _serverAdvanceByUser.get(req.user?.username);
+          if (!adv) return null;
+          const elapsed = Math.floor((Date.now() - adv.at) / 1000);
+          if (adv.duration && elapsed > adv.duration + 5) { _serverAdvanceByUser.delete(req.user.username); return null; }
+          return { fp: adv.fp, position: elapsed };
+        })(),
       });
     } catch {
       // Any error reaching the Sonos device (timeout, ECONNREFUSED, EHOSTUNREACH,

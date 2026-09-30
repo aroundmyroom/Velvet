@@ -1,5 +1,5 @@
 'use strict';
-const VELVET_VERSION = '0.5.29';
+const VELVET_VERSION = '0.5.30';
 // ── SERVER IDENTITY GUARD ────────────────────────────────────────────────────
 // Detects when this browser's localStorage belongs to a different Velvet
 // instance (fresh install, IP change, reverse-proxy swap, second server).
@@ -314,26 +314,49 @@ let _gaplessTimer= null;   // setTimeout handle: starts xEl 80ms before end
 let _msPosThrottle = 0;    // timestamp of last setPositionState call — throttled to 1 Hz
 let _rgGainNode  = null;   // ReplayGain gain node — inserted before _audioGain
 let _castMuteGain = null; // GainNode: 0 when casting to MPV, 1 otherwise — keeps analysers fed
-// Inaudible keep-alive on the graph output while cast-muted. With _castMuteGain at 0 the
-// AudioContext renders exact zeros; after ~30 s of that Chromium closes the real audio
-// device and keeps the context alive on a timer-driven "fake" sink. A media element
-// connected to the graph advances only as fast as that sink pulls — and in a
-// background tab the fake sink lags or stalls, so the local mirror's clock fell behind
-// while Sonos (streaming the file itself) played on to the end (seen live 2026-09-30:
-// mirror at 2:55 when the speaker had finished; 6 min of audio in 16 min of wall
-// clock). A -100 dBFS DC offset is below anything a DAC renders but is not the exact
-// zero the silence detector looks for, so the device stays open and the clock real-time.
+// Keep-alive on the graph output while cast-muted, for two separate reasons:
+//
+// 1. With _castMuteGain at 0 the AudioContext renders exact zeros; after ~30s of that
+//    Chromium closes the real audio device and runs the context on a timer-driven
+//    "fake" sink, which lags or stalls in a background tab and takes the local
+//    mirror's clock with it (a media element only advances as fast as that sink
+//    pulls). A non-zero signal on the graph keeps the real device open.
+// 2. That alone does not stop the tab itself from being frozen. Chromium exempts a
+//    tab from background freezing while it is "playing audible media" — but that
+//    exemption is judged by actual signal power, not by whether audioEl.muted is
+//    false, so a pure DC offset (no oscillation — a speaker driver just holds still
+//    at a fixed position, no sound at any level) almost certainly does not count,
+//    and was not enough: even with it in place, a fully backgrounded tab still froze
+//    mid-way through Auto-DJ's multi-step pick chain (seen live 2026-09-30 — the
+//    heartbeat's own light reconciliation kept working, but the heavier prefetch
+//    chain — two Last.fm calls, a DB query, growing and saving the queue — did not
+//    finish, leaving nothing for the server's own safety net to advance to).
+//
+// A quiet, genuinely oscillating tone is the closer match for what that exemption is
+// actually checking. -45 dBFS at 17.4 kHz: near the top of adult hearing (most people
+// cannot hear it, especially over normal listening volume) while still carrying real,
+// non-zero acoustic power a browser's audibility check should register — unlike the
+// DC offset, unlike something fully ultrasonic (>20 kHz, which some browsers filter
+// or resample away before it reaches the audibility check at all). This is Velvet's
+// own local playback device only — never part of what reaches Sonos, which streams
+// the file directly from the server. Best-effort: no web page can force a browser to
+// never freeze a hidden tab; this is the one documented lever (audible-tab exemption)
+// aimed as precisely at it as is reasonably possible from JavaScript.
 let _castKeepAlive = null;
 function _setCastKeepAlive(on) {
-  if (!audioCtx || typeof audioCtx.createConstantSource !== 'function') return;
+  if (!audioCtx) return;
   if (on && !_castKeepAlive) {
-    const n = audioCtx.createConstantSource();
-    n.offset.value = 1e-5;
-    n.connect(audioCtx.destination);
-    n.start();
-    _castKeepAlive = n;
+    const osc = audioCtx.createOscillator();
+    osc.type = 'sine';
+    osc.frequency.value = 17400;
+    const g = audioCtx.createGain();
+    g.gain.value = Math.pow(10, -45 / 20); // -45 dBFS
+    osc.connect(g);
+    g.connect(audioCtx.destination);
+    osc.start();
+    _castKeepAlive = { osc, gain: g };
   } else if (!on && _castKeepAlive) {
-    try { _castKeepAlive.stop(); _castKeepAlive.disconnect(); } catch (_) { /* already stopped */ }
+    try { _castKeepAlive.osc.stop(); _castKeepAlive.osc.disconnect(); _castKeepAlive.gain.disconnect(); } catch (_) { /* already stopped */ }
     _castKeepAlive = null;
   }
 }
@@ -1610,6 +1633,19 @@ const Player = {
         try { localStorage.setItem(_djKey('camelot_anchor'), _camelotAnchor); } catch(_) {}
       }
     }
+    // The visible UI must never wait on what follows — loading the audio element,
+    // applying ReplayGain, fetching the waveform, casting to Sonos/MPV, logging
+    // Wrapped stats. Any of those can be slow or throw (seen live: a track change
+    // driven by the Sonos server-auto-advance catch-up left S.idx correctly updated
+    // — Auto-DJ kept working off it — while the on-screen Now Playing bar stayed on
+    // the previous song, because these calls used to sit after that side-effect
+    // code and never ran). Update the bar, queue highlight and BPM/key chips first,
+    // from S.idx/S.queue alone, before anything that touches the network or a media
+    // element.
+    this.updateBar();
+    highlightRow();
+    refreshQueueUI();
+    _syncQueueLabel();   // update BPM/key anchor chips on track change
     // CUE virtual track: inject seek offset so the track starts at its position
     if (s._isCueSplit && s.cueOffset > 0) _pendingCueSeek = s.cueOffset;
     const _cueSeek = _pendingCueSeek;
@@ -1674,10 +1710,6 @@ const Player = {
     } else {
       _cuePoints = []; _cueTrack1Title = ''; ['cue-markers','np-cue-markers'].forEach(id => { const el = document.getElementById(id); if (el) el.innerHTML = ''; });
     }
-    this.updateBar();
-    highlightRow();
-    refreshQueueUI();
-    _syncQueueLabel();   // update BPM/key anchor chips on track change
     if (!s.isRadio && !s.isPodcast) {
       api('POST', 'api/v1/db/stats/log-play', { filePath: s.filepath }).catch(() => {});
       // Wrapped: stop any active radio or podcast event, then log play-start
@@ -19674,6 +19706,18 @@ function _handleCastResponse(r) {
   // stream-relative position Sonos reports (otherwise drift correction snaps
   // the playbar back to ~0 once the grace period ends).
   _sonosStreamOffset = Number(r.streamStartOffset) || 0;
+  if (r.alreadyPlaying) {
+    // The server already started this very track (auto-advance while this tab was
+    // asleep — docs/sonos.md): position the mirror where the speaker is instead of
+    // restarting it. The seek is flagged as a load so it is not mirrored back.
+    _sonosLoadingSong = true;
+    setTimeout(() => { _sonosLoadingSong = false; }, 2500);
+    const pos = Number(r.position) || 0;
+    try { audioEl.currentTime = pos; } catch (_) { /* not seekable yet — the load seek applies later */ }
+    _sonosCastTime = Date.now() - pos * 1000;
+    _sonosCastSeekTo = 0;
+    console.log(`[sonos] speaker already playing this track since ${_mmss(pos)} (server auto-advance) — mirror positioned, not re-cast`);
+  }
   if (r.actualIp && r.actualIp !== S.sonosRoom.ip) {
     console.info(`[sonos] cast response: IP updated ${S.sonosRoom.ip} → ${r.actualIp}`);
     S.sonosRoom = { ...S.sonosRoom, ip: r.actualIp };
@@ -24482,6 +24526,18 @@ function _startSonosPositionSync(ip) {
           }
         }
         _sonosMirrorProbe = { t: _nowMs, pos: _pos, fp: _fp };
+        // The server advanced the speaker for us while this tab was asleep (server
+        // auto-advance, docs/sonos.md): jump to that track — its cast-queue answers
+        // "already playing" and positions the mirror instead of restarting the speaker.
+        if (st.serverAdvanced?.fp && st.serverAdvanced.fp !== _fp && !_sonosLoadingSong) {
+          const i = S.queue.findIndex(s => s.filepath === st.serverAdvanced.fp);
+          if (i >= 0 && i !== S.idx) {
+            console.log(`[sonos] server auto-advanced to "${st.serverAdvanced.fp}" while this tab was asleep — catching up`);
+            _sonosAdvancedFp = _fp;
+            try { Player.playAt(i); } catch (e) { console.error('[sonos] catch-up playAt() threw — Now Playing bar may be stale until the next track change:', e); }
+            return;
+          }
+        }
         // Self-heal: the device is reachable but STOPPED while our local mirror is
         // still playing the same track — the stream dropped or the device idled.
         // Re-cast the current track at the current position. Skipped near a track's

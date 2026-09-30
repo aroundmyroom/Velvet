@@ -157,4 +157,25 @@ describe('Sonos DIDL / transport helpers', async () => {
       assert.match(didl, /<res protocolInfo="http-get:\*:audio\/mpeg:\*" duration="00:13:26">http:\/\/10\.1\.1\.101:3001\/api\/v1\/sonos\/transcode-stream\?token=abc&amp;fp=Music%2Fx\.wav<\/res>/);
     });
   });
+
+  describe('_speakerFinishedVerdict — did a STOPPED speaker finish the track, or drop it?', () => {
+    // Seen live 2026-09-30: El Coco (258 s) cast at 14:15:46, speaker STOPPED at
+    // 14:20:04 = 258 s later — finished. The player's clock was at 3:51 and nothing
+    // advanced; this verdict is what lets the server step in.
+    const castAt = Date.parse('2026-09-30T12:15:46Z');
+    it('says finished once the wall clock has covered the whole track from the seek offset', () => {
+      assert.equal(sonos._speakerFinishedVerdict({ castAt, seekTo: 0, duration: 258, now: castAt + 258_000 }), true);
+      assert.equal(sonos._speakerFinishedVerdict({ castAt, seekTo: 0, duration: 258, now: castAt + 255_000 }), true);   // 3 s tolerance
+      assert.equal(sonos._speakerFinishedVerdict({ castAt, seekTo: 200, duration: 258, now: castAt + 58_000 }), true); // resumed mid-track
+    });
+    it('says not finished for a stop well before the end (a dropped stream)', () => {
+      assert.equal(sonos._speakerFinishedVerdict({ castAt, seekTo: 0, duration: 258, now: castAt + 232_000 }), false);
+      assert.equal(sonos._speakerFinishedVerdict({ castAt, seekTo: 0, duration: 258, now: castAt + 10_000 }), false);
+    });
+    it('never says finished without a cast time or a known duration', () => {
+      assert.equal(sonos._speakerFinishedVerdict({ castAt: 0, duration: 258, now: castAt + 999_000 }), false);
+      assert.equal(sonos._speakerFinishedVerdict({ castAt, duration: 0, now: castAt + 999_000 }), false);
+      assert.equal(sonos._speakerFinishedVerdict({ castAt, duration: null, now: castAt + 999_000 }), false);
+    });
+  });
 });
