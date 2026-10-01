@@ -1,3 +1,23 @@
+## v0.6.6 (2026-10-01)
+
+Docs: explain the two harmless 404s at wizard startup
+
+### Documented: the two `curl: 404` lines some admins see at startup are expected
+
+- Also reported alongside the v0.6.5 crash: two `curl: (22) The requested
+  URL returned error: 404` lines right when the install wizard starts.
+  Confirmed, by directly reproducing the exact reported command with a full
+  trace rather than reading the source alone: these come from the
+  community-scripts engine's own optional custom-banner lookup for apps in
+  its official catalog. Velvet isn't one, so both requests 404 — and the
+  trace shows the engine handling that completely normally, continuing
+  straight on to the regular banner right after. Nothing is broken and
+  nothing needed fixing in `ct/velvet.sh`; the lookup URL is hardcoded in
+  the upstream engine, not something a third-party script can redirect or
+  suppress.
+- [`docs/lxc-incus.md`](docs/lxc-incus.md) now explains this in the
+  troubleshooting table, so it reads as expected rather than alarming.
+
 ## v0.6.5 (2026-10-01)
 
 Fix a live crash on Cancel in the Proxmox LXC / Incus wizard
