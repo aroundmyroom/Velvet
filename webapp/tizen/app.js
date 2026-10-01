@@ -2150,6 +2150,7 @@ function _updatePlayerBar(track) {
   var artSrc = track.artFile ? artUrl(track.artFile, 'm') : '';
   el('pb-art').src      = artSrc || '';
   el('overlay-art').src = artSrc || '';
+  _applyOverlayGlow(artSrc);
 
   // Auto-DJ badge
   if (S.autoDj) show('ov-autodj-badge');
@@ -2165,6 +2166,101 @@ function showPlayerBar() {
 function hidePlayerBar() {
   el('player-bar').classList.add('hidden');
   el('content-area').style.paddingBottom = '0';
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   NOW-PLAYING GLOW — ambient background tint sampled from the current album art.
+   Ported from _applyAlbumArtTheme() in the desktop web player (webapp/app.js),
+   which already does this for the main player UI — the Tizen overlay was the one
+   client still using a fixed purple gradient for every track. Same hue-bucket
+   extraction; the lightness/saturation clamp here is tuned for a dark full-screen
+   glow instead of a small foreground accent (Tizen never reads --accent/--focus
+   from this — those drive D-pad focus rings everywhere and are left alone).
+   ────────────────────────────────────────────────────────────────────────── */
+var _ovGlowLastUrl = null;
+var DEFAULT_OV_GLOW = 'radial-gradient(ellipse at 40% 40%, #1a1040 0%, #08080e 70%)';
+
+function _rgbToHsl(r, g, b) {
+  r /= 255; g /= 255; b /= 255;
+  var max = Math.max(r, g, b), min = Math.min(r, g, b);
+  var h, s, l = (max + min) / 2;
+  if (max === min) { h = s = 0; }
+  else {
+    var d = max - min;
+    s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+    switch (max) {
+      case r: h = ((g - b) / d + (g < b ? 6 : 0)) / 6; break;
+      case g: h = ((b - r) / d + 2) / 6; break;
+      default: h = ((r - g) / d + 4) / 6;
+    }
+  }
+  return [h, s, l];
+}
+
+function _resetOverlayGlow() {
+  el('player-overlay').style.background = DEFAULT_OV_GLOW;
+}
+
+function _applyOverlayGlow(artSrc) {
+  if (!artSrc) { _resetOverlayGlow(); _ovGlowLastUrl = null; return; }
+  if (artSrc === _ovGlowLastUrl) return;
+  _ovGlowLastUrl = artSrc;
+  var img = new Image();
+  img.crossOrigin = 'anonymous';
+  img.onload = function() {
+    try {
+      // 32x32 sample — enough to find the dominant hue without heavy blur cost.
+      var cv = document.createElement('canvas');
+      cv.width = 32; cv.height = 32;
+      var cx = cv.getContext('2d');
+      cx.drawImage(img, 0, 0, 32, 32);
+      var px = cx.getImageData(0, 0, 32, 32).data;
+
+      var BUCKETS = 36;
+      var score = new Float64Array(BUCKETS);
+      var sumH  = new Float64Array(BUCKETS);
+      var sumS  = new Float64Array(BUCKETS);
+      var sumL  = new Float64Array(BUCKETS);
+      var cnt   = new Int32Array(BUCKETS);
+
+      for (var i = 0; i < px.length; i += 4) {
+        var hsl = _rgbToHsl(px[i], px[i + 1], px[i + 2]);
+        var h = hsl[0], s = hsl[1], l = hsl[2];
+        if (l > 0.88 || l < 0.08) continue; // skip near-white / near-black
+        if (s < 0.12) continue;             // skip near-grey
+        var b = Math.min(Math.floor(h * BUCKETS), BUCKETS - 1);
+        score[b] += s * s; // rewards both frequency and vibrancy
+        sumH[b]  += h;
+        sumS[b]  += s;
+        sumL[b]  += l;
+        cnt[b]++;
+      }
+
+      var bestBucket = -1, bestScore = 0;
+      for (var bi = 0; bi < BUCKETS; bi++) {
+        if (score[bi] > bestScore) { bestScore = score[bi]; bestBucket = bi; }
+      }
+      if (bestBucket < 0 || cnt[bestBucket] === 0) { _resetOverlayGlow(); return; }
+
+      var n = cnt[bestBucket];
+      var avgH = sumH[bestBucket] / n;
+      var avgS = sumS[bestBucket] / n;
+      var avgL = sumL[bestBucket] / n;
+      if (avgS < 0.18) { _resetOverlayGlow(); return; }
+
+      var hDeg = Math.round(avgH * 360);
+      // Dark, moody glow — same hue as the art, clamped low so it reads as an
+      // ambient tint behind the controls, not a bright wash across the screen.
+      // Lightness tracks the art's own lightness (brighter covers → slightly
+      // brighter glow) but stays confined to a dark band either way.
+      var glowS = Math.round(Math.min(Math.max(avgS, 0.45), 0.85) * 100);
+      var glowL = Math.round(Math.min(Math.max(avgL * 0.35, 0.12), 0.22) * 100);
+      el('player-overlay').style.background =
+        'radial-gradient(ellipse at 40% 40%, hsl(' + hDeg + ',' + glowS + '%,' + glowL + '%) 0%, #08080e 70%)';
+    } catch (e) { _resetOverlayGlow(); }
+  };
+  img.onerror = function() { _resetOverlayGlow(); };
+  img.src = artSrc;
 }
 
 /* ─────────────────────────────────────────────────────────────────────────────

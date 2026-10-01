@@ -289,6 +289,22 @@ ADMINDATA.getWinDrives();
   } catch (e) { console.debug('[velvet]', e?.message ?? e); }
 })();
 
+// Sidebar badge on Server → Updates: shows the new version number as soon as the
+// admin area opens, so nobody has to visit the page to learn a release is out.
+function _setUpdateNavBadge(info) {
+  const badge = document.getElementById('update-nav-badge');
+  if (!badge) return;
+  const show = !!(info && info.isNewer && info.latest && info.latest.version);
+  badge.textContent = show ? 'v' + info.latest.version : '';
+  badge.style.display = show ? 'inline-flex' : 'none';
+}
+(async () => {
+  try {
+    const res = await API.axios({ method: 'GET', url: `${API.url()}/api/v1/admin/update/check` });
+    _setUpdateNavBadge(res.data);
+  } catch (e) { console.debug('[velvet]', e?.message ?? e); }
+})();
+
 // Handle .modal-close class elements
 document.addEventListener('click', function(e) {
   if (e.target.closest('.modal-close')) modVM.closeModal();
@@ -10853,6 +10869,226 @@ const smartPlaylistView = Vue.component('smart-playlist-view', {
   `,
 });
 
+// Minimal, escape-first Markdown for GitHub release notes: headings, bullets,
+// paragraphs, **bold**, `code` and http(s) links. Nothing else renders as HTML.
+function _mdToHtml(md) {
+  const esc = s => String(s).replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;');
+  const inline = s => esc(s)
+    .replaceAll(/`([^`]+)`/g, '<code>$1</code>')
+    .replaceAll(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+    .replaceAll(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
+  const out = [];
+  let inList = false, para = [];
+  const flushPara = () => { if (para.length) { out.push(`<p>${inline(para.join(' '))}</p>`); para = []; } };
+  const closeList = () => { if (inList) { out.push('</ul>'); inList = false; } };
+  for (const raw of String(md || '').split(/\r?\n/)) {
+    const line = raw.trimEnd();
+    const h = /^(#{1,3})\s+(.*)$/.exec(line);
+    const li = /^\s*[-*]\s+(.*)$/.exec(line);
+    if (h) { flushPara(); closeList(); const lvl = h[1].length + 2; out.push(`<h${lvl}>${inline(h[2])}</h${lvl}>`); }
+    else if (li) { flushPara(); if (!inList) { out.push('<ul>'); inList = true; } out.push(`<li>${inline(li[1])}</li>`); }
+    else if (!line.trim()) { flushPara(); closeList(); }
+    else if (inList && /^\s{2,}/.test(raw)) { out[out.length - 1] = out[out.length - 1].replace(/<\/li>$/, ` ${inline(line.trim())}</li>`); }
+    else { closeList(); para.push(line.trim()); }
+  }
+  flushPara(); closeList();
+  return out.join('\n');
+}
+
+const updateView = Vue.component('update-view', {
+  data() {
+    return {
+      loading: true,
+      checking: false,
+      info: null,          // GET /admin/update/check payload
+      job: { state: 'idle', log: [] },
+      starting: false,
+      backOnline: false,   // after a restart: the server answered again
+      reloadIn: 0,
+      _pollTimer: null,
+    };
+  },
+  computed: {
+    env() { return this.info?.environment || null; },
+    latest() { return this.info?.latest || null; },
+    notesHtml() { return this.latest?.body ? _mdToHtml(this.latest.body) : ''; },
+    canUpdate() { return !!(this.info?.isNewer && this.env?.canSelfUpdate && this.job.state !== 'running' && this.job.state !== 'restarting'); },
+    busy() { return this.job.state === 'running' || this.job.state === 'restarting'; },
+    checks() {
+      const e = this.env; if (!e) return [];
+      const has = code => (e.blockers || []).some(b => b.code === code);
+      return [
+        { key: 'runtime',    ok: e.runtime !== 'docker', value: this.t(e.runtime === 'docker' ? 'admin.update.runtimeDocker' : 'admin.update.runtimeNode') },
+        { key: 'supervisor', ok: e.supervisor !== 'none', warn: e.supervisor === 'none', value: this.t('admin.update.supervisor.' + e.supervisor) },
+        { key: 'git',        ok: e.gitAvailable && e.gitRepo && e.remoteOk !== false, value: e.gitRepo ? (e.branch || 'HEAD') + ' @ ' + String(e.head || '').slice(0, 10) : this.t('admin.update.noGit') },
+        { key: 'clean',      ok: !has('local-changes') && !has('local-commits'), value: has('local-changes') ? (e.dirtyReal || []).join(', ') : this.t('admin.update.cleanTree') },
+        { key: 'user',       ok: e.sameUser && e.writable, value: this.t('admin.update.runsAs', { user: e.processUser || '?' }) + (e.writable ? '' : ' — ' + this.t('admin.update.cannotWrite', { paths: (e.unwritable || []).join(', ') })) },
+        { key: 'npm',        ok: !!e.npmPath, value: e.npmPath || this.t('admin.update.noNpm') },
+      ];
+    },
+    phaseLabel() { return this.job.phase ? this.t('admin.update.phase.' + this.job.phase) : ''; },
+  },
+  async mounted() { await this.load(false); },
+  beforeUnmount() { clearTimeout(this._pollTimer); },
+  methods: {
+    async load(force) {
+      this.checking = true;
+      try {
+        const res = await API.axios({ method: 'GET', url: `${API.url()}/api/v1/admin/update/check${force ? '?force=1' : ''}` });
+        this.info = res.data;
+        _setUpdateNavBadge(res.data);
+        if (res.data.job) this.job = res.data.job;
+        if (this.busy) this.pollJob();
+      } catch (e) {
+        iziToast.error({ title: this.t('admin.update.checkFailed'), message: e?.response?.data?.error || e?.message || '', position: 'topCenter', timeout: 4000 });
+      } finally { this.loading = false; this.checking = false; }
+    },
+    fmtDate(iso) { try { return new Date(iso).toLocaleString(); } catch { return iso || ''; } },
+    confirmUpdate() {
+      const v = this.latest?.version; if (!v) return;
+      adminConfirm(
+        this.t('admin.update.confirmTitle', { version: v }),
+        this.t('admin.update.confirmMsg', { from: this.info.currentVersion, to: v }),
+        this.t('admin.update.confirmLabel'),
+        () => this.start(v),
+      );
+    },
+    async start(version) {
+      this.starting = true;
+      try {
+        const res = await API.axios({ method: 'POST', url: `${API.url()}/api/v1/admin/update/start`, data: { version } });
+        this.job = res.data.job;
+        this.pollJob();
+      } catch (e) {
+        iziToast.error({ title: this.t('admin.update.startFailed'), message: e?.response?.data?.error || e?.message || '', position: 'topCenter', timeout: 6000 });
+      } finally { this.starting = false; }
+    },
+    pollJob() {
+      clearTimeout(this._pollTimer);
+      this._pollTimer = setTimeout(async () => {
+        try {
+          const res = await API.axios({ method: 'GET', url: `${API.url()}/api/v1/admin/update/status` });
+          this.job = res.data.job;
+          this.$nextTick(() => { const el = this.$refs.log; if (el) el.scrollTop = el.scrollHeight; });
+          if (this.job.state === 'restarting') { this.waitForServer(); return; }
+          if (this.job.state === 'running') this.pollJob();
+        } catch {
+          // The process is gone mid-poll — it exited to restart.
+          if (this.job.state === 'running' || this.job.state === 'restarting') { this.job.state = 'restarting'; this.waitForServer(); }
+        }
+      }, 1000);
+    },
+    waitForServer() {
+      clearTimeout(this._pollTimer);
+      const target = this.job.target;
+      this._pollTimer = setTimeout(async () => {
+        try {
+          const res = await API.axios({ method: 'GET', url: `${API.url()}/api/v1/admin/update/status` });
+          if (res.data.currentVersion === target) {
+            this.backOnline = true;
+            this.job = { ...this.job, state: 'done' };
+            this.reloadIn = 5;
+            const tick = () => { if (--this.reloadIn <= 0) { window.location.reload(); return; } this._pollTimer = setTimeout(tick, 1000); };
+            this._pollTimer = setTimeout(tick, 1000);
+            return;
+          }
+        } catch { /* still coming back */ }
+        this.waitForServer();
+      }, 2000);
+    },
+    copy(text) { try { navigator.clipboard.writeText(text); iziToast.success({ title: this.t('admin.update.copied'), position: 'topCenter', timeout: 1500 }); } catch { /* clipboard unavailable */ } },
+  },
+  template: `
+    <div class="container">
+      <div v-if="loading" class="row"><svg class="spinner" width="65px" height="65px" viewBox="0 0 66 66" xmlns="http://www.w3.org/2000/svg"><circle class="spinner-path" fill="none" stroke-width="6" stroke-linecap="round" cx="33" cy="33" r="30"></circle></svg></div>
+      <div v-else>
+
+        <!-- Version -->
+        <div class="row"><div class="col s12"><div class="card"><div class="card-content">
+          <span class="card-title">{{ t('admin.update.title') }}</span>
+          <p style="color:var(--t2);margin-bottom:1rem;">{{ t('admin.update.desc') }}</p>
+          <table><tbody>
+            <tr><td><b>{{ t('admin.update.current') }}</b></td><td>v{{ info.currentVersion }}</td></tr>
+            <tr><td><b>{{ t('admin.update.latest') }}</b></td>
+              <td v-if="latest">v{{ latest.version }}
+                <span v-if="info.isNewer" style="margin-left:.5rem;padding:2px 8px;border-radius:10px;background:var(--primary);color:#fff;font-size:.75rem;">{{ t('admin.update.newVersion') }}</span>
+                <span v-else style="margin-left:.5rem;color:#4caf50;font-size:.85rem;">&#10003; {{ t('admin.update.upToDate') }}</span>
+                <span v-if="latest.publishedAt" style="color:var(--t3);font-size:.8rem;margin-left:.5rem;">{{ t('admin.update.publishedOn', { date: fmtDate(latest.publishedAt) }) }}</span>
+              </td>
+              <td v-else style="color:var(--t3);">{{ info.checkError || '—' }}</td>
+            </tr>
+          </tbody></table>
+          <p v-if="info.checkError && latest" style="color:#e57373;font-size:.8rem;margin-top:.5rem;">{{ info.checkError }}</p>
+        </div>
+        <div class="card-action" style="display:flex;gap:.5rem;flex-wrap:wrap;align-items:center;">
+          <a class="btn" :class="{ disabled: checking }" v-on:click="load(true)">{{ checking ? t('admin.update.checking') : t('admin.update.checkNow') }}</a>
+          <a v-if="latest && latest.htmlUrl" class="btn btn-flat" :href="latest.htmlUrl" target="_blank" rel="noopener" style="margin-left:0;">{{ t('admin.update.viewOnGitHub') }}</a>
+          <span v-if="info.checkedAt" style="color:var(--t3);font-size:.78rem;">{{ t('admin.update.lastChecked', { date: fmtDate(info.checkedAt) }) }}</span>
+        </div></div></div></div>
+
+        <!-- Release notes -->
+        <div class="row" v-if="latest"><div class="col s12"><div class="card"><div class="card-content">
+          <span class="card-title">{{ t('admin.update.notesTitle', { version: latest.version }) }}</span>
+          <p style="color:var(--t3);font-size:.8rem;margin:-.25rem 0 .75rem;">{{ t('admin.update.notesHint') }}</p>
+          <div v-if="notesHtml" class="update-notes" style="max-height:420px;overflow:auto;padding:.75rem 1rem;background:var(--raised);border:1px solid var(--border);border-radius:6px;font-size:.88rem;line-height:1.5;" v-html="notesHtml"></div>
+          <p v-else style="color:var(--t3);">{{ t('admin.update.notesNone') }}</p>
+        </div></div></div></div>
+
+        <!-- Readiness + action -->
+        <div class="row"><div class="col s12"><div class="card"><div class="card-content">
+          <span class="card-title">{{ t('admin.update.readinessTitle') }}</span>
+
+          <div v-if="env && env.runtime === 'docker'" style="margin-bottom:1rem;">
+            <p style="margin-bottom:.5rem;">{{ t('admin.update.dockerDesc') }}</p>
+            <div v-for="cmd in (info.docker ? info.docker.commands : [])" :key="cmd" style="display:flex;align-items:center;gap:.5rem;margin:.25rem 0;">
+              <code style="flex:1;padding:6px 10px;background:var(--raised);border:1px solid var(--border);border-radius:4px;font-size:.82rem;">{{ cmd }}</code>
+              <a class="btn-sm" v-on:click="copy(cmd)">{{ t('admin.update.copy') }}</a>
+            </div>
+          </div>
+
+          <table v-else><tbody>
+            <tr v-for="c in checks" :key="c.key">
+              <td style="width:2rem;text-align:center;"><span :style="{ color: c.ok ? '#4caf50' : (c.warn ? '#ffb74d' : '#e57373') }">{{ c.ok ? '✓' : (c.warn ? '!' : '✗') }}</span></td>
+              <td><b>{{ t('admin.update.check.' + c.key) }}</b></td>
+              <td style="font-family:monospace;font-size:.82rem;color:var(--t2);">{{ c.value }}</td>
+            </tr>
+          </tbody></table>
+
+          <div v-if="env && env.blockers && env.blockers.length && env.runtime !== 'docker'" style="margin-top:.75rem;">
+            <div v-for="b in env.blockers" :key="b.code" style="color:#e57373;font-size:.85rem;margin:.25rem 0;">
+              &#9888; {{ t('admin.update.blocker.' + b.code) }}
+              <span v-if="b.detail && b.detail.length" style="font-family:monospace;color:var(--t2);"> — {{ b.detail.join(', ') }}</span>
+              <div style="color:var(--t3);font-size:.78rem;margin-left:1.2rem;">{{ t('admin.update.fix.' + b.fix, { user: env.processUser || 'velvet', root: env.root }) }}</div>
+            </div>
+          </div>
+          <p v-if="env && env.supervisor === 'none' && env.runtime !== 'docker'" style="color:#ffb74d;font-size:.8rem;margin-top:.5rem;">{{ t('admin.update.noSupervisorWarn') }}</p>
+
+          <!-- Progress -->
+          <div v-if="busy || job.state === 'failed' || job.state === 'done'" style="margin-top:1.25rem;">
+            <div style="display:flex;justify-content:space-between;font-size:.85rem;margin-bottom:.35rem;">
+              <b>{{ job.state === 'failed' ? t('admin.update.failed') : (backOnline ? t('admin.update.updatedTo', { version: job.target }) : (job.state === 'restarting' ? t('admin.update.restarting') : phaseLabel)) }}</b>
+              <span style="color:var(--t2);">{{ job.state === 'failed' ? '' : job.percent + '%' }}</span>
+            </div>
+            <div style="height:10px;background:var(--raised);border:1px solid var(--border);border-radius:5px;overflow:hidden;">
+              <div :style="{ width: (job.state === 'failed' ? 100 : job.percent) + '%', height: '100%', background: job.state === 'failed' ? '#e57373' : (backOnline ? '#4caf50' : 'var(--primary)'), transition: 'width .4s' }"></div>
+            </div>
+            <p v-if="job.state === 'restarting' && !backOnline" style="color:var(--t2);font-size:.82rem;margin-top:.5rem;">{{ t('admin.update.waitingBack') }}</p>
+            <p v-if="backOnline" style="color:#4caf50;font-size:.85rem;margin-top:.5rem;">{{ t('admin.update.reloading', { seconds: reloadIn }) }}</p>
+            <p v-if="job.state === 'failed'" style="color:#e57373;font-size:.85rem;margin-top:.5rem;">{{ job.error }}</p>
+            <pre ref="log" style="margin-top:.75rem;max-height:260px;overflow:auto;padding:.6rem .8rem;background:#0f0f14;color:#cfd3dc;border-radius:6px;font-size:.76rem;line-height:1.4;white-space:pre-wrap;word-break:break-word;">{{ (job.log || []).join('\\n') }}</pre>
+          </div>
+        </div>
+        <div class="card-action" v-if="!env || env.runtime !== 'docker'">
+          <a class="btn" :class="{ disabled: !canUpdate || starting }" v-on:click="canUpdate && !starting && confirmUpdate()">
+            {{ latest ? t('admin.update.btnUpdate', { version: latest.version }) : t('admin.update.btnNoTarget') }}
+          </a>
+          <span v-if="!info.isNewer && latest" style="color:var(--t3);font-size:.8rem;margin-left:.75rem;">{{ t('admin.update.nothingToDo') }}</span>
+        </div></div></div></div>
+
+      </div>
+    </div>`,
+});
+
 const vm = new Vue({
   el: '#content',
   components: {
@@ -10863,6 +11099,7 @@ const vm = new Vue({
     'migrate-view': migrateView,
     'advanced-view': advancedView,
     'info-view': infoView,
+    'update-view': updateView,
     'transcode-view': transcodeView,
     'server-audio-view': serverAudioView,
     'sonos-view': sonosView,

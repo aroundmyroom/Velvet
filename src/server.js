@@ -59,6 +59,7 @@ import * as dlnaApi from './api/dlna.js';
 import * as sonosApi from './api/sonos.js';
 import * as authPasskeyApi from './api/auth-passkey.js';
 import * as authPairApi from './api/auth-pair.js';
+import * as updateApi from './api/update.js';
 import * as queueApi from './api/queue.js';
 import * as smartPlaylistMlApi from './smartplaylist/routes.js';
 import WebError, { isClientRefusal } from './util/web-error.js';
@@ -313,6 +314,7 @@ export async function serveIt(configFile) {
 
   scannerApi.setup(velvet);
   adminApi.setup(velvet);
+  updateApi.setup(velvet);
   authPasskeyApi.setup(velvet);
   authPairApi.setup(velvet);
   dbApi.setup(velvet);

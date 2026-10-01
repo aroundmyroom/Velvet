@@ -918,6 +918,18 @@ small local window for instant boot, then lazy-loads the rest from here.
 
 ---
 
+## Updates — Admin *(Velvet)*
+
+In-app updater (Admin → Updates). See `docs/updates.md`. All admin-only.
+
+| Method | Endpoint | Body / Params | Description |
+|---|---|---|---|
+| `GET` | `/api/v1/admin/update/check` | `?force=1` | Installed version, latest GitHub release (`{ version, tag, name, publishedAt, htmlUrl, body, assets }` — drafts/pre-releases ignored; cached 30 min unless `force=1`), `isNewer`, `checkError`, the environment checklist (`runtime`, `supervisor`, git state, process user, write access, `npmPath`, `blockers[]`, `canSelfUpdate`), `docker` pull hints when inside a container, and the current `job`. Never changes anything. |
+| `POST` | `/api/v1/admin/update/start` | `{ version }` | Starts the update job. `version` must equal the latest release the check returned (the notes the admin read are the notes for this version). 400 when blocked or already on it, 409 when a job is running. Runs through the background-task broker (never overlaps a scan): git fetch, fast-forward to the tag, `npm install --omit=dev` if the lockfile changed, verify, then exit for the supervisor to restart (or re-exec without one). Rolls back to the previous commit on failure. |
+| `GET` | `/api/v1/admin/update/status` | — | `{ currentVersion, job: { state: idle\|running\|restarting\|failed\|done, target, phase, percent, log[], startedAt, finishedAt, error, startedBy } }` — the page polls this every second while a job runs. |
+
+---
+
 ## Admin — Import / Export *(Velvet)*
 
 Export is built in the background; poll for status before downloading.

@@ -1,3 +1,44 @@
+## v0.6.0 (2026-10-01)
+
+In-App Updates, Samsung TV Now Playing Matches the Album Art
+
+### Added: update Velvet from the admin area (Admin → Updates)
+
+- A new **Updates** page under Server shows the installed version next to the
+  latest GitHub release and that release's notes. The sidebar item itself wears
+  a red badge with the new version number as soon as the admin area opens, so a
+  release is noticed without visiting the page. Reading the notes changes
+  nothing — updating is a separate, explicitly confirmed step, and only an admin
+  can see the page or press the button.
+- Before offering it, the page checks whether *this* install can update itself
+  and shows each check with a ✓/✗: bare-metal git checkout pointed at the official
+  repository, no local changes or local commits, the OS user Velvet runs as can
+  write the application folder, npm available, and what will restart the service
+  (systemd / pm2 / nothing). Every ✗ names the fix — `chown -R <user> <folder>`,
+  commit or revert the listed files, and so on — rather than failing halfway.
+- The update itself does what `docs/install.md` tells you to do by hand: `git
+  fetch`, fast-forward to the release tag (staying on your branch, so a later
+  manual `git pull` still works), `npm install --omit=dev` only when the lockfile
+  changed, verify, then exit for systemd/pm2 to restart (or, with no service
+  manager, start a new copy of itself). Every step's output — including npm's —
+  streams to the page as a progress bar and live log; the page then waits for
+  the server to come back on the new version and reloads itself. A failure in the
+  middle rolls the checkout back to the previous version and leaves Velvet running.
+- Inside Docker the page checks and shows release notes too, but updates by the
+  only correct route there: it prints the `docker pull` / `docker compose up -d`
+  commands for the new image tag (or use Portainer, Dockhand, Watchtower). See
+  `docs/updates.md`.
+
+### Added: Samsung TV Now Playing screen tints itself from the album art
+
+- The Samsung TV app's full-screen Now Playing background was a fixed purple
+  gradient for every track. It now samples the current album art's dominant
+  colour and tints the glow to match, the same dominant-colour extraction the
+  desktop web player already uses for its "Dynamic accent colour" option —
+  Tizen was the one client still using a static colour. Kept deliberately
+  subtle (a dark, moody tint, not a bright wash) and scoped to just the Now
+  Playing background; D-pad focus colours and the rest of the UI are unchanged.
+
 ## v0.5.30 (2026-09-30)
 
 Sonos Keeps Playing While the Browser Sleeps

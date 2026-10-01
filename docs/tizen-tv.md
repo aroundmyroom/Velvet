@@ -11,6 +11,9 @@ standard TV remote.
   Auto-DJ, streamed straight from your own Velvet server
 - Gapless-friendly playback, waveform seek bar, VU meter and a built-in
   MilkDrop-style visualizer
+- Now Playing screen tints its background glow to match each track's album art
+  (same dominant-colour extraction as the desktop web player's "Dynamic accent
+  colour" feature)
 - Ships **without any server URL or credentials baked in** — every user signs in
   to their own server on the TV
 - The **app version** is shown on the sign-in screen (e.g. `v0.4.1`) so you can

@@ -74,6 +74,12 @@ systemctl restart music.service   # or: pm2 restart all
 
 That step refreshes production dependencies for new releases and security fixes.
 
+Or let Velvet do exactly those steps for you: **Admin → Updates** checks GitHub
+for the latest release, shows its release notes, and — when the checklist on
+that page passes (git checkout, write access for the service user, no local
+changes) — fetches the release, installs changed dependencies and restarts via
+systemd/pm2, with live progress. See [`docs/updates.md`](updates.md).
+
 ---
 
 ## Switching from the old repo (one-time)
