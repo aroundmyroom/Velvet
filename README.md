@@ -6,6 +6,7 @@
 [![License](https://img.shields.io/badge/license-GPL--3.0-6d28d9?style=for-the-badge)](LICENSE)
 [![Discord](https://img.shields.io/badge/Discord-Velvet-5865F2?logo=discord&logoColor=white&style=for-the-badge)](https://discord.gg/KfsTCYrTkS)
 [![Docker](https://img.shields.io/badge/Docker-ghcr.io-2496ED?logo=docker&logoColor=white&style=for-the-badge)](https://github.com/aroundmyroom/Velvet/pkgs/container/velvet)
+[![Proxmox](https://img.shields.io/badge/Proxmox-LXC%20%2F%20Incus-E57000?logo=proxmox&logoColor=white&style=for-the-badge)](docs/lxc-incus.md)
 [![Samsung TV](https://img.shields.io/badge/Samsung%20TV-Tizen%20app-1428A0?logo=samsung&logoColor=white&style=for-the-badge)](https://github.com/aroundmyroom/Velvet/blob/main/docs/tizen-tv.md)
 
 Velvet streams your local music collection to any browser, phone, **Samsung Smart TV**, or Subsonic-compatible app — with intelligent Auto-DJ, metadata enrichment, album-art management, and a Milkdrop visualizer. No cloud. No subscription. Your music, your server.
