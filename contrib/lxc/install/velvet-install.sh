@@ -20,8 +20,18 @@
 # environment, Incus's install-env builder forwards only a fixed allow-list
 # that does not include app-specific variables). ../ct/velvet.sh instead
 # writes /etc/velvet.env directly into the container with `pct push` /
-# `incus file push` right after this install finishes, and restarts the
-# service — see the comment there for the full reasoning.
+# `incus file push` right after this install finishes.
+#
+# --no-start, always: Velvet must not boot here, before that env file and
+# any library mount exist. Reported from a real install: without this, the
+# first boot happens right here with no folders configured at all, then
+# ../ct/velvet.sh's later restart was relying on a *second* boot's
+# first-run bootstrap to pick up the folder — one more moving part than
+# necessary, and the one place it was seen not to produce a configured
+# library. ../ct/velvet.sh does the one real `systemctl start velvet` once
+# everything is actually in place, so first-run bootstrap only ever has to
+# work once, the same as it does for a Docker container that never starts
+# without its environment already set.
 
 source /dev/stdin <<<"$FUNCTIONS_FILE_PATH"
 color
@@ -46,8 +56,8 @@ VELVET_VERBOSE_FLAG=()
 [ "${VERBOSE:-no}" = "yes" ] && VELVET_VERBOSE_FLAG=(--verbose)
 
 msg_info "Installing Velvet (this runs git clone + npm ci — it can take a few minutes)"
-/tmp/velvet-install.sh --mode install "${VELVET_VERBOSE_FLAG[@]}"
-msg_ok "Installed Velvet"
+/tmp/velvet-install.sh --mode install --no-start "${VELVET_VERBOSE_FLAG[@]}"
+msg_ok "Installed Velvet (not started yet — the wizard starts it once your library is attached)"
 
 motd_ssh
 customize

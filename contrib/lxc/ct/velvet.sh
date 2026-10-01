@@ -538,8 +538,15 @@ if [ "$MUSIC_SOURCE_TYPE" != "skip" ]; then
   fi
   rm -f "$VELVET_ENV_FILE"
   "${_velvet_exec[@]}" chmod 600 /etc/velvet.env
-  "${_velvet_exec[@]}" systemctl restart velvet
 fi
+
+# The one and only time Velvet starts: install/velvet-install.sh installed it
+# with --no-start specifically so this is it — the mount (if any) and
+# /etc/velvet.env (if any) are already in place, so first-run bootstrap only
+# ever has to work on this one boot, not race a second restart to catch up.
+msg_info "Starting Velvet"
+"${_velvet_exec[@]}" systemctl start velvet
+msg_ok "Started Velvet"
 
 if is_incus_lxc_backend; then
   VELVET_IP="${IP:-$(incus exec "$CT_NAME" -- hostname -I 2>/dev/null | awk '{print $1}')}"

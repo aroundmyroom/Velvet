@@ -128,8 +128,13 @@ Two scripts, each independently useful:
 
 - **`contrib/lxc/ct/velvet.sh`** — the container-creation wizard described
   above. It creates the container via the community-scripts engine, then
-  calls the script above *inside* the new container to do the actual install.
-  For updates it skips straight to calling the installer's `--mode update`
+  calls the script above *inside* the new container with `--no-start` — it
+  installs Velvet but deliberately does not start it yet. The wizard then
+  finishes setting up the library (writing the mount, pushing
+  `/etc/velvet.env`), and only then starts the service — once, with
+  everything already in place, the same guarantee a Docker container gets
+  from never starting without its environment already configured. For
+  updates it skips straight to calling the installer's `--mode update`
   inside the existing container.
 
 Nothing in Velvet's own application code changed for this — both scripts
@@ -176,6 +181,8 @@ an NFS/SMB share instead if one is available on your network.
 | `Could not fetch install/velvet-install.sh` | The engine's `COMMUNITY_SCRIPTS_URL` didn't resolve to this repo. If you forked/copied `ct/velvet.sh`, make sure the `export COMMUNITY_SCRIPTS_URL=...` line near the top still points at a repo that has `contrib/lxc/ct/` and `contrib/lxc/install/`. |
 | Update says "No Velvet installation found" | It's looking for a git checkout at `/opt/velvet` inside the container. If you installed to a different `--install-dir`, update by hand instead: `pct exec <CTID> -- /tmp/velvet-install.sh --mode update --install-dir <path>` (or `incus exec`). |
 | Velvet can't see/write a bind-mounted music folder | See **Music library permissions** above — almost always the unprivileged UID remap. |
+| The mount shows in `mount`/`df` inside the container, but Velvet shows no folder and no library at all | Fixed — reported from a real install that hit this. The mount was fine; Velvet's own first-run folder bootstrap just hadn't run against it yet, from an earlier version of the wizard that started Velvet once with nothing configured and relied on a second restart to catch up. The wizard now starts Velvet exactly once, after the mount and `/etc/velvet.env` already exist, so this shouldn't reproduce on a fresh install. If you hit it anyway: `pct exec <CTID> -- systemctl restart velvet` (or `incus exec`) forces the bootstrap to run again. |
+| Admin → Folders → Browse fails with "Failed to get directory content" (server log shows `ENOENT ... scandir '/home/velvet'`) | Fixed — reported from a real install. The `velvet` system user had no real home directory, so the file-browser's default starting point (your OS home folder, when no path is given yet) pointed at one that didn't exist. The installer now gives it an explicit, already-existing home (`/opt/velvet`). Browse into `/music` directly if you hit this on an older install. |
 | The host-side share test fails but you know the share is fine | The host and the container can have a genuinely different network path to the same server (different VLAN, firewall rule scoped to container IPs, etc.) — choose "proceed anyway, unverified" when offered; the real mount still happens inside the container afterward. |
 | The host-side test says it couldn't install `nfs-common`/`cifs-utils` | The host isn't Debian/Ubuntu (no `apt-get`) — install the matching client package yourself first, or choose "proceed anyway" to skip verification. |
 | "Mounting the NFS/CIFS share failed" (inside the container, after creation) | Check `apt-get`/`mount` output printed above the error. Common causes: the NFS/CIFS service isn't reachable from the container's network, the export doesn't allow this container's IP, or (CIFS) the SMB version needs adjusting — the mount-options prompt (NFS) or a manual edit of `/etc/fstab` inside the container (CIFS, `vers=3.0` by default) covers that. |

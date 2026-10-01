@@ -123,6 +123,31 @@ describe('contrib/shared/velvet-install.sh — the LXC/Incus installer', () => {
     assert.doesNotMatch(stdout, /Would write \/etc\/velvet\.env/);
   });
 
+  it('--no-start enables Velvet without starting it, so the caller controls the one real boot', () => {
+    const { stdout, status } = run(['--mode', 'install', '--dry-run', '--no-start', '--ref', 'v9.9.9']);
+    assert.equal(status, 0);
+    assert.match(stdout, /systemctl enable velvet/);
+    assert.doesNotMatch(stdout, /systemctl enable --now velvet/);
+    assert.match(stdout, /not started yet/);
+  });
+
+  it('without --no-start, install still enables and starts Velvet immediately (standalone use is unaffected)', () => {
+    const { stdout, status } = run(['--mode', 'install', '--dry-run', '--ref', 'v9.9.9']);
+    assert.equal(status, 0);
+    assert.match(stdout, /systemctl enable --now velvet/);
+  });
+
+  it('the system user gets an explicit, already-existing home directory, not the useradd default', () => {
+    // Regression test: useradd --no-create-home without --home-dir still
+    // records /home/<user> in /etc/passwd, a directory that then never
+    // exists — the admin UI's file-browser defaulting an empty path to the
+    // OS home directory hit a real ENOENT from this on a live install.
+    const { stdout, status } = run(['--mode', 'install', '--dry-run', '--ref', 'v9.9.9']);
+    assert.equal(status, 0);
+    assert.match(stdout, /useradd --system --no-create-home --home-dir \/opt\/velvet/);
+    assert.doesNotMatch(stdout, /useradd --system --no-create-home --shell/);
+  });
+
   it('dry-run update on a non-existent install fails clearly instead of touching the host', () => {
     const { stdout, status } = run([
       '--mode', 'update',

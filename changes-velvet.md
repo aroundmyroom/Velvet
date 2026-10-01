@@ -1,3 +1,30 @@
+## v0.6.7 (2026-10-01)
+
+Fix two real bugs reported from a live NFS install
+
+### Fixed: Proxmox LXC / Incus — the music library wasn't configured after a successful mount
+
+- Reported from a real install: the NFS share mounted correctly at the OS
+  level, but Velvet itself showed no folder and no library at all. Cause:
+  the wizard started Velvet once, immediately after creating the container,
+  before the mount or the first-run environment file existed, then relied
+  on a second restart afterward to catch up — one unnecessary moving part,
+  and exactly where it went wrong on this install. Fixed by removing it:
+  the installer now installs Velvet without starting it, the wizard
+  finishes mounting the library and writing the environment file, and only
+  then starts Velvet — once, already fully configured, the same guarantee a
+  Docker container gets from never starting without its environment set.
+
+### Fixed: Admin → Folders → Browse failed with "Failed to get directory content"
+
+- Same install's server log showed `ENOENT ... scandir '/home/velvet'`. The
+  system user Velvet runs as never had a real home directory, but Linux
+  still recorded `/home/velvet` as one — the admin file-browser's default
+  starting point when opened with no path yet. Fixed: the installer now
+  gives that user an explicit home directory that actually exists.
+- Both fixes have new automated test coverage in
+  `test/integration/contrib-lxc-installer.test.cjs`.
+
 ## v0.6.6 (2026-10-01)
 
 Docs: explain the two harmless 404s at wizard startup

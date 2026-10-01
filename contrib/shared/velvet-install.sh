@@ -35,6 +35,7 @@ YOUTUBE_SUBDIR=""
 UPDATE_STRATEGY="auto"
 VERBOSE=0
 DRY_RUN=0
+NO_START=0
 LOG_FILE="/var/log/velvet-installer.log"
 RELEASES_API="https://api.github.com/repos/aroundmyroom/Velvet/releases/latest"
 NODE_MAJOR_MIN=22
@@ -68,6 +69,11 @@ Velvet installer/updater for LXC (Proxmox) and Incus containers.
                                 update if that isn't reachable. api/shell force one path.
   -v, --verbose                 stream every command's output instead of a one-line summary
   --dry-run                     print what would run/be written, change nothing
+  --no-start                    install mode only: enable the service but don't start it yet —
+                                for callers that still need to finish configuring the
+                                environment (mount a library, write /etc/velvet.env) before
+                                Velvet's very first boot, so first-run bootstrap only ever
+                                has to work once
   -h, --help                    this text
 EOF
 }
@@ -101,6 +107,7 @@ while [ $# -gt 0 ]; do
     --update-strategy=*) UPDATE_STRATEGY="${1#*=}"; shift ;;
     -v|--verbose) VERBOSE=1; shift ;;
     --dry-run) DRY_RUN=1; shift ;;
+    --no-start) NO_START=1; shift ;;
     -h|--help) usage; exit 0 ;;
     *) msg_error "Unknown argument: $1"; usage; exit 2 ;;
   esac
@@ -212,7 +219,16 @@ do_install() {
   resolve_latest_ref
 
   if ! id "$SERVICE_USER" >/dev/null 2>&1; then
-    run_step "Creating system user $SERVICE_USER" useradd --system --no-create-home --shell /usr/sbin/nologin "$SERVICE_USER"
+    # --home-dir explicitly, not left to useradd's own default: without it,
+    # useradd still records /home/<user> as the account's home directory
+    # even with --no-create-home (that flag only skips creating it on disk,
+    # it doesn't change what's written to /etc/passwd) — a directory that
+    # then never exists. The admin UI's file-browser defaults an empty path
+    # to the OS home directory, so opening it with no folder configured yet
+    # hit `ENOENT: no such file or directory, scandir '/home/velvet'`,
+    # reported from a real install. Pointing it at $INSTALL_DIR instead
+    # means it's always a real, already-existing directory.
+    run_step "Creating system user $SERVICE_USER" useradd --system --no-create-home --home-dir "$INSTALL_DIR" --shell /usr/sbin/nologin "$SERVICE_USER"
   else
     msg_ok "System user $SERVICE_USER already exists"
   fi
@@ -260,10 +276,15 @@ WantedBy=multi-user.target" 644
 
   run_step "Reloading systemd" systemctl daemon-reload
   run_step "Verifying the entry point parses" env -C "$INSTALL_DIR" node --check cli-boot-wrapper.js
-  run_step "Enabling and starting Velvet" systemctl enable --now velvet
 
   local ip; ip="$(hostname -I 2>/dev/null | awk '{print $1}')"
-  msg_ok "Velvet is installed and running: http://${ip:-<container-ip>}:3000"
+  if [ "$NO_START" = "1" ]; then
+    run_step "Enabling Velvet (not starting yet)" systemctl enable velvet
+    msg_ok "Velvet is installed, not started yet — start it once the environment is ready"
+  else
+    run_step "Enabling and starting Velvet" systemctl enable --now velvet
+    msg_ok "Velvet is installed and running: http://${ip:-<container-ip>}:3000"
+  fi
 }
 
 # ── update ───────────────────────────────────────────────────────────────
