@@ -242,6 +242,8 @@
   "admin.nav.importExport": "Import - Export",
   "admin.nav.about": "Over",
   "admin.nav.updates": "Updates",
+  "admin.openMode.banner": "Er is geen beheerdersaccount ingesteld — dit exemplaar is open voor iedereen die het kan bereiken. Maak nu een beheerdersaccount aan.",
+  "admin.openMode.cta": "Beheerdersaccount aanmaken",
   "admin.update.title": "Software-update",
   "admin.update.desc": "Controleert op GitHub wat de nieuwste Velvet-release is. De release-notes lezen verandert niets — updaten is een aparte, expliciete stap hieronder.",
   "admin.update.current": "Geïnstalleerd:",

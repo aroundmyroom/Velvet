@@ -80,6 +80,45 @@ function update_script() {
   exit
 }
 
+# ── override the engine's own description() ─────────────────────────────────
+# Replaces it entirely rather than tweaking it: the real one (pve/backend.func)
+# writes an "Open Script Page" badge to https://community-scripts.org/scripts/
+# velvet, which 404s — Velvet isn't in that catalog — and a "Sponsoring &
+# Donations" badge to community-scripts' own donate page, which has nothing to
+# do with this project. Its GitHub/Discussions/Issues links also silently
+# default to community-scripts' OWN ProxmoxVE repo unless $REPO_SLUG is set,
+# which nothing here was setting — so even the one link that should have been
+# correct wasn't. Reported directly: "you cannot use this in proxmox as we
+# are not an official script" and "you can only show our github page." This
+# replacement does exactly that: a link to this repo, nothing else. A bash
+# function defined after the engine is sourced simply shadows its same-named
+# one — the same mechanism already used for update_script() above.
+function description() {
+  if is_incus_lxc_backend; then
+    IP="${IP:-$(incus exec "$CT_NAME" -- hostname -I 2>/dev/null | awk '{print $1}')}"
+    incus config set "$CT_NAME" user.description \
+      "Velvet LXC — github.com/aroundmyroom/Velvet (not an official community-scripts catalog entry)" \
+      2>/dev/null || true
+  else
+    IP="${IP:-$(pct exec "$CTID" ip a s dev eth0 2>/dev/null | awk '/inet / {print $2}' | cut -d/ -f1)}"
+    local desc
+    desc=$(cat <<'EOF'
+<div align='center'>
+  <h2 style='font-size: 24px; margin: 20px 0;'>Velvet LXC</h2>
+  <p style='margin: 8px 0 16px; font-size: 12px; color: #888;'>Not an official community-scripts catalog entry.</p>
+  <p style='margin: 12px 0;'>
+    <a href='https://github.com/aroundmyroom/Velvet' target='_blank' rel='noopener noreferrer' style='text-decoration: none; color: #00617f;'>
+      github.com/aroundmyroom/Velvet
+    </a>
+  </p>
+</div>
+EOF
+    )
+    pct set "$CTID" -description "$desc" 2>/dev/null || true
+  fi
+  export IP
+}
+
 # ── Velvet-specific input: where does the music library live? ───────────────
 # This is the one question genuinely worth asking here, not deferred to the
 # admin UI: it decides what gets attached to the container at creation time
@@ -410,9 +449,28 @@ esac
 # at creation time). Harmless to export when not needed; Incus ignores it
 # and gets the equivalent handled explicitly after creation below, since its
 # backend has no matching pre-creation hook.
+#
+# var_mount_fs is set alongside it, not just ALLOW_MOUNT_FS — reported from
+# a real install: the Advanced Settings wizard's own "Mount Filesystems"
+# step (ui/advanced.func) seeds its prompt from var_mount_fs, not
+# ALLOW_MOUNT_FS, and — regardless of whether the admin changes it —
+# unconditionally overwrites ALLOW_MOUNT_FS with whatever that step ends
+# up holding once the wizard finishes. Going through Advanced Settings
+# with only ALLOW_MOUNT_FS set meant the prompt showed empty and silently
+# discarded the mount feature this container actually needs. Setting both
+# means the prompt now shows "nfs"/"cifs" already filled in — visible
+# confirmation the admin can see for themselves — and survives either way,
+# whether they accept it as shown or go through Default Settings and never
+# see that screen at all.
 case "$MUSIC_SOURCE_TYPE" in
-  nfs) export ALLOW_MOUNT_FS="nfs" ;;
-  cifs) export ALLOW_MOUNT_FS="cifs" ;;
+  nfs)
+    export ALLOW_MOUNT_FS="nfs" var_mount_fs="nfs"
+    msg_info "NFS mount support will be enabled on this container (mount=nfs)"
+    ;;
+  cifs)
+    export ALLOW_MOUNT_FS="cifs" var_mount_fs="cifs"
+    msg_info "SMB/CIFS mount support will be enabled on this container (mount=cifs)"
+    ;;
 esac
 
 start

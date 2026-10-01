@@ -111,6 +111,23 @@ p { margin: 0 0 .75rem; color: var(--t2); }
 #sidenav-cover { display: none; position: fixed; inset: 0; background: rgba(0,0,0,.5); z-index: 99; }
 #sidenav-cover.open { display: block; }
 
+/* ── Open-mode banner ──────────────────────────────────────────
+   Persistent across every admin view (lives in #content, above the
+   view-switcher), shown only while config.program.users is empty — the
+   server accepts anyone as admin in that state. Not dismissible: it
+   reflects a real condition, not a one-time tip, and goes away on its own
+   once an account exists. */
+.open-mode-banner {
+  display: flex; align-items: center; gap: .75rem; flex-wrap: wrap;
+  padding: .75rem 1.25rem; margin: 0 0 1.25rem;
+  background: rgba(248,113,113,.12); border: 1px solid rgba(248,113,113,.35);
+  border-radius: 10px; color: var(--t1);
+}
+.open-mode-banner svg { flex-shrink: 0; color: var(--red); }
+.open-mode-banner-text { flex: 1 1 280px; font-size: .88rem; line-height: 1.5; }
+.open-mode-banner-text strong { color: var(--red); }
+.open-mode-banner .btn { flex-shrink: 0; background: var(--red); }
+
 /* ── Cards ─────────────────────────────────────────────────── */
 .card { background: var(--card); border: 1px solid var(--border); border-radius: 10px; margin-bottom: 1.25rem; overflow: hidden; }
 .card-content { padding: 1.25rem 1.5rem; }

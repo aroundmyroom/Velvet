@@ -52,6 +52,16 @@ plain-text menu on hosts without `whiptail`):
 4. **Skip for now** — leave `/music` unset; set the library up from the
    admin UI once Velvet is running.
 
+The wizard doesn't ask for an admin username/password — no real app in
+this ecosystem prompts for credentials at container-creation time, and
+asking for one in a plain shell prompt isn't the right place for it either.
+Velvet starts in **open mode** (no login required) until you create an
+account, same as it does for every other install method. You won't miss
+that it's unconfigured: the admin area itself shows a persistent banner —
+*"No admin account is configured — this instance is open to anyone who can
+reach it"* — with a button straight to creating one, visible on every
+screen until you do.
+
 **Options 2 and 3 are verified immediately, before the container is
 created**: right after the details are entered, the wizard does a real
 tentative mount — on this host, read-only, then unmounts it — not just a
@@ -76,6 +86,16 @@ there's no equivalent pre-creation hook, so it's set directly
 (`security.syscalls.intercept.mount*`) right after creation, which requires
 one container restart to take effect — the wizard does this and waits for
 the container to come back before mounting.
+
+**On Proxmox, if you go into Advanced Settings during container creation**,
+you'll see this confirmed directly: a "Mount Filesystems" step showing
+`nfs` or `cifs` already filled in — that's the same thing `ALLOW_MOUNT_FS`
+set, shown back to you for confirmation, not a separate setting to turn on
+yourself. Leave it as shown and continue. (An earlier version of the wizard
+only set half of what that step reads, so going through Advanced Settings
+there would silently show it empty and drop the mount feature entirely —
+fixed.) Choosing Default Settings skips that screen entirely; the feature
+is still applied either way.
 
 When it finishes it prints the URL: `http://<container-ip>:3000`. The admin
 account and any extra library folders (Radio Recordings, YouTube downloads,
@@ -179,6 +199,7 @@ an NFS/SMB share instead if one is available on your network.
 |---|---|
 | Two `curl: (22) The requested URL returned error: 404` lines right at the start, before anything else shows | **Harmless, confirmed by reproducing it directly.** The engine looks up an optional custom ASCII-art banner for the app at `community-scripts/core`'s own `headers/ct/velvet` and `headers/ct/pve/velvet` — a feature for apps listed in their official catalog. Velvet isn't one, so both 404, the engine prints the raw curl error (this one specific lookup isn't silenced the way most of its other network calls are) and falls straight through to the normal plain-text banner. The script continues completely normally right after. This isn't something `ct/velvet.sh` can suppress — the lookup URL is hardcoded in the upstream engine, not derived from `COMMUNITY_SCRIPTS_URL` — and isn't anything wrong with your setup. |
 | `Could not fetch install/velvet-install.sh` | The engine's `COMMUNITY_SCRIPTS_URL` didn't resolve to this repo. If you forked/copied `ct/velvet.sh`, make sure the `export COMMUNITY_SCRIPTS_URL=...` line near the top still points at a repo that has `contrib/lxc/ct/` and `contrib/lxc/install/`. |
+| The Proxmox container's Summary/Notes shows "Open Script Page" and "Sponsoring & Donations" badges | **Fixed, reported from a real install.** The engine's own summary writer links those to `community-scripts.org`'s catalog page and donate page for the app — neither applies, since Velvet isn't in that catalog; the Open Script Page link 404'd. Its GitHub/Discussions/Issues links also defaulted to community-scripts' own repo rather than this one, since nothing was telling it otherwise. `ct/velvet.sh` now writes its own container description instead: a plain link to this repo, nothing else. |
 | Update says "No Velvet installation found" | It's looking for a git checkout at `/opt/velvet` inside the container. If you installed to a different `--install-dir`, update by hand instead: `pct exec <CTID> -- /tmp/velvet-install.sh --mode update --install-dir <path>` (or `incus exec`). |
 | Velvet can't see/write a bind-mounted music folder | See **Music library permissions** above — almost always the unprivileged UID remap. |
 | The mount shows in `mount`/`df` inside the container, but Velvet shows no folder and no library at all | Fixed — reported from a real install that hit this. The mount was fine; Velvet's own first-run folder bootstrap just hadn't run against it yet, from an earlier version of the wizard that started Velvet once with nothing configured and relied on a second restart to catch up. The wizard now starts Velvet exactly once, after the mount and `/etc/velvet.env` already exist, so this shouldn't reproduce on a fresh install. If you hit it anyway: `pct exec <CTID> -- systemctl restart velvet` (or `incus exec`) forces the bootstrap to run again. |

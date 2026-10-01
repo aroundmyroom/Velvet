@@ -19,12 +19,12 @@
   <script defer src="../assets/js/lib/izi-toast.js"></script>
   <link rel="stylesheet" href="../assets/css/izi-toast.css">
   <link rel="stylesheet" href="../assets/css/spinner.css">
-  <link rel="stylesheet" href="index.css?v=0.6.7-e1755727">
+  <link rel="stylesheet" href="index.css?v=0.6.8-9abba959">
 
   <script src="../assets/js/i18n.js"></script>
   <script src="../assets/js/api.js"></script>
 
-  <script src="admin-init-head.js?v=0.6.7-626d739f"></script>
+  <script src="admin-init-head.js?v=0.6.8-626d739f"></script>
 </head>
 
 <body>
@@ -243,6 +243,11 @@
   <div id="sidenav-cover"></div>
 
   <div id="content">
+    <div class="open-mode-banner" v-if="openMode">
+      <svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+      <span class="open-mode-banner-text">{{ t('admin.openMode.banner') }}</span>
+      <button type="button" class="btn" @click="goToUsersView">{{ t('admin.openMode.cta') }}</button>
+    </div>
     <component :key="componentKey" v-bind:is="currentViewMain" class="content-switcher"></component>
   </div>
 
@@ -279,8 +284,8 @@
     </button>
   </div>
 
-  <script src="admin-init-body.js?v=0.6.7-20077639"></script>
-  <script defer src="index.js?v=0.6.7-bf3aa575"></script>
+  <script src="admin-init-body.js?v=0.6.8-20077639"></script>
+  <script defer src="index.js?v=0.6.8-a3dc0fe6"></script>
 
   <!-- Custom tooltip — same system as player -->
   <div id="tip-box"></div>

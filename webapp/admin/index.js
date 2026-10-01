@@ -11132,7 +11132,15 @@ const vm = new Vue({
   },
   data: {
     currentViewMain: 'folders-view',
-    componentKey: false
+    componentKey: false,
+    openMode: false
+  },
+  methods: {
+    goToUsersView() {
+      const el = document.querySelector('[data-admin-view="users-view"]');
+      if (el) changeView('users-view', el);
+      else this.currentViewMain = 'users-view';
+    }
   }
 });
 
@@ -11153,6 +11161,18 @@ function changeView(viewName, el){
   // close nav on mobile
   closeSideMenu();
 }
+
+// Open-mode banner: persistent across every admin view while no account
+// exists at all — config.program.users empty means the server grants
+// admin to anyone who reaches it, not just a quirk of this one screen.
+// /api/v1/ping/public is unauthenticated by design precisely so this can
+// be checked without a noisy 401 (see its comment in src/server.js).
+(async () => {
+  try {
+    const res = await API.axios({ method: 'GET', url: `${API.url()}/api/v1/ping/public` });
+    vm.openMode = res.data && res.data.hasUsers === false;
+  } catch (e) { console.debug('[velvet]', e?.message ?? e); }
+})();
 
 const fileExplorerModal = Vue.component('file-explorer-modal', {
   data() {

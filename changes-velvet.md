@@ -1,3 +1,40 @@
+## v0.6.8 (2026-10-01)
+
+A no-admin-account warning, plus two Proxmox LXC wizard fixes
+
+### Added: a persistent warning in the admin area when no account exists yet
+
+- Velvet starts in open mode (no login required) until an admin account is
+  created — true for every install method, not just this one. There was
+  previously no indication of that anywhere in the app. The admin area now
+  shows a banner on every screen while this is the case: "No admin account
+  is configured — this instance is open to anyone who can reach it," with a
+  button straight to creating one. Not dismissible — it reflects the real
+  state and disappears on its own once an account exists. Uses the
+  `hasUsers` flag the public ping endpoint already exposed; the player was
+  already reading it internally but showed nothing to the visitor either.
+
+### Fixed: Proxmox LXC — Advanced Settings silently dropped NFS/SMB mount support
+
+- Reported from a real install: choosing NFS or SMB as the music source,
+  then going through the container wizard's Advanced Settings, showed the
+  "Mount Filesystems" step as empty — and, more than a display issue, going
+  through that screen actually discarded the container feature NFS/SMB
+  mounting needs. The step reads a different variable than the one the
+  wizard was setting, and unconditionally overwrites the real setting with
+  whatever it showed. Fixed: the wizard now seeds both, so the step shows
+  the correct value and survives the Advanced Settings flow either way.
+
+### Fixed: Proxmox LXC — container description showed broken, irrelevant links
+
+- Reported from a real install: the container's Proxmox Summary/Notes
+  panel showed "Sponsoring & Donations" and "Open Script Page" badges
+  pointing at community-scripts.org's own catalog and donate pages —
+  Velvet isn't in that catalog, so the script-page link 404'd, and the
+  donate link had nothing to do with this project. Its GitHub link also
+  silently defaulted to community-scripts' own repository rather than this
+  one. Replaced with a plain link to this repo, nothing else.
+
 ## v0.6.7 (2026-10-01)
 
 Fix two real bugs reported from a live NFS install

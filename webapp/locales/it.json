@@ -242,6 +242,8 @@
   "admin.nav.importExport": "Importa - Esporta",
   "admin.nav.about": "Informazioni",
   "admin.nav.updates": "Updates",
+  "admin.openMode.banner": "No admin account is configured — this instance is open to anyone who can reach it. Create an admin account now.",
+  "admin.openMode.cta": "Create admin account",
   "admin.update.title": "Software update",
   "admin.update.desc": "Checks GitHub for the latest Velvet release. Reading the release notes never changes anything — updating is a separate, explicit step below.",
   "admin.update.current": "Installed:",
