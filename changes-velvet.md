@@ -1,3 +1,40 @@
+## v0.7.0 (2026-10-01)
+
+NFS/SMB now actually works on unprivileged containers
+
+### Fixed: unprivileged containers (the default) couldn't mount NFS or SMB at all
+
+- Reported live: `mount.nfs: Operation not permitted` on an unprivileged
+  container, even with the mount feature correctly enabled — privileged
+  worked. Researched properly rather than patching on a guess again:
+  confirmed across multiple independent sources that NFS and CIFS cannot be
+  mounted directly inside an unprivileged container at all. It's not an
+  AppArmor restriction the `mount=nfs`/`mount=cifs` feature can unblock —
+  the kernel's own client code for both filesystems has no support for the
+  user-namespace mechanism unprivileged containers depend on. That feature
+  flag was correct and is still needed for privileged containers; it was
+  never going to be sufficient on its own for unprivileged ones.
+- Fixed the only way that actually works, confirmed consistently across
+  every source checked: on an unprivileged container, the share is now
+  mounted on the Proxmox/Incus **host** instead, then given to the
+  container as the same kind of bind mount the local-folder option already
+  uses. Nothing changes about how you use the wizard — same three options,
+  this just happens automatically based on which kind of container is
+  being created. SMB mounts set up this way use the UID mapping a default
+  unprivileged container expects, so files written from inside it come out
+  owned correctly on the host.
+- [`docs/lxc-incus.md`](docs/lxc-incus.md) substantially rewritten to match
+  — including correcting an earlier, now-disproven claim that NFS/SMB
+  shares don't have the permission considerations local folders do.
+
+### Added: a notice explaining what NFS/SMB actually does, right when you choose it
+
+- Right after picking NFS or SMB, before any server details are asked for,
+  the wizard now explains what's about to happen: privileged mounts inside
+  the container, unprivileged mounts on the host automatically instead,
+  either way the host itself needs network access to the share, and for
+  SMB specifically that the password goes into a root-only file.
+
 ## v0.6.9 (2026-10-01)
 
 Fix an unkillable hang right after choosing NFS/SMB

@@ -42,13 +42,16 @@ plain-text menu on hosts without `whiptail`):
 1. **A folder already on this host** — bind-mounted read-write into the
    container at `/music`. The classic "passthrough" option.
 2. **An NFS share** — `server:/export/path`, with a mount-options prompt
-   (default `rw,vers=4`). Mounted *inside* the container itself, not on the
-   host.
+   (default `rw,vers=4`). Mounted inside the container itself on a
+   privileged container; on an unprivileged one (the default) mounted on
+   the host instead and attached as a bind mount — see **Music library
+   permissions** below for why.
 3. **An SMB/CIFS share** — `//server/share`, with a username/password
    prompt (blank username = guest access). The password is asked twice and
    must match before continuing, retried up to 3 times before falling back
-   to skip; it's pushed into the container as a credentials file, never
-   embedded in a command. Mounted inside the container, same as NFS.
+   to skip; the credentials are written to a file, never embedded in a
+   command. Mounted the same way NFS is — inside the container when
+   privileged, on the host and bind-mounted in when not.
 4. **Skip for now** — leave `/music` unset; set the library up from the
    admin UI once Velvet is running.
 
@@ -76,16 +79,21 @@ server, different VLAN, is a real case this covers), or skip for now.
 Pressing Esc/Cancel on any of the wizard's dialogs is always treated the
 same as explicitly choosing "skip" — it never aborts the installer.
 
-Once verified (or you chose to proceed anyway), the real mount happens
-inside the container after it's created: install `nfs-common`/`cifs-utils`
-there too, write a standard `/etc/fstab` entry so the mount survives a
-reboot, and mount it. On Proxmox this works by exporting `ALLOW_MOUNT_FS`
-before the container is created, which is the engine's own mechanism for
-adding the matching `mount=nfs`/`mount=cifs` container feature; on Incus
-there's no equivalent pre-creation hook, so it's set directly
-(`security.syscalls.intercept.mount*`) right after creation, which requires
-one container restart to take effect — the wizard does this and waits for
-the container to come back before mounting.
+Once verified (or you chose to proceed anyway), what happens next depends on
+whether the container is privileged or unprivileged (see **Music library
+permissions** below for why that split exists). **Privileged**: the real
+mount happens inside the container after it's created — install
+`nfs-common`/`cifs-utils` there, write a standard `/etc/fstab` entry so it
+survives a reboot, and mount it. On Proxmox this works by exporting
+`ALLOW_MOUNT_FS` before the container is created, the engine's own
+mechanism for adding the matching `mount=nfs`/`mount=cifs` container
+feature; on Incus there's no equivalent pre-creation hook, so it's set
+directly (`security.syscalls.intercept.mount*`) right after creation, which
+requires one container restart to take effect — the wizard does this and
+waits for the container to come back before mounting. **Unprivileged (the
+default)**: the share is mounted on the host instead, with its own
+`/etc/fstab` entry there, and attached to the container the same way the
+local-folder option is.
 
 **On Proxmox, if you go into Advanced Settings during container creation**,
 you'll see this confirmed directly: a "Mount Filesystems" step showing
@@ -164,10 +172,7 @@ shipped in `src/util/self-update.js` for [Admin → Updates](updates.md).
 
 ## Music library permissions
 
-This only applies to option 1, the local-folder bind mount — NFS and SMB/CIFS
-shares are mounted by the container itself as its own user, so they don't
-have this problem at all, which is one real reason to prefer a network share
-over a bind mount when both are available.
+### Local folder (option 1)
 
 A bind-mounted host directory has no separate "volume" step the way Docker
 has one — the container sees the host path directly. The one thing to get
@@ -189,9 +194,40 @@ Two supported options:
    / [Incus](https://linuxcontainers.org/incus/docs/main/userns-idmap/) docs),
    then `chown` the host folder to match once.
 
-If Velvet can't read or write a bind-mounted library after install, this is
-almost always why — check which kind of container you created, or switch to
-an NFS/SMB share instead if one is available on your network.
+### NFS / SMB share (options 2 and 3)
+
+**NFS and CIFS cannot be mounted directly inside an unprivileged container
+at all** — confirmed by testing (a real install hit `mount.nfs: Operation
+not permitted` even with the `mount=nfs` feature correctly enabled) and by
+cross-checking several independent sources: the kernel's own client code
+for both filesystems has no user-namespace support, which is a different,
+deeper limitation than the AppArmor restriction the `mount=nfs`/`mount=cifs`
+feature unblocks. A privileged container mounts it inside the container
+directly and that works correctly, since privileged containers don't have
+this restriction.
+
+On an **unprivileged container (the default)**, the wizard handles this for
+you automatically and transparently: it mounts the share on the Proxmox or
+Incus **host** instead — not inside the container — and gives the container
+the same kind of bind mount the local-folder option uses. You don't need to
+do anything differently; the music source menu is the same three options
+either way, this just happens behind the scenes based on which kind of
+container you chose. The host-side mount survives a host reboot (a regular
+`/etc/fstab` entry there), the same way the in-container version would have.
+
+One thing worth knowing about this path: for CIFS, the mount is set up with
+`uid=100000,gid=100000` — Proxmox's default base UID for the first
+unprivileged container's user-namespace mapping — so files the container's
+`velvet` user writes come out owned by the right mapped user on the host.
+A container using a non-default ID mapping needs this adjusted by hand
+(`/etc/fstab` on the host, the line mounting `/mnt/velvet-<CTID>`). For NFS,
+write access from an unprivileged container generally works out of the box
+more easily than CIFS does, but still depends on how your NFS server's
+export is configured — if writes fail, check its squash/UID settings.
+
+If Velvet can't read or write a mounted library after install, this is
+almost always a UID mapping question — check which kind of container you
+created and, for CIFS, the `uid=`/`gid=` mount options on the host.
 
 ## Troubleshooting
 
@@ -206,7 +242,9 @@ an NFS/SMB share instead if one is available on your network.
 | Admin → Folders → Browse fails with "Failed to get directory content" (server log shows `ENOENT ... scandir '/home/velvet'`) | Fixed — reported from a real install. The `velvet` system user had no real home directory, so the file-browser's default starting point (your OS home folder, when no path is given yet) pointed at one that didn't exist. The installer now gives it an explicit, already-existing home (`/opt/velvet`). Browse into `/music` directly if you hit this on an older install. |
 | The host-side share test fails but you know the share is fine | The host and the container can have a genuinely different network path to the same server (different VLAN, firewall rule scoped to container IPs, etc.) — choose "proceed anyway, unverified" when offered; the real mount still happens inside the container afterward. |
 | The host-side test says it couldn't install `nfs-common`/`cifs-utils` | The host isn't Debian/Ubuntu (no `apt-get`) — install the matching client package yourself first, or choose "proceed anyway" to skip verification. |
-| "Mounting the NFS/CIFS share failed" (inside the container, after creation) | Check `apt-get`/`mount` output printed above the error. Common causes: the NFS/CIFS service isn't reachable from the container's network, the export doesn't allow this container's IP, or (CIFS) the SMB version needs adjusting — the mount-options prompt (NFS) or a manual edit of `/etc/fstab` inside the container (CIFS, `vers=3.0` by default) covers that. |
+| `mount.nfs: Operation not permitted` (or the same for CIFS), even with the share test passing | **Not a bug — a known, fundamental limitation of unprivileged containers**, confirmed by testing and research: neither NFS nor CIFS can be mounted directly inside one, no matter how the `mount=` feature is set. The wizard already works around this automatically for new installs (mounts on the host instead) — if you're hitting this by hand (e.g. `mount -a` inside an older container, or a manual mount attempt), that's expected; see **Music library permissions** above for the supported fix. |
+| "Mounting the NFS/CIFS share failed" (inside a *privileged* container, after creation) | Check `apt-get`/`mount` output printed above the error. Common causes: the NFS/CIFS service isn't reachable from the container's network, the export doesn't allow this container's IP, or (CIFS) the SMB version needs adjusting — the mount-options prompt (NFS) or a manual edit of `/etc/fstab` inside the container (CIFS, `vers=3.0` by default) covers that. |
+| "Could not mount on the host" (unprivileged container) | Same troubleshooting as above, just run on the Proxmox/Incus host instead of inside the container — check the printed error, the share's reachability from the host, and (CIFS) `/etc/fstab`'s `uid=`/`gid=` values for a non-default container ID mapping. |
 | Node install step is skipped | `velvet-install.sh` only installs Node via NodeSource if nothing `>=22` is already present — this is intentional, not a bug, so it doesn't fight a container image that already ships a newer Node. |
 | Everything else | Full log of every step is at `/var/log/velvet-installer.log` inside the container (install) or printed live with `--verbose`. |
 
@@ -221,10 +259,22 @@ systemctl daemon-reload
 rm -rf /opt/velvet
 userdel velvet
 
-# only if you chose an NFS/SMB share
+# only if you chose an NFS/SMB share AND the container is privileged
+# (unprivileged installs mounted it on the host instead — see below)
 umount /music
 sed -i '\#/music#d' /etc/fstab
 rm -rf /etc/velvet
+```
+
+**Only if the container is unprivileged and you chose an NFS/SMB share**,
+the mount lives on the Proxmox/Incus host instead — clean that up there,
+not inside the container:
+
+```shell
+# on the Proxmox/Incus host — replace <CTID> with the container's ID/name
+umount /mnt/velvet-<CTID>
+sed -i '\#/mnt/velvet-<CTID>#d' /etc/fstab
+rm -rf /mnt/velvet-<CTID> /etc/velvet/cifs-credentials-<CTID>
 ```
 
 Then re-run the installer, or just destroy the container (`pct destroy

@@ -233,7 +233,14 @@ do_install() {
     msg_ok "System user $SERVICE_USER already exists"
   fi
 
-  run_step "Cloning Velvet $REF" git clone --branch "$REF" --depth 1 "$REPO" "$INSTALL_DIR"
+  # -c advice.detachedHead=false: cloning at a tag is always a detached HEAD
+  # on purpose (a release, not a branch to track) — git's own multi-paragraph
+  # explanation of that is normal, harmless, and reproduced on every single
+  # install, which is exactly why it shows up asked about as if something had
+  # gone wrong. `git checkout -q` (used in the update path below) already
+  # suppresses this same advisory on its own; `git clone`'s own `--quiet`
+  # doesn't, so it needs the explicit flag here instead.
+  run_step "Cloning Velvet $REF" git -c advice.detachedHead=false clone --branch "$REF" --depth 1 "$REPO" "$INSTALL_DIR"
   run_step "Installing Node dependencies (npm ci --omit=dev)" env -C "$INSTALL_DIR" npm ci --omit=dev
   run_step "Creating data directories" bash -c "mkdir -p '$INSTALL_DIR'/save/conf '$INSTALL_DIR'/save/db '$INSTALL_DIR'/save/logs '$INSTALL_DIR'/save/sync '$INSTALL_DIR'/image-cache '$INSTALL_DIR'/waveform-cache"
   run_step "Setting ownership ($SERVICE_USER)" chown -R "$SERVICE_USER:$SERVICE_USER" "$INSTALL_DIR"

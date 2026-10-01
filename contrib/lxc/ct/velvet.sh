@@ -293,6 +293,44 @@ _velvet_ask_after_test_failure() {
   fi
 }
 
+# Shown once, right after NFS/SMB is chosen, before asking for any details —
+# what actually happens differs by container type in a way worth knowing
+# before typing a server address, not after. Confirmed by testing and
+# research, not assumed: an unprivileged container (the default) cannot
+# mount NFS/CIFS inside itself at all, a kernel limitation no feature flag
+# changes — so this install mounts it on the host and shares it in instead,
+# automatically; a privileged container mounts it inside itself directly.
+_velvet_mount_consequences_notice() {
+  local kind="$1" body
+  body="How ${kind} gets attached depends on the container type:
+
+- Privileged: mounted inside the container itself.
+- Unprivileged (today's default): mounted on THIS host instead, then
+  shared into the container the same way a local folder would be -
+  automatic, nothing extra for you to do.
+
+Either way, THIS host needs network access to the share - it's what the
+next test mount checks."
+  if [ "$kind" = "SMB/CIFS" ]; then
+    body="${body}
+
+The password is stored in a root-only file, never inside Velvet's own
+config."
+  fi
+  body="${body}
+
+Full detail: docs/lxc-incus.md#music-library-permissions"
+
+  if _velvet_has_whiptail; then
+    whiptail --backtitle "Velvet" --title "${kind} share — what to expect" --msgbox "$body" 16 72 3>&1 1>&2 2>&3 || true
+  else
+    echo >&2
+    echo -e "${BL}── ${kind} share — what to expect ──${CL}" >&2
+    echo -e "${YW}${body}${CL}" >&2
+    echo >&2
+  fi
+}
+
 MUSIC_SOURCE_TYPE="$(_velvet_ask_music_source)"
 [ -z "$MUSIC_SOURCE_TYPE" ] && MUSIC_SOURCE_TYPE="skip"  # Cancel/Esc in whiptail
 
@@ -329,6 +367,7 @@ local)
   unset local_tries
   ;;
 nfs)
+  _velvet_mount_consequences_notice "NFS"
   local_tries=0
   while :; do
     NFS_SERVER="$(_velvet_ask "NFS share" "NFS server:/export, e.g. 192.168.1.10:/mnt/music" "")"
@@ -362,6 +401,7 @@ nfs)
   unset local_tries
   ;;
 cifs)
+  _velvet_mount_consequences_notice "SMB/CIFS"
   local_tries=0
   while :; do
     CIFS_SERVER="$(_velvet_ask "SMB/CIFS share" "Share, e.g. //192.168.1.10/Music" "")"
@@ -516,6 +556,76 @@ msg_info "Applying the music-library configuration"
 VELVET_ENV_FILE=""
 VELVET_MOUNT_FILE=""
 
+# Reported live: an unprivileged container (the default) refused the NFS
+# mount with "Operation not permitted" even with mount=nfs enabled;
+# privileged worked. Confirmed by research, not a guess: NFS and CIFS
+# cannot be mounted directly inside an unprivileged container at all — the
+# kernel's own client code for both has no user-namespace support, which is
+# independent of AppArmor or the mount= feature flag. The feature flag only
+# gets you past AppArmor; it was never going to be sufficient on its own.
+# The correct fix, confirmed consistently across multiple independent
+# sources: mount the share on the Proxmox/Incus HOST instead, then give the
+# container the same kind of bind mount the "local folder" option already
+# uses — which is exactly what this does, by mounting on the host and then
+# falling through into that existing local-mount code path unchanged.
+VELVET_PRIVILEGED=0
+[ "${CT_TYPE:-${var_unprivileged:-1}}" = "0" ] && VELVET_PRIVILEGED=1
+
+if { [ "$MUSIC_SOURCE_TYPE" = "nfs" ] || [ "$MUSIC_SOURCE_TYPE" = "cifs" ]; } && [ "$VELVET_PRIVILEGED" != "1" ]; then
+  msg_info "Unprivileged container: mounting the ${MUSIC_SOURCE_TYPE^^} share on the host instead, then attaching it the same way a local folder would be"
+  VELVET_HOST_ID="${CTID:-$CT_NAME}"
+  if [ "$MUSIC_SOURCE_TYPE" = "nfs" ]; then
+    _velvet_host_pkg_bin=mount.nfs; _velvet_host_pkg_name=nfs-common
+  else
+    _velvet_host_pkg_bin=mount.cifs; _velvet_host_pkg_name=cifs-utils
+  fi
+  if _velvet_ensure_host_pkg "$_velvet_host_pkg_bin" "$_velvet_host_pkg_name"; then
+    VELVET_HOST_MOUNT_DIR="/mnt/velvet-${VELVET_HOST_ID}"
+    mkdir -p "$VELVET_HOST_MOUNT_DIR"
+    VELVET_HOST_CRED_FILE=""
+    if [ "$MUSIC_SOURCE_TYPE" = "cifs" ] && [ -n "$CIFS_USER" ]; then
+      VELVET_HOST_CRED_FILE="/etc/velvet/cifs-credentials-${VELVET_HOST_ID}"
+      install -d -m 700 /etc/velvet
+      {
+        echo "username=${CIFS_USER}"
+        echo "password=${CIFS_PASS}"
+        [ -n "$CIFS_DOMAIN" ] && echo "domain=${CIFS_DOMAIN}"
+      } >"$VELVET_HOST_CRED_FILE"
+      chmod 600 "$VELVET_HOST_CRED_FILE"
+    fi
+    if [ "$MUSIC_SOURCE_TYPE" = "nfs" ]; then
+      VELVET_FSTAB_LINE="${NFS_SERVER} ${VELVET_HOST_MOUNT_DIR} nfs ${NFS_OPTS} 0 0"
+    else
+      # uid/gid=100000: Proxmox's default base UID for the first unprivileged
+      # container's user-namespace mapping, so files the container's own
+      # `velvet` user (UID 0 inside, 100000 on the host) writes are owned by
+      # that mapped UID rather than root. A container using a non-default
+      # idmap needs this adjusted by hand — see docs/lxc-incus.md.
+      if [ -n "$VELVET_HOST_CRED_FILE" ]; then
+        VELVET_CIFS_OPTS="credentials=${VELVET_HOST_CRED_FILE},uid=100000,gid=100000,iocharset=utf8,vers=3.0"
+      else
+        VELVET_CIFS_OPTS="guest,uid=100000,gid=100000,iocharset=utf8,vers=3.0"
+      fi
+      VELVET_FSTAB_LINE="${CIFS_SERVER} ${VELVET_HOST_MOUNT_DIR} cifs ${VELVET_CIFS_OPTS} 0 0"
+    fi
+    grep -qF " ${VELVET_HOST_MOUNT_DIR} " /etc/fstab 2>/dev/null || echo "$VELVET_FSTAB_LINE" >>/etc/fstab
+
+    VELVET_HOST_MOUNT_ERR="$(mktemp)"
+    if mount "$VELVET_HOST_MOUNT_DIR" >"$VELVET_HOST_MOUNT_ERR" 2>&1; then
+      msg_ok "Mounted the ${MUSIC_SOURCE_TYPE^^} share on the host at ${VELVET_HOST_MOUNT_DIR}"
+      MUSIC_SOURCE_TYPE="local"
+      MUSIC_DIR_HOST="$VELVET_HOST_MOUNT_DIR"
+    else
+      msg_error "Could not mount on the host — $(tail -c 300 "$VELVET_HOST_MOUNT_ERR" | tr -s ' \n' ' ')"
+      MUSIC_SOURCE_TYPE="skip"
+    fi
+    rm -f "$VELVET_HOST_MOUNT_ERR"
+  else
+    msg_error "Could not install ${_velvet_host_pkg_name} on the host — can't set up ${MUSIC_SOURCE_TYPE^^} for an unprivileged container"
+    MUSIC_SOURCE_TYPE="skip"
+  fi
+fi
+
 if [ "$MUSIC_SOURCE_TYPE" = "local" ]; then
   if is_incus_lxc_backend; then
     incus config device add "$CT_NAME" music disk source="$MUSIC_DIR_HOST" path=/music
@@ -523,6 +633,9 @@ if [ "$MUSIC_SOURCE_TYPE" = "local" ]; then
     pct set "$CTID" -mp0 "${MUSIC_DIR_HOST},mp=/music"
   fi
 elif [ "$MUSIC_SOURCE_TYPE" = "nfs" ] || [ "$MUSIC_SOURCE_TYPE" = "cifs" ]; then
+  # Privileged only, by this point — unprivileged was redirected to the
+  # host-mount path above. mount=nfs/cifs is reliable for a privileged
+  # container, confirmed working live, so this mounts inside it directly.
   if is_incus_lxc_backend; then
     # PVE got this via ALLOW_MOUNT_FS at creation time above; Incus has no
     # equivalent pre-creation hook, so it's set directly here instead.
