@@ -11089,6 +11089,137 @@ const updateView = Vue.component('update-view', {
     </div>`,
 });
 
+// Admin → Network Shares — mount an NFS/SMB share directly from inside
+// Velvet, no shell access needed. Needs Velvet's own process to be running
+// as root (mounting is a privileged kernel operation regardless of which
+// user asks); on an unprivileged LXC/Incus container even root can't mount
+// NFS/CIFS directly, a confirmed kernel limitation, not a Velvet one —
+// src/api/network-mount.js reports both of those with their own specific
+// message, surfaced here rather than a generic "failed". See
+// docs/network-shares.md.
+const networkMountsView = Vue.component('network-mounts-view', {
+  data() {
+    return {
+      loading: true,
+      saving: false,
+      mounts: {},
+      form: { name: '', type: 'nfs', server: '', username: '', password: '', domain: '', options: '' },
+      lastError: null,
+    };
+  },
+  computed: {
+    mountList() {
+      return Object.entries(this.mounts).map(([name, m]) => ({ name, ...m }));
+    },
+    serverHint() {
+      return this.form.type === 'nfs'
+        ? this.t('admin.networkMount.serverHintNfs')
+        : this.t('admin.networkMount.serverHintCifs');
+    },
+  },
+  async mounted() { await this.load(); },
+  methods: {
+    async load() {
+      this.loading = true;
+      try {
+        const res = await API.axios({ method: 'GET', url: `${API.url()}/api/v1/admin/network-mount` });
+        this.mounts = res.data || {};
+      } catch (e) {
+        iziToast.error({ title: this.t('admin.networkMount.toastLoadFailed'), message: e?.response?.data?.error || e?.message || '', position: 'topCenter', timeout: 4000 });
+      } finally { this.loading = false; }
+    },
+    async add() {
+      this.lastError = null;
+      if (!this.form.name || !this.form.server) return;
+      this.saving = true;
+      try {
+        await API.axios({ method: 'POST', url: `${API.url()}/api/v1/admin/network-mount`, data: { ...this.form } });
+        iziToast.success({ title: this.t('admin.networkMount.toastMounted', { name: this.form.name }), position: 'topCenter', timeout: 3000 });
+        this.form = { name: '', type: 'nfs', server: '', username: '', password: '', domain: '', options: '' };
+        await this.load();
+      } catch (e) {
+        const data = e?.response?.data;
+        this.lastError = data?.message || data?.error || e?.message || this.t('admin.networkMount.toastMountFailed');
+      } finally { this.saving = false; }
+    },
+    remove(name) {
+      adminConfirm(
+        this.t('admin.networkMount.confirmRemoveTitle', { name }),
+        this.t('admin.networkMount.confirmRemoveMsg', { name }),
+        this.t('admin.networkMount.confirmRemoveLabel'),
+        async () => {
+          try {
+            await API.axios({ method: 'DELETE', url: `${API.url()}/api/v1/admin/network-mount/${encodeURIComponent(name)}` });
+            iziToast.success({ title: this.t('admin.networkMount.toastRemoved', { name }), position: 'topCenter', timeout: 3000 });
+            await this.load();
+          } catch (e) {
+            iziToast.error({ title: this.t('admin.networkMount.toastRemoveFailed'), message: e?.response?.data?.error || e?.message || '', position: 'topCenter', timeout: 4000 });
+          }
+        },
+      );
+    },
+  },
+  template: `
+    <div class="container">
+      <div v-if="loading" class="row"><svg class="spinner" width="65px" height="65px" viewBox="0 0 66 66" xmlns="http://www.w3.org/2000/svg"><circle class="spinner-path" fill="none" stroke-width="6" stroke-linecap="round" cx="33" cy="33" r="30"></circle></svg></div>
+      <div v-else>
+
+        <div class="row"><div class="col s12"><div class="card"><div class="card-content">
+          <span class="card-title">{{ t('admin.networkMount.title') }}</span>
+          <p style="color:var(--t2);margin-bottom:1rem;">{{ t('admin.networkMount.desc') }}</p>
+
+          <table v-if="mountList.length"><tbody>
+            <tr v-for="m in mountList" :key="m.name">
+              <td><b>{{ m.name }}</b></td>
+              <td style="font-family:monospace;font-size:.82rem;color:var(--t2);">{{ m.type.toUpperCase() }} — {{ m.server }}</td>
+              <td style="font-family:monospace;font-size:.78rem;color:var(--t3);">{{ m.mountPoint }}</td>
+              <td style="text-align:right;"><a class="btn-sm red" v-on:click="remove(m.name)">{{ t('admin.networkMount.remove') }}</a></td>
+            </tr>
+          </tbody></table>
+          <p v-else style="color:var(--t3);">{{ t('admin.networkMount.none') }}</p>
+        </div></div></div></div>
+
+        <div class="row"><div class="col s12"><div class="card"><div class="card-content">
+          <span class="card-title">{{ t('admin.networkMount.addTitle') }}</span>
+
+          <div style="display:flex;gap:.5rem;margin-bottom:.75rem;">
+            <a class="btn-flat" :class="{ select: form.type === 'nfs' }" v-on:click="form.type = 'nfs'">NFS</a>
+            <a class="btn-flat" :class="{ select: form.type === 'cifs' }" v-on:click="form.type = 'cifs'">SMB / CIFS</a>
+          </div>
+
+          <div style="display:grid;gap:.6rem;max-width:480px;">
+            <label>{{ t('admin.networkMount.fieldName') }}
+              <input type="text" v-model="form.name" :placeholder="t('admin.networkMount.fieldNamePlaceholder')" style="width:100%;padding:.5rem;border-radius:6px;border:1px solid var(--border);background:var(--raised);color:var(--t1);">
+            </label>
+            <label>{{ t('admin.networkMount.fieldServer') }}
+              <input type="text" v-model="form.server" :placeholder="serverHint" style="width:100%;padding:.5rem;border-radius:6px;border:1px solid var(--border);background:var(--raised);color:var(--t1);">
+            </label>
+            <template v-if="form.type === 'cifs'">
+              <label>{{ t('admin.networkMount.fieldUsername') }}
+                <input type="text" v-model="form.username" :placeholder="t('admin.networkMount.fieldUsernamePlaceholder')" style="width:100%;padding:.5rem;border-radius:6px;border:1px solid var(--border);background:var(--raised);color:var(--t1);">
+              </label>
+              <label v-if="form.username">{{ t('admin.networkMount.fieldPassword') }}
+                <input type="password" v-model="form.password" style="width:100%;padding:.5rem;border-radius:6px;border:1px solid var(--border);background:var(--raised);color:var(--t1);">
+              </label>
+              <label v-if="form.username">{{ t('admin.networkMount.fieldDomain') }}
+                <input type="text" v-model="form.domain" style="width:100%;padding:.5rem;border-radius:6px;border:1px solid var(--border);background:var(--raised);color:var(--t1);">
+              </label>
+            </template>
+            <label>{{ t('admin.networkMount.fieldOptions') }}
+              <input type="text" v-model="form.options" :placeholder="t('admin.networkMount.fieldOptionsPlaceholder')" style="width:100%;padding:.5rem;border-radius:6px;border:1px solid var(--border);background:var(--raised);color:var(--t1);font-family:monospace;font-size:.85rem;">
+            </label>
+          </div>
+
+          <p v-if="lastError" style="color:#e57373;font-size:.85rem;margin-top:.75rem;max-width:480px;">{{ lastError }}</p>
+        </div>
+        <div class="card-action">
+          <a class="btn" :class="{ disabled: saving || !form.name || !form.server }" v-on:click="!saving && form.name && form.server && add()">{{ saving ? t('admin.networkMount.mounting') : t('admin.networkMount.btnAdd') }}</a>
+        </div></div></div></div>
+
+      </div>
+    </div>`,
+});
+
 const vm = new Vue({
   el: '#content',
   components: {
@@ -11100,6 +11231,7 @@ const vm = new Vue({
     'advanced-view': advancedView,
     'info-view': infoView,
     'update-view': updateView,
+    'network-mounts-view': networkMountsView,
     'transcode-view': transcodeView,
     'server-audio-view': serverAudioView,
     'sonos-view': sonosView,

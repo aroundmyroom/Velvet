@@ -42,7 +42,12 @@ plain-text menu on hosts without `whiptail`):
 1. **A folder already on this host** — bind-mounted read-write into the
    container at `/music`. The classic "passthrough" option.
 2. **An NFS share** — `server:/export/path`, with a mount-options prompt
-   (default `rw,vers=4`). Mounted inside the container itself on a
+   (default `rw,vers=4,hard,rsize=131072,wsize=131072,timeo=600,retrans=2`
+   — confirmed necessary, not just cautious: a thinner `rw,vers=4` mount
+   reading the exact same files as a properly-tuned one threw "Offset is
+   outside the bounds of the DataView" parsing embedded cover art, the
+   signature of a short NFS read on a mount with no explicit `rsize`/
+   `wsize`). Mounted inside the container itself on a
    privileged container; on an unprivileged one (the default) mounted on
    the host instead and attached as a bind mount — see **Music library
    permissions** below for why.
@@ -172,6 +177,13 @@ shipped in `src/util/self-update.js` for [Admin → Updates](updates.md).
 
 ## Music library permissions
 
+> Prefer not to have the wizard do host-level mounting at all, or want to
+> add a network share after the container already exists? Admin → Network
+> Shares does the same NFS/SMB mounting from inside Velvet itself instead —
+> see [`docs/network-shares.md`](network-shares.md). Same requirements
+> apply either way: root process, and it can't work at all on an
+> unprivileged container, for the reasons below.
+
 ### Local folder (option 1)
 
 A bind-mounted host directory has no separate "volume" step the way Docker
@@ -243,6 +255,7 @@ created and, for CIFS, the `uid=`/`gid=` mount options on the host.
 | The host-side share test fails but you know the share is fine | The host and the container can have a genuinely different network path to the same server (different VLAN, firewall rule scoped to container IPs, etc.) — choose "proceed anyway, unverified" when offered; the real mount still happens inside the container afterward. |
 | The host-side test says it couldn't install `nfs-common`/`cifs-utils` | The host isn't Debian/Ubuntu (no `apt-get`) — install the matching client package yourself first, or choose "proceed anyway" to skip verification. |
 | `mount.nfs: Operation not permitted` (or the same for CIFS), even with the share test passing | **Not a bug — a known, fundamental limitation of unprivileged containers**, confirmed by testing and research: neither NFS nor CIFS can be mounted directly inside one, no matter how the `mount=` feature is set. The wizard already works around this automatically for new installs (mounts on the host instead) — if you're hitting this by hand (e.g. `mount -a` inside an older container, or a manual mount attempt), that's expected; see **Music library permissions** above for the supported fix. |
+| Admin → Scan Errors shows "metadata parse error" / "Offset is outside the bounds of the DataView" on files from an NFS share | **Confirmed root cause: a thinly-configured NFS mount, not a corrupt file or a Velvet bug.** Traced from a real report: the identical file, on the identical NFS export, scanned clean on a server whose mount had explicit `rsize`/`wsize`/`hard` set, and threw this exact error on one mounted with just `rw,vers=4` — the signature of a short read on a large embedded cover-art block. Fixed going forward: the wizard's default NFS mount options now include `hard,rsize=131072,wsize=131072,timeo=600,retrans=2`. A share already mounted with the old thin defaults can be fixed by editing its `/etc/fstab` line (on the host for an unprivileged container, inside the container for a privileged one) to match, then `mount -o remount <path>` and re-running the scan. The affected tracks themselves are **not lost or corrupted** — Velvet already falls back to indexing them without their embedded cover when this happens. |
 | "Mounting the NFS/CIFS share failed" (inside a *privileged* container, after creation) | Check `apt-get`/`mount` output printed above the error. Common causes: the NFS/CIFS service isn't reachable from the container's network, the export doesn't allow this container's IP, or (CIFS) the SMB version needs adjusting — the mount-options prompt (NFS) or a manual edit of `/etc/fstab` inside the container (CIFS, `vers=3.0` by default) covers that. |
 | "Could not mount on the host" (unprivileged container) | Same troubleshooting as above, just run on the Proxmox/Incus host instead of inside the container — check the printed error, the share's reachability from the host, and (CIFS) `/etc/fstab`'s `uid=`/`gid=` values for a non-default container ID mapping. |
 | Node install step is skipped | `velvet-install.sh` only installs Node via NodeSource if nothing `>=22` is already present — this is intentional, not a bug, so it doesn't fight a container image that already ships a newer Node. |

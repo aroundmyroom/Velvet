@@ -1,3 +1,42 @@
+## v0.6.11 (2026-10-01)
+
+New: Admin → Network Shares, plus LXC contribution fixes
+
+### Added: mount an NFS/SMB share directly from the admin UI
+
+- A new **Admin → Network Shares** page mounts an NFS or SMB/CIFS share
+  directly from inside Velvet itself — no shell access to the server
+  needed. Works on any install running as root (Docker, bare-metal, a
+  privileged LXC/Incus container). Needs Velvet's own process to be root,
+  since mounting a filesystem is a privileged kernel operation regardless
+  of which user asks; on an **unprivileged** LXC/Incus container this can
+  never work at all, a confirmed kernel limitation, and the page says so
+  with its own specific message rather than a generic error.
+- Built specifically to close a real gap found while checking Velvet's
+  Proxmox LXC installer against community-scripts' own contribution
+  guidelines directly: their review checklist rules out "hand-written host
+  commands in a platform-neutral CT script," which is exactly what the
+  wizard's NFS/SMB mounting is. This gives a future, submission-ready
+  version of the installer somewhere to point the admin instead, without
+  touching the host at container-creation time. This repo's own installer
+  keeps its existing automatic mounting unchanged — the two are
+  independent, not a replacement for one another.
+- New endpoints `GET`/`POST /api/v1/admin/network-mount` and
+  `DELETE /api/v1/admin/network-mount/:name`, documented in `docs/API.md`.
+  Full write-up, including the root-privilege and unprivileged-container
+  requirements, in [`docs/network-shares.md`](docs/network-shares.md).
+- 24 new automated tests covering the input validation and `/etc/fstab`
+  handling directly — the parts worth getting exactly right since they
+  touch a real system file.
+
+### Fixed: Proxmox LXC — the container wizard now tries a local checkout first
+
+- `ct/velvet.sh` now tries a local sibling `core` checkout before falling
+  back to `curl`, matching community-scripts' own contribution template
+  exactly — no behavior change for the normal one-line install, which has
+  no local checkout and falls straight through to the same `curl` as
+  before.
+
 ## v0.6.10 (2026-10-01)
 
 NFS/SMB now actually works on unprivileged containers

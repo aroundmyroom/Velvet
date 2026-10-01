@@ -23,8 +23,17 @@
 # points at community-scripts' OWN catalog, not ours (confirmed by reading
 # core/build.func — this is the documented fix for exactly this situation).
 export COMMUNITY_SCRIPTS_URL="${COMMUNITY_SCRIPTS_URL:-https://raw.githubusercontent.com/aroundmyroom/Velvet/main/contrib/lxc}"
-# shellcheck disable=SC1090  # remote engine, fetched fresh every run by design
-source <(curl -fsSL "${COMMUNITY_SCRIPTS_CORE_URL:-https://raw.githubusercontent.com/community-scripts/core/main}/core/build.func")
+# Local-first, curl fallback — matches community-scripts' own contribution
+# template exactly (their code-audit checklist checks for this pattern by
+# name). A sibling `core` checkout next to this file's own directory is
+# picked up automatically for fast local iteration without a push; the
+# normal one-liner (no local checkout at all) falls straight through to the
+# same curl this always did.
+_cs_boot="${COMMUNITY_SCRIPTS_CORE_DIR:-$(dirname "${BASH_SOURCE[0]}")/../../core}/core/build.func"
+# shellcheck disable=SC1090  # local dev checkout (present only when testing) or the remote engine
+if ! source "$_cs_boot" 2>/dev/null; then
+  source <(curl -fsSL "${COMMUNITY_SCRIPTS_CORE_URL:-https://raw.githubusercontent.com/community-scripts/core/main}/core/build.func")
+fi
 
 APP="Velvet"
 var_tags="${var_tags:-music}"
@@ -335,7 +344,19 @@ MUSIC_SOURCE_TYPE="$(_velvet_ask_music_source)"
 [ -z "$MUSIC_SOURCE_TYPE" ] && MUSIC_SOURCE_TYPE="skip"  # Cancel/Esc in whiptail
 
 MUSIC_DIR_HOST=""
-NFS_SERVER=""; NFS_OPTS="rw,vers=4"
+NFS_SERVER=""
+# rsize/wsize/hard, not just rw,vers=4 — confirmed the hard way: identical
+# Velvet version, identical music-metadata library, identical files (the
+# same NFS export mounted on another server, zero scan errors there) still
+# threw "Offset is outside the bounds of the DataView" on a thin mount with
+# no explicit rsize/wsize. That error is the signature of a short NFS read
+# handing a parser fewer bytes than it asked for, mid-way through a large
+# embedded cover-art block — far more likely on a mount with no explicit
+# read/write size than on one with it set, which is exactly what the
+# working comparison server had. `vers=4` (not pinned to a minor version)
+# so the client still auto-negotiates the highest version the NFS server
+# actually offers, rather than hard-failing against an older NAS.
+NFS_OPTS="rw,vers=4,hard,rsize=131072,wsize=131072,timeo=600,retrans=2"
 CIFS_SERVER=""; CIFS_USER=""; CIFS_PASS=""; CIFS_DOMAIN=""
 
 # Every retry loop below is capped (5 attempts for a format/existence check,
@@ -387,7 +408,7 @@ nfs)
     esac
 
     NFS_OPTS="$(_velvet_ask "NFS mount options" "Mount options" "$NFS_OPTS")"
-    [ -z "$NFS_OPTS" ] && NFS_OPTS="rw,vers=4"
+    [ -z "$NFS_OPTS" ] && NFS_OPTS="rw,vers=4,hard,rsize=131072,wsize=131072,timeo=600,retrans=2"
 
     msg_info "Testing the NFS share (mounting it read-only, then unmounting)"
     _velvet_test_nfs "$NFS_SERVER" && break

@@ -930,6 +930,22 @@ In-app updater (Admin → Updates). See `docs/updates.md`. All admin-only.
 
 ---
 
+## Network shares — Admin *(Velvet)*
+
+Mount an NFS/SMB share directly from inside Velvet (Admin → Network
+Shares). See `docs/network-shares.md`. All admin-only. Needs Velvet's own
+process to be running as root — fails with a specific `not-root` error
+otherwise; also always fails with a specific `not-permitted` error on an
+unprivileged LXC/Incus container, a confirmed kernel limitation.
+
+| Method | Endpoint | Body / Params | Description |
+|---|---|---|---|
+| `GET` | `/api/v1/admin/network-mount` | — | Lists configured network mounts: `{ [name]: { type, server, mountPoint, options, hasCredentials } }`. |
+| `POST` | `/api/v1/admin/network-mount` | `{ name, type: 'nfs'\|'cifs', server, username?, password?, domain?, options? }` | Installs the client package if needed, mounts the share, and adds a tagged `/etc/fstab` entry so it survives a reboot. Rolls the `/etc/fstab` entry back automatically if the mount itself fails. 409 with `error: 'not-root'` or `error: 'not-permitted'` for the two specific, expected failure modes above; 500 with a classified message (`unreachable`/`auth`/generic) otherwise. |
+| `DELETE` | `/api/v1/admin/network-mount/:name` | — | Unmounts, removes the `/etc/fstab` entry, and deletes the credentials file if one was written. |
+
+---
+
 ## Admin — Import / Export *(Velvet)*
 
 Export is built in the background; poll for status before downloading.

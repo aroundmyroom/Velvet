@@ -273,6 +273,7 @@ Full local play history — no external calls, no historical imports needed:
 - Folder health check — read/write test per vpath root and first-level subdirs
 - Backup and restore — weekly auto-backup, download, restore with legacy migration
 - In-app updates — Admin → Updates shows the latest GitHub release and its notes, checks the install can update itself, then fetches, installs and restarts with live progress (Docker gets the pull commands) — [docs →](docs/updates.md)
+- Network shares — mount an NFS or SMB/CIFS share directly from the admin UI, no shell access needed (root process required) — [docs →](docs/network-shares.md)
 - Logging — file output, configurable retention, download last 7 days
 - DLNA control — enable/disable, port, friendly name, live status badge
 - User management — create users, set permissions, reset passwords, toggle features per user
@@ -336,6 +337,7 @@ Full local play history — no external calls, no historical imports needed:
 | Security | [docs/frontend-security.md](docs/frontend-security.md) |
 | Pair a Device (passwordless TV/kiosk sign-in) | [docs/login-pairing.md](docs/login-pairing.md) |
 | In-app updates (Admin → Updates) | [docs/updates.md](docs/updates.md) |
+| Network shares (Admin → Network Shares) | [docs/network-shares.md](docs/network-shares.md) |
 | Proxmox LXC / Incus install | [docs/lxc-incus.md](docs/lxc-incus.md) |
 | Reverse-proxy login (SSO) | [docs/auth-reverse-proxy.md](docs/auth-reverse-proxy.md) |
 | Technology choices | [docs/technology-choices.md](docs/technology-choices.md) |
