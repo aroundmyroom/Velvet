@@ -1,3 +1,37 @@
+## v0.6.3 (2026-10-01)
+
+Proxmox LXC / Incus: NFS and SMB shares, and a cleaner wizard
+
+### Changed: Proxmox LXC / Incus — the container wizard asks one question, not five
+
+- The install wizard no longer asks for an admin account or extra library
+  folders before the container exists — checked against real install
+  scripts from the community-scripts catalog (PiHole, Immich, n8n,
+  WG-Easy), none of which ask for app configuration at container-creation
+  time. Velvet already starts in open mode with everything configurable
+  from its own admin UI afterward, the same as a plain `docker run` with no
+  options, so there was nothing here that needed asking before the
+  container exists.
+- The one question that remains — where the music library lives — is the
+  one with a real reason to be asked up front, since it decides what gets
+  attached to the container at creation time. It's now a proper `whiptail`
+  menu matching the rest of the wizard's look (a coloured plain-text
+  fallback covers hosts without `whiptail`), with three real options:
+  - a local folder on the host, bind-mounted in (the original option);
+  - an **NFS share** (`server:/export/path`), mounted inside the container;
+  - an **SMB/CIFS share** (`//server/share`), with a username/password
+    prompt — the password is asked twice and must match before continuing.
+- Fixed two bugs found while verifying this with scripted input rather than
+  by reading the code: the plain-text fallback's menu text was leaking into
+  the captured answer through command substitution, and "leave blank to
+  skip" silently didn't work for the local-folder prompt (a default value
+  was substituted in instead), which combined with an uncapped retry loop
+  meant it could hang indefinitely on a host where the example path doesn't
+  exist. The same mistake independently corrupted every SMB password with a
+  stray leading newline. All fixed; every retry loop is now capped with a
+  path to skip.
+- [`docs/lxc-incus.md`](docs/lxc-incus.md) updated to match.
+
 ## v0.6.2 (2026-10-01)
 
 Fix the in-container update command from v0.6.1

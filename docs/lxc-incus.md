@@ -30,18 +30,42 @@ with a verbose/non-verbose toggle for the install log. It automatically
 detects whether it's running on Proxmox VE or an Incus host and uses the
 matching backend — the same command works on both.
 
-After the generic container questions, it asks a few Velvet-specific ones
-(press Enter to skip any of them — everything here can also be set up later
-from the admin UI instead):
+After the generic container questions, it asks exactly one Velvet-specific
+one — where the music library lives — since that's the only thing that has
+to be decided before the container exists; everything else (admin account,
+extra library folders) is already configurable from Velvet's own admin UI
+after install, the same way a plain `docker run` with no options works, so
+there's nothing to ask about those here. The one real question is a `whiptail`
+menu matching the look of the rest of this wizard (falling back to a coloured
+plain-text menu on hosts without `whiptail`):
 
-- **Music library path on the host**, bind-mounted read-write into the
-  container at `/music`.
-- **Admin username/password** — leave blank to start in open mode (no login
-  required for anyone who can reach the container).
-- Whether to also add a **Radio Recordings**, **YouTube downloads**, or
-  **Audiobooks** folder.
+1. **A folder already on this host** — bind-mounted read-write into the
+   container at `/music`. The classic "passthrough" option.
+2. **An NFS share** — `server:/export/path`, with a mount-options prompt
+   (default `rw,vers=4`). Mounted *inside* the container itself, not on the
+   host.
+3. **An SMB/CIFS share** — `//server/share`, with a username/password
+   prompt (blank username = guest access). The password is asked twice and
+   must match before continuing, retried up to 3 times before falling back
+   to skip; it's pushed into the container as a credentials file, never
+   embedded in a command. Mounted inside the container, same as NFS.
+4. **Skip for now** — leave `/music` unset; set the library up from the
+   admin UI once Velvet is running.
 
-When it finishes it prints the URL: `http://<container-ip>:3000`.
+Options 2 and 3 install `nfs-common`/`cifs-utils` inside the container,
+write a standard `/etc/fstab` entry so the mount survives a reboot, and
+mount it immediately. On Proxmox this works by exporting `ALLOW_MOUNT_FS`
+before the container is created, which is the engine's own mechanism for
+adding the matching `mount=nfs`/`mount=cifs` container feature; on Incus
+there's no equivalent pre-creation hook, so it's set directly
+(`security.syscalls.intercept.mount*`) right after creation, which requires
+one container restart to take effect — the wizard does this and waits for
+the container to come back before mounting.
+
+When it finishes it prints the URL: `http://<container-ip>:3000`. The admin
+account and any extra library folders (Radio Recordings, YouTube downloads,
+Audiobooks) are set up from there, in the admin UI, the same as any other
+install method.
 
 ### Updating
 
@@ -100,11 +124,16 @@ shipped in `src/util/self-update.js` for [Admin → Updates](updates.md).
 
 ## Music library permissions
 
-LXC and Incus containers bind-mount a host directory directly — there is no
-separate "volume" step the way Docker has one. The one thing to get right:
-**unprivileged containers** (the default) remap UIDs, so root inside the
-container is a high, unrelated UID on the host (via `/etc/subuid`), and the
-`velvet` user inside the container will not simply see your host file
+This only applies to option 1, the local-folder bind mount — NFS and SMB/CIFS
+shares are mounted by the container itself as its own user, so they don't
+have this problem at all, which is one real reason to prefer a network share
+over a bind mount when both are available.
+
+A bind-mounted host directory has no separate "volume" step the way Docker
+has one — the container sees the host path directly. The one thing to get
+right: **unprivileged containers** (the default) remap UIDs, so root inside
+the container is a high, unrelated UID on the host (via `/etc/subuid`), and
+the `velvet` user inside the container will not simply see your host file
 ownership the way it looks on the host.
 
 Two supported options:
@@ -120,8 +149,9 @@ Two supported options:
    / [Incus](https://linuxcontainers.org/incus/docs/main/userns-idmap/) docs),
    then `chown` the host folder to match once.
 
-If Velvet can't read or write your library after install, this is almost
-always why — check which kind of container you created.
+If Velvet can't read or write a bind-mounted library after install, this is
+almost always why — check which kind of container you created, or switch to
+an NFS/SMB share instead if one is available on your network.
 
 ## Troubleshooting
 
@@ -129,7 +159,8 @@ always why — check which kind of container you created.
 |---|---|
 | `Could not fetch install/velvet-install.sh` | The engine's `COMMUNITY_SCRIPTS_URL` didn't resolve to this repo. If you forked/copied `ct/velvet.sh`, make sure the `export COMMUNITY_SCRIPTS_URL=...` line near the top still points at a repo that has `contrib/lxc/ct/` and `contrib/lxc/install/`. |
 | Update says "No Velvet installation found" | It's looking for a git checkout at `/opt/velvet` inside the container. If you installed to a different `--install-dir`, update by hand instead: `pct exec <CTID> -- /tmp/velvet-install.sh --mode update --install-dir <path>` (or `incus exec`). |
-| Velvet can't see/write the music folder | See **Music library permissions** above — almost always the unprivileged UID remap. |
+| Velvet can't see/write a bind-mounted music folder | See **Music library permissions** above — almost always the unprivileged UID remap. |
+| "Mounting the NFS/CIFS share failed" | Check `apt-get`/`mount` output printed above the error. Common causes: the NFS/CIFS service isn't reachable from the container's network, the export doesn't allow this container's IP, or (CIFS) the SMB version needs adjusting — the mount-options prompt (NFS) or a manual edit of `/etc/fstab` inside the container (CIFS, `vers=3.0` by default) covers that. |
 | Node install step is skipped | `velvet-install.sh` only installs Node via NodeSource if nothing `>=22` is already present — this is intentional, not a bug, so it doesn't fight a container image that already ships a newer Node. |
 | Everything else | Full log of every step is at `/var/log/velvet-installer.log` inside the container (install) or printed live with `--verbose`. |
 
@@ -143,6 +174,11 @@ rm -f /etc/systemd/system/velvet.service /etc/velvet.env
 systemctl daemon-reload
 rm -rf /opt/velvet
 userdel velvet
+
+# only if you chose an NFS/SMB share
+umount /music
+sed -i '\#/music#d' /etc/fstab
+rm -rf /etc/velvet
 ```
 
 Then re-run the installer, or just destroy the container (`pct destroy
