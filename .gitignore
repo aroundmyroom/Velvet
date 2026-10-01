@@ -70,6 +70,7 @@ test/*.svg
 Mauri_*.md
 harmonic-plan.md
 chora.md
+proxmox-incus.md
 
 *.log
 *.db

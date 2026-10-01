@@ -1,3 +1,36 @@
+## v0.6.1 (2026-10-01)
+
+One-command install for Proxmox LXC and Incus
+
+### Added: run Velvet in an LXC (Proxmox VE) or Incus container, no Docker needed
+
+- One command creates a container and installs Velvet into it, and the same
+  command re-run later updates it: `bash -c "$(curl -fsSL
+  https://raw.githubusercontent.com/aroundmyroom/Velvet/main/contrib/lxc/ct/velvet.sh)"`.
+  It asks the usual container questions — ID, hostname, disk, CPU, RAM,
+  storage, network — with a default-vs-advanced screen and a verbose toggle
+  for the install log, then a few Velvet-specific ones: where your music
+  library lives on the host (bind-mounted in), and an optional admin
+  username/password. Everything is skippable and can be set up later from
+  the admin UI instead.
+- Works on **both Proxmox VE and Incus** from the same command — it detects
+  which one it's running on and uses the matching backend.
+- The installer itself (`contrib/shared/velvet-install.sh`) has no
+  dependency on Proxmox, Incus, or any third-party framework — it's a
+  single script that installs Node, clones a release, runs `npm install`,
+  and sets up the same `systemd` service `docs/install.md` already
+  documents for bare-metal. It works standalone on any plain Debian box too.
+  Updating prefers the real [Admin → Updates](docs/updates.md) API added in
+  v0.6.0 — the identical code path as clicking the button there — and falls
+  back to a direct git/npm update if the app isn't reachable yet.
+- Full guide, including the one bind-mount permission detail worth knowing
+  (privileged vs. unprivileged containers and the host music folder) in
+  [`docs/lxc-incus.md`](docs/lxc-incus.md).
+- **New, and only lightly worn in**: this has been checked with dry-run
+  simulations, static analysis, and automated tests, but hasn't yet seen
+  heavy real-world Proxmox/Incus mileage the way Docker and bare-metal have.
+  If something doesn't fit your setup, it's worth a report.
+
 ## v0.6.0 (2026-10-01)
 
 In-App Updates, Samsung TV Now Playing Matches the Album Art
