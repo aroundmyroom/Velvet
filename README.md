@@ -28,7 +28,7 @@ docker run -d \
   ghcr.io/aroundmyroom/velvet:latest
 ```
 
-Open `http://localhost:3000`, point Velvet at `/music`, and press play. Full guides: [Docker](docs/docker.md) · [bare-metal/systemd](docs/install.md) · [reverse proxy](docs/deploy.md).
+Open `http://localhost:3000`, point Velvet at `/music`, and press play. Full guides: [Docker](docs/docker.md) · [bare-metal/systemd](docs/install.md) · [Proxmox LXC / Incus](docs/lxc-incus.md) · [reverse proxy](docs/deploy.md).
 
 ---
 
@@ -307,6 +307,7 @@ Full local play history — no external calls, no historical imports needed:
 |---|---|
 | Docker (recommended) | [docs/docker.md](docs/docker.md) |
 | Bare-metal / systemd | [docs/install.md](docs/install.md) |
+| Proxmox LXC / Incus (one-command install) | [docs/lxc-incus.md](docs/lxc-incus.md) |
 | Reverse proxy (nginx) | [docs/deploy.md](docs/deploy.md) |
 
 ---
@@ -335,6 +336,7 @@ Full local play history — no external calls, no historical imports needed:
 | Security | [docs/frontend-security.md](docs/frontend-security.md) |
 | Pair a Device (passwordless TV/kiosk sign-in) | [docs/login-pairing.md](docs/login-pairing.md) |
 | In-app updates (Admin → Updates) | [docs/updates.md](docs/updates.md) |
+| Proxmox LXC / Incus install | [docs/lxc-incus.md](docs/lxc-incus.md) |
 | Reverse-proxy login (SSO) | [docs/auth-reverse-proxy.md](docs/auth-reverse-proxy.md) |
 | Technology choices | [docs/technology-choices.md](docs/technology-choices.md) |
 

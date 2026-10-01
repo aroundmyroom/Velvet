@@ -45,11 +45,23 @@ When it finishes it prints the URL: `http://<container-ip>:3000`.
 
 ### Updating
 
-Run the **exact same command again**, pointed at the same container. The
-engine detects the existing container and offers to update instead of
-creating a new one. Updating fetches the latest Velvet release, checks it out,
-runs `npm install` only if dependencies changed, and restarts the service —
-it prefers doing this through Velvet's own [Admin → Updates](updates.md) API
+Two equivalent ways, both end up running the same update inside the
+container:
+
+- **From the Proxmox/Incus host**: run the **exact same one-liner again**,
+  pointed at the same container. The engine detects the existing container
+  and updates it instead of creating a new one.
+- **From inside the container**: the install leaves a standard
+  community-scripts `update` command on the `PATH` (`/usr/bin/update`,
+  written automatically by the engine during install, the same convention
+  every community-scripts app container has). SSH or console in and run:
+  ```shell
+  update
+  ```
+
+Either way, updating fetches the latest Velvet release, checks it out, runs
+`npm install` only if dependencies changed, and restarts the service — it
+prefers doing this through Velvet's own [Admin → Updates](updates.md) API
 (the same code path as clicking the button there) and falls back to a direct
 `git`/`npm` update if the app isn't reachable yet.
 

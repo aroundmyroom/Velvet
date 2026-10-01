@@ -47,33 +47,35 @@ variables
 color
 catch_errors
 
-# ── update path: re-running this same command against an existing container ──
-# Runs INSIDE the container via the backend's own exec, bypassing
-# install/velvet-install.sh entirely — it hands off to the same
-# contrib/shared/velvet-install.sh an admin could also run by hand, in
-# --mode update, which itself prefers the running app's own Admin → Updates
-# API and falls back to a direct git+npm update. See that script for the
-# actual decision logic (it mirrors src/util/self-update.js).
+# ── update path ──────────────────────────────────────────────────────────────
+# This function always runs INSIDE the target container, never on the host —
+# confirmed by reading the engine's own convention, not assumed: every real
+# app's update_script() (e.g. community-scripts/ProxmoxVE's navidrome.sh)
+# calls systemctl/etc. with no pct/incus prefix at all, and the install.func
+# step that runs `customize` (which our own install/velvet-install.sh calls)
+# auto-writes /usr/bin/update inside the container pointing back at this same
+# ct/velvet.sh. Running `update` from inside the container, or re-running the
+# host one-liner against an existing container, both end with THIS function
+# executing locally in the container the engine has already placed it in — an
+# earlier version of this function wrapped everything in `pct exec`/`incus
+# exec`, which would have tried to run pct/incus from inside the container
+# itself, where neither binary exists, and failed outright.
 function update_script() {
   header_info
   check_container_storage
   check_container_resources
 
-  local exec_cmd verbose_flag=""
-  if is_incus_lxc_backend; then
-    exec_cmd=(incus exec "$CT_NAME" --)
-  else
-    exec_cmd=(pct exec "$CTID" --)
-  fi
-
-  if ! "${exec_cmd[@]}" test -d /opt/velvet/.git; then
+  if [[ ! -d /opt/velvet/.git ]]; then
     msg_error "No ${APP} installation found in this container (expected a git checkout at /opt/velvet)"
     exit
   fi
-  [ "${VERBOSE:-no}" = "yes" ] && verbose_flag="--verbose"
+  local verbose_flag=()
+  [ "${VERBOSE:-no}" = "yes" ] && verbose_flag=(--verbose)
 
   msg_info "Updating ${APP}"
-  "${exec_cmd[@]}" bash -c "curl -fsSL '${VELVET_INSTALLER_URL}' -o /tmp/velvet-install.sh && chmod +x /tmp/velvet-install.sh && /tmp/velvet-install.sh --mode update ${verbose_flag}"
+  curl -fsSL "${VELVET_INSTALLER_URL}" -o /tmp/velvet-install.sh
+  chmod +x /tmp/velvet-install.sh
+  /tmp/velvet-install.sh --mode update "${verbose_flag[@]}"
   msg_ok "Updated ${APP}"
   exit
 }

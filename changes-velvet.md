@@ -1,3 +1,27 @@
+## v0.6.2 (2026-10-01)
+
+Fix the in-container update command from v0.6.1
+
+### Fixed: Proxmox LXC / Incus — `update` run inside the container
+
+- v0.6.1's container wizard leaves a standard `update` command in every
+  Velvet container (community-scripts' own convention, written
+  automatically during install). Running it would have failed outright:
+  the update logic was wrapped in `pct exec`/`incus exec` as if it always
+  ran on the Proxmox/Incus host, but `update` actually runs *inside* the
+  container, where neither `pct` nor `incus` exists. Caught by checking the
+  real community-scripts engine source and a real shipped app's install
+  script, not by guessing. Fixed to run entirely locally inside the
+  container, matching how every other app in that ecosystem does it.
+  Re-running the host-side one-liner against an existing container was
+  never affected — only the in-container `update` command was broken.
+- [`docs/lxc-incus.md`](docs/lxc-incus.md) now documents `update` as a
+  second, equivalent way to update a container, alongside re-running the
+  host one-liner.
+- The README was missing any mention of the Proxmox LXC / Incus install
+  path added in v0.6.1 — added to the Quick Start guide links, the
+  Installation table, and the Documentation table.
+
 ## v0.6.1 (2026-10-01)
 
 One-command install for Proxmox LXC and Incus
