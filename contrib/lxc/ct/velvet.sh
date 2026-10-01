@@ -226,16 +226,18 @@ _velvet_ensure_host_pkg() {
   msg_info "Installing $pkg on this host (needed to test the share)"
   apt-get update -qq >/dev/null 2>&1
   DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "$pkg" >/dev/null 2>&1
-  command -v "$bin" >/dev/null 2>&1
+  if command -v "$bin" >/dev/null 2>&1; then
+    msg_ok "Installed $pkg on this host"
+    return 0
+  fi
+  msg_error "Installing $pkg on this host did not succeed"
+  return 1
 }
 
 # $1 = server:/export — prints msg_ok/msg_error itself, returns 0/1
 _velvet_test_nfs() {
   local server="$1" tmp err rc=1
-  if ! _velvet_ensure_host_pkg mount.nfs nfs-common; then
-    msg_error "Could not install nfs-common on this host to test the share"
-    return 1
-  fi
+  _velvet_ensure_host_pkg mount.nfs nfs-common || return 1
   tmp="$(mktemp -d)"; err="$(mktemp)"
   if timeout 10 mount -t nfs -o ro "$server" "$tmp" >"$err" 2>&1; then
     msg_ok "NFS share mounted successfully (test mount, read-only)"
@@ -251,10 +253,7 @@ _velvet_test_nfs() {
 # $1 = //server/share  $2 = credentials file, or "" for guest access
 _velvet_test_cifs() {
   local server="$1" cred="$2" tmp err rc=1 opts
-  if ! _velvet_ensure_host_pkg mount.cifs cifs-utils; then
-    msg_error "Could not install cifs-utils on this host to test the share"
-    return 1
-  fi
+  _velvet_ensure_host_pkg mount.cifs cifs-utils || return 1
   tmp="$(mktemp -d)"; err="$(mktemp)"
   if [ -n "$cred" ]; then opts="ro,credentials=${cred},vers=3.0"; else opts="ro,guest,vers=3.0"; fi
   if timeout 10 mount -t cifs -o "$opts" "$server" "$tmp" >"$err" 2>&1; then
@@ -462,14 +461,24 @@ esac
 # confirmation the admin can see for themselves — and survives either way,
 # whether they accept it as shown or go through Default Settings and never
 # see that screen at all.
+# msg_info starts an animated spinner that only msg_ok/msg_error stops —
+# confirmed from the engine's own core.func. A bare msg_info with no
+# matching stop before the next call reaching for the real terminal (here,
+# `start`'s whiptail dialog a few lines down) leaves that spinner running
+# forever, fighting whiptail for the screen — reported live: the install
+# froze right after this message, unresponsive to Ctrl-C, only killable
+# with Ctrl-D. Every other msg_info in this file already has a matching
+# msg_ok/msg_error; these two didn't.
 case "$MUSIC_SOURCE_TYPE" in
   nfs)
     export ALLOW_MOUNT_FS="nfs" var_mount_fs="nfs"
-    msg_info "NFS mount support will be enabled on this container (mount=nfs)"
+    msg_info "Enabling NFS mount support on this container (mount=nfs)"
+    msg_ok "NFS mount support enabled on this container (mount=nfs)"
     ;;
   cifs)
     export ALLOW_MOUNT_FS="cifs" var_mount_fs="cifs"
-    msg_info "SMB/CIFS mount support will be enabled on this container (mount=cifs)"
+    msg_info "Enabling SMB/CIFS mount support on this container (mount=cifs)"
+    msg_ok "SMB/CIFS mount support enabled on this container (mount=cifs)"
     ;;
 esac
 

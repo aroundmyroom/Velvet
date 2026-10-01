@@ -1,3 +1,25 @@
+## v0.6.9 (2026-10-01)
+
+Fix an unkillable hang right after choosing NFS/SMB
+
+### Fixed: Proxmox LXC — the wizard could freeze solid, Ctrl-C did nothing
+
+- Reported live: right after confirming NFS or SMB mount support, the
+  install wizard would freeze completely — an animated spinner stuck on
+  screen, unresponsive to Ctrl-C, only killable by closing the terminal
+  outright. Root cause, confirmed by reading the engine's own spinner
+  implementation: the confirmation message started an animated spinner that
+  only a matching follow-up message stops, and the very next thing the
+  wizard does is open the container-creation dialog screen. The still-
+  running spinner fought that screen for control of the terminal — exactly
+  the "frozen, Ctrl-C does nothing" symptom, since the dialog's own input
+  handling was intercepting keystrokes that never reached it.
+- Fixed by adding the missing stop. The same gap, found while auditing
+  every other instance of this pattern in the file, existed in the host
+  share-test's package installer too — harmless there since the code
+  calling it always stopped it a few lines later, but fixed anyway, and
+  used the chance to drop a redundant duplicate error message.
+
 ## v0.6.8 (2026-10-01)
 
 A no-admin-account warning, plus two Proxmox LXC wizard fixes
