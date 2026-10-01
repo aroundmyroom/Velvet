@@ -108,7 +108,7 @@ _velvet_ask() {
     fi
   else
     if [ "$hidden" = "yes" ]; then
-      read -rsp "  ${YW}${prompt}:${CL} " reply </dev/tty
+      read -rsp "  ${YW}${prompt}:${CL} " reply </dev/tty || true
       # To stderr, not stdout: this function's stdout is captured by the
       # caller via `$(...)` to get the typed value. A bare `echo` here (only
       # meant to move the cursor off the masked-input line) would otherwise
@@ -118,7 +118,7 @@ _velvet_ask() {
       # _velvet_ask_music_source, in a second place.
       echo >&2
     else
-      read -rp "  ${YW}${prompt}${default:+ [$default]}:${CL} " reply </dev/tty
+      read -rp "  ${YW}${prompt}${default:+ [$default]}:${CL} " reply </dev/tty || true
       reply="${reply:-$default}"
     fi
   fi
@@ -127,6 +127,14 @@ _velvet_ask() {
 
 _velvet_ask_music_source() {
   if _velvet_has_whiptail; then
+    # `|| echo skip`, not left to the caller's own empty-check: whiptail
+    # exits 1 on Cancel/Esc, and this engine runs under `set -Eeuo
+    # pipefail` with an ERR trap — an unprotected nonzero exit here aborts
+    # the whole script immediately, before the caller's fallback logic ever
+    # runs. Confirmed live: a real Proxmox run crashed on exactly this,
+    # cancelling the dialog, with "exit code 1 (General error)" pointing at
+    # this line. `_velvet_ask()`'s whiptail calls already had the same
+    # `||` guard; this menu didn't.
     whiptail --backtitle "Velvet" --title "Music library" --menu \
       "Velvet needs a music folder once it's running.\n\nPick how it will be provided, or skip and set it up later from the admin UI instead (Settings -> Folders)." \
       18 72 4 \
@@ -134,7 +142,7 @@ _velvet_ask_music_source() {
       nfs "An NFS share (server:/export/path)" \
       cifs "An SMB/CIFS share (//server/share)" \
       skip "Skip for now" \
-      3>&1 1>&2 2>&3
+      3>&1 1>&2 2>&3 || echo skip
   else
     # Everything here except the final `echo local|nfs|cifs|skip` below must
     # go to stderr: the caller captures this function's stdout with
@@ -152,7 +160,7 @@ _velvet_ask_music_source() {
     echo "  3) An SMB/CIFS share (//server/share)" >&2
     echo "  4) Skip for now" >&2
     local choice=""
-    read -rp "Choice [1-4, default 4]: " choice </dev/tty
+    read -rp "Choice [1-4, default 4]: " choice </dev/tty || true
     case "$choice" in
       1) echo local ;;
       2) echo nfs ;;
@@ -227,16 +235,18 @@ _velvet_test_cifs() {
 # Echoes retry|proceed|skip.
 _velvet_ask_after_test_failure() {
   if _velvet_has_whiptail; then
+    # Same fix as _velvet_ask_music_source above, same reason: Cancel/Esc
+    # here must resolve to "skip", not crash the script under set -e.
     whiptail --backtitle "Velvet" --title "Mount test failed" --menu \
       "The test mount did not work (see the error above). What now?" 14 70 3 \
       retry "Try different details" \
       proceed "Use these details anyway, unverified" \
       skip "Skip the music library for now" \
-      3>&1 1>&2 2>&3
+      3>&1 1>&2 2>&3 || echo skip
   else
     echo "  r) try different details   p) use these details anyway   s) skip" >&2
     local choice=""
-    read -rp "Choice [r/p/s, default r]: " choice </dev/tty
+    read -rp "Choice [r/p/s, default r]: " choice </dev/tty || true
     case "$choice" in
       p|P) echo proceed ;;
       s|S) echo skip ;;
@@ -372,8 +382,15 @@ cifs)
     fi
 
     msg_info "Testing the SMB/CIFS share (mounting it read-only, then unmounting)"
-    _velvet_test_cifs "$CIFS_SERVER" "$CIFS_TEST_CRED"
-    _velvet_test_rc=$?
+    # `if CMD; then ...; else ...; fi`, not a bare `CMD; rc=$?` — a bare
+    # failing command here would trip this engine's `set -Eeuo pipefail`
+    # and abort the whole script before the next line ever captured the
+    # exit code, same bug as the two whiptail calls fixed above.
+    if _velvet_test_cifs "$CIFS_SERVER" "$CIFS_TEST_CRED"; then
+      _velvet_test_rc=0
+    else
+      _velvet_test_rc=$?
+    fi
     rm -f "$CIFS_TEST_CRED"
     [ "$_velvet_test_rc" -eq 0 ] && break
 

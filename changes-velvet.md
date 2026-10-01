@@ -1,3 +1,30 @@
+## v0.6.5 (2026-10-01)
+
+Fix a live crash on Cancel in the Proxmox LXC / Incus wizard
+
+### Fixed: cancelling a dialog in the install wizard crashed the script
+
+- Reported from a real Proxmox run: cancelling the music-library menu
+  aborted the whole installer with "exit code 1 (General error)" instead of
+  skipping gracefully. Root cause: the community-scripts engine runs app
+  scripts under strict error handling, and `whiptail` exits with a non-zero
+  code on Cancel/Esc by design — two of the wizard's dialogs had no guard
+  against that, so a cancel was treated as a fatal error rather than the
+  expected "skip" outcome it was supposed to mean.
+- Fixed in three places: both `whiptail` menus now resolve to "skip" when
+  cancelled; a related spot in the SMB/CIFS test code captured a command's
+  exit status in a way that wasn't protected against the same strict-error
+  mode; and all four text-answer prompts got the same defensive treatment.
+- Verified by reproducing the exact reported crash — a scriptable fake
+  `whiptail` drove the real, unmodified script logic through cancelling
+  each dialog, under the same strict error handling the real engine uses —
+  and confirming it now resolves cleanly instead of aborting. The
+  plain-text fallback path (no `whiptail` present) was verified the same
+  way through a real pseudo-terminal, covering the password-retry and
+  test-failure-retry flows together.
+- [`docs/lxc-incus.md`](docs/lxc-incus.md): cancelling any dialog in the
+  wizard is now documented as always meaning "skip," never a crash.
+
 ## v0.6.4 (2026-10-01)
 
 Proxmox LXC / Incus: verify the NFS/SMB share up front

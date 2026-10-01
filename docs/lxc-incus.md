@@ -63,6 +63,8 @@ automatically if missing, Debian/Ubuntu only (`apt-get`). If the test
 fails, three choices: try different details, proceed anyway unverified (the
 host's network path can genuinely differ from the container's — same
 server, different VLAN, is a real case this covers), or skip for now.
+Pressing Esc/Cancel on any of the wizard's dialogs is always treated the
+same as explicitly choosing "skip" — it never aborts the installer.
 
 Once verified (or you chose to proceed anyway), the real mount happens
 inside the container after it's created: install `nfs-common`/`cifs-utils`
