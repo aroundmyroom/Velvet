@@ -1,3 +1,28 @@
+## v0.6.4 (2026-10-01)
+
+Proxmox LXC / Incus: verify the NFS/SMB share up front
+
+### Added: real mount verification, right after the share details are entered
+
+- The container wizard now does a real tentative mount of the NFS or SMB
+  share — on the Proxmox/Incus host itself, read-only, then unmounted —
+  immediately after the details are entered, before the container is even
+  created. A format check only catches typos; this also catches an
+  unreachable server, an export that doesn't allow this host, or a wrong
+  password. `nfs-common`/`cifs-utils` are installed on the host
+  automatically if missing (Debian/Ubuntu; fails closed with a clear
+  message elsewhere).
+- On a failed test, three choices: try different details, proceed anyway
+  unverified (the host and the eventual container can genuinely see the
+  network differently — same server, different VLAN, is a real case this
+  covers), or skip the music library for now.
+- Verified for real against an unreachable test address: both the NFS and
+  SMB test paths fail within a bounded time (10-14 seconds, not hanging),
+  return cleanly, and leave no leftover temp files; the package auto-install
+  was exercised live as well.
+- [`docs/lxc-incus.md`](docs/lxc-incus.md) documents the new step and the
+  three-way choice on failure.
+
 ## v0.6.3 (2026-10-01)
 
 Proxmox LXC / Incus: NFS and SMB shares, and a cleaner wizard

@@ -162,6 +162,89 @@ _velvet_ask_music_source() {
   fi
 }
 
+# ── real mountability tests ──────────────────────────────────────────────────
+# A format check (server:/export, //server/share) only catches typos, not an
+# unreachable server, a locked-down export, or a wrong password — so each is
+# followed by an actual tentative mount, on this host, right after the
+# details are entered, rather than only finding out when the real mount
+# happens inside the container much later. Needs nfs-common / cifs-utils on
+# THIS host (the same client packages an NFS/CIFS-backed Proxmox storage
+# pool would need); installed here if missing. Debian/Ubuntu only (`apt-get`)
+# — on a non-Debian Incus host this fails closed with a clear message and
+# the "proceed without verifying" choice below still gets you past it.
+_velvet_ensure_host_pkg() {
+  local bin="$1" pkg="$2"
+  command -v "$bin" >/dev/null 2>&1 && return 0
+  command -v apt-get >/dev/null 2>&1 || return 1
+  msg_info "Installing $pkg on this host (needed to test the share)"
+  apt-get update -qq >/dev/null 2>&1
+  DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "$pkg" >/dev/null 2>&1
+  command -v "$bin" >/dev/null 2>&1
+}
+
+# $1 = server:/export — prints msg_ok/msg_error itself, returns 0/1
+_velvet_test_nfs() {
+  local server="$1" tmp err rc=1
+  if ! _velvet_ensure_host_pkg mount.nfs nfs-common; then
+    msg_error "Could not install nfs-common on this host to test the share"
+    return 1
+  fi
+  tmp="$(mktemp -d)"; err="$(mktemp)"
+  if timeout 10 mount -t nfs -o ro "$server" "$tmp" >"$err" 2>&1; then
+    msg_ok "NFS share mounted successfully (test mount, read-only)"
+    umount "$tmp" 2>/dev/null
+    rc=0
+  else
+    msg_error "Could not mount $server — $(tail -c 300 "$err" | tr -s ' \n' ' ')"
+  fi
+  rmdir "$tmp" 2>/dev/null; rm -f "$err"
+  return "$rc"
+}
+
+# $1 = //server/share  $2 = credentials file, or "" for guest access
+_velvet_test_cifs() {
+  local server="$1" cred="$2" tmp err rc=1 opts
+  if ! _velvet_ensure_host_pkg mount.cifs cifs-utils; then
+    msg_error "Could not install cifs-utils on this host to test the share"
+    return 1
+  fi
+  tmp="$(mktemp -d)"; err="$(mktemp)"
+  if [ -n "$cred" ]; then opts="ro,credentials=${cred},vers=3.0"; else opts="ro,guest,vers=3.0"; fi
+  if timeout 10 mount -t cifs -o "$opts" "$server" "$tmp" >"$err" 2>&1; then
+    msg_ok "SMB/CIFS share mounted successfully (test mount, read-only)"
+    umount "$tmp" 2>/dev/null
+    rc=0
+  else
+    msg_error "Could not mount $server — $(tail -c 300 "$err" | tr -s ' \n' ' ')"
+  fi
+  rmdir "$tmp" 2>/dev/null; rm -f "$err"
+  return "$rc"
+}
+
+# After a FAILED test (not a format error — that's always just "try again"):
+# retry with different details, proceed anyway without verifying (the host's
+# network path may genuinely differ from the container's), or give up.
+# Echoes retry|proceed|skip.
+_velvet_ask_after_test_failure() {
+  if _velvet_has_whiptail; then
+    whiptail --backtitle "Velvet" --title "Mount test failed" --menu \
+      "The test mount did not work (see the error above). What now?" 14 70 3 \
+      retry "Try different details" \
+      proceed "Use these details anyway, unverified" \
+      skip "Skip the music library for now" \
+      3>&1 1>&2 2>&3
+  else
+    echo "  r) try different details   p) use these details anyway   s) skip" >&2
+    local choice=""
+    read -rp "Choice [r/p/s, default r]: " choice </dev/tty
+    case "$choice" in
+      p|P) echo proceed ;;
+      s|S) echo skip ;;
+      *) echo retry ;;
+    esac
+  fi
+}
+
 MUSIC_SOURCE_TYPE="$(_velvet_ask_music_source)"
 [ -z "$MUSIC_SOURCE_TYPE" ] && MUSIC_SOURCE_TYPE="skip"  # Cancel/Esc in whiptail
 
@@ -203,19 +286,32 @@ nfs)
     NFS_SERVER="$(_velvet_ask "NFS share" "NFS server:/export, e.g. 192.168.1.10:/mnt/music" "")"
     [ -z "$NFS_SERVER" ] && { MUSIC_SOURCE_TYPE="skip"; break; }
     case "$NFS_SERVER" in
-      *:/*) break ;;
+      *:/*) ;;
+      *)
+        local_tries=$((local_tries + 1))
+        if [ "$local_tries" -ge 5 ]; then
+          msg_error "That still isn't server:/export — giving up, skipping the music library for now"
+          MUSIC_SOURCE_TYPE="skip"
+          break
+        fi
+        msg_error "Expected server:/export (e.g. 192.168.1.10:/mnt/music) — try again ($local_tries/5)"
+        continue
+        ;;
     esac
-    local_tries=$((local_tries + 1))
-    if [ "$local_tries" -ge 5 ]; then
-      msg_error "That still isn't server:/export — giving up, skipping the music library for now"
-      MUSIC_SOURCE_TYPE="skip"
-      break
-    fi
-    msg_error "Expected server:/export (e.g. 192.168.1.10:/mnt/music) — try again ($local_tries/5)"
+
+    NFS_OPTS="$(_velvet_ask "NFS mount options" "Mount options" "$NFS_OPTS")"
+    [ -z "$NFS_OPTS" ] && NFS_OPTS="rw,vers=4"
+
+    msg_info "Testing the NFS share (mounting it read-only, then unmounting)"
+    _velvet_test_nfs "$NFS_SERVER" && break
+
+    case "$(_velvet_ask_after_test_failure)" in
+      proceed) msg_info "Proceeding without verifying — this will be attempted again when the container is created"; break ;;
+      skip) MUSIC_SOURCE_TYPE="skip"; break ;;
+      *) : ;;  # retry — loop again
+    esac
   done
   unset local_tries
-  [ "$MUSIC_SOURCE_TYPE" = "nfs" ] && NFS_OPTS="$(_velvet_ask "NFS mount options" "Mount options" "$NFS_OPTS")"
-  [ -z "$NFS_OPTS" ] && NFS_OPTS="rw,vers=4"
   ;;
 cifs)
   local_tries=0
@@ -223,41 +319,71 @@ cifs)
     CIFS_SERVER="$(_velvet_ask "SMB/CIFS share" "Share, e.g. //192.168.1.10/Music" "")"
     [ -z "$CIFS_SERVER" ] && { MUSIC_SOURCE_TYPE="skip"; break; }
     case "$CIFS_SERVER" in
-      //*/*) break ;;
+      //*/*) ;;
+      *)
+        local_tries=$((local_tries + 1))
+        if [ "$local_tries" -ge 5 ]; then
+          msg_error "That still isn't //server/share — giving up, skipping the music library for now"
+          MUSIC_SOURCE_TYPE="skip"
+          break
+        fi
+        msg_error "Expected //server/share (e.g. //192.168.1.10/Music) — try again ($local_tries/5)"
+        continue
+        ;;
     esac
-    local_tries=$((local_tries + 1))
-    if [ "$local_tries" -ge 5 ]; then
-      msg_error "That still isn't //server/share — giving up, skipping the music library for now"
-      MUSIC_SOURCE_TYPE="skip"
-      break
-    fi
-    msg_error "Expected //server/share (e.g. //192.168.1.10/Music) — try again ($local_tries/5)"
-  done
-  unset local_tries
-  if [ "$MUSIC_SOURCE_TYPE" = "cifs" ]; then
+
     CIFS_USER="$(_velvet_ask "SMB/CIFS share" "Username (leave blank for guest access)" "")"
+    CIFS_TEST_CRED=""
     if [ -n "$CIFS_USER" ]; then
       # Confirmed by re-entry, not echoed back — the thing a previous version
       # of this script was missing entirely for its (now-removed) admin
       # password prompt. Retried up to 3 times rather than silently
       # continuing with a password that doesn't match what the user meant.
-      local_tries=0
+      # A separate counter from the outer loop's — reusing the same one would
+      # have corrupted its count instead of this inner retry's own.
+      pw_tries=0
       while :; do
         CIFS_PASS="$(_velvet_ask "SMB/CIFS share" "Password for ${CIFS_USER}" "" yes)"
         CIFS_PASS_CONFIRM="$(_velvet_ask "SMB/CIFS share" "Confirm password" "" yes)"
         [ "$CIFS_PASS" = "$CIFS_PASS_CONFIRM" ] && break
-        local_tries=$((local_tries + 1))
-        if [ "$local_tries" -ge 3 ]; then
+        pw_tries=$((pw_tries + 1))
+        if [ "$pw_tries" -ge 3 ]; then
           msg_error "Passwords kept not matching — skipping the SMB/CIFS mount, set it up later instead"
           MUSIC_SOURCE_TYPE="skip"
           break
         fi
-        msg_error "Passwords did not match — try again ($local_tries/3)"
+        msg_error "Passwords did not match — try again ($pw_tries/3)"
       done
-      unset CIFS_PASS_CONFIRM local_tries
+      unset CIFS_PASS_CONFIRM pw_tries
+      [ "$MUSIC_SOURCE_TYPE" != "cifs" ] && break
+
+      CIFS_DOMAIN="$(_velvet_ask "SMB/CIFS share" "Domain/workgroup (optional)" "")"
+
+      # Test-only credentials file — separate from, and always removed
+      # before, the real one the post-creation section below writes into
+      # the container; this one's only job is proving the share mounts.
+      CIFS_TEST_CRED="$(mktemp)"
+      chmod 600 "$CIFS_TEST_CRED"
+      {
+        echo "username=${CIFS_USER}"
+        echo "password=${CIFS_PASS}"
+        [ -n "$CIFS_DOMAIN" ] && echo "domain=${CIFS_DOMAIN}"
+      } >"$CIFS_TEST_CRED"
     fi
-    [ "$MUSIC_SOURCE_TYPE" = "cifs" ] && CIFS_DOMAIN="$(_velvet_ask "SMB/CIFS share" "Domain/workgroup (optional)" "")"
-  fi
+
+    msg_info "Testing the SMB/CIFS share (mounting it read-only, then unmounting)"
+    _velvet_test_cifs "$CIFS_SERVER" "$CIFS_TEST_CRED"
+    _velvet_test_rc=$?
+    rm -f "$CIFS_TEST_CRED"
+    [ "$_velvet_test_rc" -eq 0 ] && break
+
+    case "$(_velvet_ask_after_test_failure)" in
+      proceed) msg_info "Proceeding without verifying — this will be attempted again when the container is created"; break ;;
+      skip) MUSIC_SOURCE_TYPE="skip"; break ;;
+      *) : ;;  # retry — loop again
+    esac
+  done
+  unset local_tries
   ;;
 esac
 

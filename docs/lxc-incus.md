@@ -52,9 +52,22 @@ plain-text menu on hosts without `whiptail`):
 4. **Skip for now** — leave `/music` unset; set the library up from the
    admin UI once Velvet is running.
 
-Options 2 and 3 install `nfs-common`/`cifs-utils` inside the container,
-write a standard `/etc/fstab` entry so the mount survives a reboot, and
-mount it immediately. On Proxmox this works by exporting `ALLOW_MOUNT_FS`
+**Options 2 and 3 are verified immediately, before the container is
+created**: right after the details are entered, the wizard does a real
+tentative mount — on this host, read-only, then unmounts it — not just a
+format check. A format check only catches typos; this also catches an
+unreachable server, an export that doesn't allow this host, or (CIFS) a
+wrong password. Needs `nfs-common`/`cifs-utils` installed on *this host*
+(the Proxmox/Incus machine, not the new container) — installed
+automatically if missing, Debian/Ubuntu only (`apt-get`). If the test
+fails, three choices: try different details, proceed anyway unverified (the
+host's network path can genuinely differ from the container's — same
+server, different VLAN, is a real case this covers), or skip for now.
+
+Once verified (or you chose to proceed anyway), the real mount happens
+inside the container after it's created: install `nfs-common`/`cifs-utils`
+there too, write a standard `/etc/fstab` entry so the mount survives a
+reboot, and mount it. On Proxmox this works by exporting `ALLOW_MOUNT_FS`
 before the container is created, which is the engine's own mechanism for
 adding the matching `mount=nfs`/`mount=cifs` container feature; on Incus
 there's no equivalent pre-creation hook, so it's set directly
@@ -160,7 +173,9 @@ an NFS/SMB share instead if one is available on your network.
 | `Could not fetch install/velvet-install.sh` | The engine's `COMMUNITY_SCRIPTS_URL` didn't resolve to this repo. If you forked/copied `ct/velvet.sh`, make sure the `export COMMUNITY_SCRIPTS_URL=...` line near the top still points at a repo that has `contrib/lxc/ct/` and `contrib/lxc/install/`. |
 | Update says "No Velvet installation found" | It's looking for a git checkout at `/opt/velvet` inside the container. If you installed to a different `--install-dir`, update by hand instead: `pct exec <CTID> -- /tmp/velvet-install.sh --mode update --install-dir <path>` (or `incus exec`). |
 | Velvet can't see/write a bind-mounted music folder | See **Music library permissions** above — almost always the unprivileged UID remap. |
-| "Mounting the NFS/CIFS share failed" | Check `apt-get`/`mount` output printed above the error. Common causes: the NFS/CIFS service isn't reachable from the container's network, the export doesn't allow this container's IP, or (CIFS) the SMB version needs adjusting — the mount-options prompt (NFS) or a manual edit of `/etc/fstab` inside the container (CIFS, `vers=3.0` by default) covers that. |
+| The host-side share test fails but you know the share is fine | The host and the container can have a genuinely different network path to the same server (different VLAN, firewall rule scoped to container IPs, etc.) — choose "proceed anyway, unverified" when offered; the real mount still happens inside the container afterward. |
+| The host-side test says it couldn't install `nfs-common`/`cifs-utils` | The host isn't Debian/Ubuntu (no `apt-get`) — install the matching client package yourself first, or choose "proceed anyway" to skip verification. |
+| "Mounting the NFS/CIFS share failed" (inside the container, after creation) | Check `apt-get`/`mount` output printed above the error. Common causes: the NFS/CIFS service isn't reachable from the container's network, the export doesn't allow this container's IP, or (CIFS) the SMB version needs adjusting — the mount-options prompt (NFS) or a manual edit of `/etc/fstab` inside the container (CIFS, `vers=3.0` by default) covers that. |
 | Node install step is skipped | `velvet-install.sh` only installs Node via NodeSource if nothing `>=22` is already present — this is intentional, not a bug, so it doesn't fight a container image that already ships a newer Node. |
 | Everything else | Full log of every step is at `/var/log/velvet-installer.log` inside the container (install) or printed live with `--verbose`. |
 
