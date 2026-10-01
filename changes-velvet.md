@@ -1,4 +1,4 @@
-## v0.7.0 (2026-10-01)
+## v0.6.10 (2026-10-01)
 
 NFS/SMB now actually works on unprivileged containers
 
