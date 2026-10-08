@@ -12,7 +12,7 @@ const SCRIPT = path.join(__dirname, '../../contrib/shared/velvet-install.sh');
 
 function run(args, opts = {}) {
   try {
-    const stdout = execFileSync('bash', [SCRIPT, ...args], {
+    const stdout = execFileSync('/bin/bash', [SCRIPT, ...args], {
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'pipe'],
       ...opts,
