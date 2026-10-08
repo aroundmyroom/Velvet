@@ -1,3 +1,31 @@
+## v0.6.12 (2026-10-08)
+
+Fix: play-on-add while paused, LXC docs verified, dependency updates
+
+### Fixed: adding a song while paused now plays it
+
+- Choosing "play" on a song while the player was paused only appended it
+  to the queue and left playback paused, so nothing seemed to happen.
+  `queueAndPlay` now treats a paused player like an idle one and starts
+  the chosen song immediately.
+
+### Docs: Proxmox LXC / Incus install marked as verified
+
+- `docs/lxc-incus.md` no longer carries the "needs real-hardware
+  verification" warning. The installer and container wizard have been run
+  end-to-end on a real Proxmox VE host across v0.6.1–v0.6.11, covering
+  privileged and unprivileged containers and both NFS and SMB/CIFS music
+  sources.
+
+### Maintenance
+
+- Dependency updates: `file-type` 22.1.1, `music-metadata` 11.16.1,
+  `ws` 8.22.0, `sharp` 0.35.5, `@simplewebauthn/server` 14.0.3,
+  `fast-xml-parser` 5.11.2; dev tooling `eslint` 10.12.0, `globals`
+  17.13.0, `eslint-plugin-sonarjs` 4.2.2; CI `aquasecurity/trivy-action`.
+- The LXC installer test now calls `bash` by absolute path, which fixes
+  the CI lint gate that was blocking every open pull request.
+
 ## v0.6.11 (2026-10-01)
 
 New: Admin → Network Shares, plus LXC contribution fixes

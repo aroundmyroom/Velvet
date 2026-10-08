@@ -1,13 +1,12 @@
 # Running Velvet in an LXC (Proxmox VE) or Incus container
 
-> **Status: new, needs real-hardware verification.** The install/update logic
-> (`contrib/shared/velvet-install.sh`) has been exercised with `--dry-run`,
-> shellchecked, and covered by an automated test. The container-creation
-> wizard (`contrib/lxc/ct/velvet.sh`) has been shellchecked and read against
-> the actual source of the engine it depends on, but **has not yet run
-> against a real Proxmox VE or Incus host** — there is no `pct`/`incus`
-> available to test it end-to-end before it reaches one. Please report back
-> what happens on first real use.
+> **Status: verified on real hardware.** Both the install/update logic
+> (`contrib/shared/velvet-install.sh`) and the container-creation wizard
+> (`contrib/lxc/ct/velvet.sh`) have been run end-to-end on a real Proxmox VE
+> host across several rounds of testing (v0.6.1–v0.6.11), including the
+> privileged and unprivileged container paths and both the NFS and SMB/CIFS
+> music-source options. If you hit something that doesn't match this doc,
+> please report it.
 
 Velvet can run directly inside an LXC container on Proxmox VE, or inside an
 Incus container, without Docker. One command creates the container and

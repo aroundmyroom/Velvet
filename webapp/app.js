@@ -1,5 +1,5 @@
 'use strict';
-const VELVET_VERSION = '0.6.11';
+const VELVET_VERSION = '0.6.12';
 // ── SERVER IDENTITY GUARD ────────────────────────────────────────────────────
 // Detects when this browser's localStorage belongs to a different Velvet
 // instance (fresh install, IP change, reverse-proxy swap, second server).
@@ -1555,7 +1555,7 @@ const Player = {
   },
   // Add to queue; if nothing is playing yet, start immediately
   queueAndPlay(song) {
-    if (!audioEl.src || audioEl.ended || S.queue.length === 0) {
+    if (audioEl.paused || !audioEl.src || audioEl.ended || S.queue.length === 0) {
       if (!song.isRadio && !song.isPodcast) _setPlaySource(null);
       this.playSingle(song);
     } else {
