@@ -2,7 +2,7 @@ FROM node:24-slim
 
 # Build tools needed for npm native modules on Debian slim
 # hadolint ignore=DL3008
-RUN apt-get update && apt-get install -y --no-install-recommends wget xz-utils gosu && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates wget xz-utils gosu && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 

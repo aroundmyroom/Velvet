@@ -1,3 +1,19 @@
+## v0.6.14 (2026-10-13)
+
+Fix: Docker image now actually ships ffmpeg, yt-dlp, fpcalc and rsgain
+
+### Fixed
+
+- The Docker image was meant to come with ffmpeg, yt-dlp, fpcalc and
+  rsgain pre-installed, but every one of those downloads had been failing
+  silently during the build. The base image was installed without
+  `ca-certificates`, so `wget` couldn't open any HTTPS connection.
+  Containers still worked, because Velvet fetches missing tools on first
+  start, but that first start took several minutes longer than it should.
+  The image now installs `ca-certificates`, and all four tools are inside
+  the image again on both amd64 and arm64 (rsgain on amd64 only, as
+  before).
+
 ## v0.6.13 (2026-10-13)
 
 Maintenance: dependency and tooling updates, fpcalc 1.6.1
