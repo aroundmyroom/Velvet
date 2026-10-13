@@ -35,22 +35,25 @@ The fingerprint is computed by `fpcalc`, the command-line frontend to the [Chrom
 | `fpcalc` npm (v1.3.0, 2018) | Outdated thin wrapper — requires the binary anyway |
 | `@unimusic/chromaprint` (WASM) | Only accepts raw PCM — needs FFmpeg to decode first; adds complexity without benefit |
 | `rusty-chromaprint-wasm` (WASM) | Same constraint — PCM only |
-| **fpcalc binary (Chromaprint v1.5.1)** | ✅ Handles all formats natively, fast, well-tested, identical tool used by MusicBrainz Picard, beets, and every serious music tagger |
+| **fpcalc binary (Chromaprint v1.6.1)** | ✅ Handles all formats natively, fast, well-tested, identical tool used by MusicBrainz Picard, beets, and every serious music tagger |
 
 We use a `fpcalc-bootstrap.js` modelled exactly on the existing `ffmpeg-bootstrap.js`:
 
 - On server startup, check `bin/fpcalc/fpcalc` (or `fpcalc.exe` on Windows)
 - If missing: auto-download the correct static binary from the official [Chromaprint GitHub releases](https://github.com/acoustid/chromaprint/releases)
 - If present: verify it is executable and responds to `fpcalc -version`
+- If the bundled binary is an older version, it is upgraded in place (the old one is kept if the download fails)
 
 ### Download targets
 
 | Platform | Archive |
 |---|---|
-| Linux x86_64 | `chromaprint-fpcalc-1.5.1-linux-x86_64.tar.gz` |
-| Linux aarch64 | `chromaprint-fpcalc-1.5.1-linux-aarch64.tar.gz` |
-| macOS (x64 + arm64) | `chromaprint-fpcalc-1.5.1-macos-x86_64.tar.gz` |
-| Windows x64 | `chromaprint-fpcalc-1.5.1-windows-x86_64.zip` |
+| Linux x86_64 | `chromaprint-fpcalc-1.6.1-linux-x86_64.tar.gz` |
+| Linux arm64 | `chromaprint-fpcalc-1.6.1-linux-arm64.tar.gz` |
+| macOS (x64 + arm64) | `chromaprint-fpcalc-1.6.1-macos-universal.tar.gz` |
+| Windows x64 | `chromaprint-fpcalc-1.6.1-windows-x86_64.zip` |
+
+Every archive is SHA256-verified before extraction.
 
 Binary is installed to `bin/fpcalc/fpcalc` (or `bin/fpcalc/fpcalc.exe`). The `bin/fpcalc/` directory follows the same gitignore pattern as `bin/ffmpeg/` and `bin/yt-dlp/`.
 
@@ -71,8 +74,8 @@ Binary is installed to `bin/fpcalc/fpcalc` (or `bin/fpcalc/fpcalc.exe`). The `bi
 # Static binary, no dependencies. Falls back gracefully if download fails.
 RUN arch="$(uname -m)"; \
     case "$arch" in \
-      x86_64)  url="https://github.com/acoustid/chromaprint/releases/download/v1.5.1/chromaprint-fpcalc-1.5.1-linux-x86_64.tar.gz" ;; \
-      aarch64) url="https://github.com/acoustid/chromaprint/releases/download/v1.5.1/chromaprint-fpcalc-1.5.1-linux-aarch64.tar.gz" ;; \
+      x86_64)  url="https://github.com/acoustid/chromaprint/releases/download/v1.6.1/chromaprint-fpcalc-1.6.1-linux-x86_64.tar.gz" ;; \
+      aarch64) url="https://github.com/acoustid/chromaprint/releases/download/v1.6.1/chromaprint-fpcalc-1.6.1-linux-arm64.tar.gz" ;; \
       *)       url="" ;; \
     esac; \
     if [ -n "$url" ]; then \

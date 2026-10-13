@@ -1,3 +1,29 @@
+## v0.6.13 (2026-10-13)
+
+Maintenance: dependency and tooling updates, fpcalc 1.6.1
+
+### Updated
+
+- `express` 5.3.0, `nanoid` 6.0.2 and `music-metadata` 12.2.0. The
+  music-metadata major bump was checked against 493 real library files
+  across all 14 formats in the database: no parse errors, and every tag,
+  duration, bitrate and cover matches v11 except that OGG files now
+  report `lossless: false` instead of leaving it empty (unused by Velvet).
+- **fpcalc (Chromaprint) 1.5.1 → 1.6.1.** Fingerprints are bit-for-bit
+  identical to 1.5.1, so existing AcoustID matches stay valid. An existing
+  1.5.1 binary is upgraded automatically on next start, and if the
+  download fails the old binary is kept. Every archive is SHA256-verified.
+- **Linux arm64 now gets a bundled fpcalc.** Chromaprint publishes an
+  official arm64 build since 1.6, so arm64 installs (including the arm64
+  Docker image) no longer depend on a system-installed `fpcalc`.
+
+### Docker
+
+- The image now ships fpcalc 1.6.1 on both amd64 and arm64.
+- Release builds always pull the newest `node:24-slim` base and never
+  reuse cached yt-dlp/ffmpeg/rsgain downloads, so every image carries the
+  latest versions of those tools.
+
 ## v0.6.12 (2026-10-08)
 
 Fix: play-on-add while paused, LXC docs verified, dependency updates

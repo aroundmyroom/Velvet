@@ -11,6 +11,10 @@ RUN npm ci --omit=dev
 
 COPY --chown=node:node . .
 
+# Changes on every release build so the "latest" downloads below are never
+# served stale from the build cache.
+ARG CACHEBUST=0
+
 # Pre-download yt-dlp so it's ready immediately on container start.
 # The server also auto-downloads it at runtime if missing or empty.
 RUN arch="$(uname -m)"; \
@@ -33,8 +37,8 @@ RUN arch="$(uname -m)"; \
 # Static binary, no system dependencies. Falls back gracefully if download fails.
 RUN arch="$(uname -m)"; \
     case "$arch" in \
-      x86_64)  url="https://github.com/acoustid/chromaprint/releases/download/v1.5.1/chromaprint-fpcalc-1.5.1-linux-x86_64.tar.gz" ;; \
-      aarch64) url="https://github.com/acoustid/chromaprint/releases/download/v1.5.1/chromaprint-fpcalc-1.5.1-linux-aarch64.tar.gz" ;; \
+      x86_64)  url="https://github.com/acoustid/chromaprint/releases/download/v1.6.1/chromaprint-fpcalc-1.6.1-linux-x86_64.tar.gz" ;; \
+      aarch64) url="https://github.com/acoustid/chromaprint/releases/download/v1.6.1/chromaprint-fpcalc-1.6.1-linux-arm64.tar.gz" ;; \
       *)       url="" ;; \
     esac; \
     if [ -n "$url" ]; then \

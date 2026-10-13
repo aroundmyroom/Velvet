@@ -6,10 +6,10 @@
  * worker to generate Chromaprint fingerprints for every file in the library.
  *
  * Supported platforms (static builds, no system dependencies):
- *   Linux x64   → chromaprint-fpcalc-1.5.1-linux-x86_64.tar.gz
- *   Linux arm64 → chromaprint-fpcalc-1.5.1-linux-aarch64.tar.gz
- *   macOS x64   → chromaprint-fpcalc-1.5.1-macos-x86_64.tar.gz
- *   Windows x64 → chromaprint-fpcalc-1.5.1-windows-x86_64.zip
+ *   Linux x64   → chromaprint-fpcalc-1.6.1-linux-x86_64.tar.gz
+ *   Linux arm64 → chromaprint-fpcalc-1.6.1-linux-arm64.tar.gz
+ *   macOS       → chromaprint-fpcalc-1.6.1-macos-universal.tar.gz
+ *   Windows x64 → chromaprint-fpcalc-1.6.1-windows-x86_64.zip
  *
  * All other platforms: log a warning — user must provide the binary manually.
  *
@@ -39,7 +39,7 @@ const _SYSTEM_WHICH = process.platform === 'win32'
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const binaryExt = process.platform === 'win32' ? '.exe' : '';
 
-const FPCALC_VERSION = '1.5.1';
+const FPCALC_VERSION = '1.6.1';
 const BUNDLED_FPCALC_DIR = path.join(__dirname, '../../bin/fpcalc');
 
 let _initPromise = null;
@@ -53,16 +53,16 @@ export function fpcalcBin() {
 // ── Platform → download URL + expected SHA256 ────────────────────────────────
 //
 // SHA256 checksums are hardcoded because Chromaprint releases are pinned at
-// v1.5.1 — the archives never change.
+// v1.6.1 — the archives never change.
 //
-// Linux ARM64: Chromaprint does not publish a pre-built ARM64 Linux binary.
-// On ARM64 Linux the bootstrap falls back to the system `fpcalc` in PATH
+// Other platforms (e.g. Linux armv7) fall back to the system `fpcalc` in PATH
 // (install via: apt install libchromaprint-tools  /or/  apk add chromaprint).
 
 const KNOWN_CHECKSUMS = {
-  'chromaprint-fpcalc-1.5.1-linux-x86_64.tar.gz':   '4d7433a7f778e5946d7225230681cbcd634e153316ecac87c538c33ac32387a5',
-  'chromaprint-fpcalc-1.5.1-macos-universal.tar.gz': 'd4d8faff4b5f7c558d9be053da47804f9501eaa6c2f87906a9f040f38d61c860',
-  'chromaprint-fpcalc-1.5.1-windows-x86_64.zip':     '36b478e16aa69f757f376645db0d436073a42c0097b6bb2677109e7835b59bbc',
+  'chromaprint-fpcalc-1.6.1-linux-x86_64.tar.gz':   'fc16cd37a70168040bc9ceb45f1d4d1216f5a75bc4c9cf8564bea70ac6a45733',
+  'chromaprint-fpcalc-1.6.1-linux-arm64.tar.gz':    '7eaf5d655c4aa172ab28e3c870b8bb61dd2c327ac94de145676f88842cf6215a',
+  'chromaprint-fpcalc-1.6.1-macos-universal.tar.gz': '240aeb5a8c8205af458e3625cb7487b826b711a999e491ef00111f3cebd76f00',
+  'chromaprint-fpcalc-1.6.1-windows-x86_64.zip':     '735d6182b38e9f364b84ce6f4ccd682c75e2851de89735711d6b762d12b92a4e',
 };
 
 function releaseInfo() {
@@ -71,6 +71,10 @@ function releaseInfo() {
 
   if (platform === 'linux' && arch === 'x64') {
     const asset = `chromaprint-fpcalc-${FPCALC_VERSION}-linux-x86_64.tar.gz`;
+    return { url: `${base}/${asset}`, asset, ext: 'tar.gz' };
+  }
+  if (platform === 'linux' && arch === 'arm64') {
+    const asset = `chromaprint-fpcalc-${FPCALC_VERSION}-linux-arm64.tar.gz`;
     return { url: `${base}/${asset}`, asset, ext: 'tar.gz' };
   }
   if (platform === 'darwin') {
@@ -82,7 +86,7 @@ function releaseInfo() {
     const asset = `chromaprint-fpcalc-${FPCALC_VERSION}-windows-x86_64.zip`;
     return { url: `${base}/${asset}`, asset, ext: 'zip' };
   }
-  // Linux arm64 and other platforms: no official pre-built binary
+  // Other platforms: no official pre-built binary
   return null;
 }
 
@@ -264,8 +268,15 @@ export async function ensureFpcalc() {
     try {
       await fsp.access(binPath);
       const version = await getFpcalcVersion(binPath);
-      if (version) {
+      const isSystemLink = (await fsp.lstat(binPath)).isSymbolicLink();
+      if (version && (isSystemLink || !releaseInfo() || version.includes(`version ${FPCALC_VERSION}`))) {
         winston.info(`[fpcalc-bootstrap] fpcalc ready: ${version}`);
+        return true;
+      }
+      if (version) {
+        winston.info(`[fpcalc-bootstrap] Bundled ${version} is outdated — upgrading to v${FPCALC_VERSION}`);
+        if (await downloadAndInstall()) return true;
+        winston.warn('[fpcalc-bootstrap] Upgrade failed — keeping the existing fpcalc');
         return true;
       }
       // Binary exists but doesn't run — try to fix executable bit first
