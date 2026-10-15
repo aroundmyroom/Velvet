@@ -38,7 +38,7 @@ jobs:
 
       # ── SAST: Filesystem / dependency CVE scan ────────────────────────
       - name: Trivy filesystem scan
-        uses: aquasecurity/trivy-action@c03d123cb480c08c69b054af418ea5e69fe6e57e  # master (2026-06-01)
+        uses: aquasecurity/trivy-action@6abccf398f78b4c337599c0656f933d91efb91a0  # master (2026-06-01)
         with:
           scan-type: fs
           scan-ref: .
@@ -85,7 +85,7 @@ jobs:
       # ── Container image CVE scan ──────────────────────────────────────
       - name: Trivy image scan
         if: startsWith(github.ref, 'refs/tags/')
-        uses: aquasecurity/trivy-action@c03d123cb480c08c69b054af418ea5e69fe6e57e  # master (2026-06-01)
+        uses: aquasecurity/trivy-action@6abccf398f78b4c337599c0656f933d91efb91a0  # master (2026-06-01)
         with:
           image-ref: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.ref_name }}
           exit-code: '0'
