@@ -101,6 +101,12 @@ Clicking the artist *name* (anywhere except the icon) still opens the full artis
 
 The track list is fetched via `POST /api/v1/db/artist-folder-songs` using the artist name and all name variants returned by the search response (e.g. `"Bob Marley"` and `"Bob Marley & The Wailers"`). Audiobook and albums-only vpath filters are applied automatically.
 
+## Song results in an Albums-Only folder
+
+Clicking a song result that lives in an **Albums-Only** vpath opens its album in the Album Library instead of playing the bare file, so CUE-backed albums expand into their tracks. The album is found by folder: first the song's own folder, then one level up, so a track in a disc subfolder (`…/Album (2CD)/cd2/track.mp3`) opens `…/Album (2CD)`.
+
+If no album matches, the song plays and is queued directly. Velvet does not guess an album from the song's `album` tag, because folders with mixed tags would open an album that doesn't exist. The **+** button always queues the song directly.
+
 ## Excluding words from results
 
 Prefix a word with `-` or precede it with `NOT` to exclude results that

@@ -1,3 +1,20 @@
+## v0.6.15 (2026-10-19)
+
+Fix: search results in disc folders play again instead of opening an empty album
+
+### Fixed
+
+- Clicking a song in search results did nothing useful when the song sat in
+  an Albums-Only folder inside a disc subfolder, such as
+  `…/2012 - Voyage (Special Edition) (2CD)/cd2/`. Velvet tried to open the
+  song's album, but only looked for an album at the exact `cd2` folder. The
+  Album Library stores the album one level up, so the lookup failed and
+  Velvet fell back to the song's `album` tag ("Best Of"). That opened an
+  empty album view, and the song was neither played nor queued.
+  The lookup now also checks the parent folder, so disc subfolders open
+  their album. When no album matches, the song simply plays instead of
+  opening an album guessed from its tag.
+
 ## v0.6.14 (2026-10-13)
 
 Fix: Docker image now actually ships ffmpeg, yt-dlp, fpcalc and rsgain

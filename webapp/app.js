@@ -1,5 +1,5 @@
 'use strict';
-const VELVET_VERSION = '0.6.14';
+const VELVET_VERSION = '0.6.15';
 // ── SERVER IDENTITY GUARD ────────────────────────────────────────────────────
 // Detects when this browser's localStorage belongs to a different Velvet
 // instance (fresh install, IP change, reverse-proxy swap, second server).
@@ -11360,17 +11360,18 @@ async function doSearch(q) {
             await _loadAlbLib();
             // song.filepath = "Music/Albums/BW Live/track.flac"
             // album.path   = "Albums/BW Live"  (relative to vpath, no vpath prefix)
-            const rel = song.filepath.split('/').slice(1, -1).join('/');
-            const match = rel ? _albLib.albums.find(a => a.path === rel) : null;
-            if (match) {
-              viewAlbumDetail(match.id, 0, { backFn: () => viewSearch() });
-            } else {
-              // Fall back: fetch metadata to get album name, then open song list
-              const meta = await api('POST', 'api/v1/db/metadata', { filepath: song.filepath });
-              const m = norm(meta);
-              if (m.album) viewAlbumSongs(m.album, m.artist || null, () => viewSearch(), { skipAOFilter: true });
-              else Player.queueAndPlay(song);
+            // Walk up from the file's folder so disc subfolders ("…(2CD)/cd2") resolve to their album
+            const parts = song.filepath.split('/').slice(1, -1);
+            const stopAt = Math.max(0, parts.length - 2);
+            let match = null;
+            while (parts.length > stopAt && !match) {
+              const rel = parts.join('/');
+              match = _albLib.albums.find(a => a.path === rel);
+              parts.pop();
             }
+            // Tag album names are unreliable in mixed-tag folders — play the file rather than open a guessed album
+            if (match) viewAlbumDetail(match.id, 0, { backFn: () => viewSearch() });
+            else Player.queueAndPlay(song);
           } catch { Player.queueAndPlay(song); }
         })();
         return true; // intercept — async handler takes over
