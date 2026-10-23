@@ -1,3 +1,20 @@
+## v0.6.16 (2026-10-23)
+
+Maintenance: dependency updates and a follow-redirects security fix
+
+### Security
+
+- `follow-redirects` 1.16.0 → 1.16.1, a transitive dependency of `axios`
+  and `http-proxy`. It fixes two high-severity advisories where credential
+  headers could survive a cross-origin redirect
+  ([GHSA-q3jh-wrc6-jgq8](https://github.com/advisories/GHSA-q3jh-wrc6-jgq8),
+  [GHSA-8r9p-f939-6h3c](https://github.com/advisories/GHSA-8r9p-f939-6h3c)).
+
+### Updated
+
+- `music-metadata` 12.2.3, `joi` 18.3.0, `file-type` 22.2.0.
+- Dev/CI: `eslint` 10.13.0, `aquasecurity/trivy-action`.
+
 ## v0.6.15 (2026-10-19)
 
 Fix: search results in disc folders play again instead of opening an empty album
