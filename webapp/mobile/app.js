@@ -244,7 +244,7 @@ function stationArtUrl(station) {
   if (!station?.img) return '';
   if (/^https?:\/\//i.test(station.img))
     return `${S.serverUrl}/api/v1/radio/art?url=${encodeURIComponent(station.img)}&token=${encodeURIComponent(S.token)}`;
-  return `${S.serverUrl}/album-art/${station.img}`;
+  return `${S.serverUrl}/album-art/${encodeURIComponent(station.img)}`;
 }
 
 function esc(s) {

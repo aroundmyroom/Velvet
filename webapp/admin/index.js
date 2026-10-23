@@ -1,5 +1,12 @@
 // Escape a string for safe use in iziToast message/title (rendered via innerHTML)
 const _esc = s => String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+// Every toast here is plain text, often carrying server error messages that echo
+// filenames or tags, so title/message are escaped once, centrally. The themed
+// helpers (error, success, …) all go through show().
+if (window.iziToast) {
+  const _izShow = iziToast.show.bind(iziToast);
+  iziToast.show = opts => _izShow({ ...opts, title: _esc(opts?.title), message: _esc(opts?.message) });
+}
 
 // ── i18n Vue-reactivity bridge ───────────────────────────────────────────────
 // I18NSTATE.tick increments each time a language loads.  Vue templates that
@@ -413,7 +420,7 @@ const wrappedAdminView = Vue.component('wrapped-admin-view', {
       }
       const fmt = dt => new Date(dt).toLocaleString();
       adminConfirm(
-        this.t('admin.playStats.confirmDeleteTitle', { user: this.purgeUser }),
+        this.t('admin.playStats.confirmDeleteTitle', { user: _esc(this.purgeUser) }),
         this.t('admin.playStats.confirmDeleteMsg', { from: fmt(fromMs), to: fmt(toMs) }),
         this.t('admin.playStats.confirmDeleteLabel'),
         async () => {
@@ -427,7 +434,7 @@ const wrappedAdminView = Vue.component('wrapped-admin-view', {
             iziToast.success({ title: this.t('admin.playStats.toastDeletedEvents', { count: r.data.deleted }), position: 'topCenter', timeout: 3000 });
             this.load();
           } catch (e) {
-            iziToast.error({ title: this.t('admin.playStats.toastDeleteFailed'), message: _esc(e.message), position: 'topCenter', timeout: 4000 });
+            iziToast.error({ title: this.t('admin.playStats.toastDeleteFailed'), message: e.message, position: 'topCenter', timeout: 4000 });
           } finally {
             this.purging = false;
           }
@@ -452,7 +459,7 @@ const wrappedAdminView = Vue.component('wrapped-admin-view', {
             iziToast.success({ title: this.t('admin.playStats.toastUpdatedFiles', { count: r.data.updated }), position: 'topCenter', timeout: 4000 });
             this.loadPreview(); // refresh count after apply
           } catch (e) {
-            iziToast.error({ title: this.t('admin.playStats.toastBackfillFailed'), message: _esc(e.message), position: 'topCenter', timeout: 4000 });
+            iziToast.error({ title: this.t('admin.playStats.toastBackfillFailed'), message: e.message, position: 'topCenter', timeout: 4000 });
           } finally {
             this.backfilling = false;
           }
@@ -1001,14 +1008,14 @@ const scanErrorsView = Vue.component('scan-errors-view', {
         if (r.data.action === 'unrecoverable') {
           iziToast.error({ title: this.t('admin.scanErrors.toastFileUnrecoverable'), message: this.t('admin.scanErrors.toastFileUnrecoverableMsg'), position: 'topCenter', timeout: 0, close: true });
         } else {
-          const msg = (labels[r.data.action] || this.t('admin.scanErrors.toastFixed')) + (r.data.note ? ' — ' + _esc(r.data.note) : '');
+          const msg = (labels[r.data.action] || this.t('admin.scanErrors.toastFixed')) + (r.data.note ? ' — ' + r.data.note : '');
           iziToast.success({ title: this.t('admin.scanErrors.toastFixed'), message: msg, position: 'topCenter', timeout: 4000 });
         }
         // Sync fix_action from server response into the local row so the badge
         // reflects the correct state immediately (before page reload).
         if (idx >= 0) this.errors[idx].fix_action = r.data.action;
       } catch (e) {
-        iziToast.error({ title: this.t('admin.scanErrors.toastFixFailed'), message: _esc(e?.response?.data?.error) || this.t('admin.scanErrors.typeOther'), position: 'topCenter', timeout: 0, close: true });
+        iziToast.error({ title: this.t('admin.scanErrors.toastFixFailed'), message: e?.response?.data?.error || this.t('admin.scanErrors.typeOther'), position: 'topCenter', timeout: 0, close: true });
       } finally {
         Vue.delete(this.fixing, err.guid);
       }
@@ -2274,7 +2281,7 @@ const foldersView = Vue.component('folders-view', {
         }
       },
       removeFolder: async function(vpath, folder) {
-                adminConfirm(this.t('admin.folders.confirmRemoveTitle', { folder: folder }), this.t('admin.folders.confirmRemoveMsg'), this.t('admin.folders.confirmRemoveLabel'), () => {
+                adminConfirm(this.t('admin.folders.confirmRemoveTitle', { folder: _esc(folder) }), this.t('admin.folders.confirmRemoveMsg'), this.t('admin.folders.confirmRemoveLabel'), () => {
           API.axios({
                           method: 'DELETE',
                           url: `${API.url()}/api/v1/admin/directory`,
@@ -2492,7 +2499,7 @@ const usersView = Vue.component('users-view', {
         modVM.openModal();
       },
       deleteUser: function (username) {
-                adminConfirm(this.t('admin.users.confirmDeleteTitle', { username }), '', this.t('admin.users.confirmDeleteLabel'), async () => {
+                adminConfirm(this.t('admin.users.confirmDeleteTitle', { username: _esc(username) }), '', this.t('admin.users.confirmDeleteLabel'), async () => {
           try {
                           await API.axios({
                             method: 'DELETE',
@@ -3284,7 +3291,7 @@ const dbView = Vue.component('db-view', {
           if (st.data?.running === false) {
             done = true;
             if (st.data.lastError) {
-              iziToast.error({ title: this.t('admin.db.toastRebuildFailed'), message: _esc(st.data.lastError), position: 'topCenter', timeout: 7000 });
+              iziToast.error({ title: this.t('admin.db.toastRebuildFailed'), message: st.data.lastError, position: 'topCenter', timeout: 7000 });
             } else {
               iziToast.success({ title: this.t('admin.db.toastArtistIndexRebuilt'), message: this.t('admin.db.toastReloadArtistLibrary'), position: 'topCenter', timeout: 4000 });
             }
@@ -3307,7 +3314,7 @@ const dbView = Vue.component('db-view', {
               const st = await API.axios({ method: 'GET', url: `${API.url()}/api/v1/admin/artists/rebuild-status` });
               if (st.data?.running === false) {
                 done = true;
-                if (st.data.lastError) iziToast.error({ title: this.t('admin.db.toastRebuildFailed'), message: _esc(st.data.lastError), position: 'topCenter', timeout: 7000 });
+                if (st.data.lastError) iziToast.error({ title: this.t('admin.db.toastRebuildFailed'), message: st.data.lastError, position: 'topCenter', timeout: 7000 });
                 else iziToast.success({ title: this.t('admin.db.toastArtistIndexRebuilt'), message: this.t('admin.db.toastReloadArtistLibrary'), position: 'topCenter', timeout: 4000 });
                 break;
               }
@@ -3315,10 +3322,10 @@ const dbView = Vue.component('db-view', {
             if (!done) iziToast.error({ title: this.t('admin.db.toastRebuildTimedOut'), message: this.t('admin.db.toastRebuildTimedOutMsg'), position: 'topCenter', timeout: 7000 });
           } catch (pollErr) {
             const pmsg = pollErr?.message ?? msg;
-            iziToast.error({ title: this.t('admin.db.toastRebuildStatusCheckFailed'), message: _esc(pmsg), position: 'topCenter', timeout: 7000 });
+            iziToast.error({ title: this.t('admin.db.toastRebuildStatusCheckFailed'), message: pmsg, position: 'topCenter', timeout: 7000 });
           }
         } else {
-          iziToast.error({ title: this.t('admin.db.toastRebuildFailed'), message: _esc(msg), position: 'topCenter', timeout: 7000 });
+          iziToast.error({ title: this.t('admin.db.toastRebuildFailed'), message: msg, position: 'topCenter', timeout: 7000 });
         }
       } finally {
         this.rebuildingArtists = false;
@@ -3640,7 +3647,7 @@ const dbView = Vue.component('db-view', {
         }
         adminConfirm(
           this.t('admin.library.purgeOrphaned'),
-          this.t('admin.library.purgeOrphanedConfirm', { count: orphaned.length, list: orphaned.join(', ') }),
+          this.t('admin.library.purgeOrphanedConfirm', { count: orphaned.length, list: orphaned.map(_esc).join(', ') }),
           this.t('admin.library.purgeOrphaned'),
           async () => {
             try {
@@ -6883,7 +6890,7 @@ const albumArtWorkshopView = Vue.component('album-art-workshop-view', {
     },
     _doShelve(list) {
       const title = list.length === 1
-        ? this.t('admin.art.shelveTitle', { folder: list[0].vpath + '/' + list[0].prefix })
+        ? this.t('admin.art.shelveTitle', { folder: _esc(list[0].vpath + '/' + list[0].prefix) })
         : this.t('admin.art.shelveTitleMulti', { count: list.length });
       adminConfirm(title, this.t('admin.art.shelveConfirm'), this.t('admin.art.btnShelveFolder'), async () => {
         try {

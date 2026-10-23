@@ -73,7 +73,7 @@ function resolveTagField(fieldName, songInfo, nativeMap) {
       return null;
     },
   };
-  if (commonAlias[key]) return commonAlias[key]() ?? null;
+  if (Object.hasOwn(commonAlias, key)) return commonAlias[key]() ?? null;
 
   // Raw Vorbis / APE / iTunes custom atom by exact key name
   const raw = nativeMap.vorbis?.[key] ?? nativeMap.ape?.[key] ?? nativeMap.itunesCustom?.[key];

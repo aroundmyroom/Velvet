@@ -137,6 +137,11 @@ All on the user's chosen drive — not on the 47 GB system disk.
 > i18n keys already exist in all 12 locales. All 7 endpoints documented at `docs/API.md:912-918`.
 >
 > Remaining work:
+> - [ ] **ZIP extraction in the upload step** — the old code called a non-existent
+>   `fs.Extract` through `require()` in an ES module and crashed the server. Since v0.7.0
+>   `POST /migrate/upload` stores nothing and answers "Import is not available yet". Needs
+>   a real unzip with an entry-count/byte budget and zip-slip protection (every entry must
+>   stay inside the extract dir).
 > - [ ] **vpath remapping** — `src/api/migrate.js:211-213` is a stub: *"this would need UI interaction / For now, just restore config as-is"*
 > - [ ] **Re-enable the import UI** — `webapp/admin/index.js:3907-3915` wraps the section in `opacity:.4;pointer-events:none` with the button `disabled`
 > - [ ] **"Keep this system's user accounts" checkbox** — the `keepUsers` param exists in the API (`docs/API.md:916`) but has no UI control

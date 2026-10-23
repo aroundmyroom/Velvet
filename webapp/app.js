@@ -1,5 +1,5 @@
 'use strict';
-const VELVET_VERSION = '0.6.16';
+const VELVET_VERSION = '0.7.0';
 // ── SERVER IDENTITY GUARD ────────────────────────────────────────────────────
 // Detects when this browser's localStorage belongs to a different Velvet
 // instance (fresh install, IP change, reverse-proxy swap, second server).
@@ -4178,7 +4178,7 @@ async function _npItunesSearch(song) {
     }
     const thumbsHtml = d.results.map(r =>
       `<img class="np-discogs-thumb np-deezer-thumb"
-        src="${r.thumb}" alt=""
+        src="${esc(r.thumb)}" alt=""
         title="${esc(r.label)}"
         data-cover-url="${esc(r.coverUrl)}"
         data-filepath="${esc(song.filepath || '')}">`
@@ -4223,7 +4223,7 @@ dsEl.innerHTML = `<span class="np-discogs-status">${t('player.npArt.searchingDee
     }
     const thumbsHtml = hits.map(h =>
       `<img class="np-discogs-thumb np-deezer-thumb"
-        src="${h.cover_medium}" alt=""
+        src="${esc(h.cover_medium)}" alt=""
         title="${esc(h.title)}${h.artist?.name ? ' — ' + esc(h.artist.name) : ''}"
         data-cover-xl="${esc(h.cover_xl || h.cover_big || h.cover_medium)}"
         data-filepath="${esc(song.filepath || '')}">` 
@@ -4324,7 +4324,7 @@ async function _npDiscogsSearch(song) {
       `<img class="np-discogs-thumb"
         src="${c.thumbB64}" alt=""
         title="${esc(c.releaseTitle)}${c.year ? ' (' + esc(c.year) + ')' : ''}"
-        data-release-id="${c.releaseId}"
+        data-release-id="${esc(c.releaseId)}"
         data-filepath="${esc(song.filepath || '')}">`
     ).join('');
     dsEl.innerHTML =
@@ -6908,7 +6908,6 @@ const VIZ = (() => {
         // coloured arc fill
         const fillEnd=arcStart+(arcEnd-arcStart)*rms;
         const hue=barHue(rms);
-        const arcGrd=ctx.createConicalGradient?null:null; // fallback: solid
         ctx.shadowColor=`hsla(${hue},100%,55%,.5)`; ctx.shadowBlur=16*dpr;
         ctx.strokeStyle=`hsla(${hue},100%,55%,.9)`; ctx.lineWidth=14*dpr;
         ctx.beginPath(); ctx.arc(cx,cy,radius,arcStart,fillEnd); ctx.stroke();
@@ -8930,7 +8929,7 @@ async function viewArtistProfile(artistKey, displayName, variants, backFn) {
       const verBadge = alb.album_version ? `<span class="alb-version-badge" title="${esc(alb.album_version)}">${esc(alb.album_version)}</span>` : '';
       return `<div class="album-card${isSibling ? ' alb-sibling-group' : ''}" data-alb-idx="${i}">
         <div class="album-art">${albArtHtml}<div class="play-ov"><svg width="24" height="24" viewBox="0 0 24 24" fill="white"><polygon points="5,3 19,12 5,21"/></svg></div></div>
-        <div class="album-meta"><div class="album-name">${esc(alb.name || '—')}</div>${alb.year ? `<div class="album-year">${alb.year}${verBadge}</div>` : verBadge ? `<div class="album-year">${verBadge}</div>` : ''}</div>
+        <div class="album-meta"><div class="album-name">${esc(alb.name || '—')}</div>${alb.year ? `<div class="album-year">${esc(alb.year)}${verBadge}</div>` : verBadge ? `<div class="album-year">${verBadge}</div>` : ''}</div>
       </div>`;
     }).join('');
     albumsEl.querySelectorAll('.album-card').forEach((card, i) => {
@@ -9552,7 +9551,7 @@ async function viewArtistProfile2(artistKey, displayName, variants, backFn, init
       for (const s of songs) {
         const dur = s.duration ? _fmtDuration(s.duration) : '';
         const title = s.title || s.filepath.split('/').pop();
-        const trackNum = s.track ? `<span class="artpro2-track-num">${s.track}</span>` : '';
+        const trackNum = s.track ? `<span class="artpro2-track-num">${esc(s.track)}</span>` : '';
         songsHtml += `<div class="artpro2-song-row" data-fp="${esc(s.filepath)}">
           ${trackNum}
           <span class="artpro2-song-title">${esc(title)}</span>
@@ -9677,7 +9676,7 @@ async function viewArtistProfile2(artistKey, displayName, variants, backFn, init
           const verBadge = alb.album_version ? `<span class="alb-version-badge" title="${esc(alb.album_version)}">${esc(alb.album_version)}</span>` : '';
           return `<div class="album-card" data-alb2-idx="${artistAlbums.indexOf(alb)}">
             <div class="album-art">${albArtHtml}<div class="play-ov"><svg width="24" height="24" viewBox="0 0 24 24" fill="white"><polygon points="5,3 19,12 5,21"/></svg></div></div>
-            <div class="album-meta"><div class="album-name">${esc(alb.displayName || '—')}</div>${alb.year ? `<div class="album-year">${alb.year}${verBadge}</div>` : verBadge ? `<div class="album-year">${verBadge}</div>` : ''}</div>
+            <div class="album-meta"><div class="album-name">${esc(alb.displayName || '—')}</div>${alb.year ? `<div class="album-year">${esc(alb.year)}${verBadge}</div>` : verBadge ? `<div class="album-year">${verBadge}</div>` : ''}</div>
           </div>`;
         }).join('') || '<p style="color:var(--t3);font-size:13px;">No albums in this category</p>';
 
@@ -9923,7 +9922,7 @@ async function viewAlbumLibrary() {
         </div>
         <div class="album-meta">
           <div class="album-name">${esc(a.displayName)}</div>
-          ${a.year ? `<div class="album-year">${a.year}${verBadge}${catBadge}</div>` : (verBadge || catBadge) ? `<div class="album-year">${verBadge}${catBadge}</div>` : '<div class="album-year">&nbsp;</div>'}
+          ${a.year ? `<div class="album-year">${esc(a.year)}${verBadge}${catBadge}</div>` : (verBadge || catBadge) ? `<div class="album-year">${verBadge}${catBadge}</div>` : '<div class="album-year">&nbsp;</div>'}
         </div>
       </div>`;
     }
@@ -10240,7 +10239,7 @@ async function _albDiscogsSearch() {
           `<img class="np-discogs-thumb albd-discogs-thumb"
             src="${c.thumbB64}" alt=""
             title="${esc(c.releaseTitle)}${c.year ? ' (' + esc(c.year) + ')' : ''}"
-            data-release-id="${c.releaseId}">`
+            data-release-id="${esc(c.releaseId)}">`
         ).join('') +
       `</div>` +
       `<span class="np-discogs-note">${t('player.npArt.viaDiscogsAlbum')}</span>`;
@@ -10277,7 +10276,7 @@ async function _albDeezerSearch() {
       `<div class="np-discogs-choices">` +
         hits.map(h =>
           `<img class="np-discogs-thumb albd-url-thumb"
-            src="${h.cover_medium}" alt=""
+            src="${esc(h.cover_medium)}" alt=""
             title="${esc(h.title)}${h.artist?.name ? ' \u2014 ' + esc(h.artist.name) : ''}"
             data-cover-url="${esc(h.cover_xl || h.cover_big || h.cover_medium)}">`
         ).join('') +
@@ -10314,7 +10313,7 @@ async function _albItunesSearch() {
       `<div class="np-discogs-choices">` +
         d.results.map(r =>
           `<img class="np-discogs-thumb albd-url-thumb"
-            src="${r.thumb}" alt=""
+            src="${esc(r.thumb)}" alt=""
             title="${esc(r.label)}"
             data-cover-url="${esc(r.coverUrl)}">`
         ).join('') +
@@ -12243,7 +12242,7 @@ async function _pnowLoadArtistData(artist, forFp, skipImg = false) {
         for (const s of songs) {
           const dur = s.duration ? _fmtDuration(s.duration) : '';
           const title = s.title || s.filepath.split('/').pop();
-          const trackNum = s.track ? `<span class="artpro2-track-num">${s.track}</span>` : '';
+          const trackNum = s.track ? `<span class="artpro2-track-num">${esc(s.track)}</span>` : '';
           songsHtml += `<div class="artpro2-song-row" data-fp="${esc(s.filepath)}">
             ${trackNum}
             <span class="artpro2-song-title">${esc(title)}</span>
@@ -12318,7 +12317,7 @@ async function _pnowLoadArtistData(artist, forFp, skipImg = false) {
           const verBadge = alb.album_version ? `<span class="alb-version-badge" title="${esc(alb.album_version)}">${esc(alb.album_version)}</span>` : '';
           return `<div class="album-card" data-pnow-alb-idx="${i}">
             <div class="album-art">${albArtHtml}<div class="play-ov"><svg width="24" height="24" viewBox="0 0 24 24" fill="white"><polygon points="5,3 19,12 5,21"/></svg></div></div>
-            <div class="album-meta"><div class="album-name">${esc(alb.displayName || '—')}</div>${alb.year ? `<div class="album-year">${alb.year}${verBadge}</div>` : verBadge ? `<div class="album-year">${verBadge}</div>` : ''}</div>
+            <div class="album-meta"><div class="album-name">${esc(alb.displayName || '—')}</div>${alb.year ? `<div class="album-year">${esc(alb.year)}${verBadge}</div>` : verBadge ? `<div class="album-year">${verBadge}</div>` : ''}</div>
           </div>`;
         }).join('');
         albumsEl2.querySelectorAll('.album-card').forEach((card, i) => {
@@ -13019,7 +13018,7 @@ function renderFileExplorer(d) {
   parts.forEach(p => {
     crumbs += `<span class="fe-crumb-sep">/</span>`;
     cumPath += (cumPath ? '/' : '') + p;
-    crumbs += `<span class="fe-crumb" data-dir="/${cumPath}">${esc(p)}</span>`;
+    crumbs += `<span class="fe-crumb" data-dir="/${esc(cumPath)}">${esc(p)}</span>`;
   });
 
   const feVpath = parts[0] || '';
@@ -13333,7 +13332,7 @@ function renderTagWorkshop(dbFiles, dirs, curPath) {
   parts.forEach(p => {
     crumbs += `<span class="fe-crumb-sep">/</span>`;
     cumPath += (cumPath ? '/' : '') + p;
-    crumbs += `<span class="fe-crumb" data-dir="/${cumPath}">${esc(p)}</span>`;
+    crumbs += `<span class="fe-crumb" data-dir="/${esc(cumPath)}">${esc(p)}</span>`;
   });
 
   // Subdirectory entries (navigate within workshop)
@@ -17498,7 +17497,7 @@ async function _renderSonosRadioView() {
       ? t('player.sonosRadio.directPlayHint')
       : (isFav && item.service ? esc(item.service) : t('player.sonosRadio.subtitle'));
     return `
-      <div class="sonos-item-row sonos-card${concealed ? ' sonos-card--hidden' : ''}" data-id="${item.id}" data-cloud-id="${item.cloudObjectId || ''}" data-auth-token="${item.authToken || ''}"${concealed ? ' style="opacity:.55"' : ''}>
+      <div class="sonos-item-row sonos-card${concealed ? ' sonos-card--hidden' : ''}" data-id="${esc(item.id)}" data-cloud-id="${esc(item.cloudObjectId || '')}" data-auth-token="${esc(item.authToken || '')}"${concealed ? ' style="opacity:.55"' : ''}>
         ${art}
         <div class="sonos-card-body">
           <div class="sonos-item-title sonos-card-title">${esc(item.title)}${item.hidden ? ` <span style="font-size:.72rem;color:var(--t3);font-weight:400">(${t('player.sonosRadio.hidden')})</span>` : ''}</div>
@@ -17507,12 +17506,12 @@ async function _renderSonosRadioView() {
         <div class="sonos-card-actions">
           ${hideBtn}
           ${canBrowse ? `
-            <button class="btn-flat sonos-browse-btn" data-id="${item.id}" data-cloud-id="${item.cloudObjectId || ''}" data-auth-token="${item.authToken || ''}" title="${t('player.sonosRadio.browseTitle')}">
+            <button class="btn-flat sonos-browse-btn" data-id="${esc(item.id)}" data-cloud-id="${esc(item.cloudObjectId || '')}" data-auth-token="${esc(item.authToken || '')}" title="${t('player.sonosRadio.browseTitle')}">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
               ${t('player.sonosRadio.browseTitle')}
             </button>
           ` : ''}
-          ${canPlayOnSonos ? `<button class="btn-primary sonos-play-btn" data-id="${item.id}" data-fav-id="${isFav ? esc(item.id) : ''}" data-cloud-id="${item.cloudObjectId || ''}" data-auth-token="${item.authToken || ''}" title="${t('player.sonosRadio.playOnSonos')}">
+          ${canPlayOnSonos ? `<button class="btn-primary sonos-play-btn" data-id="${esc(item.id)}" data-fav-id="${isFav ? esc(item.id) : ''}" data-cloud-id="${esc(item.cloudObjectId || '')}" data-auth-token="${esc(item.authToken || '')}" title="${t('player.sonosRadio.playOnSonos')}">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M6 4l14 8-14 8V4z"/></svg>
             ${t('player.sonosRadio.playOnSonos')}
           </button>` : ''}
@@ -21769,7 +21768,7 @@ function _renderScanProgress(scans) {
     const fileTip  = sp.currentFile ? ` title="${sp.currentFile.replaceAll(/"/g,'&quot;')}"` : '';
     return `<div class="spc-card"${fileTip}>
       <span class="spc-dot"></span>
-      <span class="spc-vpath">${sp.vpath}</span>
+      <span class="spc-vpath">${esc(sp.vpath)}</span>
       <div class="spc-track">${bar}</div>
       <span class="spc-pct">${pctTxt}</span>
       <span class="spc-count">${countTxt}</span>
@@ -25046,7 +25045,7 @@ document.getElementById('np-left').addEventListener('click', async e => {
           `<img class="np-discogs-thumb"
             src="${c.thumbB64}" alt=""
             title="${esc(c.releaseTitle)}${c.year ? ' (' + esc(c.year) + ')' : ''}"
-            data-release-id="${c.releaseId}"
+            data-release-id="${esc(c.releaseId)}"
             data-filepath="${esc(song?.filepath || '')}">`
         ).join('');
         if (dsEl) dsEl.innerHTML =

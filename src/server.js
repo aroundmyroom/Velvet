@@ -389,6 +389,8 @@ export async function serveIt(configFile) {
   const _artExists = f => fs.promises.access(f).then(() => true, () => false);
 
   velvet.get('/album-art/:file', async (req, res) => {
+    // Cached art can include remote SVG station logos — never let it run script if opened directly
+    res.setHeader('Content-Security-Policy', "default-src 'none'; style-src 'unsafe-inline'; sandbox");
     if (!req.params.file) { return sendArtFallback(res); }
 
     const filename = sanitizeFilename(req.params.file);

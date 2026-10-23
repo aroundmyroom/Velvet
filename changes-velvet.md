@@ -1,3 +1,56 @@
+## v0.7.0 (2026-10-23)
+
+Security release: full static-analysis audit of the whole codebase
+
+A complete scan of the code with opengrep 1.32.0 (572 rules: JavaScript,
+TypeScript, secrets, Dockerfile, YAML, Bash, HTML) over every tracked file,
+including the two 1 MB+ frontends the scanner skips by default. All 2,072
+findings were triaged; every real issue is fixed below, false positives are
+documented in `docs/dev/security-scan.md`. 34 new regression tests.
+
+### Security
+
+- **Server-side request forgery (SSRF).** The private-address guard only
+  looked at the hostname text. A domain that resolves to an internal address,
+  `0.0.0.0`, an IPv6 literal in brackets (`[::1]`) or a redirect to an internal
+  host all got through. The guard now resolves DNS and checks every address,
+  pins the connection to the checked address, and re-checks every redirect hop.
+  Covers radio streams, radio logos, now-playing metadata, recordings and
+  podcasts (feeds, images, episode downloads).
+- **Jukebox sessions.** Session codes were looked up in plain objects, so
+  `__proto__`, `toString` and similar names counted as valid codes. On the
+  unauthenticated now-playing endpoint that let anyone overwrite the cache's
+  prototype and fake another session's now-playing state. Sessions now live in
+  `Map`s, and the remote page's inline JSON escapes `<`.
+- **Cross-site scripting (XSS) in the player.** Folder names in the file
+  explorer and tag workshop breadcrumbs, Sonos favourite/browse IDs and tokens,
+  cover URLs from Deezer, iTunes and Discogs, album years, track numbers and
+  the scan-progress library name were written into HTML unescaped. All are
+  escaped now.
+- **XSS in the admin UI.** Confirm dialogs render HTML, and usernames, folder
+  names and album paths were passed in raw. Toasts showed server error text as
+  HTML. Both are escaped now; toasts are escaped once, centrally.
+- **XSS in the mobile player.** Radio station logos stored as a local filename
+  were put into an image URL unencoded.
+- **Remote SVG on Velvet's origin.** Radio logos can be SVG. Both
+  `/album-art/*` and `/api/v1/radio/art` now send a sandbox
+  Content-Security-Policy, so an SVG opened directly can never run script.
+- **XML injection.** The Sonos browse request took `browseFlag` straight from
+  the query string into SOAP; it is now limited to its two valid values. DLNA
+  year, track number and file size are written as integers only. The Subsonic
+  XML escaper now also strips characters XML forbids and escapes `'`, so an odd
+  tag can no longer break a Subsonic client's parser.
+- **Tag Workshop.** A manual year override is now stored as a number.
+- **Migration import.** Uploading an import ZIP crashed the whole server
+  (the unfinished import called a function that doesn't exist). It now answers
+  "Import is not available yet", and the import cleanup/status routes only
+  accept their own import IDs instead of any folder under `/tmp`.
+
+### Cleanup
+
+- An unused gradient variable in the visualiser, and a tag-alias lookup that
+  could hit `Object.prototype`, are fixed.
+
 ## v0.6.16 (2026-10-23)
 
 Maintenance: dependency updates and a follow-redirects security fix

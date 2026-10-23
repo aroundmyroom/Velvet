@@ -560,7 +560,7 @@ function _buildTrackTags(t, overrides) {
     artist:       overrides?.artist || (t.mb_artist       ?? t.artist),
     album_artist: t.mb_album_artist ?? t.album_artist     ?? null,
     album:        overrides?.album  || (t.mb_album        ?? t.album),
-    year:         overrides?.year === undefined ? (t.mb_year ?? t.year) : overrides.year,
+    year:         overrides?.year === undefined ? (t.mb_year ?? t.year) : (Number.parseInt(overrides.year, 10) || null),
     track:        t.mb_track  ?? t.track,
   };
 }

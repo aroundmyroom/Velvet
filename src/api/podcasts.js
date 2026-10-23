@@ -8,7 +8,7 @@ import path from 'node:path';
 import Joi from 'joi';
 import * as config from '../state/config.js';
 import * as db from '../db/manager.js';
-import { isPrivateHost } from '../util/ssrf-check.js';
+import { isPrivateHost, safeFetch } from '../util/ssrf-check.js';
 import { resolvePathWithinRoot } from '../util/path-security.js';
 
 function _parseDuration(v) {
@@ -34,7 +34,7 @@ async function _cacheArt(imgUrl) {
     }
     const ac = new AbortController();
     const timer = setTimeout(() => ac.abort(), 10000);
-    const r = await fetch(imgUrl, { signal: ac.signal, redirect: 'follow' });
+    const r = await safeFetch(imgUrl, { signal: ac.signal });
     clearTimeout(timer);
     if (!r.ok) return null;
     const ct = r.headers.get('content-type') || '';
@@ -182,9 +182,8 @@ async function _fetchAndParse(url) {
   const timer = setTimeout(() => ac.abort(), 15000);
   let r;
   try {
-    r = await fetch(url, {
+    r = await safeFetch(url, {
       signal: ac.signal,
-      redirect: 'follow',
       headers: { 'User-Agent': 'Velvet/5 PodcastClient', 'Accept': 'application/rss+xml, application/xml, text/xml, */*' }
     });
     clearTimeout(timer);
@@ -441,8 +440,8 @@ async function _fetchEpisodeAudio(audioUrl, urlExt) {
   const timer = setTimeout(() => ac.abort(), 120000);
   let dlRes;
   try {
-    dlRes = await fetch(audioUrl, {
-      signal: ac.signal, redirect: 'follow', headers: { 'User-Agent': 'Velvet/5 PodcastClient' }
+    dlRes = await safeFetch(audioUrl, {
+      signal: ac.signal, headers: { 'User-Agent': 'Velvet/5 PodcastClient' }
     });
     clearTimeout(timer);
   } catch {

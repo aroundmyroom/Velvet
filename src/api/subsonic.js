@@ -228,8 +228,12 @@ function toXml(obj, tag = null, indent = '') {
   return `${indent}<${tag}${attrStr}>\n${inner}\n${indent}</${tag}>`;
 }
 
+// Strips characters XML 1.0 forbids, so a stray control char in a tag can't break client parsers
+const XML_INVALID = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\uFFFE\uFFFF]|[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g;
+
 function xmlEscape(s) {
-  return s.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;');
+  return String(s).replaceAll(XML_INVALID, '')
+    .replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;').replaceAll("'", '&apos;');
 }
 
 /** Return the vpaths a user is allowed to access */

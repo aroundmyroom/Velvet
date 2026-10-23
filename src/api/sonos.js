@@ -2306,7 +2306,7 @@ export function setup(velvet) {
         if (!uuid) uuid = (await _fetchDeviceDescription(resolvedIp))?.uuid;
         if (!uuid) return res.status(500).json({ ok: false, error: 'could not resolve device uuid' });
         await soapCall(resolvedIp, 'SetAVTransportURI', [
-          `<CurrentURI>x-rincon-queue:${uuid}#0</CurrentURI>`,
+          `<CurrentURI>${xmlEsc(`x-rincon-queue:${uuid}#0`)}</CurrentURI>`,
           '<CurrentURIMetaData></CurrentURIMetaData>',
         ].join(''));
         await soapCall(resolvedIp, 'Seek', '<Unit>TRACK_NR</Unit><Target>1</Target>');
@@ -2359,7 +2359,7 @@ export function setup(velvet) {
     
     try {
       assertPrivateIp(ip);
-      const browseFlag = req.query?.browseFlag || 'BrowseDirectChildren';
+      const browseFlag = req.query?.browseFlag === 'BrowseMetadata' ? 'BrowseMetadata' : 'BrowseDirectChildren';
       const startingIndex = Number(req.query?.startingIndex) || 0;
       const requestedCount = Number(req.query?.requestedCount) || 100;
       

@@ -8,7 +8,7 @@ import Joi from 'joi';
 import * as config from '../state/config.js';
 import * as db from '../db/manager.js';
 import * as admin from '../util/admin.js';
-import { isPrivateHost } from '../util/ssrf-check.js';
+import { isPrivateHost, safeFetch, safeLookup } from '../util/ssrf-check.js';
 import { resolveChildPath } from '../util/path-security.js';
 
 const _URL_RE = /^https?:\/\/.+/i;
@@ -33,7 +33,7 @@ async function _cacheRadioArt(imgUrl, force = false) {
     }
     const ac = new AbortController();
     const timer = setTimeout(() => ac.abort(), 10000);
-    const r = await fetch(imgUrl, { signal: ac.signal, redirect: 'follow' });
+    const r = await safeFetch(imgUrl, { signal: ac.signal });
     clearTimeout(timer);
     if (!r.ok) return imgUrl;
     const ct = r.headers.get('content-type') || '';
@@ -67,7 +67,7 @@ async function _fetchIcyMeta(rawUrl) {
     const lib     = parsed.protocol === 'https:' ? https : http;
     const req = lib.request(
       { hostname: parsed.hostname, port: parsed.port || (parsed.protocol === 'https:' ? 443 : 80),
-        path: parsed.pathname + parsed.search, method: 'GET',
+        path: parsed.pathname + parsed.search, method: 'GET', lookup: safeLookup,
         headers: { 'User-Agent': 'Velvet/5 RadioProxy', 'Icy-MetaData': '1' } },
       res => {
         if ((res.statusCode === 301 || res.statusCode === 302 || res.statusCode === 307) && res.headers.location) {
@@ -201,12 +201,15 @@ export function setup(velvet) {
     try {
       const ac = new AbortController();
       const timer = setTimeout(() => ac.abort(), 8000);
-      const r = await fetch(parsed.href, { signal: ac.signal, redirect: 'follow' });
+      const r = await safeFetch(parsed.href, { signal: ac.signal });
       clearTimeout(timer);
       if (!r.ok) return res.status(r.status).end();
       const ct = r.headers.get('content-type') || 'image/jpeg';
       if (!ct.startsWith('image/')) return res.status(415).end();
       res.setHeader('Content-Type', ct);
+      // Remote SVG is served from our origin — never let it run script if opened directly
+      res.setHeader('Content-Security-Policy', "default-src 'none'; style-src 'unsafe-inline'; sandbox");
+      res.setHeader('X-Content-Type-Options', 'nosniff');
       res.setHeader('Cache-Control', 'public, max-age=86400');
       const buf = await r.arrayBuffer();
       res.end(Buffer.from(buf));
@@ -250,6 +253,7 @@ export function setup(velvet) {
           port: parsed2.port || (parsed2.protocol === 'https:' ? 443 : 80),
           path: parsed2.pathname + parsed2.search,
           method: 'GET',
+          lookup: safeLookup,
           headers: upstreamHeaders },
         upRes => {
           if (aborted) { upRes.resume(); return; }

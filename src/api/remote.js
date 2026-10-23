@@ -11,13 +11,15 @@ import { joiValidate } from '../util/validation.js';
 import WebError from '../util/web-error.js';
 
 // list of currently connected clients (users)
-const clients = {};
+// Maps, not plain objects: codes arrive unauthenticated, and "__proto__" or
+// "toString" must never resolve to a session
+const clients = new Map();
 // Map code to JWT
-const codeTokenMap = {};
+const codeTokenMap = new Map();
 // Map code to session start time (unix ms)
-const codeStartTime = {};
-const playlistCache = {};
-const nowPlayingCache = {};
+const codeStartTime = new Map();
+const playlistCache = new Map();
+const nowPlayingCache = new Map();
 const allowedCommands = new Set([
   'next',
   'previous',
@@ -40,7 +42,7 @@ export function setupAfterAuth(velvet, server) {
       }
 
       info.req.code = url.parse(info.req.url, true).query.code;
-      if (info.req.code in clients) { throw new Error('Code In Use'); }
+      if (clients.has(info.req.code)) { throw new Error('Code In Use'); }
 
       info.req.jwt = jwt.sign({
         username: decoded?.username ?? 'velvet-user',
@@ -56,10 +58,10 @@ export function setupAfterAuth(velvet, server) {
   wss.on('connection', (connection, req) => {
     const code = nanoid(8);
     winston.info(`Websocket Connection Accepted With Code: ${code}`);
-    clients[code] = connection;
-    codeStartTime[code] = Date.now();
+    clients.set(code, connection);
+    codeStartTime.set(code, Date.now());
 
-    if (req.jwt) { codeTokenMap[code] = req.jwt; }
+    if (req.jwt) { codeTokenMap.set(code, req.jwt); }
 
     connection.send(JSON.stringify({ code: code, token: req.jwt ? req.jwt : false }));
 
@@ -69,11 +71,11 @@ export function setupAfterAuth(velvet, server) {
     });
 
     connection.on('close', (_connection) => {
-      delete clients[code];
-      if (codeTokenMap[code])  { delete codeTokenMap[code]; }
-      if (codeStartTime[code]) { delete codeStartTime[code]; }
-      delete playlistCache[code];
-      delete nowPlayingCache[code];
+      clients.delete(code);
+      codeTokenMap.delete(code);
+      codeStartTime.delete(code);
+      playlistCache.delete(code);
+      nowPlayingCache.delete(code);
     });
   });
 
@@ -82,10 +84,10 @@ export function setupAfterAuth(velvet, server) {
     if (config.program.lockAdmin === true) { return res.status(405).json({ error: 'Admin API Disabled' }); }
     if (req.user.admin !== true)           { return res.status(403).json({ error: 'Forbidden' }); }
 
-    const sessions = Object.keys(clients).map(code => ({
+    const sessions = [...clients.keys()].map(code => ({
       code,
-      token:     codeTokenMap[code]  || null,
-      startTime: codeStartTime[code] || null,
+      token:     codeTokenMap.get(code)  || null,
+      startTime: codeStartTime.get(code) || null,
       url:       `/remote/${code}`,
     }));
 
@@ -100,7 +102,7 @@ export function setupAfterAuth(velvet, server) {
     });
     joiValidate(schema, req.body);
 
-    if (!(req.body.code in clients)) {
+    if (!clients.has(req.body.code)) {
       throw new WebError('Code Not Found', 404);
     }
 
@@ -109,7 +111,7 @@ export function setupAfterAuth(velvet, server) {
     }
 
     // Push command to client
-    clients[req.body.code].send(JSON.stringify({ command: req.body.command, file: req.body.file ? req.body.file : '' }));
+    clients.get(req.body.code).send(JSON.stringify({ command: req.body.command, file: req.body.file ? req.body.file : '' }));
 
     res.json({});
   });
@@ -125,8 +127,8 @@ export function setupBeforeAuth(velvet) {
       idx:    Joi.number().integer().min(0).required(),
     });
     joiValidate(schema, req.body);
-    if (!(req.body.code in clients)) { return res.status(404).json({ error: 'Code Not Found' }); }
-    playlistCache[req.body.code] = { tracks: req.body.tracks, idx: req.body.idx, ts: Date.now() };
+    if (!clients.has(req.body.code)) { return res.status(404).json({ error: 'Code Not Found' }); }
+    playlistCache.set(req.body.code, { tracks: req.body.tracks, idx: req.body.idx, ts: Date.now() });
     res.json({});
   });
 
@@ -137,36 +139,36 @@ export function setupBeforeAuth(velvet) {
       nowPlaying: Joi.object().required(),
     });
     joiValidate(schema, req.body);
-    if (!(req.body.code in clients)) { return res.status(404).json({ error: 'Code Not Found' }); }
-    nowPlayingCache[req.body.code] = { ...req.body.nowPlaying, ts: Date.now() };
+    if (!clients.has(req.body.code)) { return res.status(404).json({ error: 'Code Not Found' }); }
+    nowPlayingCache.set(req.body.code, { ...req.body.nowPlaying, ts: Date.now() });
     res.json({});
   });
 
   // Remote → server: read cached playlist
   velvet.get('/api/v1/jukebox/get-playlist', (req, res) => {
     const code = req.query.code;
-    if (!code || !(code in clients)) { return res.json({ tracks: [], idx: 0 }); }
-    res.json(playlistCache[code] || { tracks: [], idx: 0 });
+    if (!clients.has(code)) { return res.json({ tracks: [], idx: 0 }); }
+    res.json(playlistCache.get(code) || { tracks: [], idx: 0 });
   });
 
   // Remote → server: read cached now-playing
   velvet.get('/api/v1/jukebox/get-now-playing', (req, res) => {
     const code = req.query.code;
-    if (!code || !(code in clients)) { return res.json(null); }
-    res.json(nowPlayingCache[code] || null);
+    if (!clients.has(code)) { return res.json(null); }
+    res.json(nowPlayingCache.get(code) || null);
   });
 
   velvet.post('/api/v1/jukebox/does-code-exist', (req, res) => {
     const clientCode = req.body.code;
-    if (!(clientCode in clients) || !(clientCode in codeTokenMap)) {
+    if (!clients.has(clientCode) || !codeTokenMap.has(clientCode)) {
       return res.json({ status: false });
     }
-    res.json({ status: true, token: codeTokenMap[clientCode] });
+    res.json({ status: true, token: codeTokenMap.get(clientCode) });
   });
 
   velvet.get('/remote/:remoteId', async (req, res) => {
     const clientCode = req.params.remoteId;
-    const invalid = !(clientCode in clients) || !(clientCode in codeTokenMap);
+    const invalid = !clients.has(clientCode) || !codeTokenMap.has(clientCode);
 
     let sharePage = await fs.readFile(path.join(config.program.webAppDirectory, 'remote/index.html'), 'utf-8');
     sharePage = sharePage.replaceAll('../', '../../');
@@ -174,7 +176,7 @@ export function setupBeforeAuth(velvet) {
       '<script></script>',
       `<script>var remoteProperties = ${JSON.stringify(invalid
         ? { error: true }
-        : { code: clientCode, error: false, token: codeTokenMap[clientCode] })}</script>`
+        : { code: clientCode, error: false, token: codeTokenMap.get(clientCode) }).replaceAll('<', String.raw`\u003c`)}</script>`
     );
     res.send(sharePage);
   });

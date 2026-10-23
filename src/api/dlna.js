@@ -250,17 +250,20 @@ function trackItem(track, parentId) {
   const mediaUrl = `${_baseUrl}/media/${vp}/${fp}`;
   const dur = formatDuration(track.duration);
   const durAttr = dur ? ` duration="${dur}"` : '';
-  const sizeAttr = track.filesize ? ` size="${track.filesize}"` : '';
+  const size = Number.parseInt(track.filesize, 10);
+  const sizeAttr = size > 0 ? ` size="${size}"` : '';
+  const year = Number.parseInt(track.year, 10);
+  const trackNo = Number.parseInt(track.track, 10);
   const title = track.title || path.basename(String(track.filepath), path.extname(String(track.filepath)));
   const isAudioBook = config.program.folders?.[track.vpath]?.type === 'audio-books';
   const itemClass = isAudioBook ? 'object.item.audioItem.audioBook' : 'object.item.audioItem.musicTrack';
   return `  <item id="${xmlEsc(trackId(track.vpath, track.filepath))}" parentID="${xmlEsc(parentId)}" restricted="1">
     <dc:title>${xmlEsc(title)}</dc:title>
     <dc:creator>${xmlEsc(track.artist || '')}</dc:creator>${artXml(track.aaFile)}
-    ${track.year ? `<dc:date>${track.year}-01-01</dc:date>\n    <upnp:originalYear>${track.year}</upnp:originalYear>` : ''}
+    ${year > 0 ? `<dc:date>${year}-01-01</dc:date>\n    <upnp:originalYear>${year}</upnp:originalYear>` : ''}
     <upnp:artist>${xmlEsc(track.artist || '')}</upnp:artist>
     <upnp:album>${xmlEsc(track.album || '')}</upnp:album>
-    ${track.track ? `<upnp:originalTrackNumber>${track.track}</upnp:originalTrackNumber>` : ''}
+    ${trackNo > 0 ? `<upnp:originalTrackNumber>${trackNo}</upnp:originalTrackNumber>` : ''}
     ${track.genre ? `<upnp:genre>${xmlEsc(track.genre)}</upnp:genre>` : ''}
     <upnp:class>${itemClass}</upnp:class>
     <res protocolInfo="${xmlEsc(protocolInfo(track.filepath))}"${durAttr}${sizeAttr}>${xmlEsc(mediaUrl)}</res>

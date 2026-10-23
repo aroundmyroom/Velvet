@@ -955,10 +955,10 @@ Export is built in the background; poll for status before downloading.
 | `POST` | `/api/v1/admin/migrate/export/start` | `{ includeWaveforms?, includeArtistImages? }` | Start background ZIP build. Returns `{ id }`. |
 | `GET` | `/api/v1/admin/migrate/export/status/:id` | — | Poll build status. Returns `{ status: 'building'\|'ready'\|'error', filename?, sizeBytes?, error? }`. |
 | `GET` | `/api/v1/admin/migrate/export/download/:id` | — | Stream the finished ZIP (authenticated). Deletes file after download. |
-| `POST` | `/api/v1/admin/migrate/upload` | multipart `file` | Upload import ZIP. Returns `{ id, manifest }`. |
+| `POST` | `/api/v1/admin/migrate/upload` | multipart `file` | Upload import ZIP. **Not available yet**: ZIP extraction is unimplemented, so this answers `500 { error: 'Import is not available yet' }` and stores nothing. |
 | `POST` | `/api/v1/admin/migrate/apply` | `{ id, keepUsers? }` | Apply an uploaded import. |
-| `GET` | `/api/v1/admin/migrate/status/:id` | — | Read manifest of an uploaded import. |
-| `POST` | `/api/v1/admin/migrate/cleanup/:id` | — | Delete temp files for an import job. |
+| `GET` | `/api/v1/admin/migrate/status/:id` | — | Read manifest of an uploaded import. `id` must look like `velvet-import-<digits>`, else `400`. |
+| `POST` | `/api/v1/admin/migrate/cleanup/:id` | — | Delete temp files for an import job. `id` must look like `velvet-import-<digits>`, else `400`. |
 
 ---
 

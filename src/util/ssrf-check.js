@@ -1,5 +1,6 @@
 import http from 'node:http';
 import https from 'node:https';
+import dns from 'node:dns';
 
 /**
  * ssrf-check.js
@@ -19,9 +20,11 @@ import https from 'node:https';
  *   IPv4-mapped IPv6    ::ffff:a.b.c.d  (recurses to IPv4 check)
  */
 export function isPrivateHost(hostname) {
-  const h = hostname.toLowerCase();
-  // IPv4 private ranges + loopback
-  if (h === 'localhost') return true;
+  // URL.hostname keeps the brackets around IPv6 literals ("[::1]")
+  const h = String(hostname).toLowerCase().replace(/^\[(.*)\]$/, '$1');
+  // IPv4 private ranges + loopback ("this network" 0.0.0.0/8 reaches localhost on Linux)
+  if (h === 'localhost' || h.endsWith('.localhost')) return true;
+  if (h.startsWith('0.')) return true;
   if (h.startsWith('127.') || h.startsWith('10.')) return true;
   if (h.startsWith('192.168.') || /^172\.(1[6-9]|2\d|3[01])\./.test(h)) return true;
   // IPv4 link-local / APIPA (169.254.x.x) — includes AWS/GCP cloud metadata endpoint
@@ -36,6 +39,52 @@ export function isPrivateHost(hostname) {
   const v4mapped = h.match(/^::ffff:((\d+\.\d+\.\d+\.\d+))$/);
   if (v4mapped) return isPrivateHost(v4mapped[1]);
   return false;
+}
+
+/**
+ * dns.lookup replacement for http(s).request: resolves every address and fails
+ * if any of them is private, so the socket connects to exactly the address that
+ * was checked (no DNS-rebinding window between check and connect).
+ */
+export function safeLookup(hostname, options, callback) {
+  dns.lookup(hostname, { ...options, all: true }, (err, addresses) => {
+    if (err) return callback(err);
+    const blocked = addresses.find(a => isPrivateHost(a.address));
+    if (blocked) return callback(Object.assign(new Error(`${hostname} resolves to a private address`), { code: 'ESSRF' }));
+    if (options?.all) return callback(null, addresses);
+    callback(null, addresses[0].address, addresses[0].family);
+  });
+}
+
+export async function resolvesToPrivate(hostname) {
+  if (isPrivateHost(hostname)) return true;
+  try {
+    const addresses = await dns.promises.lookup(String(hostname).replace(/^\[(.*)\]$/, '$1'), { all: true });
+    return addresses.some(a => isPrivateHost(a.address));
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * fetch() that refuses private destinations on every redirect hop. Same return
+ * value as fetch(); redirects are followed manually (max 5).
+ */
+export async function safeFetch(url, options = {}) {
+  let current = String(url);
+  for (let hop = 0; hop <= 5; hop++) {
+    const parsed = new URL(current);
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') throw new Error('URL must be http or https');
+    if (await resolvesToPrivate(parsed.hostname)) throw new Error('URL resolves to a private address');
+    const r = await fetch(current, { ...options, redirect: 'manual' });
+    if (r.status >= 300 && r.status < 400 && r.headers.get('location')) {
+      current = new URL(r.headers.get('location'), current).toString();
+      await r.body?.cancel().catch(() => {});
+      continue;
+    }
+    return r;
+  }
+  throw new Error('Too many redirects');
 }
 
 function _requestBufferOnce(targetUrl, options = {}) {
@@ -62,6 +111,7 @@ function _requestBufferOnce(targetUrl, options = {}) {
       path: parsed.pathname + parsed.search,
       method: 'GET',
       headers,
+      lookup: safeLookup,
     }, res => {
       const chunks = [];
       let total = 0;

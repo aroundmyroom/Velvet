@@ -11,7 +11,7 @@ import { joiValidate } from '../util/validation.js';
 import { ffmpegBin } from '../util/ffmpeg-bootstrap.js';
 import { resolvePathWithinRoot } from '../util/path-security.js';
 
-import { isPrivateHost } from '../util/ssrf-check.js';
+import { isPrivateHost, safeLookup } from '../util/ssrf-check.js';
 
 // ── Content-Type → file extension map ────────────────────────────────────────
 const CT_EXT = {
@@ -203,6 +203,7 @@ function _attemptStreamConnect(streamUrl, tries, ctx) {
     port:     parsed.port || (parsed.protocol === 'https:' ? 443 : 80),
     path:     parsed.pathname + parsed.search,
     method:   'GET',
+    lookup:   safeLookup,
     headers:  { 'User-Agent': 'Velvet/5 RadioRecorder', 'Icy-MetaData': '0' },
   }, upRes => {
     if ([301, 302, 307, 308].includes(upRes.statusCode) && upRes.headers.location) {

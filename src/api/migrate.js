@@ -10,6 +10,7 @@ import * as dbManager from '../db/manager.js';
 import { resolvePathWithinRoot } from '../util/path-security.js';
 
 const TMP_DIR = os.tmpdir();
+const IMPORT_ID_RE = /^velvet-import-\d+$/;
 
 function getVpathRoots() {
   const cfg = config.program;
@@ -143,35 +144,13 @@ async function handleImportUpload(req) {
       
       file.pipe(writeStream);
       
-      writeStream.on('finish', () => {
-        // File saved, now extract it
-        const { Extract } = require('node:fs');
-        const { createReadStream } = fs;
-        
-        const extract = Extract({ path: extractDir });
-        const input = createReadStream(zipFile);
-        
-        input.pipe(extract);
-        
-        extract.on('close', async () => {
-          // Clean up uploaded zip file
-          await fsp.unlink(zipFile).catch(() => {});
-          
-          // Read manifest
-          try {
-            const manifestPath = path.join(extractDir, 'manifest.json');
-            const manifest = JSON.parse(await fsp.readFile(manifestPath, 'utf8'));
-            resolve({ 
-              id: extractId,
-              extractDir,
-              manifest 
-            });
-          } catch (e) {
-            reject(e);
-          }
-        });
-        
-        extract.on('error', reject);
+      // ZIP extraction is not implemented yet (docs/dev/todo.md, Import step 1).
+      // The old handler called a non-existent fs.Extract through require() in an
+      // ES module, which threw outside the promise and crashed the server.
+      writeStream.on('finish', async () => {
+        await fsp.rm(extractDir, { recursive: true, force: true }).catch(() => {});
+        await fsp.unlink(zipFile).catch(() => {});
+        reject(new Error('Import is not available yet'));
       });
       
       writeStream.on('error', reject);
@@ -190,12 +169,8 @@ async function handleImportUpload(req) {
 
 async function applyImportData(extractId, options = {}) {
   const { keepUsers = true } = options;
-  let extractDir;
-  try {
-    extractDir = resolvePathWithinRoot(TMP_DIR, extractId);
-  } catch {
-    throw new Error('Invalid import id');
-  }
+  if (!IMPORT_ID_RE.test(String(extractId))) throw new Error('Invalid import id');
+  const extractDir = resolvePathWithinRoot(TMP_DIR, extractId);
   const manifestPath = path.join(extractDir, 'manifest.json');
   
   // Read manifest
@@ -386,6 +361,7 @@ export function setup(velvet) {
   velvet.get('/api/v1/admin/migrate/status/:id', async (req, res) => {
     try {
       const { id } = req.params;
+      if (!IMPORT_ID_RE.test(id)) return res.status(400).json({ error: 'Invalid import id' });
       const extractDir = resolvePathWithinRoot(TMP_DIR, id);
       const manifestPath = path.join(extractDir, 'manifest.json');
       
@@ -404,6 +380,7 @@ export function setup(velvet) {
   velvet.post('/api/v1/admin/migrate/cleanup/:id', async (req, res) => {
     try {
       const { id } = req.params;
+      if (!IMPORT_ID_RE.test(id)) return res.status(400).json({ error: 'Invalid import id' });
       const extractDir = resolvePathWithinRoot(TMP_DIR, id);
       await fsp.rm(extractDir, { recursive: true, force: true });
       res.json({ success: true });
