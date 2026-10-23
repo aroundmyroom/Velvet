@@ -52,7 +52,7 @@
     "m3u8-parser": "^7.2.0",
     "make-dir": "^5.0.0",
     "mime-types": "^3.0.2",
-    "music-metadata": "^12.2.0",
+    "music-metadata": "^12.2.3",
     "nanoid": "^6.0.2",
     "sharp": "^0.35.5",
     "tree-kill": "^1.2.2",
