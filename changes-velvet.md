@@ -1,3 +1,31 @@
+## v0.7.1 (2026-10-25)
+
+Fix: artist pages for libraries organised by artist folder
+
+### Fixed
+
+- **Other artists' albums on an artist page.** With an Albums-Only library,
+  an artist folder with album subfolders becomes a "series" in the Album
+  Library, and the artist page matched series names with a plain substring
+  check. "Black Sabbath" contains the letters "abba", so ABBA's page showed
+  Black Sabbath's albums. Series names now have to contain the artist as a
+  whole word ("Cerrone Discography" still matches Cerrone).
+- **Empty artist page for songs directly in an artist folder.** Songs in
+  `Artist/song.mp3` (no album subfolder) were skipped when building the artist
+  profile, which left the page empty in the TV app and in the profile API.
+  They now form a release of their own.
+- **Song counts too low by one or more.** A "feat." credit only joined its lead
+  artist when that artist had at least 10 songs, so in a smaller library
+  "Afrojack feat. Eva Simons" became a separate artist and Afrojack showed 5
+  songs instead of 6. Explicit `feat.`, `ft.` and `featuring` credits now
+  always count for the lead artist when that artist exists. "vs", "&" and "x"
+  collaborations are unchanged. The artist list gets shorter as one-off
+  "feat." entries disappear; no songs are lost.
+
+All three date back to the first Velvet release and are not caused by v0.7.0.
+The artist index is rebuilt automatically after the next scan, or right away
+via Admin → Database → Rebuild Artist Index.
+
 ## v0.7.0 (2026-10-23)
 
 Security release: full static-analysis audit of the whole codebase

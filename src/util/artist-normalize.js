@@ -66,6 +66,9 @@ const SIM_MIN_TARGET    = 10;  // target (large group): ≥ this many songs
 const SIM_RATIO         = 5;   // target must have ≥ 5× more songs than candidate
 const SIM_MIN_KEY_LEN   = 5;   // target key must be ≥ 5 chars to avoid "dj"/"the" false matches
 
+// Lead artist before an explicit featuring credit, on the lower-cased group key
+const FEATURING_RX = /^(.+?)\s+(?:feat\.?|ft\.?|featuring)\s+\S/;
+
 // ── Low-level helpers ─────────────────────────────────────────────────────────
 
 function parseDigitPrefix(raw) {
@@ -305,6 +308,22 @@ function buildArtistGroups(rows) {
       group.canonicalName = pickCanonicalName(group.rawVariants);
       group._sealed = true;
     }
+  }
+
+  // ── Step 3b: explicit featuring credits ───────────────────────────────────
+  //    "Afrojack feat. Eva Simons" is an Afrojack track. Step 4's size thresholds
+  //    exist for corrupt tags; an explicit feat./ft./featuring credit is reliable,
+  //    so merge it into the lead artist's group whenever that group exists — a
+  //    5-song artist must not lose its 6th song to a one-off "feat." group.
+  //    "vs", "&" and "x" are left alone: those are collaborations with no lead.
+  for (const [key, group] of [...groups]) {
+    const m = FEATURING_RX.exec(key);
+    if (!m) continue;
+    const leadKey = m[1].trim();
+    const lead = groups.get(leadKey);
+    if (!lead || leadKey === key) continue;
+    for (const v of group.rawVariants) lead.rawVariants.push(v);
+    groups.delete(key);
   }
 
   // ── Step 4: similarity / containment merge pass ───────────────────────────

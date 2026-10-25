@@ -59,6 +59,9 @@ Each raw tag is run through these transforms in order (first match wins):
 4. `PADDED_PREFIX_RX` — zero-padded digit prefix: `"01 Madonna"` → `"Madonna"`.
 5. `UNPADDED_PREFIX_RX` (safe) — only applied when a clean variant already has many more songs; prevents `"2 Unlimited"` (235 songs) from collapsing into `"Unlimited"`.
 
+**Pass 2b — explicit featuring credits**
+A group whose name is `<lead> feat. <guest>` (also `ft.` and `featuring`) is merged into the `<lead>` group whenever that group exists, regardless of song counts: `"Afrojack feat. Eva Simons"` counts as an Afrojack song. `vs`, `&` and `x` credits are collaborations without a clear lead and are left alone.
+
 **Pass 3 — similarity/containment merge**
 After the explicit passes, any *small* group (≤ 5 songs, `SIM_MAX_CANDIDATE`) whose key, at a word boundary, is **contained within** a *large* group's key (≥ 10 songs, `SIM_MIN_TARGET`, ≥ 5× more songs, key ≥ 5 chars) is merged into the larger group. This catches residual malformed tags like `"Nalin & Kane Remix)"` (missing opening paren) that survive the earlier passes.
 
@@ -214,6 +217,12 @@ Calls `POST /api/v1/db/artists-albums-multi` with all known variants of the arti
 - **Breadcrumb titles** — the page title builds up as you drill: `Propaganda` → `Propaganda – Albums` → `Propaganda – Albums – A Secret Wish`.
 - **Correct back-navigation** — pressing `<` returns to exactly the grid level you came from, not the top-level artist page.
 - **Category pills** — when the artist's albums fall into recognisable groups (CUE Albums, Series, etc.), filter pills appear above the grid. Selecting a pill filters the grid to that category. Pills are displayed horizontally (flexbox row spanning all grid columns via `grid-column: 1 / -1`). When you click into an album from a category and press back, the category pill and Albums tab are automatically restored to the state they were in when you left.
+
+**Albums tab matching.** An album appears on an artist's page when its `album_artist`/`artist` tags match one of the artist's variants, when its top-level folder is the artist's name (`Artist`, `Artist - …`, `Artist (…`), or when it belongs to a series whose name contains the artist **as a whole word** (`_nameContainsArtist`). Whole-word matters: "Black Sabbath" contains the letters "abba", and a plain substring check put Black Sabbath's albums on ABBA's page.
+
+**Songs tab.** Lists the artist's songs *outside* Albums-Only folders. If the whole library is Albums-Only, everything is reached through the Albums tab and the Songs tab is empty by design.
+
+**Profile data (`GET /api/v1/artists/profile`).** Releases are grouped as `Category/Release/…`. Songs directly inside an artist folder (`Artist/song.mp3`) form a release of their own, and loose files at the library root are grouped by album tag.
 
 ### Series grouping detail
 

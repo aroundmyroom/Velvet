@@ -157,11 +157,19 @@ function buildProfile(fileRows, canonicalName) {
 
   for (const row of fileRows) {
     const parts = row.filepath.split('/');
-    if (parts.length < 2) continue; // bare file at vpath root — skip
 
-    const l1 = parts[0];
-    const releaseFolder = parts.length >= 3 ? parts[1] : null; // L2 segment
-    if (!releaseFolder) continue; // just l1/filename — skip
+    // Category/Release/…/file is the usual layout. An artist folder holding the
+    // songs directly (Artist/file) is a release of its own, and loose files at
+    // the vpath root are grouped by album tag — both used to be dropped, which
+    // left the artist page empty for libraries organised that way.
+    let l1, releaseFolder, relDir;
+    if (parts.length >= 3) {
+      l1 = parts[0]; releaseFolder = parts[1]; relDir = `${l1}/${releaseFolder}`;
+    } else if (parts.length === 2) {
+      l1 = row.vpath; releaseFolder = parts[0]; relDir = parts[0];
+    } else {
+      l1 = row.vpath; releaseFolder = row.album || row.vpath; relDir = '';
+    }
 
     if (!categories.has(l1)) categories.set(l1, new Map());
     const relMap = categories.get(l1);
@@ -179,7 +187,7 @@ function buildProfile(fileRows, canonicalName) {
     const rel = relMap.get(releaseFolder);
     if (!rel.artFile && row.cover_file) {
       // Build artFile path relative to vpath root for the images API
-      rel.artFile = row.vpath + '/' + l1 + '/' + releaseFolder + '/' + row.cover_file;
+      rel.artFile = row.vpath + '/' + (relDir ? relDir + '/' : '') + row.cover_file;
     }
     if (!rel.aaFile && row.aaFile) rel.aaFile = row.aaFile;
     if (!rel.year && row.year) rel.year = row.year;

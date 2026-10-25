@@ -1,5 +1,5 @@
 'use strict';
-const VELVET_VERSION = '0.7.0';
+const VELVET_VERSION = '0.7.1';
 // ── SERVER IDENTITY GUARD ────────────────────────────────────────────────────
 // Detects when this browser's localStorage belongs to a different Velvet
 // instance (fresh install, IP change, reverse-proxy swap, second server).
@@ -9382,6 +9382,22 @@ function _songContainerFolder(filepath) {
   return parts.join('/');
 }
 
+// Whole-word match: "Cerrone Discography" contains the artist "Cerrone", but
+// "Black Sabbath" must not match "ABBA" just because "abba" sits inside "Sabbath".
+function _nameContainsArtist(name, artist) {
+  const n = String(name || '').toLowerCase();
+  const a = String(artist || '').toLowerCase().trim();
+  if (!a) return false;
+  let i = n.indexOf(a);
+  while (i !== -1) {
+    const before = i === 0 ? '' : n[i - 1];
+    const after = n[i + a.length] || '';
+    if (!/[\p{L}\p{N}]/u.test(before) && !/[\p{L}\p{N}]/u.test(after)) return true;
+    i = n.indexOf(a, i + 1);
+  }
+  return false;
+}
+
 async function viewArtistProfile2(artistKey, displayName, variants, backFn, initialCategory = null, restoreAlbumsTab = false) {
   const back = backFn || (() => viewArtists());
   setTitle(displayName);
@@ -9602,11 +9618,11 @@ async function viewArtistProfile2(artistKey, displayName, variants, backFn, init
   const albumsEl = document.getElementById('artpro2-albums');
 
   if (albumsEl) {
-    // Match series whose displayName contains any artist variant
+    // Match series whose displayName contains any artist variant as a whole word
     const matchedSeriesIds = new Set();
     for (const ser of (_albLib?.series || [])) {
       for (const v of artistsArg) {
-        if ((ser.displayName || '').toLowerCase().includes(v.toLowerCase())) {
+        if (_nameContainsArtist(ser.displayName, v)) {
           matchedSeriesIds.add(ser.id);
           break;
         }
@@ -12292,7 +12308,7 @@ async function _pnowLoadArtistData(artist, forFp, skipImg = false) {
       const matchedSeriesIds = new Set();
       for (const ser of (_albLib.series || [])) {
         for (const v of artistsArg) {
-          if ((ser.displayName || '').toLowerCase().includes(v.toLowerCase())) {
+          if (_nameContainsArtist(ser.displayName, v)) {
             matchedSeriesIds.add(ser.id); break;
           }
         }
