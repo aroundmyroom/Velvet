@@ -1,3 +1,19 @@
+## v0.7.2 (2026-10-25)
+
+New: restore the previous queue after an album or song replaced it
+
+### Added
+
+- **Restore previous queue.** Clicking a track in an album plays the full
+  disc from that point and replaces the queue; one accidental click used to
+  throw the old queue away. The Up Next bar of the queue panel now shows a
+  **Restore previous queue** button whenever a queue was replaced. It puts the
+  old queue back and continues the song that was playing from where it was
+  (paused if it was paused). Works for albums, single songs and **Clear
+  queue**. A second click in the same album keeps the original queue as the
+  one to restore. Kept for the browser session; the button disappears after
+  use. Details in `docs/albums.md`.
+
 ## v0.7.1 (2026-10-25)
 
 Fix: artist pages for libraries organised by artist folder

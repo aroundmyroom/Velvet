@@ -229,7 +229,15 @@ Click an album card to open the full detail:
 - **CUE tracks** — for single-file CUE albums, individual tracks are listed with their chapter time offsets.
 - **Play album** button — clears the queue and plays the full album from the first track.
 - **Add to queue** (+ icon per track) — appends the selected track.
-- **Play from here** — clicking a track row starts the album from that track. If the queue is not empty, the album is appended (not replaced).
+- **Clicking a track row** depends on the album click mode (toggle next to the hint above the track list): *full disc* replaces the queue with the disc and plays from that track; *single track* only adds that track to the queue.
+
+### Restore previous queue
+
+Playing an album (or a single song) replaces the queue. If that was a mistake, the **Up Next** bar of the queue panel shows an accent-coloured **Restore previous queue** button (curved-arrow icon; hover to see how many songs it holds). It puts the old queue back and continues the song that was playing, from where it was; a song that was paused comes back paused. Then click the track again with the album click mode set to *single track* if you only wanted that one song.
+
+- Clicking another track in the same album keeps the original queue as the one to restore, so it is never overwritten by the album itself.
+- **Clear queue** can be undone the same way.
+- The previous queue is kept for the current browser session only, and the button disappears once it has been used.
 
 ---
 

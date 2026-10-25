@@ -1,5 +1,5 @@
 'use strict';
-const VELVET_VERSION = '0.7.1';
+const VELVET_VERSION = '0.7.2';
 // ── SERVER IDENTITY GUARD ────────────────────────────────────────────────────
 // Detects when this browser's localStorage belongs to a different Velvet
 // instance (fresh install, IP change, reverse-proxy swap, second server).
@@ -1519,9 +1519,62 @@ function cleanArtistDisplay(name) {
     .trim();
 }
 
+// ── Previous-queue undo ──────────────────────────────────────
+// Playing an album or a single song replaces the whole queue. Keep the queue it
+// replaced so an accidental click can be undone from the Up Next bar. Replacing
+// the queue with the same song list again (a second click in the same album)
+// keeps the original snapshot instead of overwriting it.
+let _prevQueue = null; // { queue, idx, time, playing, playSource }
+
+function _sameSongs(a, b) {
+  return a.length === b.length && a.every((s, i) => s?.filepath === b[i]?.filepath);
+}
+
+function _snapshotQueueForUndo(nextSongs) {
+  if (!S.queue.length) return;
+  if (nextSongs && _sameSongs(S.queue, nextSongs)) return;
+  _prevQueue = {
+    queue: [...S.queue],
+    idx: S.idx,
+    time: audioEl.currentTime || 0,
+    playing: !audioEl.paused,
+    playSource: S.playSource || null,
+  };
+  _syncPrevQueueBtn();
+}
+
+function _syncPrevQueueBtn() {
+  const btn = document.getElementById('qp-undo-btn');
+  if (!btn) return;
+  btn.style.display = _prevQueue ? '' : 'none';
+  if (_prevQueue) btn.title = t('player.ctrl.restorePrevQueueCount', { count: _prevQueue.queue.length });
+}
+
+function _restorePrevQueue() {
+  const snap = _prevQueue;
+  if (!snap) return;
+  _prevQueue = null;
+  _syncPrevQueueBtn();
+  S.queue = snap.queue; _qvsVersion++;
+  S.playSource = snap.playSource;
+  if (snap.idx >= 0 && snap.idx < S.queue.length) {
+    // Continue the song that was playing, from where it was
+    if (snap.time > 1) _pendingCueSeek = snap.time;
+    Player.playAt(snap.idx);
+    if (!snap.playing) audioEl.addEventListener('playing', () => audioEl.pause(), { once: true });
+  } else {
+    S.idx = snap.idx;
+    refreshQueueUI();
+  }
+  persistQueue();
+  _syncQueueToDb();
+  toast(t('player.toast.queueRestored', { count: S.queue.length }));
+}
+
 // ── PLAYER ───────────────────────────────────────────────────
 const Player = {
   setQueue(songs, start) {
+    _snapshotQueueForUndo(songs);
     S.queue = [...songs]; _qvsVersion++;
     S.djIgnore = [];
     S.djArtistHistory = [];
@@ -1540,6 +1593,7 @@ const Player = {
     });
   },
   playSingle(song) {
+    _snapshotQueueForUndo([song]);
     S.queue = [song]; _qvsVersion++;
     // Fresh playback resets Auto-DJ memory. Clear the persisted copies too —
     // not just the in-memory state — so a stale (possibly oversized) ignore
@@ -23336,7 +23390,9 @@ document.getElementById('qp-shuffle-btn').addEventListener('click', () => {
   persistQueue();
   _syncQueueToDb();
 });
+document.getElementById('qp-undo-btn').addEventListener('click', _restorePrevQueue);
 document.getElementById('qp-clear-btn').addEventListener('click', () => {
+  _snapshotQueueForUndo(null);
   // If a song is currently loaded/playing, keep it as the only queue item so
   // the player bar stays correct and audio continues uninterrupted.
   const current = S.idx >= 0 ? S.queue[S.idx] : null;

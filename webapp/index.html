@@ -13,7 +13,7 @@
   <script defer src="../assets/js/lib/butterchurn.min.js"></script>
   <script defer src="../assets/js/lib/audiomotion-analyzer.js"></script>
   <script defer src="../assets/js/lib/qr.js"></script>
-  <link rel="stylesheet" href="/style.css?v=0.7.1-db03722c">
+  <link rel="stylesheet" href="/style.css?v=0.7.2-e3932159">
   <script src="/assets/js/lib/simplewebauthn-browser.js"></script>
   <script src="/assets/js/i18n.js"></script>
 </head>
@@ -27,7 +27,7 @@
       <h1>Velvet</h1>
       <p data-i18n="player.login.tagline">a music server — evolved.</p>
       <p data-i18n="player.login.tagline2">Enter the danger zone.</p>
-      <p id="login-version" class="login-version-tag">v0.7.1</p>
+      <p id="login-version" class="login-version-tag">v0.7.2</p>
     </div>
     <form id="login-form">
       <label class="field-label" for="l-user" data-i18n="player.login.username">Username</label>
@@ -722,6 +722,9 @@
         <span data-i18n="player.queue.upNext">Up Next</span> <span id="qp-count"></span>
       </div>
       <div class="qp-btns">
+        <button id="qp-undo-btn" class="qp-undo" style="display:none" title="Restore previous queue" data-i18n="player.ctrl.restorePrevQueue" data-i18n-attr="title">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9,14 4,9 9,4"/><path d="M20 20v-7a4 4 0 0 0-4-4H4"/></svg>
+        </button>
         <button id="qp-jump-btn" title="Jump to now playing" data-i18n="player.ctrl.jumpToNowPlaying" data-i18n-attr="title">
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><line x1="12" y1="2" x2="12" y2="5"/><line x1="12" y1="19" x2="12" y2="22"/><line x1="2" y1="12" x2="5" y2="12"/><line x1="19" y1="12" x2="22" y2="12"/></svg>
         </button>
@@ -1075,7 +1078,7 @@
 
 <div id="tip-box"></div>
 <script src="/assets/js/player-locale.js"></script>
-  <script src="/app.js?v=0.7.1-4a85295a"></script>
+  <script src="/app.js?v=0.7.2-468a5986"></script>
 
 </body>
 </html>
