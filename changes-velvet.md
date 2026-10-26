@@ -1,3 +1,24 @@
+## v0.7.3 (2026-10-26)
+
+Security: body-parser and undici updates
+
+### Security
+
+- `body-parser` 2.3.0 → 2.4.0 (used by Express to read request bodies). Fixes
+  a high-severity denial of service: trailing bytes after a compressed request
+  body could tie up the server
+  ([GHSA-27r3-jxmh-p828](https://github.com/advisories/GHSA-27r3-jxmh-p828)).
+- `undici` 7.29.1 → 7.30.1 (HTTP client used by the YouTube downloader).
+  Fixes three advisories: a high-severity crash on responses with too many
+  content-encodings
+  ([GHSA-xjj6-f33q-929c](https://github.com/advisories/GHSA-xjj6-f33q-929c)),
+  unbounded memory use in its EventSource parser
+  ([GHSA-4qv8-2p9j-2685](https://github.com/advisories/GHSA-4qv8-2p9j-2685)),
+  and a Subresource Integrity bypass
+  ([GHSA-f72v-6w45-q472](https://github.com/advisories/GHSA-f72v-6w45-q472)).
+- Same update as Dependabot PR #118. `npm audit` reports no known
+  vulnerabilities after this release.
+
 ## v0.7.2 (2026-10-25)
 
 New: restore the previous queue after an album or song replaced it
