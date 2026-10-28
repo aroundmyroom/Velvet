@@ -1,6 +1,13 @@
 # Velvet
 
-**A self-hosted music server built for people who care about their library.**
+**Your music collection deserves a DJ, not a shuffle button.**
+
+Velvet is a self-hosted music server for people who still own their music. It
+streams your library to any browser, phone, Samsung TV, Sonos or Subsonic app,
+and it plays it the way a good DJ would: the next song follows from the one
+playing now, tempos move in small steps, keys fit, and when you want something
+specific you just say so — *"two hours of 80s italo that builds up, no Modern
+Talking"*. No cloud, no subscription, no algorithm selling you anything.
 
 [![Version](https://img.shields.io/github/v/release/aroundmyroom/Velvet?style=for-the-badge&color=6d28d9&label=latest)](https://github.com/aroundmyroom/Velvet/releases)
 [![License](https://img.shields.io/badge/license-GPL--3.0-6d28d9?style=for-the-badge)](LICENSE)
@@ -9,9 +16,55 @@
 [![Proxmox](https://img.shields.io/badge/Proxmox-LXC%20%2F%20Incus-E57000?logo=proxmox&logoColor=white&style=for-the-badge)](docs/lxc-incus.md)
 [![Samsung TV](https://img.shields.io/badge/Samsung%20TV-Tizen%20app-1428A0?logo=samsung&logoColor=white&style=for-the-badge)](https://github.com/aroundmyroom/Velvet/blob/main/docs/tizen-tv.md)
 
-Velvet streams your local music collection to any browser, phone, **Samsung Smart TV**, or Subsonic-compatible app — with intelligent Auto-DJ, metadata enrichment, album-art management, and a Milkdrop visualizer. No cloud. No subscription. Your music, your server.
-
 > **Before you continue:** This project was built with AI assistance. If that bothers you, the exit is right there. If you're still reading — welcome, you're going to be fine. Probably. [Read the full disclaimer →](docs/responsible-disclosure.md)
+
+---
+
+## Why people switch to Velvet
+
+**Because the music keeps flowing.** Auto-DJ does not fill a queue once and
+walk away. It commits one next song at a time, judged against what is
+playing right now — similar artists, BPM, Camelot key, genre, era, what you
+heard recently — so a session travels without lurching. Change a filter and
+the *next* pick changes, not the one after the queue drains.
+
+**Because you can talk to it.** Tell the AI DJ what you want in your own
+words and get a set that is mixed, not listed:
+
+> *the top 10 of the House Top 1000* · *one album of Cerrone from around 1985* ·
+> *give me the Grandmix 1983 and 1986* · *the most played disco song* ·
+> *never played lossless disco from the 70s, no remixes* ·
+> *create a mix of 3 songs which match tempo, key and genre*
+
+The model only reads your request against a description of your library.
+Velvet picks the songs itself, keeps every tempo step under about 3 BPM,
+matches keys on the Camelot wheel, never plays the same song twice, and tells
+you exactly what it did — including when a song exists but sits in a
+collection you switched off. Works with Claude or with a model running on
+your own machine. Off by default; a few cents to read a library of 140,000
+songs. [How it works →](docs/ai-dj.md)
+
+**Because messy libraries are normal.** Twenty years of rips, 12-inch
+collections, radio megamixes, DJ remix services, box sets, half-tagged
+folders: Velvet was built on exactly that. Genre Enricher, Album-Art
+Workshop, AcoustID fingerprinting and Tag Workshop pull from Last.fm,
+MusicBrainz and Discogs — always with you approving the result. Folders
+numbered by chart position are understood as charts. Multi-disc albums,
+series and box sets look right.
+
+**Because it plays everywhere you are.** Browser and phone, a native
+**Samsung Smart TV** app, **Sonos**, **DLNA**, any **Subsonic** client
+(Symfonium, DSub, Ultrasonic), **Music Assistant / Home Assistant**, shared
+playlist links for friends without an account.
+
+**Because it sounds right.** Gapless playback, crossfade, EBU R128 loudness
+normalisation with true-peak limiting, on-demand transcoding, an 8-band EQ,
+BPM and key analysis of your whole library in the background, and a
+full-screen Milkdrop visualizer for when the lights go down.
+
+**Because it is yours.** One Docker container, one SQLite file, your files
+untouched on disk. HTTPS built in, passkeys, per-user folders, local
+listening statistics that never leave the server, in-app updates.
 
 ---
 
@@ -29,7 +82,10 @@ docker run -d \
   ghcr.io/aroundmyroom/velvet:latest
 ```
 
-Open `http://localhost:3000`, point Velvet at `/music`, and press play. Full guides: [Docker](docs/docker.md) · [bare-metal/systemd](docs/install.md) · [Proxmox LXC / Incus](docs/lxc-incus.md) · [reverse proxy](docs/deploy.md).
+Open `http://localhost:3000`, point Velvet at `/music`, and press play. The
+scan runs in the background; Auto-DJ works from the first song. Full guides:
+[Docker](docs/docker.md) · [bare-metal/systemd](docs/install.md) ·
+[Proxmox LXC / Incus](docs/lxc-incus.md) · [reverse proxy](docs/deploy.md).
 
 ---
 
@@ -77,7 +133,7 @@ Open `http://localhost:3000`, point Velvet at `/music`, and press play. Full gui
 </td>
 <td width="32%">
 
-**External services** — Last.fm, ListenBrainz, Discogs, Webhooks, Radio, Lyrics, and language picker:
+**External services** — Last.fm, ListenBrainz, Discogs, Webhooks, Radio, Lyrics, AI-assist, and language picker:
 
 <img src="screenshots/adminexternlserv-small.png" alt="Admin sidebar — external services and language" width="100%">
 
@@ -106,17 +162,18 @@ Open `http://localhost:3000`, point Velvet at `/music`, and press play. Full gui
 
 ---
 
-## What makes Velvet different
+## At a glance
 
 | | |
 |---|---|
-| **Auto-DJ that listens** | Hundreds of candidates are compared, but only one next song is committed. Every transition is reconsidered from what is playing now: similar artists, BPM, key, genre, era and recent history all move with the music |
-| **AI DJ — a set from a sentence** | *"Two hours of 80s italo that builds up, no Modern Talking"*, *"the top 10 of the House Top 1000"*, *"one album of Cerrone from around 1985"*. A model reads the request against a description of your library; Velvet picks the songs itself and mixes them like a DJ — small tempo steps, Camelot-compatible keys — and tells you exactly what it did. Off by default; Claude or your own local model. [Docs →](docs/ai-dj.md) |
-| **Metadata that works** | Genre Enricher, Album-Art Workshop, AcoustID fingerprinting, and Tag Workshop pull from Last.fm, MusicBrainz, and Discogs — always with a human in the loop |
-| **Album library first** | Multi-disc detection, series grouping, category folders, per-disc cover art, CUE sheet support — your classical and box-set collections look right |
-| **Listening analytics** | Full play history, skip rates, hourly heat charts, personality type, fun facts — all local, no external calls |
-| **Real audio quality** | EBU R128 loudness normalization, gapless playback, crossfade, BPM/harmonic mixing, on-demand transcoding |
-| **Plays everywhere** | Browser, **Samsung Smart TV (Tizen app)**, Sonos, DLNA/UPnP, Subsonic API (Symfonium, DSub, Ultrasonic), **Music Assistant / Home Assistant**, shared playlist links |
+| **Auto-DJ that listens** | Hundreds of candidates are compared, but only one next song is committed. Every transition is reconsidered from what is playing now: similar artists, BPM, key, genre, era and recent history all move with the music. [Scoring →](docs/autodj-scoring.md) |
+| **AI DJ — a set from a sentence** | Ask for a set, an album, a chart, your most played, a harmonic three-song mix. A model reads the request against a description of your library; Velvet picks the songs and mixes them like a DJ. Claude or your own local model, off by default. [Docs →](docs/ai-dj.md) |
+| **Metadata that works** | Genre Enricher, Album-Art Workshop, AcoustID fingerprinting, and Tag Workshop pull from Last.fm, MusicBrainz, and Discogs — always with a human in the loop. |
+| **Album library first** | Multi-disc detection, series grouping, category folders, per-disc cover art, CUE sheet support — your classical and box-set collections look right. |
+| **Listening analytics** | Full play history, skip rates, hourly heat charts, personality type, fun facts — all local, no external calls. |
+| **Real audio quality** | EBU R128 loudness normalisation, gapless playback, crossfade, BPM and harmonic mixing, on-demand transcoding. |
+| **Plays everywhere** | Browser, **Samsung Smart TV (Tizen app)**, Sonos, DLNA/UPnP, Subsonic API (Symfonium, DSub, Ultrasonic), **Music Assistant / Home Assistant**, shared playlist links. |
+| **Twelve languages** | EN, NL, DE, FR, ES, IT, PT, PL, RU, ZH, JA, KO — the whole UI, player and admin. |
 
 ---
 
@@ -163,12 +220,41 @@ The musical signals work together and fall back gracefully:
 1. **Similar Artists** — Last.fm API, musically related artists to what's playing now — diacritic-tolerant name matching ("Tiësto" ↔ "Tiesto", "André" ↔ "Andre")
 2. **BPM Continuity** — ±N BPM tolerance (configurable), with octave equivalence (72 BPM ≈ 145 BPM)
 3. **Harmonic Mixing** — Camelot wheel, six compatible keys per track
+4. **Genre families** — electronic, disco, soft, ambient, hard: a mixing compatibility matrix, with rules per tag and per folder that an AI proposes and you approve
 
 Additional controls: keyword filter, genre whitelist/blacklist, minimum star rating, track-length window (min/max duration), artist cooldown, library scope. Genre drift prevention kicks in when one genre dominates three consecutive tracks or 40% of the last 25 — an escape pick is queued automatically.
 
 BPM and era use rolling anchors while key compatibility follows the currently
 playing song. The result is direction without lock-in: the set can travel, but
 it does not lurch. [Auto-DJ scoring →](docs/autodj-scoring.md) · [BPM and harmonic mixing →](docs/bpm-harmonic.md)
+
+### AI DJ
+
+A page where listeners write what they want to hear and get a set to play,
+queue or save as a playlist. The model writes only a *brief* in the
+library's own names; Velvet does the DJ work from the database:
+
+- **Request shapes**: mixed sets with an energy arc (build, peak, wave,
+  cooldown), one album or whole albums in track order, named songs (every
+  version on request), charts by position from numbered folders, rankings
+  from your own statistics, playlists and smart playlists by name, every
+  filter the library views have, version kinds (12-inch, single,
+  instrumental, remix, live), scenes, labels, producers and remix services.
+- **Mixed like a mix DJ**: one mixable tempo corridor, steps under about 2.5%,
+  Camelot-compatible keys, one artist never twice in a row, one song never twice.
+- **Grounded, not guessed**: every phrase of a request is looked up in the
+  library first; the model also reads *library notes* it wrote once after
+  reading your collection ("Disconet is the New York DJ remix service",
+  "Grandmix is Ben Liebrand's yearly megamix") which the admin can correct.
+- **Honest**: every relaxation, cap, chosen album, chart range and corridor is
+  a note on the page; a song outside your current selection is reported with
+  where it is; without a model a rule-based reader in English and Dutch still
+  builds the set.
+- **Costs shown before anything is sent**; Claude or any OpenAI-compatible
+  local server (Ollama, LM Studio, llama.cpp, vLLM, LocalAI, Jan); per-user
+  switch; 200 requests per user per day.
+
+[Listener guide →](docs/ai-dj.md) · [Admin guide →](docs/ai-assist.md) · [API →](docs/API/ai-queue.md)
 
 ### Library & Scanning
 
@@ -221,6 +307,8 @@ Dynamic filter-based playlists that re-evaluate every time you open them:
 
 **ReplayGain Analysis** — rsgain (primary) + ffmpeg (fallback). Admin workshop with progress tracking, failed file inspector, and undo. [Docs →](docs/replaygain-info.md)
 
+**AI-assist** — genre families for Auto-DJ proposed per tag and per folder, in profiles you approve; library notes that describe every folder in music-history terms; every call, prompt and cent visible on the admin page. [Docs →](docs/ai-assist.md)
+
 ### Scrobbling & Integrations
 
 | Integration | What it does |
@@ -234,6 +322,7 @@ Dynamic filter-based playlists that re-evaluate every time you open them:
 | **Music Assistant / Home Assistant** | Use Velvet as an Open Subsonic source in [Music Assistant](https://www.music-assistant.io/) — stream your library to Chromecast, AirPlay, Squeezelite and more, with Home Assistant automations and voice control. [Setup →](docs/subsonic.md#music-assistant) |
 | **Samsung Smart TV** | Native **Velvet TV** app for Tizen 5.5+ — full remote/D-pad navigation, albums (CUE + multi-disc), A–Z quick-jump, VU meter and visualizer. Side-load the `.wgt` with Apps2Samsung. [Docs →](docs/tizen-tv.md) |
 | **Sharesonic (Android)** | Community Android app for Velvet. [GitHub →](https://github.com/Tiritibambix/Sharesonic) |
+| **Claude / local LLM** | The AI DJ and AI-assist run on Claude (Anthropic) or on any OpenAI-compatible server on your own machine. [Docs →](docs/ai-assist.md) |
 
 ### Audio Content
 
@@ -278,7 +367,7 @@ Full local play history — no external calls, no historical imports needed:
 - Network shares — mount an NFS or SMB/CIFS share directly from the admin UI, no shell access needed (root process required) — [docs →](docs/network-shares.md)
 - Logging — file output, configurable retention, download last 7 days
 - DLNA control — enable/disable, port, friendly name, live status badge
-- User management — create users, set permissions, reset passwords, toggle features per user
+- User management — create users, set permissions, reset passwords, toggle features per user (including the AI DJ)
 - Runtime API key override — update Last.fm and Discogs credentials without a restart
 - Telemetry — opt-out toggle
 
@@ -345,6 +434,10 @@ Full local play history — no external calls, no historical imports needed:
 | Proxmox LXC / Incus install | [docs/lxc-incus.md](docs/lxc-incus.md) |
 | Reverse-proxy login (SSO) | [docs/auth-reverse-proxy.md](docs/auth-reverse-proxy.md) |
 | Technology choices | [docs/technology-choices.md](docs/technology-choices.md) |
+
+Questions, ideas, a library that does something odd? Come to the
+[Discord](https://discord.gg/KfsTCYrTkS) or open an issue — libraries like
+yours are how Velvet gets better.
 
 ---
 
