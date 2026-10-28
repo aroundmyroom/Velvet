@@ -6,7 +6,7 @@ Velvet is a self-hosted music server for people who still own their music. It
 streams your library to any browser, phone, Samsung TV, Sonos or Subsonic app,
 and it plays it the way a good DJ would: the next song follows from the one
 playing now, tempos move in small steps, keys fit, and when you want something
-specific you just say so — *"two hours of 80s italo that builds up, no Modern
+specific you just say so - *"two hours of 80s italo that builds up, no Modern
 Talking"*. No cloud, no subscription, no algorithm selling you anything.
 
 [![Version](https://img.shields.io/github/v/release/aroundmyroom/Velvet?style=for-the-badge&color=6d28d9&label=latest)](https://github.com/aroundmyroom/Velvet/releases)
@@ -16,7 +16,7 @@ Talking"*. No cloud, no subscription, no algorithm selling you anything.
 [![Proxmox](https://img.shields.io/badge/Proxmox-LXC%20%2F%20Incus-E57000?logo=proxmox&logoColor=white&style=for-the-badge)](docs/lxc-incus.md)
 [![Samsung TV](https://img.shields.io/badge/Samsung%20TV-Tizen%20app-1428A0?logo=samsung&logoColor=white&style=for-the-badge)](https://github.com/aroundmyroom/Velvet/blob/main/docs/tizen-tv.md)
 
-> **Before you continue:** This project was built with AI assistance. If that bothers you, the exit is right there. If you're still reading — welcome, you're going to be fine. Probably. [Read the full disclaimer →](docs/responsible-disclosure.md)
+> **Before you continue:** This project was built with AI assistance. If that bothers you, the exit is right there. If you're still reading - welcome, you're going to be fine. Probably. [Read the full disclaimer →](docs/responsible-disclosure.md)
 
 ---
 
