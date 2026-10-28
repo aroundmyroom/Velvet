@@ -520,6 +520,44 @@ Controls the Discogs integration used for artist images and metadata enrichment.
 
 Credentials and the enable toggle can also be managed at runtime via Admin panel → Discogs or `POST /api/v1/admin/discogs/config`.
 
+## AI-assist (`aiAssist`)
+
+Off by default; the whole feature (admin page and endpoints) is hidden until
+`enabled` is set here once. Every other field can then be changed on the
+admin page. Full guide: [ai-assist.md](ai-assist.md); listener page:
+[ai-dj.md](ai-dj.md).
+
+```json
+"aiAssist": {
+  "enabled": true,
+  "apiKey": "sk-ant-…",
+  "model": "claude-haiku-5-5",
+  "monthlyBudgetUsd": 2,
+  "queueBuilder": false,
+  "maxQueueSongs": 500,
+  "provider": "anthropic",
+  "localBaseUrl": "",
+  "localModel": "",
+  "localApiKey": "",
+  "djNotes": ""
+}
+```
+
+| Key | Default | Meaning |
+|---|---|---|
+| `enabled` | `false` | Shows the admin page and enables the endpoints. |
+| `apiKey` | — | Anthropic API key. Never leaves the server; shown only by its last characters. |
+| `model` | `claude-haiku-5-5` | `claude-haiku-5-5`, `claude-sonnet-5-5` or `claude-opus-5-5`. |
+| `monthlyBudgetUsd` | `2` | Spending cap per calendar month; Velvet stops asking once it is reached. |
+| `queueBuilder` | `false` | Shows the AI DJ page to listeners (per user: `allow-ai-dj: false` on the user). |
+| `maxQueueSongs` | `500` | Cap for one AI-built set, 1–9999. |
+| `provider` | `anthropic` | `openai` for a self-hosted server with an OpenAI-compatible API. |
+| `localBaseUrl`, `localModel`, `localApiKey` | `""` | The self-hosted server (`…/v1`), its model name and an optional bearer key. |
+| `djNotes` | `""` | House notes for the DJ, up to 4000 characters; `A = B` lines also act as aliases. |
+
+Saving a key reads nothing; the admin page shows the cost of a full pass and
+asks before running it.
+
 ## Radio Streams
 
 Enables the internet radio station feature in the player.

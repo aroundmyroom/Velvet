@@ -4,6 +4,45 @@
 
 ## NOW — In Progress / Remaining
 
+### AI-assist (off by default, shipped in v0.8.0) — see docs/ai-assist.md, docs/ai-dj.md
+
+- [ ] Approve the genre and folder proposals on the production library; then
+  compare a week of Auto-DJ sessions against the keyword-only families.
+- [ ] AI DJ ideas after a week of use: let the listener edit the brief chips
+  before rebuilding, "more like this set" from the current queue, a server-side
+  similar-artist cache so the Last.fm expansion is instant.
+- [ ] **AI DJ feedback loop** (decided 2026-10-28: the engine covers the
+  reported cases; what is missing is turning a listener's complaint into a
+  lasting fix without a developer in between). In this order:
+  1. **"Report this set"** button on the AI DJ page: stores request, brief,
+     scope, result and the listener's one-line comment. Admin page "Reported
+     sets" shows exactly what the model read (the grounding and notes of that
+     request) and what the planner did, with one click to turn the lesson into
+     a house note. Low effort; makes every complaint reproducible.
+  2. **Corrections as examples**: the admin marks a reported brief wrong and
+     writes the right one; the pair is stored and appended to the DJ's cached
+     system prompt as "asked X → brief Y" (cap ~40, newest first). Covers the
+     class of errors no rule anticipates. Medium effort.
+  3. **Golden requests** for this library: a short admin-kept list of request →
+     expected outcome ("Grandmix 1983 and 1986 → two songs", "top 10 of the
+     House Top 1000 → starts with Jaydee", "3 house songs that match → one
+     tempo, harmonic keys, three artists"), run on demand after any change and
+     shown green/red. Low effort once (1) exists; the unit tests use synthetic
+     fixtures and cannot guard the real collection.
+  Beyond the loop: the 10% of songs without tempo or key (analysis queue), and
+  pure music knowledge, which scales with the model (Sonnet ≈ 20× Haiku per
+  request).
+- [ ] Step 2 of the plan: Claude as fallback for similar artists when Last.fm
+  has none (or ≤ 3 in the library), pre-selected from the library by family
+  and era, cached per artist.
+- [ ] Year from the folder: 25,988 files have no year tag and 12,108 of them
+  sit in a folder or file name that carries one (`…/1979/…`, `(1997)`,
+  `Jaarmixen 2012`). Propose and approve like the genre families; feed the
+  Auto-DJ year anchor and the Decades view.
+- [ ] Mix folders (Jaarmixen, DMC, Mixfreaks, Grandmix, Bootleg, MastermixDJ):
+  6,553 files longer than 15 minutes. A "mix" flag per folder would let Auto-DJ
+  skip them without the duration window.
+
 ### Artist and Album Identity Improvements
 
 - [x] Fold diacritics in the existing artist grouping key so accented and

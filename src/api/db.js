@@ -11,6 +11,7 @@ import * as config from '../state/config.js';
 import { joiValidate } from '../util/validation.js';
 import WebError from '../util/web-error.js';
 import { mergeGenreRows } from '../util/genre-merge.js';
+import { genreFamilyResolver } from '../util/genre-family-cache.js';
 import { indexFileOnDemand } from '../util/on-demand-index.js';
 import { ffprobeBin } from '../util/ffmpeg-bootstrap.js';
 import { resolveChildPath, resolvePathWithinRoot } from '../util/path-security.js';
@@ -52,7 +53,7 @@ function computeChildExclusions(userVpaths) {
 // For child-only users (e.g. only "12-inches", not "Music"), returns
 // includeFilepathPrefixes restricting DB queries to their allowed sub-folders.
 // When a user has direct access to a root vpath, returns [] (no restriction).
-function computeChildInclusions(user) {
+export function computeChildInclusions(user) {
   const allFolders = config.program.folders || {};
   const userVpaths = user.vpaths || [];
   const userSet = new Set(userVpaths);
@@ -70,7 +71,7 @@ function computeChildInclusions(user) {
   return inclusions;
 }
 
-function renderMetadataObj(row) {
+export function renderMetadataObj(row) {
   // Build rg object: trackGain uses full priority chain; albumGain is the raw
   // measured album value only (null = no album measurement, client falls back).
   const trackR = resolveTrackGain(row, 'track');
@@ -117,7 +118,7 @@ function renderMetadataObj(row) {
 // For child-only users (e.g. vpath "12-inches" with no direct "Music" access),
 // auth middleware pre-computes dbVpaths = [child, ...parentRoots].  Using this
 // for DB queries ensures files (indexed under the root vpath) are found.
-function userDbVpaths(user) {
+export function userDbVpaths(user) {
   return user.dbVpaths ?? user.vpaths;
 }
 
@@ -1020,7 +1021,15 @@ export function setup(velvet) {
       const pool = _batchRandomSongs(db, req.user, req.body);
       if (!pool) throw new WebError('No songs that match criteria', 400);
       console.log(`[autodj] pool user=${req.user.username} → ${pool.songs.length} candidates (${pool.note})`);
-      return res.json({ songs: pool.songs.map(s => renderMetadataObj(s)) });
+      // Admin-approved genre families ride along for the client's genre score;
+      // absent (as before) until a rule exists — see util/genre-family-cache.js.
+      const families = genreFamilyResolver();
+      return res.json({ songs: pool.songs.map(s => {
+        const o = renderMetadataObj(s);
+        const f = families?.resolve(s);
+        if (f) o.metadata['genre-family'] = f.family;
+        return o;
+      }) });
     }
 
     // ── Genre filter: resolve display names → raw DB genre strings ──────────

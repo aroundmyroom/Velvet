@@ -111,6 +111,7 @@ Open `http://localhost:3000`, point Velvet at `/music`, and press play. Full gui
 | | |
 |---|---|
 | **Auto-DJ that listens** | Hundreds of candidates are compared, but only one next song is committed. Every transition is reconsidered from what is playing now: similar artists, BPM, key, genre, era and recent history all move with the music |
+| **AI DJ — a set from a sentence** | *"Two hours of 80s italo that builds up, no Modern Talking"*, *"the top 10 of the House Top 1000"*, *"one album of Cerrone from around 1985"*. A model reads the request against a description of your library; Velvet picks the songs itself and mixes them like a DJ — small tempo steps, Camelot-compatible keys — and tells you exactly what it did. Off by default; Claude or your own local model. [Docs →](docs/ai-dj.md) |
 | **Metadata that works** | Genre Enricher, Album-Art Workshop, AcoustID fingerprinting, and Tag Workshop pull from Last.fm, MusicBrainz, and Discogs — always with a human in the loop |
 | **Album library first** | Multi-disc detection, series grouping, category folders, per-disc cover art, CUE sheet support — your classical and box-set collections look right |
 | **Listening analytics** | Full play history, skip rates, hourly heat charts, personality type, fun facts — all local, no external calls |
@@ -324,6 +325,8 @@ Full local play history — no external calls, no historical imports needed:
 | Audio output & Sonos | [docs/audio-output.md](docs/audio-output.md) |
 | DLNA / UPnP | [docs/dlna.md](docs/dlna.md) |
 | Smart playlists | [docs/smart-playlists.md](docs/smart-playlists.md) |
+| AI DJ (listeners) | [docs/ai-dj.md](docs/ai-dj.md) |
+| AI-assist (admin: genre families, library notes, costs) | [docs/ai-assist.md](docs/ai-assist.md) |
 | BPM & harmonic mixing | [docs/bpm-harmonic.md](docs/bpm-harmonic.md) |
 | ReplayGain | [docs/replaygain-info.md](docs/replaygain-info.md) |
 | Tag editor | [docs/tageditor.md](docs/tageditor.md) |

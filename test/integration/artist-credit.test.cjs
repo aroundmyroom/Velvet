@@ -30,6 +30,13 @@ describe('artistLookupCandidates — names tried against Last.fm, in order', asy
     assert.deepEqual(artistLookupCandidates('Olav Basoski f. Michie One'), ['Olav Basoski f. Michie One']);
   });
 
+  it('splits ";" and "," credit lists that Last.fm only knows by their parts', () => {
+    // Seen live 2026-10: both came back with zero similar artists.
+    assert.deepEqual(artistLookupCandidates('Martin Garrix; Ed Sheeran'), ['Martin Garrix; Ed Sheeran', 'Martin Garrix', 'Ed Sheeran']);
+    assert.deepEqual(artistLookupCandidates('Quentin Harris, Byron Stingily'), ['Quentin Harris, Byron Stingily', 'Quentin Harris', 'Byron Stingily']);
+    assert.deepEqual(artistLookupCandidates('Earth, Wind & Fire'), ['Earth, Wind & Fire', 'Earth', 'Wind', 'Fire']);
+  });
+
   it('dedupes case-insensitively and drops empties', () => {
     assert.deepEqual(artistLookupCandidates('Sting & sting'), ['Sting & sting', 'Sting']);
     assert.deepEqual(artistLookupCandidates('   '), []);

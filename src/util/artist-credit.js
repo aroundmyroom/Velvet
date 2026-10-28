@@ -10,8 +10,10 @@
 // seen live (Martin Solveig Fe. Roy Woods → nothing; 384 credits in the same
 // library use it). "F." is deliberately not a separator — it is far more often
 // an initial (George F. Zimmer).
-const COLLAB_SEP = /\s+(?:feat\.?|ft\.?|fe\.?|featuring|vs\.?|pres\.?|presents?\b|\bx\b)\s+/i;
-const DUO_SEP = /\s+(?:&|and)\s+/i;
+// ";" only ever separates credits; "," is split at the duo level, after the
+// whole credit has been tried, so "Earth, Wind & Fire" still resolves as itself.
+const COLLAB_SEP = /\s*;\s*|\s+(?:feat\.?|ft\.?|fe\.?|featuring|vs\.?|pres\.?|presents?\b|\bx\b)\s+/i;
+const DUO_SEP = /\s*,\s*|\s+(?:&|and)\s+/i;
 // "05. Jax Jones Feat. Ina Wroldsen" — a track number leaked into the artist tag.
 const TRACK_NO_PREFIX = /^\d{1,3}\.\s+/;
 

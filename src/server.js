@@ -54,6 +54,8 @@ import * as rgAnalysisApi from './api/rg-analysis.js';
 import * as albumArtWorkshopApi from './api/album-art-workshop.js';
 import * as bpmAnalysisApi from './api/bpm-analysis.js';
 import * as genreEnricherApi from './api/genre-enricher.js';
+import * as aiAssistApi from './api/ai-assist.js';
+import * as aiQueueApi from './api/ai-queue.js';
 import * as dupWorkshopApi from './api/duplicate-workshop.js';
 import * as dlnaApi from './api/dlna.js';
 import * as sonosApi from './api/sonos.js';
@@ -352,6 +354,8 @@ export async function serveIt(configFile) {
   albumArtWorkshopApi.setup(velvet);
   bpmAnalysisApi.setup(velvet);
   genreEnricherApi.setup(velvet);
+  aiAssistApi.setup(velvet);
+  aiQueueApi.setup(velvet);
   dupWorkshopApi.setup(velvet);
   dlnaApi.setup(velvet);
   sonosApi.setup(velvet);

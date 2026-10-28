@@ -1,3 +1,106 @@
+## v0.8.0 (2026-10-28)
+
+AI DJ and AI-assist: a set from a sentence
+
+### Added
+
+- **AI DJ for listeners** (`Now Playing → AI DJ`, off by default; Admin →
+  AI-assist → *AI DJ for listeners*, and per user on the Users page). The
+  listener writes what they want to hear — *"twee uur italo uit de jaren 80
+  dat opbouwt, geen Modern Talking"*, *"the top 10 of the House Top 1000"*,
+  *"one album of Cerrone from around 1985"*, *"3 songs that match tempo, key
+  and genre"* — and gets a set to play, add to the queue or save as a
+  playlist. The model only writes a *brief* in the library's own names;
+  Velvet picks and orders the songs itself, so a set never holds anything
+  but library songs and never exceeds the admin's cap. Request shapes: mixed
+  sets with an energy arc, one album or whole albums in track order, named
+  songs (one each, every version on request), charts by position (numbered
+  folders, countdown on request), rankings from the listener's own
+  statistics (most played, recently added …), playlists and smart playlists
+  by name, every filter the library views have (starred, never played, play
+  counts, date windows, lossless, hi-res), version kinds (12-inch, single,
+  instrumental, remix, live), song length, musical key, scenes, labels,
+  producers and remix services. Shorthand (FGTH, GM, DMC) is understood.
+  Docs: `docs/ai-dj.md`, `docs/API/ai-queue.md`.
+- **Mixes like a mix DJ.** A DJ-ordered set is picked from one mixable
+  corridor (a seed song; the rest within a few BPM, in a compatible key, of
+  the same genre family — only when that costs no quality), laid on a tempo
+  ladder where no two neighbours are more than about 2.5% apart (3 BPM at
+  125), and keyed on the Camelot wheel: the next song is in the same key, one
+  step round the wheel or the relative major/minor, repaired from the
+  corridor when it is not. The result page shows the largest tempo step and
+  the harmonic transitions. "Songs that match each other" is the strict
+  version: one tempo, one genre tag, different artists.
+- **The model reads the library, not its memory.** Every request's phrases
+  are looked up in the search index first and the model is told what they
+  are here (title, artist, folder); the library summary lists charts
+  (numbered folders), series ("name + year" titles such as Grandmix
+  1982–2022), collections and playlist names; one song is one song (no
+  7-inch, 12-inch and remix of the same song in one set).
+- **Honest answers.** A name that exists in the library but outside the
+  listener's current selection is reported as such, with where it is; the
+  model's "I'll play …" summary is never shown over an empty result; every
+  relaxation, cap, chosen album, chart position range, corridor and seed is
+  a note on the page. Without a model (no key, budget spent, offline) a
+  rule-based reader in English and Dutch writes the brief and the page says
+  so.
+- **Library notes — what the AI knows about your library.** Once, after
+  reading a digest of every folder (size, years, lengths, artists, genres,
+  albums, file names, three levels deep), the model writes what each folder
+  is in music-history terms, with the names people use for it; the admin
+  page lists, filters and edits them (an edited note is never overwritten),
+  and the AI DJ reads them on every request. Later passes describe only new
+  or changed folders.
+- **Nothing is sent before you have seen the price.** Saving a key reads
+  nothing; the settings card shows what one full pass over your library
+  would cost at the configured model and on the others, per 1,000 songs,
+  and per AI DJ request, with a checkbox "Read my library after saving".
+- **What the AI sees and does**: provider, endpoint, usage, every call with
+  tokens, cost and result, and the exact prompts of every task.
+- **Genre families in profiles** (Profile 1, 2, …; Auto-DJ uses the active
+  one), one-pass background analysis of all tags and folders, undo, and an
+  overview of what the active rules do to every song.
+- **Your own model instead of Claude**: any OpenAI-compatible server (Ollama,
+  LM Studio, llama.cpp, vLLM, LocalAI, Jan) under *Advanced*, with a
+  connection test.
+- **House notes for the DJ**: the owner's shorthand and taste, appended to
+  every briefing; `A = B` lines double as aliases for the rule-based reader.
+- Admin: `POST /api/v1/admin/users/allow-ai-dj` and the AI DJ switch per
+  user; AI-assist endpoints for library notes, profiles, activity, context,
+  overview and the cost estimate (`docs/API.md`).
+
+### Changed
+
+- **Auto-DJ stays in the same corner after a Last.fm miss.** When Last.fm had
+  no similar artists for the playing song, Auto-DJ dropped the similar-artist
+  scope and the next pick could come from anywhere in the library; that
+  artist then became the new starting point, and it rarely found its way back.
+  Mid-session it now keeps the last list that worked ("staying close to Donna
+  Summer") until an artist with its own list comes along. A song you start
+  yourself still starts fresh.
+- **Session genre anchor.** Genre continuity is now scored against the
+  current song and the genre family that dominated the session so far (the
+  song you started and the last 8 picks). One off-genre pick, or a song
+  without a genre tag, no longer sets the direction for the rest of the
+  session.
+
+### Fixed
+
+- **Similar artists for credits separated by ";" or ",".** Credits such as
+  "Martin Garrix; Ed Sheeran" or "Quentin Harris, Byron Stingily" got no
+  similar artists from Last.fm, because only the whole credit was looked up.
+  The individual artists are now tried after the whole credit, the same way
+  "feat." and "&" credits already were.
+
+### Dependencies
+
+- axios 1.21.0, joi 18.3.1, music-metadata 12.3.2; the `qs` override raised
+  to 6.17.0 (closes GHSA-6pq8-jhm2-2vcw) — `npm audit` reports no known
+  vulnerabilities.
+- Removed two unused dependencies: `@distube/ytdl-core` (the YouTube
+  downloader runs the bundled yt-dlp binary) and `escape-string-regexp`.
+- Runs on Node 24.22.1; the Docker image builds from `node:24-slim`.
+
 ## v0.7.3 (2026-10-26)
 
 Security: body-parser and undici updates

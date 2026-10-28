@@ -1109,6 +1109,13 @@ export function setup(velvet) {
     res.json({});
   });
 
+  velvet.post("/api/v1/admin/users/allow-ai-dj", async (req, res) => {
+    if (req.user.admin !== true) return res.status(403).json({ error: 'Admin only' });
+    joiValidate(Joi.object({ username: Joi.string().required(), allow: Joi.boolean().required() }), req.body);
+    await admin.editAllowAiDj(req.body.username, req.body.allow);
+    res.json({});
+  });
+
   velvet.post("/api/v1/admin/users/allow-upload", async (req, res) => {
     if (req.user.admin !== true) return res.status(403).json({ error: 'Admin only' });
     const schema = Joi.object({

@@ -146,6 +146,7 @@ const ADMINDATA = (() => {
         if (!Object.hasOwn(u, 'allow-upload')) u['allow-upload'] = true;
         if (!Object.hasOwn(u, 'allow-radio-recording')) u['allow-radio-recording'] = false;
         if (!Object.hasOwn(u, 'allow-youtube-download')) u['allow-youtube-download'] = false;
+        if (!Object.hasOwn(u, 'allow-ai-dj')) u['allow-ai-dj'] = true;
         // MPV permissions: server-remote default true (matches historical open access), mpv-cast default false
         if (!Object.hasOwn(u, 'allow-server-remote')) u['allow-server-remote'] = true;
         if (!Object.hasOwn(u, 'allow-mpv-cast')) u['allow-mpv-cast'] = false;
@@ -2427,6 +2428,15 @@ const usersView = Vue.component('users-view', {
                       <span style="font-size:.68rem;opacity:.6;font-weight:400;margin-left:4px;">{{v['allow-youtube-download'] ? 'ON' : 'off'}}</span>
                     </button>
                     <button type="button" class="btn-small btn-flat"
+                      :title="v['allow-ai-dj'] !== false ? t('admin.users.tooltipDisableAiDj') : t('admin.users.tooltipEnableAiDj')"
+                      :style="v['allow-ai-dj'] === false ? 'background:rgba(220,50,50,.12);color:#e05555;border-color:rgba(220,50,50,.35);' : 'background:rgba(40,167,69,.12);color:#28a745;border-color:rgba(40,167,69,.35);'"
+                      style="display:flex;align-items:center;width:100%;gap:0;font-weight:600;"
+                      @click="toggleAiDj(k, v)">
+                      <span style="display:inline-block;width:18px;text-align:center;flex-shrink:0;">&#10024;</span>
+                      <span style="flex:1;text-align:left;">{{ t('admin.users.permAiDj') }}</span>
+                      <span style="font-size:.68rem;opacity:.6;font-weight:400;margin-left:4px;">{{v['allow-ai-dj'] !== false ? 'ON' : 'off'}}</span>
+                    </button>
+                    <button type="button" class="btn-small btn-flat"
                       :title="v['allow-upload'] !== false ? t('admin.users.tooltipDisableUpload') : t('admin.users.tooltipEnableUpload')"
                       :style="v['allow-upload'] === false ? 'background:rgba(220,50,50,.12);color:#e05555;border-color:rgba(220,50,50,.35);' : 'background:rgba(40,167,69,.12);color:#28a745;border-color:rgba(40,167,69,.35);'"
                       style="display:flex;align-items:center;width:100%;gap:0;font-weight:600;"
@@ -2595,6 +2605,16 @@ const usersView = Vue.component('users-view', {
           });
           Vue.set(ADMINDATA.users[username], 'allow-youtube-download', newVal);
           iziToast.success({ title: newVal ? this.t('admin.users.toastYoutubeEnabled') : this.t('admin.users.toastYoutubeDisabled'), position: 'topCenter', timeout: 3000 });
+        } catch {
+          iziToast.error({ title: this.t('admin.users.toastFailedUpdate'), position: 'topCenter', timeout: 3500 });
+        }
+      },
+      toggleAiDj: async function (username, user) {
+        const newVal = user['allow-ai-dj'] === false;
+        try {
+          await API.axios({ method: 'POST', url: `${API.url()}/api/v1/admin/users/allow-ai-dj`, data: { username, allow: newVal } });
+          Vue.set(ADMINDATA.users[username], 'allow-ai-dj', newVal);
+          iziToast.success({ title: newVal ? this.t('admin.users.toastAiDjEnabled') : this.t('admin.users.toastAiDjDisabled'), position: 'topCenter', timeout: 3000 });
         } catch {
           iziToast.error({ title: this.t('admin.users.toastFailedUpdate'), position: 'topCenter', timeout: 3500 });
         }
@@ -9918,6 +9938,656 @@ const dupWorkshopView = Vue.component('dup-workshop-view', {
 });
 
 // ── Genre Groups Admin View ────────────────────────────────────────────────
+// AI-assist: hidden until aiAssist.enabled is set in the config file (the nav
+// item is revealed at boot). Claude proposes a genre family per tag and per
+// folder; nothing reaches Auto-DJ until it is approved here.
+const aiAssistView = Vue.component('ai-assist-view', {
+  data() {
+    return {
+      enabled: false, apiKey: '', model: 'claude-haiku-5-5', monthlyBudgetUsd: 2,
+      queueBuilder: false, maxQueueSongs: 500,
+      usage: { calls: 0, usd: 0 },
+      families: [], ruleFamilies: [],
+      genres: [], folders: [],
+      tab: 'genres', filter: '', onlyOpen: true,
+      pending: false, busy: '',
+      profiles: [], profile: null, analysis: null, newProfileName: '', copyCurrent: true, renameVal: '',
+      provider: 'anthropic', localBaseUrl: '', localModel: '', localApiKey: '', advanced: false, testResult: null,
+      activity: null, context: null, showContext: '',
+      overview: null, showHow: true,
+      djNotes: '',
+      notes: [], notesPlan: null, notesAnalysis: null, noteKinds: [], notesFilter: '', editing: null, editBuf: {},
+      estimate: null, analyseOnSave: false,
+    };
+  },
+  computed: {
+    rows() {
+      const q = this.filter.trim().toLowerCase();
+      const list = this.tab === 'genres' ? this.genres : this.folders;
+      return list.filter(r => (!this.onlyOpen || r.status !== 'approved') && (!q || r.name.toLowerCase().includes(q)));
+    },
+    openProposals() {
+      return (this.tab === 'genres' ? this.genres : this.folders).filter(r => r.status === 'proposed' && r.proposed);
+    },
+    approvedCount() {
+      return (this.tab === 'genres' ? this.genres : this.folders).filter(r => r.status === 'approved').length;
+    },
+    overviewRows() {
+      if (!this.overview) return [];
+      return Object.entries(this.overview.families).map(([key, f]) => ({ key, ...f })).filter(f => f.songs > 0).sort((a, b) => (a.key === 'unknown') - (b.key === 'unknown') || b.songs - a.songs);
+    },
+    contextText() {
+      const c = this.context; if (!c) return '';
+      if (this.showContext === 'aidj') return `${c.aidj.system}\n\n--- ${this.t('admin.ai.ctxLibrary')} ---\n${c.aidj.library}${c.aidj.notes ? `\n\n${c.aidj.notes}` : ''}`;
+      const part = c[this.showContext]; if (!part) return '';
+      return `${part.system}\n\n--- ${this.t('admin.ai.ctxSample')} ---\n${part.sample}`;
+    },
+    contextNote() {
+      const c = this.context; if (!c) return '';
+      if (this.showContext === 'aidj') return this.t('admin.ai.ctxAidjNote', { chars: c.aidj.chars.toLocaleString() }) + (c.aidj.notesTotal ? ' ' + this.t('admin.ai.ctxAidjNotes', { included: c.aidj.notesIncluded, total: c.aidj.notesTotal }) : '');
+      if (this.showContext === 'genres') return this.t('admin.ai.ctxGenresNote', { lines: c.genres.lines, batch: c.genres.batch });
+      if (this.showContext === 'folders') return this.t('admin.ai.ctxFoldersNote', { lines: c.folders.lines, stats: c.folders.fromStats });
+      if (this.showContext === 'notes') return this.t('admin.ai.ctxNotesNote', { lines: c.notes.lines });
+      return '';
+    },
+    noteRows() {
+      const q = this.notesFilter.trim().toLowerCase();
+      const all = q ? this.notes.filter(x => `${x.key} ${x.kind} ${x.note} ${x.aliases.join(' ')} ${x.ask}`.toLowerCase().includes(q)) : this.notes;
+      return all.slice(0, 300);
+    },
+    isActiveProfile() {
+      return !!this.profiles.find(p => p.id === this.profile)?.active;
+    },
+    currentProfile() {
+      return this.profiles.find(p => p.id === this.profile) || null;
+    },
+  },
+  template: `
+    <div class="container">
+      <div class="row">
+        <div class="col s12">
+          <div class="card">
+            <div class="card-content">
+              <span class="card-title">{{ t('admin.ai.title') }}</span>
+              <p style="margin-bottom:.5rem;">{{ t('admin.ai.desc') }}</p>
+              <p style="margin-bottom:1rem;font-size:.85rem;color:var(--t2);">{{ t('admin.ai.privacy') }}</p>
+              <table>
+                <tbody>
+                  <tr>
+                    <td style="width:160px"><b>{{ t('admin.ai.labelEnable') }}</b></td>
+                    <td><input type="checkbox" v-model="enabled" style="margin:0;width:auto;height:auto;" /> {{ t('admin.ai.checkboxEnable') }}</td>
+                  </tr>
+                  <tr>
+                    <td><b>{{ t('admin.ai.labelApiKey') }}</b></td>
+                    <td><input v-model="apiKey" type="password" :placeholder="t('admin.ai.apiKeyPlaceholder')" autocomplete="new-password" data-form-type="other" data-lpignore="true" data-1p-ignore data-bwignore style="margin:0" /></td>
+                  </tr>
+                  <tr>
+                    <td><b>{{ t('admin.ai.labelModel') }}</b></td>
+                    <td>
+                      <select v-model="model" style="margin:0;max-width:280px;">
+                        <option value="claude-haiku-5-5">Claude Haiku 5.5 — {{ t('admin.ai.modelCheapest') }}</option>
+                        <option value="claude-sonnet-5-5">Claude Sonnet 5.5</option>
+                        <option value="claude-opus-5-5">Claude Opus 5.5</option>
+                      </select>
+                    </td>
+                  </tr>
+                  <tr>
+                    <td><b>{{ t('admin.ai.labelBudget') }}</b></td>
+                    <td><input v-model.number="monthlyBudgetUsd" type="number" min="0" step="0.5" style="margin:0;width:120px;" /> <span style="color:var(--t2);font-size:.85rem;">{{ t('admin.ai.usageThisMonth', { calls: usage.calls, usd: (usage.usd || 0).toFixed(3) }) }}</span></td>
+                  </tr>
+                  <tr>
+                    <td><b>{{ t('admin.ai.labelQueueBuilder') }}</b></td>
+                    <td>
+                      <input type="checkbox" v-model="queueBuilder" style="margin:0;width:auto;height:auto;" /> {{ t('admin.ai.checkboxQueueBuilder') }}
+                      <div style="font-size:.85rem;color:var(--t2);margin-top:.25rem;">{{ t('admin.ai.queueBuilderHint') }}</div>
+                    </td>
+                  </tr>
+                  <tr>
+                    <td><b>{{ t('admin.ai.labelMaxQueueSongs') }}</b></td>
+                    <td><input v-model.number="maxQueueSongs" type="number" min="1" max="9999" step="1" style="margin:0;width:120px;" /> <span style="color:var(--t2);font-size:.85rem;">{{ t('admin.ai.maxQueueSongsHint') }}</span></td>
+                  </tr>
+                </tbody>
+              </table>
+              <div v-if="queueBuilder" style="margin-top:1rem;padding:.75rem;border:1px solid var(--border);border-radius:6px;">
+                <b>{{ t('admin.ai.notesTitle') }}</b>
+                <p style="font-size:.85rem;color:var(--t2);margin:.3rem 0 .5rem;">{{ t('admin.ai.notesDesc') }}</p>
+                <textarea v-model="djNotes" rows="6" maxlength="4000" :placeholder="t('admin.ai.notesPlaceholder')" style="width:100%;box-sizing:border-box;font-size:.85rem;font-family:monospace;padding:.5rem;"></textarea>
+                <p style="font-size:.8rem;color:var(--t3);margin-top:.3rem;">{{ t('admin.ai.notesHint') }}</p>
+              </div>
+              <div style="margin-top:1rem;">
+                <a href="#" @click.prevent="advanced = !advanced" style="font-size:.9rem;">{{ advanced ? '▾' : '▸' }} {{ t('admin.ai.advancedTitle') }}</a>
+                <div v-if="advanced" style="margin-top:.5rem;padding:.75rem;border:1px solid var(--border);border-radius:6px;">
+                  <p style="font-size:.85rem;color:var(--t2);margin-bottom:.5rem;">{{ t('admin.ai.advancedDesc') }}</p>
+                  <table>
+                    <tbody>
+                      <tr>
+                        <td style="width:160px"><b>{{ t('admin.ai.labelProvider') }}</b></td>
+                        <td>
+                          <select v-model="provider" style="margin:0;max-width:360px;">
+                            <option value="anthropic">{{ t('admin.ai.providerAnthropic') }}</option>
+                            <option value="openai">{{ t('admin.ai.providerLocal') }}</option>
+                          </select>
+                        </td>
+                      </tr>
+                      <tr v-if="provider === 'openai'">
+                        <td><b>{{ t('admin.ai.labelLocalUrl') }}</b></td>
+                        <td><input v-model="localBaseUrl" type="text" placeholder="http://localhost:11434/v1" style="margin:0;max-width:360px;" /></td>
+                      </tr>
+                      <tr v-if="provider === 'openai'">
+                        <td><b>{{ t('admin.ai.labelLocalModel') }}</b></td>
+                        <td><input v-model="localModel" type="text" placeholder="llama3.1:8b" style="margin:0;max-width:360px;" /></td>
+                      </tr>
+                      <tr v-if="provider === 'openai'">
+                        <td><b>{{ t('admin.ai.labelLocalKey') }}</b></td>
+                        <td><input v-model="localApiKey" type="password" :placeholder="t('admin.ai.localKeyPlaceholder')" autocomplete="new-password" data-form-type="other" data-lpignore="true" data-1p-ignore data-bwignore style="margin:0;max-width:360px;" /></td>
+                      </tr>
+                    </tbody>
+                  </table>
+                  <div v-if="provider === 'openai'" style="font-size:.8rem;color:var(--t2);margin-top:.5rem;line-height:1.7;">
+                    <b>{{ t('admin.ai.localServersTitle') }}</b><br>
+                    Ollama — <code>http://localhost:11434/v1</code> · LM Studio — <code>http://localhost:1234/v1</code> · llama.cpp (llama-server) — <code>http://localhost:8080/v1</code> · vLLM — <code>http://localhost:8000/v1</code> · LocalAI — <code>http://localhost:8080/v1</code> · Jan — <code>http://localhost:1337/v1</code><br>
+                    {{ t('admin.ai.localServersHint') }}
+                  </div>
+                  <div style="margin-top:.75rem;display:flex;gap:.5rem;align-items:center;flex-wrap:wrap;">
+                    <button class="btn btn-small" @click="testConnection" :disabled="!!busy || !enabled">{{ busy === 'test' ? t('admin.ai.btnTesting') : t('admin.ai.btnTest') }}</button>
+                    <span v-if="testResult" :style="testResult.ok ? 'color:var(--green)' : 'color:#e05555'" style="font-size:.85rem;">{{ testResult.ok ? t('admin.ai.testOk', { model: testResult.model, ms: testResult.ms }) : t('admin.ai.testFailed', { error: testResult.error }) }}</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div class="card-content" v-if="estimate" style="padding-top:0;">
+              <div style="padding:.6rem .75rem;border:1px solid var(--border);border-radius:6px;font-size:.85rem;">
+                <b>{{ t('admin.ai.costTitle') }}</b>
+                <p style="margin:.3rem 0 .5rem;color:var(--t2);">{{ t('admin.ai.costDesc', { songs: estimate.songs.toLocaleString(), genres: estimate.items.genres.toLocaleString(), folders: estimate.items.folders.toLocaleString(), notes: estimate.items.notes.toLocaleString(), notesAll: estimate.items.notesAll.toLocaleString() }) }}</p>
+                <table style="font-size:.8rem;max-width:520px;">
+                  <tbody>
+                    <tr><td>{{ t('admin.ai.costGenres', { count: estimate.items.genres.toLocaleString() }) }}</td><td style="text-align:right;white-space:nowrap">{{ '$' + estimate.usd.genres.toFixed(3) }}</td></tr>
+                    <tr><td>{{ t('admin.ai.costFolders', { count: estimate.items.folders.toLocaleString() }) }}</td><td style="text-align:right;white-space:nowrap">{{ '$' + estimate.usd.folders.toFixed(3) }}</td></tr>
+                    <tr><td>{{ t('admin.ai.costNotes', { count: estimate.items.notes.toLocaleString() }) }}</td><td style="text-align:right;white-space:nowrap">{{ '$' + estimate.usd.notes.toFixed(3) }}</td></tr>
+                    <tr><td><b>{{ t('admin.ai.costTotal', { model: estimate.model }) }}</b></td><td style="text-align:right;white-space:nowrap"><b>{{ '$' + estimate.usd.total.toFixed(3) }}</b></td></tr>
+                  </tbody>
+                </table>
+                <p style="margin:.4rem 0 0;color:var(--t2);">{{ t('admin.ai.costPerThousand', { usd: estimate.perThousandSongs.toFixed(4) }) }}<span v-if="estimate.provider !== 'openai'"> · {{ t('admin.ai.costOtherModels') }} {{ Object.entries(estimate.models).map(([m, u]) => m.replace('claude-', '') + ' $' + u.toFixed(2)).join(' · ') }}</span></p>
+                <p style="margin:.2rem 0 0;color:var(--t2);">{{ t('admin.ai.costBrief', { usd: estimate.usd.brief.toFixed(4), ten: (estimate.usd.brief * 1000).toFixed(1) }) }} {{ t('admin.ai.costSpent', { usd: (usage.usd || 0).toFixed(3), calls: usage.calls || 0 }) }}</p>
+                <p style="margin:.2rem 0 .5rem;color:var(--t2);">{{ t('admin.ai.costSent') }}</p>
+                <label style="display:flex;align-items:center;gap:.4rem;"><input type="checkbox" v-model="analyseOnSave" style="margin:0;width:auto;height:auto;" :disabled="!enabled || !estimate.usd.total && estimate.provider !== 'openai' && !estimate.items.notes" /> {{ t('admin.ai.analyseOnSave', { usd: estimate.usd.total.toFixed(3) }) }}</label>
+              </div>
+            </div>
+            <div class="card-action">
+              <button class="btn" @click="saveConfig" :disabled="pending">{{ pending ? t('admin.common.saving') : (analyseOnSave ? t('admin.ai.btnSaveAnalyse') : t('admin.common.save')) }}</button>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-content">
+              <span class="card-title">{{ t('admin.ai.activityTitle') }}</span>
+              <p style="margin-bottom:.75rem;font-size:.85rem;color:var(--t2);">{{ t('admin.ai.activityDesc') }}</p>
+              <table v-if="activity" style="font-size:.85rem;margin-bottom:.75rem;">
+                <tbody>
+                  <tr><td style="width:160px"><b>{{ t('admin.ai.colProvider') }}</b></td><td>{{ activity.endpoint.provider === 'openai' ? t('admin.ai.providerLocal') : t('admin.ai.providerAnthropic') }} — <code>{{ activity.endpoint.model }}</code></td></tr>
+                  <tr><td><b>{{ t('admin.ai.colEndpoint') }}</b></td><td><code>{{ activity.endpoint.endpoint }}</code> · {{ activity.endpoint.auth }}</td></tr>
+                  <tr><td><b>{{ t('admin.ai.colBilling') }}</b></td><td>{{ activity.endpoint.billing }} · {{ t('admin.ai.usageThisMonth', { calls: activity.usage.calls, usd: (activity.usage.usd || 0).toFixed(3) }) }}</td></tr>
+                </tbody>
+              </table>
+              <div style="display:flex;gap:.5rem;flex-wrap:wrap;margin-bottom:.75rem;">
+                <button class="btn-flat btn-small" :class="{ 'gg-tab-on': showContext==='aidj' }" @click="toggleContext('aidj')">{{ t('admin.ai.ctxAidj') }}</button>
+                <button class="btn-flat btn-small" :class="{ 'gg-tab-on': showContext==='genres' }" @click="toggleContext('genres')">{{ t('admin.ai.ctxGenres') }}</button>
+                <button class="btn-flat btn-small" :class="{ 'gg-tab-on': showContext==='folders' }" @click="toggleContext('folders')">{{ t('admin.ai.ctxFolders') }}</button>
+                <button class="btn-flat btn-small" :class="{ 'gg-tab-on': showContext==='notes' }" @click="toggleContext('notes')">{{ t('admin.ai.ctxNotes') }}</button>
+                <span style="flex:1"></span>
+                <button class="btn-flat btn-small" @click="loadActivity">{{ t('admin.ai.btnRefresh') }}</button>
+              </div>
+              <div v-if="showContext && context" style="margin-bottom:.75rem;">
+                <p style="font-size:.8rem;color:var(--t2);margin-bottom:.3rem;">{{ contextNote }}</p>
+                <pre style="max-height:320px;overflow:auto;font-size:.75rem;white-space:pre-wrap;word-break:break-word;background:var(--surface,rgba(0,0,0,.15));padding:.6rem;border-radius:6px;">{{ contextText }}</pre>
+              </div>
+              <table class="striped" v-if="activity && activity.calls.length" style="font-size:.8rem;">
+                <thead><tr><th>{{ t('admin.ai.colWhen') }}</th><th>{{ t('admin.ai.colTask') }}</th><th>{{ t('admin.ai.colSent') }}</th><th style="text-align:right">{{ t('admin.ai.colTokens') }}</th><th style="text-align:right">{{ t('admin.ai.colCost') }}</th><th style="text-align:right">{{ t('admin.ai.colTime') }}</th><th>{{ t('admin.ai.colResult') }}</th></tr></thead>
+                <tbody>
+                  <tr v-for="c in activity.calls" :key="c.ts + c.task">
+                    <td style="white-space:nowrap">{{ new Date(c.ts).toLocaleTimeString() }}</td>
+                    <td>{{ taskLabel(c.task) }}</td>
+                    <td style="color:var(--t2)" :title="c.preview">{{ (c.systemChars + c.promptChars).toLocaleString() }} chars — {{ c.preview }}</td>
+                    <td style="text-align:right;white-space:nowrap">{{ c.ok ? (c.inputTokens || 0).toLocaleString() + ' → ' + (c.outputTokens || 0) + (c.cacheRead ? ' ⚡' : '') : '—' }}</td>
+                    <td style="text-align:right">{{ c.ok ? '$' + (c.usd || 0).toFixed(4) : '—' }}</td>
+                    <td style="text-align:right">{{ (c.ms / 1000).toFixed(1) }} s</td>
+                    <td :style="c.ok ? 'color:var(--green)' : 'color:#e05555'">{{ c.ok ? (c.stub ? 'stub' : 'ok') : c.error }}</td>
+                  </tr>
+                </tbody>
+              </table>
+              <p v-else-if="activity" style="font-size:.85rem;color:var(--t3);">{{ t('admin.ai.noCalls') }}</p>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-content">
+              <span class="card-title">{{ t('admin.ai.notesTitle') }}</span>
+              <p style="margin-bottom:.75rem;font-size:.85rem;color:var(--t2);">{{ t('admin.ai.notesDesc') }}</p>
+              <p v-if="notesPlan" style="font-size:.85rem;margin-bottom:.5rem;">{{ t('admin.ai.notesPlan', { noted: notesPlan.noted, folders: notesPlan.folders, todo: notesPlan.todo, usd: notesPlan.estimateUsd.toFixed(3) }) }}</p>
+              <div v-if="notesAnalysis && (notesAnalysis.running || notesAnalysis.finishedAt)" style="margin-bottom:.75rem;padding:.5rem .75rem;border-radius:6px;font-size:.85rem;" :style="notesAnalysis.error ? 'background:rgba(220,50,50,.12);' : 'background:rgba(40,167,69,.12);'">
+                <span v-if="notesAnalysis.running">{{ t('admin.ai.notesRunning', { done: notesAnalysis.done, todo: notesAnalysis.todo, usd: (notesAnalysis.usd || 0).toFixed(3) }) }}</span>
+                <span v-else-if="notesAnalysis.error">{{ t('admin.ai.notesError', { error: notesAnalysis.error }) }}</span>
+                <span v-else>{{ t('admin.ai.notesDone', { done: notesAnalysis.done, usd: (notesAnalysis.usd || 0).toFixed(3) }) }}</span>
+              </div>
+              <div style="display:flex;gap:.5rem;flex-wrap:wrap;align-items:center;margin-bottom:.75rem;">
+                <button class="btn btn-small" @click="analyseNotes(false)" :disabled="!!busy || !enabled || !notesPlan || !notesPlan.todo || (notesAnalysis && notesAnalysis.running)">{{ t('admin.ai.btnNotesAnalyse', { count: notesPlan ? notesPlan.todo : 0 }) }}</button>
+                <button class="btn-flat btn-small" @click="analyseNotes(true)" :disabled="!!busy || !enabled || (notesAnalysis && notesAnalysis.running)">{{ t('admin.ai.btnNotesReanalyse') }}</button>
+                <button class="btn-flat btn-small" @click="resetNotes" :disabled="!!busy || !notes.length">{{ t('admin.ai.btnNotesClear') }}</button>
+                <span style="flex:1"></span>
+                <input v-model="notesFilter" type="text" :placeholder="t('admin.ai.filterPlaceholder')" style="margin:0;max-width:220px;" />
+              </div>
+              <p v-if="!enabled" style="font-size:.85rem;color:var(--t2);">{{ t('admin.ai.hintDisabled') }}</p>
+              <p v-else-if="!notes.length" style="font-size:.85rem;color:var(--t3);">{{ t('admin.ai.notesNone') }}</p>
+              <table v-else class="striped" style="font-size:.8rem;">
+                <thead><tr><th>{{ t('admin.ai.colFolder') }}</th><th>{{ t('admin.ai.colKind') }}</th><th>{{ t('admin.ai.colNote') }}</th><th>{{ t('admin.ai.colAliases') }}</th><th>{{ t('admin.ai.colAsk') }}</th><th></th></tr></thead>
+                <tbody>
+                  <tr v-for="x in noteRows" :key="x.key">
+                    <td style="max-width:220px;word-break:break-word;"><code>{{ x.key }}</code><br><small style="color:var(--t3)">{{ x.n.toLocaleString() }} · {{ x.source === 'edited' ? t('admin.ai.noteEdited') : t('admin.ai.noteByAi') }}</small></td>
+                    <template v-if="editing === x.key">
+                      <td><select v-model="editBuf.kind" style="margin:0;"><option v-for="k in noteKinds" :key="k" :value="k">{{ k }}</option></select></td>
+                      <td><textarea v-model="editBuf.note" rows="3" style="margin:0;width:100%;min-width:220px;"></textarea></td>
+                      <td><input v-model="editBuf.aliases" type="text" style="margin:0;" :placeholder="t('admin.ai.aliasesPlaceholder')" /></td>
+                      <td><input v-model="editBuf.ask" type="text" style="margin:0;" /></td>
+                      <td style="white-space:nowrap"><button class="btn btn-small" @click="saveNote(x)" :disabled="!!busy">{{ t('admin.common.save') }}</button> <button class="btn-flat btn-small" @click="editing = null">{{ t('admin.common.cancel') }}</button></td>
+                    </template>
+                    <template v-else>
+                      <td style="white-space:nowrap">{{ x.kind }}</td>
+                      <td>{{ x.note }}</td>
+                      <td style="color:var(--t2)">{{ x.aliases.join(', ') }}</td>
+                      <td style="color:var(--t2);font-style:italic;">{{ x.ask }}</td>
+                      <td style="white-space:nowrap"><button class="btn-flat btn-small" @click="editNote(x)">{{ t('admin.ai.btnEditNote') }}</button> <button class="btn-flat btn-small" @click="deleteNote(x)" :disabled="!!busy">✕</button></td>
+                    </template>
+                  </tr>
+                </tbody>
+              </table>
+              <p v-if="notes.length > noteRows.length" style="font-size:.8rem;color:var(--t3);margin-top:.4rem;">{{ t('admin.ai.notesShown', { shown: noteRows.length, total: notes.length }) }}</p>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-content">
+              <span class="card-title">{{ t('admin.ai.familiesTitle') }}</span>
+              <p style="margin-bottom:.75rem;">{{ t('admin.ai.familiesDesc') }}</p>
+              <div style="margin-bottom:1rem;padding:.75rem;border:1px solid var(--border);border-radius:6px;">
+                <a href="#" @click.prevent="showHow = !showHow" style="font-weight:600;">{{ showHow ? '▾' : '▸' }} {{ t('admin.ai.howTitle') }}</a>
+                <div v-if="showHow" style="margin-top:.5rem;font-size:.85rem;line-height:1.6;">
+                  <p><b>{{ t('admin.ai.howWhatTitle') }}</b> {{ t('admin.ai.howWhat') }}</p>
+                  <p style="margin-top:.4rem;"><b>{{ t('admin.ai.howNotTitle') }}</b> {{ t('admin.ai.howNot') }}</p>
+                  <p style="margin-top:.4rem;"><b>{{ t('admin.ai.howReadsTitle') }}</b> {{ t('admin.ai.howReads') }}</p>
+                  <p style="margin-top:.4rem;"><b>{{ t('admin.ai.howWantsTitle') }}</b> {{ t('admin.ai.howWants') }}</p>
+                  <div v-if="overview" style="margin-top:.75rem;">
+                    <p style="color:var(--t2);">{{ t('admin.ai.overviewLibrary', { songs: overview.library.songs.toLocaleString(), withGenre: overview.library.withGenre.toLocaleString(), genres: overview.library.genres, withoutGenre: overview.library.withoutGenre.toLocaleString(), withBpm: overview.library.withBpm.toLocaleString(), withKey: overview.library.withKey.toLocaleString(), folders: overview.library.folders, subfolders: overview.library.subfolders }) }}</p>
+                    <p style="color:var(--t2);margin-top:.3rem;">{{ t('admin.ai.overviewRules', { tag: overview.rules.tag, folder: overview.rules.folder }) }}</p>
+                    <table style="font-size:.8rem;margin-top:.5rem;">
+                      <thead><tr><th>{{ t('admin.ai.colFamily') }}</th><th style="text-align:right">{{ t('admin.ai.colSongs') }}</th><th>{{ t('admin.ai.colDecidedBy') }}</th><th>{{ t('admin.ai.colBiggestGenres') }}</th></tr></thead>
+                      <tbody>
+                        <tr v-for="f in overviewRows" :key="f.key">
+                          <td>{{ f.key === 'unknown' ? t('admin.ai.familyUnknown') : familyLabel(f.key) }}</td>
+                          <td style="text-align:right">{{ f.songs.toLocaleString() }}</td>
+                          <td style="color:var(--t2)">{{ f.key === 'unknown' ? t('admin.ai.decidedNone') : t('admin.ai.decidedBy', { tag: f.viaTag.toLocaleString(), folder: f.viaFolder.toLocaleString(), keyword: f.viaKeyword.toLocaleString() }) }}</td>
+                          <td style="color:var(--t2)">{{ f.genres.map(g => g.genre + ' ' + g.cnt.toLocaleString()).join(', ') || '—' }}</td>
+                        </tr>
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              </div>
+              <div style="display:flex;gap:.5rem;flex-wrap:wrap;align-items:center;margin-bottom:.75rem;padding:.6rem .75rem;border:1px solid var(--border);border-radius:6px;">
+                <b style="font-size:.85rem;">{{ t('admin.ai.profilesLabel') }}</b>
+                <select v-model.number="profile" @change="loadFamilies" style="margin:0;max-width:240px;">
+                  <option v-for="p in profiles" :key="p.id" :value="p.id">{{ p.name }}{{ p.active ? ' — ' + t('admin.ai.profileActive') : '' }} ({{ p.approved }}/{{ p.proposed }})</option>
+                </select>
+                <button class="btn btn-small" @click="activateProfile" :disabled="!!busy || isActiveProfile">{{ t('admin.ai.btnUseProfile') }}</button>
+                <button class="btn-flat btn-small" @click="renameProfile" :disabled="!!busy">{{ t('admin.ai.btnRenameProfile') }}</button>
+                <button class="btn-flat btn-small" @click="deleteProfile" :disabled="!!busy || isActiveProfile || profiles.length < 2">{{ t('admin.ai.btnDeleteProfile') }}</button>
+                <span style="flex:1"></span>
+                <input v-model="newProfileName" type="text" :placeholder="t('admin.ai.newProfilePlaceholder')" style="margin:0;max-width:200px;" />
+                <label style="display:flex;align-items:center;gap:.3rem;font-size:.85rem;"><input type="checkbox" v-model="copyCurrent" style="margin:0;width:auto;height:auto;" /> {{ t('admin.ai.copyCurrent') }}</label>
+                <button class="btn btn-small" @click="createProfile" :disabled="!!busy || !newProfileName.trim()">{{ t('admin.ai.btnNewProfile') }}</button>
+                <div style="flex-basis:100%;font-size:.8rem;color:var(--t2);">{{ t('admin.ai.profileHint') }}</div>
+              </div>
+              <div v-if="analysis && (analysis.running || analysis.finishedAt)" style="margin-bottom:.75rem;padding:.5rem .75rem;border-radius:6px;font-size:.85rem;" :style="analysis.error ? 'background:rgba(220,50,50,.12);' : 'background:rgba(40,167,69,.12);'">
+                <span v-if="analysis.running">{{ t('admin.ai.analysisRunning', { genres: analysis.genres, folders: analysis.folders }) }}</span>
+                <span v-else-if="analysis.error">{{ t('admin.ai.analysisError', { error: analysis.error }) }}</span>
+                <span v-else>{{ t('admin.ai.analysisDone', { genres: analysis.genres, folders: analysis.folders }) }}</span>
+              </div>
+              <div style="display:flex;gap:.5rem;flex-wrap:wrap;align-items:center;margin-bottom:.75rem;">
+                <button class="btn-flat btn-small" :class="{ 'gg-tab-on': tab==='genres' }" @click="tab='genres'">{{ t('admin.ai.tabGenres') }} ({{ genres.length }})</button>
+                <button class="btn-flat btn-small" :class="{ 'gg-tab-on': tab==='folders' }" @click="tab='folders'">{{ t('admin.ai.tabFolders') }} ({{ folders.length }})</button>
+                <span style="flex:1"></span>
+                <input v-model="filter" type="text" :placeholder="t('admin.ai.filterPlaceholder')" style="margin:0;max-width:220px;" />
+                <label style="display:flex;align-items:center;gap:.3rem;font-size:.85rem;"><input type="checkbox" v-model="onlyOpen" style="margin:0;width:auto;height:auto;" /> {{ t('admin.ai.onlyOpen') }}</label>
+              </div>
+              <div style="display:flex;gap:.5rem;flex-wrap:wrap;align-items:center;margin-bottom:.75rem;">
+                <button class="btn btn-small" @click="analyse" :disabled="!!busy || !enabled || (analysis && analysis.running)">{{ t('admin.ai.btnAnalyse') }}</button>
+                <button class="btn-flat btn-small" @click="propose" :disabled="!!busy || !enabled || (analysis && analysis.running)">{{ busy === 'propose' ? t('admin.ai.btnProposing') : t('admin.ai.btnPropose') }}</button>
+                <button class="btn btn-small" @click="approveAllProposed" :disabled="!!busy || !openProposals.length">{{ t('admin.ai.btnApproveAll', { count: openProposals.length }) }}</button>
+                <button class="btn-flat btn-small" @click="resetProposals" :disabled="!!busy">{{ t('admin.ai.btnClearProposals') }}</button>
+                <span style="color:var(--t2);font-size:.85rem;">{{ t('admin.ai.approvedCount', { count: approvedCount }) }}</span>
+              </div>
+              <p v-if="!enabled" style="font-size:.85rem;color:var(--t2);">{{ t('admin.ai.hintDisabled') }}</p>
+              <table class="striped" style="font-size:.85rem;">
+                <thead>
+                  <tr>
+                    <th>{{ tab === 'genres' ? t('admin.ai.colGenre') : t('admin.ai.colFolder') }}</th>
+                    <th style="text-align:right">{{ t('admin.ai.colFiles') }}</th>
+                    <th>{{ t('admin.ai.colEvidence') }}</th>
+                    <th>{{ t('admin.ai.colFamily') }}</th>
+                    <th>{{ t('admin.ai.colStatus') }}</th>
+                    <th></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-for="r in rows" :key="r.kind + r.key">
+                    <td>{{ r.name }}</td>
+                    <td style="text-align:right">{{ r.cnt }}</td>
+                    <td style="color:var(--t2)">{{ r.evidence }}</td>
+                    <td>
+                      <select v-model="r.pick" style="margin:0;min-width:130px;">
+                        <option value="">—</option>
+                        <option v-for="f in ruleFamilies" :key="f" :value="f">{{ familyLabel(f) }}</option>
+                      </select>
+                    </td>
+                    <td>
+                      <span v-if="r.status === 'approved'" style="color:var(--green)">{{ t('admin.ai.statusApproved') }}</span>
+                      <span v-else-if="r.status === 'proposed'" :title="r.note || ''">{{ t('admin.ai.statusProposed', { family: familyLabel(r.proposed), pct: Math.round((r.confidence || 0) * 100) }) }}</span>
+                      <span v-else style="color:var(--t3)">{{ t('admin.ai.statusNone') }}</span>
+                    </td>
+                    <td style="white-space:nowrap">
+                      <button class="btn btn-small" @click="approve(r)" :disabled="!!busy || !r.pick || (r.status === 'approved' && r.pick === r.family)">{{ t('admin.ai.btnApprove') }}</button>
+                      <button v-if="r.status === 'approved' && r.proposed" class="btn-flat btn-small" @click="undo(r)" :disabled="!!busy">{{ t('admin.ai.btnUndo') }}</button>
+                      <button v-if="r.status === 'approved'" class="btn-flat btn-small" @click="remove(r)" :disabled="!!busy">{{ t('admin.ai.btnRemove') }}</button>
+                    </td>
+                  </tr>
+                  <tr v-if="!rows.length"><td colspan="6" style="color:var(--t3)">{{ t('admin.ai.emptyList') }}</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>`,
+  async mounted() {
+    await this.loadConfig();
+    await this.loadFamilies();
+    await this.loadActivity();
+    await this.loadNotes();
+  },
+  methods: {
+    familyLabel(f) { return f ? this.t('admin.ai.family.' + f) : '—'; },
+    evidenceOf(r, kind) {
+      const tempo = kind === 'genre' ? (r.bpmN ? ` · ~${r.bpmAvg} BPM` : '') : (r.bpmN ? ` · ~${r.bpmMedian} BPM` : '');
+      if (kind === 'genre') return this.t('admin.ai.evidenceKeyword', { family: this.familyLabel(r.keyword) }) + tempo;
+      const artists = r.topArtists?.length ? ` · ${r.topArtists.join(', ')}` : '';
+      if (!r.tagged) return this.t('admin.ai.evidenceNoTags') + tempo + artists;
+      const parts = Object.entries(r.families || {}).sort((a, b) => b[1] - a[1]).slice(0, 3)
+        .map(([f, n]) => `${this.familyLabel(f)} ${Math.round(100 * n / r.tagged)}%`).join(', ');
+      return this.t('admin.ai.evidenceTags', { tagged: r.tagged, parts }) + tempo + artists;
+    },
+    shape(list, kind) {
+      return list.map(r => ({
+        ...r, kind,
+        name: kind === 'genre' ? r.genre : r.key,
+        cnt: kind === 'genre' ? r.cnt : r.n,
+        evidence: this.evidenceOf(r, kind),
+        pick: r.status === 'approved' ? r.family : (r.proposed || ''),
+      }));
+    },
+    taskLabel(task) {
+      return { 'queue-brief': this.t('admin.ai.taskBrief'), 'genre-families': this.t('admin.ai.taskGenres'), 'folder-families': this.t('admin.ai.taskFolders'), 'library-notes': this.t('admin.ai.taskNotes'), ping: this.t('admin.ai.taskPing') }[task] || task;
+    },
+    async loadNotes() {
+      try {
+        const res = await API.axios({ method: 'GET', url: `${API.url()}/api/v1/admin/ai/library-notes` });
+        this.notes = res.data.notes || [];
+        this.noteKinds = res.data.kinds || [];
+        this.notesAnalysis = res.data.analysis || null;
+        this.notesPlan = res.data.plan || null;
+        this.watchNotes();
+      } catch (e) { console.debug('[velvet]', e?.message ?? e); }
+    },
+    watchNotes() {
+      if (!this.notesAnalysis?.running || this._pollNotes) return;
+      this._pollNotes = setTimeout(async () => {
+        this._pollNotes = null;
+        await this.loadNotes();
+        await this.loadActivity();
+      }, 4000);
+    },
+    async analyseNotes(force) {
+      if (force && !confirm(this.t('admin.ai.notesReanalyseConfirm', { count: this.notesPlan ? this.notesPlan.folders : 0 }))) return;
+      this.busy = 'notes';
+      try {
+        await API.axios({ method: 'POST', url: `${API.url()}/api/v1/admin/ai/library-notes/analyse`, data: { force: !!force } });
+        await this.loadNotes();
+      } catch (e) {
+        const msg = e?.response?.data?.error || e?.message || '';
+        iziToast.error({ title: this.t('admin.ai.toastProposeFailed'), message: msg, position: 'topCenter', timeout: 6000 });
+      } finally { this.busy = ''; }
+    },
+    editNote(x) {
+      this.editing = x.key;
+      this.editBuf = { kind: x.kind, note: x.note, aliases: x.aliases.join(', '), ask: x.ask };
+    },
+    async saveNote(x) {
+      this.busy = 'note';
+      try {
+        const aliases = String(this.editBuf.aliases || '').split(',').map(s => s.trim()).filter(Boolean).slice(0, 6);
+        await API.axios({ method: 'POST', url: `${API.url()}/api/v1/admin/ai/library-notes/edit`, data: { key: x.key, kind: this.editBuf.kind, note: this.editBuf.note, aliases, ask: this.editBuf.ask } });
+        this.editing = null;
+        this.context = null;
+        await this.loadNotes();
+      } catch (e) {
+        iziToast.error({ title: this.t('admin.ai.toastProposeFailed'), message: e?.response?.data?.error || e?.message || '', position: 'topCenter', timeout: 6000 });
+      } finally { this.busy = ''; }
+    },
+    async deleteNote(x) {
+      this.busy = 'note';
+      try {
+        await API.axios({ method: 'POST', url: `${API.url()}/api/v1/admin/ai/library-notes/delete`, data: { key: x.key } });
+        this.context = null;
+        await this.loadNotes();
+      } catch (e) { console.debug('[velvet]', e?.message ?? e); } finally { this.busy = ''; }
+    },
+    async resetNotes() {
+      if (!confirm(this.t('admin.ai.notesResetConfirm'))) return;
+      this.busy = 'note';
+      try {
+        await API.axios({ method: 'POST', url: `${API.url()}/api/v1/admin/ai/library-notes/reset`, data: { keepEdited: true } });
+        this.context = null;
+        await this.loadNotes();
+      } catch (e) { console.debug('[velvet]', e?.message ?? e); } finally { this.busy = ''; }
+    },
+    async loadOverview() {
+      try {
+        const q = this.profile ? `?profile=${this.profile}` : '';
+        const res = await API.axios({ method: 'GET', url: `${API.url()}/api/v1/admin/ai/overview${q}` });
+        this.overview = res.data;
+      } catch (e) { console.debug('[velvet]', e?.message ?? e); }
+    },
+    async loadActivity() {
+      try {
+        const res = await API.axios({ method: 'GET', url: `${API.url()}/api/v1/admin/ai/activity` });
+        this.activity = res.data;
+      } catch (e) { console.debug('[velvet]', e?.message ?? e); }
+    },
+    async toggleContext(which) {
+      if (this.showContext === which) { this.showContext = ''; return; }
+      this.showContext = which;
+      if (!this.context) {
+        try {
+          const q = this.profile ? `?profile=${this.profile}` : '';
+          const res = await API.axios({ method: 'GET', url: `${API.url()}/api/v1/admin/ai/context${q}` });
+          this.context = res.data;
+        } catch (e) { console.debug('[velvet]', e?.message ?? e); }
+      }
+    },
+    async loadConfig() {
+      try {
+        const res = await API.axios({ method: 'GET', url: `${API.url()}/api/v1/admin/ai/config` });
+        this.enabled = !!res.data.enabled;
+        this.apiKey = res.data.apiKey || '';
+        this.model = res.data.model || 'claude-haiku-5-5';
+        this.monthlyBudgetUsd = res.data.monthlyBudgetUsd ?? 2;
+        this.queueBuilder = !!res.data.queueBuilder;
+        this.maxQueueSongs = res.data.maxQueueSongs ?? 500;
+        this.provider = res.data.provider === 'openai' ? 'openai' : 'anthropic';
+        this.localBaseUrl = res.data.localBaseUrl || '';
+        this.localModel = res.data.localModel || '';
+        this.localApiKey = res.data.localApiKey || '';
+        this.djNotes = res.data.djNotes || '';
+        if (this.provider === 'openai') this.advanced = true;
+        this.usage = res.data.usage || this.usage;
+        this.families = res.data.families || [];
+        this.estimate = res.data.estimate || null;
+      } catch (e) { console.debug('[velvet]', e?.message ?? e); }
+    },
+    async loadFamilies() {
+      try {
+        const q = this.profile ? `?profile=${this.profile}` : '';
+        const res = await API.axios({ method: 'GET', url: `${API.url()}/api/v1/admin/ai/genre-families${q}` });
+        this.ruleFamilies = res.data.ruleFamilies || [];
+        this.profiles = res.data.profiles || [];
+        this.profile = res.data.profile;
+        this.analysis = res.data.analysis || null;
+        this.genres = this.shape(res.data.genres || [], 'genre');
+        this.folders = this.shape(res.data.folders || [], 'folder');
+        this.usage = res.data.usage || this.usage;
+        this.context = null;
+        this.watchAnalysis();
+        this.loadOverview();
+      } catch (e) { console.debug('[velvet]', e?.message ?? e); }
+    },
+    // While a background analysis runs, refresh every few seconds so proposals appear as they land.
+    watchAnalysis() {
+      if (!this.analysis?.running || this._poll) return;
+      this._poll = setTimeout(async () => {
+        this._poll = null;
+        try {
+          const res = await API.axios({ method: 'GET', url: `${API.url()}/api/v1/admin/ai/analysis` });
+          this.analysis = res.data;
+        } catch (e) { console.debug('[velvet]', e?.message ?? e); }
+        await this.loadFamilies();
+        // the library notes follow the genre pass
+        if (!this.analysis?.running) await this.loadNotes();
+      }, 4000);
+    },
+    async testConnection() {
+      this.busy = 'test'; this.testResult = null;
+      try {
+        await this.saveConfig();
+        const res = await API.axios({ method: 'POST', url: `${API.url()}/api/v1/admin/ai/test`, data: {} });
+        this.testResult = res.data;
+        await this.loadActivity();
+      } catch (e) {
+        this.testResult = { ok: false, error: e?.response?.data?.error || e?.message || '' };
+      } finally { this.busy = ''; }
+    },
+    async analyse() {
+      this.busy = 'analyse';
+      try {
+        await API.axios({ method: 'POST', url: `${API.url()}/api/v1/admin/ai/genre-families/analyse`, data: { profile: this.profile } });
+        await this.loadFamilies();
+      } catch (e) {
+        const msg = e?.response?.data?.error || e?.message || '';
+        iziToast.error({ title: this.t('admin.ai.toastProposeFailed'), message: msg, position: 'topCenter', timeout: 6000 });
+      } finally { this.busy = ''; }
+    },
+    async profileCall(path, data, okKey) {
+      this.busy = 'profile';
+      try {
+        const res = await API.axios({ method: 'POST', url: `${API.url()}/api/v1/admin/ai/profiles${path}`, data });
+        if (okKey) iziToast.success({ title: this.t(okKey, { name: this.currentProfile?.name || '' }), position: 'topCenter', timeout: 3000 });
+        return res.data;
+      } catch (e) {
+        iziToast.error({ title: this.t('admin.ai.toastFailed'), message: e?.response?.data?.error || '', position: 'topCenter', timeout: 4000 });
+        return null;
+      } finally { this.busy = ''; }
+    },
+    async createProfile() {
+      const name = this.newProfileName.trim();
+      if (!name) return;
+      const d = await this.profileCall('', { name, copyFrom: this.copyCurrent ? this.profile : undefined });
+      if (!d) return;
+      this.newProfileName = '';
+      this.profile = d.id;
+      await this.loadFamilies();
+      iziToast.success({ title: this.t('admin.ai.toastProfileCreated', { name }), position: 'topCenter', timeout: 3000 });
+    },
+    async activateProfile() {
+      if (await this.profileCall('/activate', { id: this.profile })) {
+        await this.loadFamilies();
+        iziToast.success({ title: this.t('admin.ai.toastProfileActive', { name: this.currentProfile?.name || '' }), position: 'topCenter', timeout: 3000 });
+      }
+    },
+    async renameProfile() {
+      const name = prompt(this.t('admin.ai.btnRenameProfile'), this.currentProfile?.name || '');
+      if (!name || !name.trim()) return;
+      if (await this.profileCall('/rename', { id: this.profile, name: name.trim() })) await this.loadFamilies();
+    },
+    async deleteProfile() {
+      if (!confirm(this.t('admin.ai.confirmDeleteProfile', { name: this.currentProfile?.name || '' }))) return;
+      if (await this.profileCall('/delete', { id: this.profile })) { this.profile = null; await this.loadFamilies(); }
+    },
+    async saveConfig() {
+      this.pending = true;
+      try {
+        await API.axios({ method: 'POST', url: `${API.url()}/api/v1/admin/ai/config`,
+          data: { enabled: this.enabled, apiKey: this.apiKey.trim(), model: this.model, monthlyBudgetUsd: Number(this.monthlyBudgetUsd) || 0,
+            queueBuilder: this.queueBuilder, maxQueueSongs: Math.min(9999, Math.max(1, Math.round(Number(this.maxQueueSongs) || 500))),
+            provider: this.provider, localBaseUrl: this.localBaseUrl.trim(), localModel: this.localModel.trim(), localApiKey: this.localApiKey.trim(),
+            djNotes: this.djNotes, analyse: this.analyseOnSave } });
+        this.context = null;
+        this.analyseOnSave = false;
+        iziToast.success({ title: this.t('admin.ai.toastSaved'), position: 'topCenter', timeout: 3000 });
+        await this.loadConfig();
+        await this.loadFamilies();
+        await this.loadNotes();
+      } catch {
+        iziToast.error({ title: this.t('admin.ai.toastFailed'), position: 'topCenter', timeout: 3000 });
+      } finally { this.pending = false; }
+    },
+    async propose() {
+      this.busy = 'propose';
+      try {
+        const kind = this.tab === 'genres' ? 'genre' : 'folder';
+        const res = await API.axios({ method: 'POST', url: `${API.url()}/api/v1/admin/ai/genre-families/propose`, data: { kind, profile: this.profile } });
+        iziToast.success({ title: this.t('admin.ai.toastProposed', { count: res.data.proposed }), position: 'topCenter', timeout: 4000 });
+        await this.loadFamilies();
+        await this.loadActivity();
+      } catch (e) {
+        const msg = e?.response?.data?.error || e?.message || '';
+        iziToast.error({ title: this.t('admin.ai.toastProposeFailed'), message: msg, position: 'topCenter', timeout: 6000 });
+      } finally { this.busy = ''; }
+    },
+    async apply(items) {
+      this.busy = 'apply';
+      try {
+        await API.axios({ method: 'POST', url: `${API.url()}/api/v1/admin/ai/genre-families/apply`, data: { items, profile: this.profile } });
+        iziToast.success({ title: this.t('admin.ai.toastApplied', { count: items.length }), position: 'topCenter', timeout: 3000 });
+        await this.loadFamilies();
+      } catch {
+        iziToast.error({ title: this.t('admin.ai.toastFailed'), position: 'topCenter', timeout: 3000 });
+      } finally { this.busy = ''; }
+    },
+    approve(r) { return this.apply([{ kind: r.kind, key: r.key, family: r.pick, label: r.name }]); },
+    remove(r) { return this.apply([{ kind: r.kind, key: r.key, family: 'none' }]); },
+    undo(r) { return this.apply([{ kind: r.kind, key: r.key, family: 'undo' }]); },
+    approveAllProposed() {
+      return this.apply(this.openProposals.map(r => ({ kind: r.kind, key: r.key, family: r.proposed, label: r.name })));
+    },
+    async resetProposals() {
+      this.busy = 'reset';
+      try {
+        await API.axios({ method: 'POST', url: `${API.url()}/api/v1/admin/ai/genre-families/reset`, data: { kind: this.tab === 'genres' ? 'genre' : 'folder', profile: this.profile } });
+        await this.loadFamilies();
+      } catch {
+        iziToast.error({ title: this.t('admin.ai.toastFailed'), position: 'topCenter', timeout: 3000 });
+      } finally { this.busy = ''; }
+    },
+  }
+});
+
 const genreGroupsView = Vue.component('genre-groups-view', {
   data() {
     return {
@@ -11265,6 +11935,7 @@ const vm = new Vue({
     'album-art-workshop-view': albumArtWorkshopView,
     'shared-playlists-view': sharedPlaylistsView,
     'genre-groups-view': genreGroupsView,
+    'ai-assist-view': aiAssistView,
     'artists-admin-view': artistsAdminView,
     'languages-view': languagesView,
     'smart-playlist-view': smartPlaylistView,
@@ -11310,6 +11981,15 @@ function changeView(viewName, el){
   try {
     const res = await API.axios({ method: 'GET', url: `${API.url()}/api/v1/ping/public` });
     vm.openMode = res.data && res.data.hasUsers === false;
+  } catch (e) { console.debug('[velvet]', e?.message ?? e); }
+})();
+
+// AI-assist is a preview: its nav item only appears once aiAssist.enabled is
+// set in the config file, so nobody else sees a feature that is not ready.
+(async () => {
+  try {
+    const res = await API.axios({ method: 'GET', url: `${API.url()}/api/v1/admin/ai/config` });
+    if (res.data?.enabled) document.getElementById('nav-ai-assist').style.display = '';
   } catch (e) { console.debug('[velvet]', e?.message ?? e); }
 })();
 

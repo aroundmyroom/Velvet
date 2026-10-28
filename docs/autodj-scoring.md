@@ -58,7 +58,7 @@ harmonic (Camelot) mixing — is additive scoring only:
 |---|---|---|
 | Similar-artist (Last.fm) | 35% | Redistributed into BPM/genre/harmonic when Last.fm has no data for the current artist, or Similar Artists mode is off |
 | BPM continuity | 25% (up to ~46% when artist weight is redistributed) | Blended reference: 60% current-song BPM + 40% session base/anchor |
-| Genre | 13% (up to ~24%) | Blends the user's explicit whitelist/blacklist (soft, not a hard gate) with a genre-compatibility matrix |
+| Genre | 13% (up to ~24%) | Blends the user's explicit whitelist/blacklist (soft, not a hard gate) with a genre-compatibility matrix, scored against the current song and the session genre anchor |
 | Harmonic (Camelot) mixing | 7% (up to ~13%) | Uses the *currently playing* song's key directly — no separate locked "anchor" key to track |
 | Year/era continuity | 10% (fixed) | Blended reference: 60% current-song year + 40% rolling anchor |
 | Artist diversity (cooldown) | 10% (fixed) | Penalises artists played very recently |
@@ -116,6 +116,38 @@ lookup fails), the 35% similar-artist weight is redistributed proportionally
 into BPM/genre/harmonic instead of being wasted — those signals become the
 primary basis for the pick, matching the intent that when one "nice to have"
 signal has nothing to offer, the others should matter more, not less.
+
+That redistribution only happens at the start of a session. Mid-session, a
+miss keeps the **last list that worked**: when Donna Summer gave a list and the
+next pick is an obscure act Last.fm doesn't know, Auto-DJ keeps choosing from
+Donna Summer's similar artists until an artist with its own list comes along.
+The info strip says so ("staying close to Donna Summer"). Without this, one
+unknown artist dropped the similar-artist scope, the next pick came from
+anywhere in the library, and Auto-DJ rarely found its way back. A song the
+user starts by hand always starts fresh. (`_djNoSimilarFor()` in
+`webapp/app.js`.)
+
+## Genre families
+
+The genre score compares **families** — electronic, disco, soft, ambient,
+hard, other — through a compatibility matrix (electronic ↔ disco 0.7,
+disco ↔ hard 0.05, …). A song's family is `genreFamily` when the server
+attached one, else a keyword match on the tag (`_djGenreCat()`). The server
+attaches `genre-family` to Auto-DJ candidates only once an admin has approved
+genre-family rules in the AI-assist page (per tag, per folder) — see
+[ai-assist.md](ai-assist.md). Without rules the keyword match decides, as it
+always did.
+
+## Session genre anchor
+
+Genre continuity is scored against two references: the current song (60%) and
+the session's **genre anchor** (40%). The anchor is the genre family (disco,
+electronic, soft, ambient, hard, other) that dominates the manually started
+song (counted twice) and the last 8 Auto-DJ picks. When the current song has
+no genre tag, the anchor decides alone instead of every candidate getting the
+same neutral score. Like the BPM and year anchors, it stops one off-genre pick
+from becoming the new direction. (`_djGenreAnchor()` and
+`_djGenreContinuityScore()` in `webapp/app.js`.)
 
 ## Similar-artist name resolution (diacritic folding)
 

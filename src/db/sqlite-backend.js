@@ -766,6 +766,65 @@ export function init(dbDirectory) {
     song_ids   TEXT NOT NULL DEFAULT '[]'
   )`);
 
+  // ── Genre families (Auto-DJ) + AI-assist usage ───────────────────────────
+  // kind 'genre': key = canonical tag key (genre-merge toKey); kind 'folder':
+  // key = "vpath/dir[/subdir]". Only status 'approved' rows ever affect
+  // playback; 'proposed' rows wait for the admin.
+  db.exec(`CREATE TABLE IF NOT EXISTS genre_family_profiles (
+    id     INTEGER PRIMARY KEY AUTOINCREMENT,
+    name   TEXT NOT NULL,
+    active INTEGER NOT NULL DEFAULT 0,
+    ts     INTEGER
+  )`);
+  // Rules live per profile; a table from before profiles existed is carried over as profile 1.
+  const gfrCols = db.prepare('PRAGMA table_info(genre_family_rules)').all().map(c => c.name);
+  const gfrLegacy = gfrCols.length > 0 && !gfrCols.includes('profile');
+  if (gfrLegacy) db.exec('ALTER TABLE genre_family_rules RENAME TO genre_family_rules_v1');
+  db.exec(`CREATE TABLE IF NOT EXISTS genre_family_rules (
+    profile         INTEGER NOT NULL DEFAULT 1,
+    kind            TEXT NOT NULL,
+    key             TEXT NOT NULL,
+    label           TEXT,
+    family          TEXT,
+    status          TEXT NOT NULL DEFAULT 'proposed',
+    proposed_family TEXT,
+    confidence      REAL,
+    note            TEXT,
+    source          TEXT,
+    ts              INTEGER,
+    PRIMARY KEY (profile, kind, key)
+  )`);
+  if (gfrLegacy) {
+    db.exec(`INSERT INTO genre_family_rules (profile, kind, key, label, family, status, proposed_family, confidence, note, source, ts)
+      SELECT 1, kind, key, label, family, status, proposed_family, confidence, note, source, ts FROM genre_family_rules_v1`);
+    db.exec('DROP TABLE genre_family_rules_v1');
+  }
+  if (!db.prepare('SELECT COUNT(*) AS c FROM genre_family_profiles').get().c) {
+    db.prepare("INSERT INTO genre_family_profiles (id, name, active, ts) VALUES (1, 'Profile 1', 1, ?)").run(Date.now());
+  }
+  db.exec(`CREATE TABLE IF NOT EXISTS ai_usage (
+    month         TEXT PRIMARY KEY,
+    calls         INTEGER NOT NULL DEFAULT 0,
+    input_tokens  INTEGER NOT NULL DEFAULT 0,
+    output_tokens INTEGER NOT NULL DEFAULT 0,
+    usd           REAL NOT NULL DEFAULT 0
+  )`);
+  // What each folder is, written by the model after reading the library
+  // (util/ai-library-notes.js); 'edited' rows are the admin's and never overwritten.
+  db.exec(`CREATE TABLE IF NOT EXISTS ai_library_notes (
+    key     TEXT PRIMARY KEY,
+    vpath   TEXT NOT NULL,
+    folder  TEXT NOT NULL,
+    depth   INTEGER NOT NULL,
+    kind    TEXT NOT NULL DEFAULT 'other',
+    note    TEXT NOT NULL DEFAULT '',
+    aliases TEXT NOT NULL DEFAULT '[]',
+    ask     TEXT NOT NULL DEFAULT '',
+    n       INTEGER NOT NULL DEFAULT 0,
+    source  TEXT NOT NULL DEFAULT 'ai',
+    ts      INTEGER NOT NULL DEFAULT 0
+  )`);
+
   // ── Missing indexes (added post-initial-release) ──────────────────────────
   // Artist Home page: ORDER BY song_count DESC LIMIT 20 — was a full 18k-row
   // scan + temp B-TREE sort on every page load.
@@ -4012,6 +4071,426 @@ export function getGenreGroups() {
 export function saveGenreGroups(groups) {
   db.prepare('INSERT INTO genre_groups(id, groups) VALUES(1,?) ON CONFLICT(id) DO UPDATE SET groups=excluded.groups')
     .run(JSON.stringify(groups));
+}
+
+// ── Genre family rules (Auto-DJ) ──────────────────────────────────────────
+export function getGenreFamilyProfiles() {
+  return db.prepare(`
+    SELECT p.id, p.name, p.active, p.ts,
+      (SELECT COUNT(*) FROM genre_family_rules r WHERE r.profile = p.id AND r.status = 'approved') AS approved,
+      (SELECT COUNT(*) FROM genre_family_rules r WHERE r.profile = p.id AND r.status = 'proposed') AS proposed
+    FROM genre_family_profiles p ORDER BY p.id`).all();
+}
+
+export function activeGenreFamilyProfile() {
+  return db.prepare('SELECT id FROM genre_family_profiles WHERE active = 1 ORDER BY id LIMIT 1').get()?.id
+    ?? db.prepare('SELECT id FROM genre_family_profiles ORDER BY id LIMIT 1').get()?.id ?? 1;
+}
+
+export function createGenreFamilyProfile(name, copyFrom) {
+  db.exec('BEGIN');
+  try {
+    const id = Number(db.prepare('INSERT INTO genre_family_profiles (name, active, ts) VALUES (?, 0, ?)').run(name, Date.now()).lastInsertRowid);
+    if (copyFrom) {
+      db.prepare(`INSERT INTO genre_family_rules (profile, kind, key, label, family, status, proposed_family, confidence, note, source, ts)
+        SELECT ?, kind, key, label, family, status, proposed_family, confidence, note, source, ts FROM genre_family_rules WHERE profile = ?`).run(id, copyFrom);
+    }
+    db.exec('COMMIT');
+    return id;
+  } catch (e) {
+    db.exec('ROLLBACK');
+    throw e;
+  }
+}
+
+export function renameGenreFamilyProfile(id, name) {
+  return db.prepare('UPDATE genre_family_profiles SET name = ? WHERE id = ?').run(name, id).changes;
+}
+
+export function activateGenreFamilyProfile(id) {
+  db.exec('BEGIN');
+  try {
+    const found = db.prepare('UPDATE genre_family_profiles SET active = CASE WHEN id = ? THEN 1 ELSE 0 END').run(id).changes;
+    db.exec('COMMIT');
+    return found;
+  } catch (e) {
+    db.exec('ROLLBACK');
+    throw e;
+  }
+}
+
+export function deleteGenreFamilyProfile(id) {
+  db.exec('BEGIN');
+  try {
+    db.prepare('DELETE FROM genre_family_rules WHERE profile = ?').run(id);
+    const changes = db.prepare('DELETE FROM genre_family_profiles WHERE id = ? AND active = 0').run(id).changes;
+    db.exec('COMMIT');
+    return changes;
+  } catch (e) {
+    db.exec('ROLLBACK');
+    throw e;
+  }
+}
+
+export function getGenreFamilyRules(status, profile = activeGenreFamilyProfile()) {
+  if (status) return db.prepare('SELECT * FROM genre_family_rules WHERE profile = ? AND status = ? ORDER BY kind, key').all(profile, status);
+  return db.prepare('SELECT * FROM genre_family_rules WHERE profile = ? ORDER BY kind, key').all(profile);
+}
+
+// Proposals never touch an approved rule; re-proposing refreshes a proposal.
+export function proposeGenreFamilyRules(rows, profile = activeGenreFamilyProfile()) {
+  const stmt = db.prepare(`
+    INSERT INTO genre_family_rules (profile, kind, key, label, family, status, proposed_family, confidence, note, source, ts)
+    VALUES (?, ?, ?, ?, NULL, 'proposed', ?, ?, ?, ?, ?)
+    ON CONFLICT(profile, kind, key) DO UPDATE SET
+      label = excluded.label, proposed_family = excluded.proposed_family, confidence = excluded.confidence,
+      note = excluded.note, source = excluded.source, ts = excluded.ts
+    WHERE genre_family_rules.status != 'approved'`);
+  const now = Date.now();
+  let changes = 0;
+  db.exec('BEGIN');
+  try {
+    for (const r of rows) changes += stmt.run(profile, r.kind, r.key, r.label ?? null, r.family, r.confidence ?? null, r.note ?? null, r.source ?? null, now).changes;
+    db.exec('COMMIT');
+  } catch (e) {
+    db.exec('ROLLBACK');
+    throw e;
+  }
+  return changes;
+}
+
+// family: a family approves (the proposal, if any, is kept so it can be
+// undone), 'undo' puts an approved rule back to its proposal (or drops it when
+// there was none), 'none' removes the rule altogether.
+export function approveGenreFamilyRules(items, profile = activeGenreFamilyProfile()) {
+  const upsert = db.prepare(`
+    INSERT INTO genre_family_rules (profile, kind, key, label, family, status, source, ts)
+    VALUES (?, ?, ?, ?, ?, 'approved', 'admin', ?)
+    ON CONFLICT(profile, kind, key) DO UPDATE SET family = excluded.family, status = 'approved', label = COALESCE(excluded.label, label), ts = excluded.ts`);
+  const remove = db.prepare('DELETE FROM genre_family_rules WHERE profile = ? AND kind = ? AND key = ?');
+  const revert = db.prepare(`UPDATE genre_family_rules SET status = 'proposed', family = NULL, ts = ? WHERE profile = ? AND kind = ? AND key = ? AND proposed_family IS NOT NULL`);
+  const dropBare = db.prepare('DELETE FROM genre_family_rules WHERE profile = ? AND kind = ? AND key = ? AND proposed_family IS NULL');
+  const now = Date.now();
+  db.exec('BEGIN');
+  try {
+    for (const it of items) {
+      if (it.family === 'none') remove.run(profile, it.kind, it.key);
+      else if (it.family === 'undo') { revert.run(now, profile, it.kind, it.key); dropBare.run(profile, it.kind, it.key); }
+      else upsert.run(profile, it.kind, it.key, it.label ?? null, it.family, now);
+    }
+    db.exec('COMMIT');
+  } catch (e) {
+    db.exec('ROLLBACK');
+    throw e;
+  }
+}
+
+export function deleteGenreFamilyRules({ kind, status, profile = activeGenreFamilyProfile() } = {}) {
+  const where = ['profile = ?'];
+  const params = [profile];
+  if (kind) { where.push('kind = ?'); params.push(kind); }
+  if (status) { where.push('status = ?'); params.push(status); }
+  return db.prepare(`DELETE FROM genre_family_rules WHERE ${where.join(' AND ')}`).run(...params).changes;
+}
+
+// Every file's folder + tag, for folder statistics (admin action, not a hot path).
+export function getFolderGenreRows(vpaths) {
+  if (!vpaths?.length) return [];
+  const vIn = inClause('vpath', vpaths);
+  return db.prepare(`SELECT vpath, filepath, genre, bpm, artist, title FROM files WHERE ${vIn.sql}`).all(...vIn.params);
+}
+
+// Tempo per raw genre tag, for the model's genre proposals and the AI DJ's library summary.
+export function getGenreBpm(vpaths) {
+  if (!vpaths?.length) return [];
+  const vIn = inClause('vpath', vpaths);
+  return db.prepare(`SELECT genre, AVG(bpm) AS bpmAvg, COUNT(bpm) AS bpmN FROM files WHERE ${vIn.sql} AND genre IS NOT NULL AND genre != '' AND bpm IS NOT NULL GROUP BY genre`).all(...vIn.params);
+}
+
+// ── AI-assist usage (monthly budget) ───────────────────────────────────────
+export function getAiUsage(month) {
+  return db.prepare('SELECT * FROM ai_usage WHERE month = ?').get(month)
+    || { month, calls: 0, input_tokens: 0, output_tokens: 0, usd: 0 };
+}
+
+export function addAiUsage(month, { calls, inputTokens, outputTokens, usd }) {
+  db.prepare(`
+    INSERT INTO ai_usage (month, calls, input_tokens, output_tokens, usd) VALUES (?, ?, ?, ?, ?)
+    ON CONFLICT(month) DO UPDATE SET calls = calls + excluded.calls, input_tokens = input_tokens + excluded.input_tokens,
+      output_tokens = output_tokens + excluded.output_tokens, usd = usd + excluded.usd`)
+    .run(month, calls, inputTokens, outputTokens, usd);
+}
+
+// ── AI DJ (queue builder) ───────────────────────────────────────────────────
+// What the library looks like in numbers — the only library context the
+// model gets: counts, decades, tempo coverage, the biggest artists, genres and
+// top-level folders. No file names, no users, no play history.
+export function getLibraryProfile(vpaths, opts = {}) {
+  const filtered = vpathFilter(vpaths, opts.ignoreVPaths);
+  if (filtered.length === 0) return null;
+  const vIn = inClause('vpath', filtered);
+  const ep = excludePrefixClauses(opts.excludeFilepathPrefixes);
+  const ip = includePrefixClauses(opts.includeFilepathPrefixes);
+  const where = `WHERE ${vIn.sql}${ep.sql}${ip.sql}`;
+  const params = [...vIn.params, ...ep.params, ...ip.params];
+  const q = (sql, extra = []) => db.prepare(sql).all(...params, ...extra);
+  const totals = db.prepare(`
+    SELECT COUNT(*) AS total, COUNT(bpm) AS withBpm, COUNT(musical_key) AS withKey, COUNT(year) AS withYear,
+           SUM(CASE WHEN genre IS NOT NULL AND genre != '' THEN 1 ELSE 0 END) AS withGenre, AVG(duration) AS avgDuration
+    FROM files ${where}`).get(...params);
+  return {
+    ...totals,
+    avgDuration: totals.avgDuration || null,
+    decades: q(`SELECT (year / 10) * 10 AS decade, COUNT(*) AS cnt FROM files ${where} AND year BETWEEN 1900 AND 2100 GROUP BY decade ORDER BY decade`),
+    bpmBuckets: q(`SELECT (bpm / 10) * 10 AS bucket, COUNT(*) AS cnt FROM files ${where} AND bpm BETWEEN 60 AND 220 GROUP BY bucket ORDER BY bucket`),
+    artists: q(`SELECT artist, COUNT(*) AS cnt FROM files ${where} AND artist IS NOT NULL AND artist != '' GROUP BY artist ORDER BY cnt DESC LIMIT ?`, [opts.artistLimit ?? 400]),
+    folders: q(`SELECT vpath, substr(filepath, 1, instr(filepath, '/') - 1) AS folder, COUNT(*) AS cnt FROM files ${where} AND instr(filepath, '/') > 0 GROUP BY vpath, folder ORDER BY cnt DESC LIMIT ?`, [opts.folderLimit ?? 80]),
+    // second level: "Labels/Strictly Rhythm", "12 inches/12 Inch Classics on CD"
+    folders2: q(`SELECT vpath, substr(filepath, 1, instr(filepath, '/') - 1) || '/' || substr(substr(filepath, instr(filepath, '/') + 1), 1, instr(substr(filepath, instr(filepath, '/') + 1), '/') - 1) AS folder, COUNT(*) AS cnt
+      FROM files ${where} AND instr(filepath, '/') > 0 AND instr(substr(filepath, instr(filepath, '/') + 1), '/') > 0 GROUP BY vpath, folder ORDER BY cnt DESC LIMIT ?`, [opts.folder2Limit ?? 120]),
+    genreBpm: q(`SELECT genre, AVG(bpm) AS bpmAvg, COUNT(bpm) AS bpmN FROM files ${where} AND genre IS NOT NULL AND genre != '' AND bpm IS NOT NULL GROUP BY genre`),
+  };
+}
+
+// What the library holds for one phrase of a listener's request ("grandmix
+// 1983"): an exact FTS phrase over title, artist, album and file name, so the
+// AI DJ's brief is grounded in what exists before the model writes it.
+export function getPhraseHits(vpaths, opts = {}, phrase, limit = 300) {
+  const filtered = vpathFilter(vpaths, opts.ignoreVPaths);
+  if (filtered.length === 0 || !String(phrase || '').trim()) return { total: 0, rows: [] };
+  const vIn = inClause('f.vpath', filtered);
+  const ep = excludePrefixClauses(opts.excludeFilepathPrefixes, 'f.vpath', 'f.filepath');
+  const ip = includePrefixClauses(opts.includeFilepathPrefixes, 'f.vpath', 'f.filepath');
+  const where = `FROM fts_files ft JOIN files f ON f.rowid = ft.rowid WHERE ${vIn.sql}${ep.sql}${ip.sql} AND ft.fts_files MATCH ?`;
+  const params = [...vIn.params, ...ep.params, ...ip.params, `"${escapeFts(phrase)}"`];
+  const total = db.prepare(`SELECT COUNT(*) AS c ${where}`).get(...params).c;
+  const rows = total ? db.prepare(`SELECT f.vpath, f.filepath, f.title, f.artist, f.album ${where} LIMIT ?`).all(...params, limit) : [];
+  return { total, rows };
+}
+
+// Titles of the form "<name> <year>" ("Grandmix 1983", "Jaarmix 1991"): the
+// series a library holds, so a name + year is read as a title, not an era.
+export function getTitleYears(vpaths, opts = {}) {
+  const filtered = vpathFilter(vpaths, opts.ignoreVPaths);
+  if (filtered.length === 0) return [];
+  const vIn = inClause('vpath', filtered);
+  const ep = excludePrefixClauses(opts.excludeFilepathPrefixes);
+  const ip = includePrefixClauses(opts.includeFilepathPrefixes);
+  return db.prepare(`SELECT title, COUNT(*) AS cnt FROM files WHERE ${vIn.sql}${ep.sql}${ip.sql} AND title GLOB '*[12][09][0-9][0-9]*' GROUP BY title`).all(...vIn.params, ...ep.params, ...ip.params);
+}
+
+// ── Library notes (what each folder is) ────────────────────────────────────
+function mapNote(r) {
+  let aliases = [];
+  try { aliases = JSON.parse(r.aliases || '[]'); } catch { aliases = []; }
+  return { ...r, name: r.folder.split('/').pop(), aliases: Array.isArray(aliases) ? aliases : [] };
+}
+export function getLibraryNotes() {
+  return db.prepare('SELECT * FROM ai_library_notes ORDER BY depth, n DESC').all().map(mapNote);
+}
+// Model-written notes; a row the admin edited keeps the admin's text.
+export function putLibraryNotes(items) {
+  const stmt = db.prepare(`INSERT INTO ai_library_notes (key, vpath, folder, depth, kind, note, aliases, ask, n, source, ts)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'ai', ?)
+    ON CONFLICT(key) DO UPDATE SET kind = excluded.kind, note = excluded.note, aliases = excluded.aliases, ask = excluded.ask, n = excluded.n, ts = excluded.ts
+    WHERE ai_library_notes.source != 'edited'`);
+  const now = Date.now();
+  db.exec('BEGIN');
+  try {
+    for (const it of items) stmt.run(it.key, it.vpath, it.folder, it.depth, it.kind, it.note, JSON.stringify(it.aliases || []), it.ask || '', it.n || 0, now);
+    db.exec('COMMIT');
+  } catch (e) { db.exec('ROLLBACK'); throw e; }
+  return items.length;
+}
+export function editLibraryNote(key, { kind, note, aliases, ask }) {
+  return db.prepare("UPDATE ai_library_notes SET kind = ?, note = ?, aliases = ?, ask = ?, source = 'edited', ts = ? WHERE key = ?")
+    .run(kind, note, JSON.stringify(aliases || []), ask || '', Date.now(), key).changes > 0;
+}
+export function deleteLibraryNote(key) {
+  return db.prepare('DELETE FROM ai_library_notes WHERE key = ?').run(key).changes > 0;
+}
+export function clearLibraryNotes({ keepEdited = true } = {}) {
+  return db.prepare(keepEdited ? "DELETE FROM ai_library_notes WHERE source != 'edited'" : 'DELETE FROM ai_library_notes').run().changes;
+}
+// What the digest is built from: every file with what its tags say about it.
+export function getFolderDigestRows(vpaths, opts = {}) {
+  const filtered = vpathFilter(vpaths, opts.ignoreVPaths);
+  if (filtered.length === 0) return [];
+  const vIn = inClause('vpath', filtered);
+  return db.prepare(`SELECT vpath, filepath, artist, album, genre, year, duration FROM files WHERE ${vIn.sql} AND instr(filepath, '/') > 0`).all(...vIn.params);
+}
+
+// Every path in scope, for chart detection (util/ai-charts.js): which folders
+// hold numbered lists.
+export function getFilePaths(vpaths, opts = {}) {
+  const filtered = vpathFilter(vpaths, opts.ignoreVPaths);
+  if (filtered.length === 0) return [];
+  const vIn = inClause('vpath', filtered);
+  const ep = excludePrefixClauses(opts.excludeFilepathPrefixes);
+  const ip = includePrefixClauses(opts.includeFilepathPrefixes);
+  return db.prepare(`SELECT vpath, filepath FROM files WHERE ${vIn.sql}${ep.sql}${ip.sql} AND instr(filepath, '/') > 0`).all(...vIn.params, ...ep.params, ...ip.params);
+}
+
+// Candidate pool for one AI DJ build. Every filter is a hard scope filter the
+// brief asked for; taste, order and spacing are decided afterwards in
+// util/ai-queue.js. Random order with a LIMIT keeps one build bounded however
+// loose the brief is.
+export function getQueueCandidates(vpaths, username, opts = {}) {
+  const filtered = vpathFilter(vpaths, opts.ignoreVPaths);
+  if (filtered.length === 0) return [];
+  const vIn = inClause('f.vpath', filtered);
+  const ep = excludePrefixClauses(opts.excludeFilepathPrefixes, 'f.vpath', 'f.filepath');
+  const ip = includePrefixClauses(opts.includeFilepathPrefixes, 'f.vpath', 'f.filepath');
+  const pf = prefixClause(opts.filepathPrefix, 'f.filepath');
+  let sql = `
+    SELECT f.rowid AS id, f.*, um.rating, um.pc, um.lp, um.pc AS playCount, um.lp AS lastPlayed
+    FROM files f
+    LEFT JOIN user_metadata um ON f.hash = um.hash AND um.user = ?
+    WHERE ${vIn.sql}${ep.sql}${ip.sql}${pf.sql}`;
+  const params = [username, ...vIn.params, ...ep.params, ...ip.params, ...pf.params];
+
+  const minRating = Number(opts.minRating);
+  if (minRating >= 1 && minRating <= 10) { sql += ' AND um.rating >= ?'; params.push(minRating); }
+  if (opts.yearFrom != null || opts.yearTo != null) {
+    const range = [];
+    if (opts.yearFrom != null) { range.push('f.year >= ?'); }
+    if (opts.yearTo != null) { range.push('f.year <= ?'); }
+    sql += opts.allowUnknownYear ? ` AND (f.year IS NULL OR (${range.join(' AND ')}))` : ` AND (${range.join(' AND ')})`;
+    if (opts.yearFrom != null) params.push(Number(opts.yearFrom));
+    if (opts.yearTo != null) params.push(Number(opts.yearTo));
+  }
+  if (opts.bpmFrom != null || opts.bpmTo != null) {
+    const range = [];
+    if (opts.bpmFrom != null) { range.push('f.bpm >= ?'); }
+    if (opts.bpmTo != null) { range.push('f.bpm <= ?'); }
+    sql += ` AND (f.bpm IS NULL OR (${range.join(' AND ')}))`;
+    if (opts.bpmFrom != null) params.push(Number(opts.bpmFrom));
+    if (opts.bpmTo != null) params.push(Number(opts.bpmTo));
+  }
+  if (opts.untaggedOnly) {
+    sql += ` AND (f.genre IS NULL OR f.genre = '')`;
+  } else if (Array.isArray(opts.genreRawStrings) && opts.genreRawStrings.length > 0) {
+    sql += ` AND f.genre IN (${opts.genreRawStrings.map(() => '?').join(',')})`;
+    params.push(...opts.genreRawStrings);
+  }
+  if (Array.isArray(opts.excludeGenreRawStrings) && opts.excludeGenreRawStrings.length > 0) {
+    sql += ` AND (f.genre IS NULL OR f.genre NOT IN (${opts.excludeGenreRawStrings.map(() => '?').join(',')}))`;
+    params.push(...opts.excludeGenreRawStrings);
+  }
+  if (Array.isArray(opts.artists) && opts.artists.length > 0) {
+    const aIn = inClause('f.artist', opts.artists);
+    sql += ` AND ${aIn.sql}`;
+    params.push(...aIn.params);
+  }
+  if (Array.isArray(opts.ignoreArtists) && opts.ignoreArtists.length > 0) {
+    sql += ` AND REPLACE(LOWER(COALESCE(f.artist, '')), '.', '') NOT IN (${opts.ignoreArtists.map(() => '?').join(',')})`;
+    params.push(...opts.ignoreArtists.map(a => String(a).toLowerCase().replaceAll('.', '')));
+  }
+  if (Array.isArray(opts.folderPrefixes) && opts.folderPrefixes.length > 0) {
+    sql += ' AND (' + opts.folderPrefixes.map(() => String.raw`(f.vpath = ? AND f.filepath LIKE ? ESCAPE '\')`).join(' OR ') + ')';
+    for (const { vpath, prefix } of opts.folderPrefixes) params.push(vpath, prefix.replaceAll(/[%_\\]/g, String.raw`\$&`) + '%');
+  }
+  const like = v => '%' + String(v).replaceAll(/[%_\\]/g, String.raw`\$&`) + '%';
+  // song titles the listener named: any of them, in the title
+  if (Array.isArray(opts.titles) && opts.titles.length > 0) {
+    sql += ' AND (' + opts.titles.map(() => String.raw`f.title LIKE ? ESCAPE '\'`).join(' OR ') + ')';
+    params.push(...opts.titles.map(like));
+  }
+  // version words the listener insists on (12 inch, instrumental, …): title or file name
+  if (Array.isArray(opts.patterns) && opts.patterns.length > 0) {
+    sql += ' AND (' + opts.patterns.map(() => String.raw`(f.title LIKE ? ESCAPE '\' OR f.filepath LIKE ? ESCAPE '\')`).join(' OR ') + ')';
+    for (const p of opts.patterns) params.push(like(p), like(p));
+  }
+  if (Number(opts.minSeconds) > 0) { sql += ' AND f.duration >= ?'; params.push(Number(opts.minSeconds)); }
+  if (Number(opts.maxSeconds) > 0) { sql += ' AND f.duration <= ?'; params.push(Number(opts.maxSeconds)); }
+  // the listener's own marks and history — the same columns the Starred,
+  // Unplayed Gems, Recently Added and smart-playlist views use
+  if (opts.starred) sql += ' AND um.starred = 1';
+  if (opts.played === 'never') sql += ' AND COALESCE(um.pc, 0) = 0';
+  if (opts.played === 'played') sql += ' AND um.pc > 0';
+  if (Number(opts.minPlays) > 0) { sql += ' AND COALESCE(um.pc, 0) >= ?'; params.push(Number(opts.minPlays)); }
+  if (opts.maxPlays != null && Number(opts.maxPlays) >= 0) { sql += ' AND COALESCE(um.pc, 0) <= ?'; params.push(Number(opts.maxPlays)); }
+  if (opts.rated === 'rated') sql += ' AND um.rating > 0';
+  if (opts.rated === 'unrated') sql += ' AND (um.rating IS NULL OR um.rating = 0)';
+  const now = Date.now();
+  if (Number(opts.addedWithinDays) > 0) { sql += ' AND f.ts >= ?'; params.push(Math.floor(now / 1000) - Number(opts.addedWithinDays) * 86400); }
+  if (Number(opts.playedWithinDays) > 0) { sql += ' AND um.lp >= ?'; params.push(now - Number(opts.playedWithinDays) * 86400000); }
+  if (Number(opts.notPlayedWithinDays) > 0) { sql += ' AND (um.lp IS NULL OR um.lp < ?)'; params.push(now - Number(opts.notPlayedWithinDays) * 86400000); }
+  if (opts.lossless === true) sql += " AND lower(f.format) IN ('flac','wav','aiff','aif','alac','ape','wv','dsf')";
+  if (opts.lossless === false) sql += " AND lower(f.format) NOT IN ('flac','wav','aiff','aif','alac','ape','wv','dsf')";
+  if (opts.hiRes) sql += " AND (f.bit_depth >= 24 OR f.sample_rate > 48000 OR lower(COALESCE(f.album_version, '')) LIKE '%hi-res%' OR lower(COALESCE(f.album_version, '')) LIKE '%24bit%')";
+  if (Array.isArray(opts.excludePatterns) && opts.excludePatterns.length > 0) {
+    sql += ' AND NOT (' + opts.excludePatterns.map(() => String.raw`(f.title LIKE ? ESCAPE '\' OR f.filepath LIKE ? ESCAPE '\')`).join(' OR ') + ')';
+    for (const p of opts.excludePatterns) params.push(like(p), like(p));
+  }
+  // songs of the listener's playlists, by full path
+  if (Array.isArray(opts.filepaths) && opts.filepaths.length > 0) {
+    sql += " AND (f.vpath || '/' || f.filepath) IN (SELECT value FROM json_each(?))";
+    params.push(JSON.stringify(opts.filepaths.slice(0, 5000)));
+  }
+  sql = _appendMusicalKeyFilter(sql, params, opts);
+  // A ranking ("the most played", "recently added") is a fact, not a taste: the
+  // same ORDER BY the Most Played / Recently Added views use, no sampling.
+  const order = {
+    mostPlayed: ['AND um.pc > 0', 'ORDER BY um.pc DESC, um.lp DESC'],
+    leastPlayed: ['', 'ORDER BY COALESCE(um.pc, 0) ASC, f.ts ASC'],
+    topRated: ['AND um.rating > 0', 'ORDER BY um.rating DESC, COALESCE(um.pc, 0) DESC'],
+    recentlyAdded: ['', 'ORDER BY f.ts DESC'],
+    recentlyPlayed: ['AND um.lp IS NOT NULL', 'ORDER BY um.lp DESC'],
+  }[opts.orderBy];
+  sql += order ? ` ${order[0]} ${order[1]} LIMIT ?` : ' ORDER BY RANDOM() LIMIT ?';
+  params.push(Math.max(1, Math.min(20000, Number(opts.limit) || 5000)));
+  return db.prepare(sql).all(...params).map(mapFileRow);
+}
+
+// Albums for the AI DJ's "play one album" path: one row per album (album_id,
+// or folder + album title when a file has none), with its size, years and
+// whether track numbers exist to play it in order.
+const ALBUM_KEY = "COALESCE(f.album_id, f.vpath || '|' || rtrim(f.filepath, replace(f.filepath, '/', '')) || '|' || COALESCE(f.album, ''))";
+function albumScopeSql(vpaths, username, opts) {
+  const filtered = vpathFilter(vpaths, opts.ignoreVPaths);
+  if (filtered.length === 0) return null;
+  const vIn = inClause('f.vpath', filtered);
+  const ep = excludePrefixClauses(opts.excludeFilepathPrefixes, 'f.vpath', 'f.filepath');
+  const ip = includePrefixClauses(opts.includeFilepathPrefixes, 'f.vpath', 'f.filepath');
+  const pf = prefixClause(opts.filepathPrefix, 'f.filepath');
+  return { sql: `FROM files f LEFT JOIN user_metadata um ON f.hash = um.hash AND um.user = ? WHERE ${vIn.sql}${ep.sql}${ip.sql}${pf.sql}`, params: [username, ...vIn.params, ...ep.params, ...ip.params, ...pf.params] };
+}
+
+export function getAlbumCandidates(vpaths, username, opts = {}) {
+  const scope = albumScopeSql(vpaths, username, opts);
+  if (!scope) return [];
+  let sql = `
+    SELECT ${ALBUM_KEY} AS key, f.vpath, rtrim(f.filepath, replace(f.filepath, '/', '')) AS dir, f.album,
+      MIN(COALESCE(f.album_artist, f.artist)) AS albumArtist, COUNT(DISTINCT COALESCE(f.album_artist, f.artist)) AS artistCount,
+      COUNT(*) AS n, MIN(f.year) AS yearMin, MAX(f.year) AS yearMax, GROUP_CONCAT(f.year) AS years, COUNT(f.track) AS withTrack, SUM(COALESCE(f.duration, 0)) AS seconds,
+      SUM(CASE WHEN f.genre IN (SELECT value FROM json_each(?)) THEN 1 ELSE 0 END) AS genreHits
+    ${scope.sql} AND f.album IS NOT NULL AND f.album != ''`;
+  const params = [JSON.stringify(opts.genreRawStrings || []), ...scope.params];
+  if (Array.isArray(opts.artists) && opts.artists.length > 0) {
+    const ph = opts.artists.map(() => '?').join(',');
+    sql += ` AND (f.artist IN (${ph}) OR f.album_artist IN (${ph}))`;
+    params.push(...opts.artists, ...opts.artists);
+  }
+  if (Array.isArray(opts.genreRawStrings) && opts.genreRawStrings.length > 0 && opts.requireGenre) {
+    sql += ` AND f.genre IN (${opts.genreRawStrings.map(() => '?').join(',')})`;
+    params.push(...opts.genreRawStrings);
+  }
+  sql += ' GROUP BY key ORDER BY n DESC LIMIT ?';
+  params.push(Math.max(1, Math.min(5000, Number(opts.limit) || 2000)));
+  return db.prepare(sql).all(...params);
+}
+
+// Every artist name once, for alias and acronym matching (FGTH → Frankie Goes To Hollywood).
+export function getArtistNames() {
+  return db.prepare('SELECT artist_clean AS name, artist_raw_variants AS variants FROM artists_normalized').all()
+    .map(r => { try { return { name: r.name, variants: JSON.parse(r.variants || '[]') }; } catch { return { name: r.name, variants: [r.name] }; } });
+}
+
+export function getAlbumTracks(vpaths, username, key, opts = {}) {
+  const scope = albumScopeSql(vpaths, username, opts);
+  if (!scope) return [];
+  return db.prepare(`SELECT f.rowid AS id, f.*, um.rating, um.pc ${scope.sql} AND ${ALBUM_KEY} = ? ORDER BY f.disk, f.track, f.filepath`).all(...scope.params, key).map(mapFileRow);
 }
 
 // ── Wrapped / Play Events ─────────────────────────────────────────────────

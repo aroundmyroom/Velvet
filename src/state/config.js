@@ -62,6 +62,23 @@ const listenBrainzOptions = Joi.object({
   enabled: Joi.boolean().default(false),
 });
 
+const aiAssistOptions = Joi.object({
+  enabled:          Joi.boolean().default(false),
+  apiKey:           Joi.string().allow('').default(''),
+  model:            Joi.string().default('claude-haiku-5-5'),
+  monthlyBudgetUsd: Joi.number().min(0).default(2),
+  queueBuilder:     Joi.boolean().default(false),
+  maxQueueSongs:    Joi.number().integer().min(1).max(9999).default(500),
+  // 'anthropic' (Claude) or 'openai': any server with an OpenAI-compatible
+  // chat-completions API — Ollama, LM Studio, llama.cpp, vLLM, LocalAI, Jan.
+  provider:         Joi.string().valid('anthropic', 'openai').default('anthropic'),
+  localBaseUrl:     Joi.string().allow('').default(''),
+  localModel:       Joi.string().allow('').default(''),
+  localApiKey:      Joi.string().allow('').default(''),
+  // The library owner's own notes for the DJ brief: aliases, house meanings, taste.
+  djNotes:          Joi.string().allow('').max(4000).default(''),
+});
+
 const discordWebhookOptions = Joi.object({
   enabled: Joi.boolean().default(false),
   url:     Joi.string().uri().allow('').default(''),
@@ -148,6 +165,7 @@ const schema = Joi.object({
   }),
   lastFM: lastFMOptions.default(lastFMOptions.validate({}).value),
   listenBrainz: listenBrainzOptions.default(listenBrainzOptions.validate({}).value),
+  aiAssist: aiAssistOptions.default(aiAssistOptions.validate({}).value),
   discordWebhook: discordWebhookOptions.default(discordWebhookOptions.validate({}).value),
   discogs: discogsOptions.default(discogsOptions.validate({}).value),
   scanOptions: scanOptions.default(scanOptions.validate({}).value),
@@ -187,6 +205,7 @@ const schema = Joi.object({
       'allow-radio-recording': Joi.boolean().optional(),
       'allow-youtube-download': Joi.boolean().optional(),
       'allow-upload': Joi.boolean().optional(),
+      'allow-ai-dj': Joi.boolean().optional(),
     })
   ).default({}),
   ssl: Joi.object({

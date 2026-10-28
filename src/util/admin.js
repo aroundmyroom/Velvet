@@ -422,6 +422,15 @@ export async function editAllowYoutubeDownload(username, val) {
   config.program.users[username]['allow-youtube-download'] = val;
 }
 
+export async function editAllowAiDj(username, val) {
+  const loadConfig = await loadFile(config.configFile);
+  if (!loadConfig.users?.[username]) { throw new WebError(`User '${username}' not found`, 404); }
+  loadConfig.users[username]['allow-ai-dj'] = val;
+  await saveFile(loadConfig, config.configFile);
+
+  config.program.users[username]['allow-ai-dj'] = val;
+}
+
 export async function editAllowUpload(username, val) {
   const loadConfig = await loadFile(config.configFile);
   if (!loadConfig.users?.[username]) { throw new WebError(`User '${username}' not found`, 404); }

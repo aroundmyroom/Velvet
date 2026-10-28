@@ -279,6 +279,34 @@ export function deleteSmartPlaylist(id, username) { return backend.deleteSmartPl
 // Genre Groups
 export function getGenreGroups() { return backend.getGenreGroups(); }
 export function saveGenreGroups(groups) { return backend.saveGenreGroups(groups); }
+export function getGenreFamilyRules(status, profile) { return backend.getGenreFamilyRules(status, profile); }
+export function proposeGenreFamilyRules(rows, profile) { return backend.proposeGenreFamilyRules(rows, profile); }
+export function approveGenreFamilyRules(items, profile) { return backend.approveGenreFamilyRules(items, profile); }
+export function deleteGenreFamilyRules(opts) { return backend.deleteGenreFamilyRules(opts); }
+export function getGenreFamilyProfiles() { return backend.getGenreFamilyProfiles(); }
+export function activeGenreFamilyProfile() { return backend.activeGenreFamilyProfile(); }
+export function createGenreFamilyProfile(name, copyFrom) { return backend.createGenreFamilyProfile(name, copyFrom); }
+export function renameGenreFamilyProfile(id, name) { return backend.renameGenreFamilyProfile(id, name); }
+export function activateGenreFamilyProfile(id) { return backend.activateGenreFamilyProfile(id); }
+export function deleteGenreFamilyProfile(id) { return backend.deleteGenreFamilyProfile(id); }
+export function getFolderGenreRows(vpaths) { return backend.getFolderGenreRows(vpaths); }
+export function getGenreBpm(vpaths) { return backend.getGenreBpm(vpaths); }
+export function getAiUsage(month) { return backend.getAiUsage(month); }
+export function addAiUsage(month, usage) { return backend.addAiUsage(month, usage); }
+export function getLibraryProfile(vpaths, opts) { return backend.getLibraryProfile(vpaths, opts); }
+export function getQueueCandidates(vpaths, username, opts) { return backend.getQueueCandidates(vpaths, username, opts); }
+export function getFilePaths(vpaths, opts) { return backend.getFilePaths(vpaths, opts); }
+export function getPhraseHits(vpaths, opts, phrase, limit) { return backend.getPhraseHits(vpaths, opts, phrase, limit); }
+export function getLibraryNotes() { return backend.getLibraryNotes(); }
+export function putLibraryNotes(items) { return backend.putLibraryNotes(items); }
+export function editLibraryNote(key, fields) { return backend.editLibraryNote(key, fields); }
+export function deleteLibraryNote(key) { return backend.deleteLibraryNote(key); }
+export function clearLibraryNotes(opts) { return backend.clearLibraryNotes(opts); }
+export function getFolderDigestRows(vpaths, opts) { return backend.getFolderDigestRows(vpaths, opts); }
+export function getTitleYears(vpaths, opts) { return backend.getTitleYears(vpaths, opts); }
+export function getAlbumCandidates(vpaths, username, opts) { return backend.getAlbumCandidates(vpaths, username, opts); }
+export function getAlbumTracks(vpaths, username, key, opts) { return backend.getAlbumTracks(vpaths, username, key, opts); }
+export function getArtistNames() { return backend.getArtistNames(); }
 // Wrapped / Play Events
 export function insertPlayEvent(e) { return backend.insertPlayEvent(e); }
 export function recordPlaybackStart(e) { return backend.recordPlaybackStart(e); }

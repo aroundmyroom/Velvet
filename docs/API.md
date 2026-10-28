@@ -1141,6 +1141,50 @@ All endpoints require admin token. The Genre Enricher worker queries Last.fm, Mu
 
 ---
 
+## AI-assist — Admin *(Velvet)*
+
+> See [docs/ai-assist.md](ai-assist.md) (admin) and [docs/ai-dj.md](ai-dj.md) (listeners).
+
+Admin token required. Everything except the config endpoints answers `404` until `aiAssist.enabled` is set in the config file. Claude proposes a genre family per tag and per library folder; only approved rules reach Auto-DJ (`genre-family` on `random-songs` candidates).
+
+| Method | Endpoint | Body / Query | Description |
+|---|---|---|---|
+| `GET`  | `/api/v1/admin/ai/config` | — | `{ enabled, apiKey, model, monthlyBudgetUsd, queueBuilder, maxQueueSongs, provider, localBaseUrl, localModel, localApiKey, djNotes, usage: { month, calls, usd }, families, estimate }`. `estimate` is what one full pass over the library would cost before anything is sent: `{ songs, items: { genres, folders, notes, notesAll }, model, provider, usd: { genres, folders, notes, total, brief }, perThousandSongs, models: { <model>: total } }` — `brief` is the cost of one AI DJ request. Token counts per item were measured on a 141,000-song library (4 cents for 523 rules, 9 cents for 662 folder notes on Haiku). |
+| `POST` | `/api/v1/admin/ai/config` | `{ enabled, apiKey, model, monthlyBudgetUsd, queueBuilder?, maxQueueSongs?, provider?, localBaseUrl?, localModel?, localApiKey?, djNotes?, analyse? }` | Save settings (config file + live). `queueBuilder` shows the AI DJ page to listeners; `maxQueueSongs` (1–9999, default 500) caps one AI-built set. `provider` is `anthropic` (default) or `openai` for a self-hosted server with an OpenAI-compatible API at `localBaseUrl` (…`/v1`) serving `localModel`. Nothing is sent to the model on save unless `analyse: true`, which starts the full pass (genre and folder proposals, then the folder notes) in the background; the answer says `{ analysing, estimate }`. |
+| `POST` | `/api/v1/admin/ai/test` | — | One tiny structured request to the configured provider. `{ ok, model, ms, provider }`, or `409 { ok: false, error, code }` (`nokey`, `local`, `budget`, `disabled`). |
+| `GET`  | `/api/v1/admin/ai/genre-families` | `?profile=` (default: active) | Merged genres and library folders (two levels deep) with file counts, tag statistics, and the rule per row (`status`: `none`/`proposed`/`approved`, `family`, `proposed`, `confidence`, `note`), plus `profile`, `profiles` and the `analysis` state. |
+| `GET`  | `/api/v1/admin/ai/activity` | — | `{ endpoint: { provider, model, endpoint, auth, billing }, usage, calls: [{ ts, task, provider, model, systemChars, promptChars, preview, ms, ok, inputTokens, outputTokens, cacheRead, usd, error? }], analysis }` — the last 60 calls since start. |
+| `GET`  | `/api/v1/admin/ai/context` | `?profile=` | The exact texts each task sends: `{ genres: { system, sample, lines, batch }, folders: { system, sample, lines, fromStats }, aidj: { system, library, notes, notesIncluded, notesTotal, chars }, notes: { system, sample, lines } }`. |
+| `GET`  | `/api/v1/admin/ai/overview` | `?profile=` | The library as that profile's rules see it: `{ library: { songs, withGenre, withoutGenre, genres, withBpm, withKey, folders, subfolders }, rules: { tag, folder }, families: { <family|unknown>: { songs, viaTag, viaFolder, viaKeyword, genres: [{ genre, cnt }] } } }`. |
+| `GET`  | `/api/v1/admin/ai/analysis` | — | `{ running, profile, startedAt, finishedAt, error, genres, folders, notes: { running, startedAt, finishedAt, error, folders, todo, done, usd } }` — the background pass started by a saved key or `…/analyse`; the library notes follow the genre pass. |
+| `GET`  | `/api/v1/admin/ai/library-notes` | — | What the model wrote about each folder after reading the library: `{ notes: [{ key, vpath, folder, name, depth, kind, note, aliases, ask, n, source: 'ai'\|'edited', ts }], kinds, analysis, plan: { folders, todo, noted, estimateUsd, batches } }`. `plan.todo` counts folders without a note or whose size changed by a fifth; `estimateUsd` is the cost at the configured model. |
+| `POST` | `/api/v1/admin/ai/library-notes/analyse` | `{ force? }` | Describe the `todo` folders in the background (`force` describes every folder again; edited notes are kept). `{ started, analysis }`; `409 nokey` without a key. |
+| `POST` | `/api/v1/admin/ai/library-notes/edit` | `{ key, kind, note, aliases, ask }` | The admin's own text for a folder; marked `edited`, never overwritten by a later pass. |
+| `POST` | `/api/v1/admin/ai/library-notes/delete` | `{ key }` | Remove one note (a later pass writes it again). |
+| `POST` | `/api/v1/admin/ai/library-notes/reset` | `{ keepEdited? }` | Remove the model's notes (default keeps edited ones). `{ removed }`. |
+| `POST` | `/api/v1/admin/ai/genre-families/analyse` | `{ profile? }` | Propose genres and folders in one background pass. `{ started, analysis }`; `started: false` while one is running; `409 nokey` without a key. |
+| `POST` | `/api/v1/admin/ai/genre-families/propose` | `{ kind: 'genre'\|'folder', profile? }` | Ask Claude for proposals (folders whose tags already agree are proposed from statistics). `409` with `code: 'budget'\|'nokey'\|'disabled'` when it cannot ask. Returns `{ proposed, usage }`. |
+| `POST` | `/api/v1/admin/ai/genre-families/apply` | `{ items: [{ kind, key, family, label? }], profile? }` | Save rules. `family` ∈ `electronic\|disco\|soft\|ambient\|hard\|other\|ignore` approves (a modified choice too), `undo` puts an approved rule back to its proposal, `none` removes the rule. |
+| `POST` | `/api/v1/admin/ai/genre-families/reset` | `{ kind?, status?, profile? }` | Delete rules; default deletes proposals only. Returns `{ removed }`. |
+| `GET`  | `/api/v1/admin/ai/profiles` | — | `{ profiles: [{ id, name, active, approved, proposed }], active }`. Rules live per profile; Auto-DJ uses the active one. |
+| `POST` | `/api/v1/admin/ai/profiles` | `{ name, copyFrom? }` | Create a profile, optionally copying another profile's rules. `{ id, profiles }`. |
+| `POST` | `/api/v1/admin/ai/profiles/activate` | `{ id }` | Make this profile the one Auto-DJ uses. |
+| `POST` | `/api/v1/admin/ai/profiles/rename` | `{ id, name }` | Rename. |
+| `POST` | `/api/v1/admin/ai/profiles/delete` | `{ id }` | Delete a profile and its rules; `409 active` for the active profile. |
+| `POST` | `/api/v1/admin/users/allow-ai-dj` | `{ username, allow }` | Per-user switch for the AI DJ page (default on once the admin enables the queue builder). |
+
+### AI DJ — listeners *(Velvet)*
+
+User token. `/queue/*` answers `404` until both `aiAssist.enabled` and `aiAssist.queueBuilder` are set. The listener's text becomes a **brief** (genres, era, tempo, flow, artists, length — see `BRIEF_SCHEMA` in `src/util/ai-queue.js`); Velvet picks and orders the songs itself, so a set only ever holds songs from the library and never exceeds the cap. Scope fields (`ignoreVPaths`, `filepathPrefix`, `excludeFilepathPrefixes`) work as for `random-songs`.
+
+| Method | Endpoint | Body / Query | Description |
+|---|---|---|---|
+| `GET`  | `/api/v1/ai/status` | — | `{ enabled, maxSongs, families }` — always `200`; `enabled` is false until the admin switches the queue builder on, and for a user with `allow-ai-dj: false`. Usage guide: [docs/API/ai-queue.md](API/ai-queue.md). |
+| `POST` | `/api/v1/ai/queue/brief` | `{ text (2–600 chars), ignoreVPaths?, filepathPrefix?, excludeFilepathPrefixes? }` | Asks Claude for a brief. Returns `{ brief, cached, source: 'claude'\|'local'\|'rules', usage }`; `local` is a self-hosted model; `source: 'rules'` means the model could not be reached (no key, budget, network, unusable answer) and a rule-based reader wrote the brief instead. Identical requests are served from a 15-minute cache. `429` with `code: 'throttled'` (3 s between calls) or `'daily'` (200 per user per day). |
+| `POST` | `/api/v1/ai/queue/build` | `{ brief, ignoreVPaths?, filepathPrefix?, excludeFilepathPrefixes? }` | Builds the set from a (possibly edited) brief, no model call. Returns `{ songs: [{ filepath, metadata }], notes: [{ code, … }], stats: { pool, picked, minutes, artists, bpmFrom, bpmTo, withBpm, maxStep, harmonic, transitions, withKey }, resolved: { genres, excludeGenres, families, artists, similar, folders, titles, keys, release, playlists, collections, chart?, albums? } }`. Notes say what was capped, not found, outside the listener's selection (`titleOutsideScope` …), relaxed to fill the set, which album, chart, corridor or seed was used, and which cohesion rule gave way — the full list is in [docs/API/ai-queue.md](API/ai-queue.md). `400` on an invalid brief, `429` when called more than once a second. |
+
+---
+
 ## Duplicate Workshop — Admin *(Velvet)*
 
 Find and remove duplicate songs and album folders in the library. Three detection tiers: exact file hash, matching audio hash (same content, different tags/container), and similar (same normalised artist+title with close duration).

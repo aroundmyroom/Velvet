@@ -1,5 +1,5 @@
 'use strict';
-const VELVET_VERSION = '0.7.3';
+const VELVET_VERSION = '0.8.0';
 // ── SERVER IDENTITY GUARD ────────────────────────────────────────────────────
 // Detects when this browser's localStorage belongs to a different Velvet
 // instance (fresh install, IP change, reverse-proxy swap, second server).
@@ -83,6 +83,8 @@ const S = {
   recordingElapsedSec: 0,       // elapsed seconds
   recordingMeta: null,          // { vpath, art, title } saved at record start
   _recordingTimer: null,        // setInterval handle
+  aiDjEnabled: false,           // admin switched the AI DJ queue builder on
+  aiDjMax: 500,                 // songs per AI-built queue (server cap)
   lastfmEnabled: false,
   lastfmHasApiKey: false,
   lastfmLinked: false,
@@ -700,6 +702,7 @@ function toastError(msg, ms) {
 
 let _similarStripT = null;
 let _djSimilarFor = '';            // artist we searched Last.fm for
+let _djSimilarSource = '';         // artist the current list actually came from (differs when kept after a miss)
 let _djSimilarArtists = [];        // raw DB variants (for SQL IN filter)
 let _djSimilarDisplayArtists = []; // clean Last.fm names (for display)
 let _djVariantRankMap = {};        // DB artist variant → 1-indexed Last.fm rank (lower = more similar)
@@ -823,6 +826,8 @@ let _camelotAnchor           = null;
 let _camelotAnchorNeighbours = null;
 let _djLastPickFree          = false; // true when last DJ pick had no BPM context (free pick — must not seed anchor)
 let _djGenreHistory          = [];    // rolling window — last 25 picked genres (drift prevention)
+let _djSeedFamily            = null;  // genre family of the last manually started song — seeds the genre anchor
+let _djFamilyHistory         = [];    // genre family of the last 8 Auto-DJ picks (genre anchor)
 let _djEscaping              = false; // single-shot guard — prevents recursive escape retries
 let _djGenreGroupsCache      = null;  // [{name, genres:[{genre,cnt}]}] — fetched once per viewAutoDJ open
 let _djGenreGroupsCachePromise = null; // in-flight fetch, so concurrent callers share one request
@@ -951,7 +956,7 @@ function _showDJStrip(song) {
   const title = esc(song.title || song.filepath?.split('/').pop() || '');
   const played = title ? `${esc(song.artist || '?')} · ${title}` : esc(song.artist || '?');
   const html =
-    `<span class="dj-strip-label">${t('player.autodj.stripSimilarTo')} <strong>${esc(_djSimilarFor)}</strong></span>` +
+    `<span class="dj-strip-label">${t('player.autodj.stripSimilarTo')} <strong>${esc(_djSimilarSource || _djSimilarFor)}</strong></span>` +
     `<span class="dj-strip-sep">—</span>` +
     `<span class="dj-strip-label">${t('player.autodj.stripWillPlay')}</span>` +
     `<span class="dj-strip-queued">${played}</span>` +
@@ -1250,6 +1255,7 @@ function restoreQueue(silent = false) {
   try { _camelotAnchor = localStorage.getItem(_djKey('camelot_anchor')) || null; } catch(_) {}
   if (_camelotAnchor) _camelotAnchorNeighbours = camelotNeighbours(_camelotAnchor);
   try { _djGenreHistory = JSON.parse(localStorage.getItem(_djKey('genre_hist')) || 'null') || []; } catch(_) { _djGenreHistory = []; }
+  _djFamilyHistory = _djGenreHistory.slice(-8).map(_djGenreCat);
   refreshQueueUI();
   _syncQueueLabel();   // render BPM/key chips with restored anchors
   // Restore Auto-DJ on/off so a refresh keeps it running if it was on. The flag is
@@ -1434,6 +1440,7 @@ function norm(s) {
     track:        m.track    || null,
     disk:         m.disk     || null,
     genre:        m.genre    || null,
+    genreFamily:  m['genre-family'] || null,
     replaygain: m['replaygain-track'] != null ? m['replaygain-track'] : (m['replaygain-track-db'] != null ? m['replaygain-track-db'] : null),
     'album-art':  m['album-art'] || null,
     rating:       m.rating   || null,
@@ -1579,7 +1586,7 @@ const Player = {
     S.djIgnore = [];
     S.djArtistHistory = [];
     localStorage.removeItem(_djKey('artist_history'));
-    _djGenreHistory = [];
+    _djGenreHistory = []; _djFamilyHistory = [];
     try { localStorage.removeItem(_djKey('genre_hist')); } catch (_) {}
     _syncPrefs();
     const idx = start ?? 0;
@@ -1602,7 +1609,7 @@ const Player = {
     S.djArtistHistory = [];
     try { localStorage.removeItem(_djKey('ignore')); } catch (_) { /* ignore */ }
     try { localStorage.removeItem(_djKey('artist_history')); } catch (_) { /* ignore */ }
-    _djGenreHistory = [];
+    _djGenreHistory = []; _djFamilyHistory = [];
     try { localStorage.removeItem(_djKey('genre_hist')); } catch (_) {}
     _syncPrefs();
     this.playAt(0);
@@ -1664,6 +1671,7 @@ const Player = {
     // If the user manually picks a song (not Auto-DJ generated), reset the
     // session BPM/key anchors so the next DJ session re-locks to the new song.
     if (!s?._dj) {
+      _djSeedFamily = _djGenreFamilyOf(s);
       _bpmHistoryClear();
       _yearHistoryClear();
       _camelotAnchor           = null;
@@ -2307,37 +2315,69 @@ function _qHighlightMatch(text) {
 // Genre compatibility matrix — returns 0..1 for a genre transition. Every
 // transition (including a hard↔soft jump like pop→hardcore) is scored, never
 // hard-blocked — Auto-DJ signals are "nice to have", not exclusionary.
-function _djGenreCompatScore(curGenre, candGenre) {
-  if (!curGenre || !candGenre) return 0.6;
-  const lc1 = curGenre.toLowerCase(), lc2 = candGenre.toLowerCase();
-  if (lc1 === lc2) return 1.0;
-  const _cat = g => {
-    if (g.includes('ambient') || g.includes('chillout') || g.includes('downtempo') || g.includes('new age')) return 'ambient';
-    if (g.includes('disco') || g.includes('funk') || g.includes('soul') || g.includes('motown')) return 'disco';
-    if (g.includes('electronic') || g.includes('techno') || g.includes('house') ||
-        g.includes('trance') || g.includes('dance') || g.includes('edm') ||
-        g.includes('synth') || g.includes('electro')) return 'electronic';
-    if (g.includes('hardcore') || g.includes('hardstyle') || g.includes('gabber')) return 'hard';
-    if (g.includes('pop') || g.includes('rock') || g.includes('indie') ||
-        g.includes('alternative') || g.includes('country') || g.includes('folk') ||
-        g.includes('r&b') || g.includes('rnb') || g.includes('jazz')) return 'soft';
-    return 'other';
-  };
-  const c1 = _cat(lc1), c2 = _cat(lc2);
+function _djGenreCat(genre) {
+  const g = String(genre || '').toLowerCase();
+  if (g.includes('ambient') || g.includes('chillout') || g.includes('downtempo') || g.includes('new age')) return 'ambient';
+  if (g.includes('disco') || g.includes('funk') || g.includes('soul') || g.includes('motown')) return 'disco';
+  if (g.includes('electronic') || g.includes('techno') || g.includes('house') ||
+      g.includes('trance') || g.includes('dance') || g.includes('edm') ||
+      g.includes('synth') || g.includes('electro')) return 'electronic';
+  if (g.includes('hardcore') || g.includes('hardstyle') || g.includes('gabber')) return 'hard';
+  if (g.includes('pop') || g.includes('rock') || g.includes('indie') ||
+      g.includes('alternative') || g.includes('country') || g.includes('folk') ||
+      g.includes('r&b') || g.includes('rnb') || g.includes('jazz')) return 'soft';
+  return 'other';
+}
+const DJ_GENRE_CAT_COMPAT = {
+  'electronic→disco': 0.7,  'disco→electronic': 0.7,
+  'electronic→ambient': 0.35, 'ambient→electronic': 0.35,
+  'disco→ambient': 0.15,    'ambient→disco': 0.15,
+  'electronic→soft': 0.25,  'soft→electronic': 0.25,
+  'disco→soft': 0.45,       'soft→disco': 0.45,
+  'ambient→soft': 0.25,     'soft→ambient': 0.25,
+  'electronic→hard': 0.05,  'hard→electronic': 0.05,
+  'disco→hard': 0.05,       'hard→disco': 0.05,
+  'ambient→hard': 0.0,      'hard→ambient': 0.0,
+  'soft→hard': 0.15,        'hard→soft': 0.15,
+};
+function _djGenreCatCompat(c1, c2) {
   if (c1 === c2) return 0.9;
-  const MATRIX = {
-    'electronic→disco': 0.7,  'disco→electronic': 0.7,
-    'electronic→ambient': 0.35, 'ambient→electronic': 0.35,
-    'disco→ambient': 0.15,    'ambient→disco': 0.15,
-    'electronic→soft': 0.25,  'soft→electronic': 0.25,
-    'disco→soft': 0.45,       'soft→disco': 0.45,
-    'ambient→soft': 0.25,     'soft→ambient': 0.25,
-    'electronic→hard': 0.05,  'hard→electronic': 0.05,
-    'disco→hard': 0.05,       'hard→disco': 0.05,
-    'ambient→hard': 0.0,      'hard→ambient': 0.0,
-    'soft→hard': 0.15,        'hard→soft': 0.15,
-  };
-  return MATRIX[`${c1}→${c2}`] ?? 0.5;
+  return DJ_GENRE_CAT_COMPAT[`${c1}→${c2}`] ?? 0.5;
+}
+// The server attaches genreFamily to Auto-DJ candidates once an admin has
+// approved genre-family rules (tag or folder based); the keyword match on the
+// tag is the fallback for every other song. null = nothing known.
+function _djGenreFamilyOf(song) {
+  if (!song) return null;
+  if (song.genreFamily) return song.genreFamily;
+  return song.genre ? _djGenreCat(song.genre) : null;
+}
+function _djGenreCompatScore(cur, cand) {
+  const cf = _djGenreFamilyOf(cur), kf = _djGenreFamilyOf(cand);
+  if (!cf || !kf) return 0.6;
+  if (cur.genre && cand.genre && cur.genre.toLowerCase() === cand.genre.toLowerCase()) return 1.0;
+  return _djGenreCatCompat(cf, kf);
+}
+
+// Session genre anchor: the genre family that dominates the manually started
+// song and the last few Auto-DJ picks. Like the BPM and year anchors, it stops
+// one untagged or off-genre pick from steering the rest of the session.
+function _djGenreAnchor() {
+  const recent = [_djSeedFamily, _djSeedFamily, ..._djFamilyHistory.slice(-8)].filter(Boolean);
+  if (!recent.length) return null;
+  const freq = {};
+  for (const f of recent) freq[f] = (freq[f] || 0) + 1;
+  return Object.entries(freq).sort((a, b) => b[1] - a[1])[0][0];
+}
+
+// Genre continuity for a candidate: 60% the current song, 40% the session
+// anchor; the anchor alone when nothing is known about the current song.
+function _djGenreContinuityScore(cur, cand, anchor) {
+  const curScore = _djGenreCompatScore(cur, cand);
+  const kf = _djGenreFamilyOf(cand);
+  if (!anchor || !kf) return curScore;
+  const anchored = _djGenreCatCompat(anchor, kf);
+  return _djGenreFamilyOf(cur) ? 0.6 * curScore + 0.4 * anchored : anchored;
 }
 
 // Explicit user genre whitelist/blacklist preference, expressed as a soft
@@ -2404,7 +2444,7 @@ function _djScoreSong(song) {
   // ── Genre — blends the user's explicit whitelist/blacklist (when
   // configured) with continuity-based compatibility scoring ──────────────
   const _filterScore = _djGenreFilterScore(song);
-  const _contScore   = _djGenreCompatScore(S.queue[S.idx]?.genre, song.genre);
+  const _contScore   = _djGenreContinuityScore(S.queue[S.idx], song, _djGenreAnchor());
   const genreScore   = _filterScore != null ? (0.6 * _filterScore + 0.4 * _contScore) : _contScore;
   score += wGenre * genreScore;
 
@@ -2487,6 +2527,25 @@ function _djSongBlocked(song) {
   return false;
 }
 
+// Last.fm had nothing for this artist. Mid-session, keep steering by the last
+// artist that did have a list, so one obscure pick can't send Auto-DJ off into
+// an unrelated corner of the library. A manually started song starts fresh.
+// Returns the artist filter to use (undefined = no similar-artist scope).
+function _djNoSimilarFor(currentArtist, lookupFailed) {
+  _djSimilarFor = currentArtist;
+  if (S.queue[S.idx]?._dj && _djSimilarArtists.length > 0) {
+    console.log(`[Auto-DJ] keeping similar artists of "${_djSimilarSource}"`);
+    _showInfoStrip('Auto-DJ', t('player.autodj.infoNoSimilarKeep', { artist: esc(currentArtist), source: esc(_djSimilarSource) }), 8000);
+    return _djSimilarArtists;
+  }
+  _djSimilarSource = '';
+  _djSimilarArtists = [];
+  _djSimilarDisplayArtists = [];
+  _djVariantRankMap = {};
+  _showInfoStrip('Auto-DJ', t(lookupFailed ? 'player.autodj.infoLookupFailed' : 'player.autodj.infoNoSimilar', { artist: esc(currentArtist) }), 8000);
+  return undefined;
+}
+
 // Shared helper — returns {ignoreList, songs} from the random-songs API
 // Fetch a batch of Auto-DJ candidates in a single request. Genre/BPM/harmonic
 // are soft, client-scored signals (see _djScoreSong) and are never sent as
@@ -2526,25 +2585,18 @@ async function _djFetchBatch(escapeOpts = {}) {
         if (d.artists && d.artists.length > 0) {
           artistFilter = d.artists;
           _djSimilarFor = currentArtist;
+          _djSimilarSource = currentArtist;
           _djSimilarArtists = artistFilter;
           _djSimilarDisplayArtists = d.displayArtists || d.artists;
           _djVariantRankMap = d.variantRankMap || {};
           console.log(`[Auto-DJ] Last.fm similar to "${currentArtist}":`, d.displayArtists || artistFilter);
         } else {
-          console.warn(`[Auto-DJ] Last.fm returned no similar artists for "${currentArtist}" — other criteria take priority`);
-          _djSimilarFor = currentArtist;
-          _djSimilarArtists = [];
-          _djSimilarDisplayArtists = [];
-          _djVariantRankMap = {};
-          _showInfoStrip('Auto-DJ', t('player.autodj.infoNoSimilar', { artist: esc(currentArtist) }), 8000);
+          console.warn(`[Auto-DJ] Last.fm returned no similar artists for "${currentArtist}"`);
+          artistFilter = _djNoSimilarFor(currentArtist, false);
         }
       } catch (_e) {
         console.error(`[Auto-DJ] Last.fm call failed for "${currentArtist}":`, _e);
-        _djSimilarFor = currentArtist;
-        _djSimilarArtists = [];
-        _djSimilarDisplayArtists = [];
-        _djVariantRankMap = {};
-        _showInfoStrip('Auto-DJ', t('player.autodj.infoLookupFailed', { artist: esc(currentArtist) }), 8000);
+        artistFilter = _djNoSimilarFor(currentArtist, true);
       }
     }
   }
@@ -2717,7 +2769,13 @@ const DJ_GENRE_CONSEC_SOFT = 3;    // consecutive same-genre picks → soft esca
 const DJ_GENRE_CONSEC_HARD = 5;    // consecutive same-genre picks → hard escape (drop artist filter too)
 const DJ_GENRE_FREQ_THRESH = 0.40; // genre share of window → overrepresented
 
-function _djGenreHistoryPush(genre) {
+function _djGenreHistoryPush(song) {
+  const fam = _djGenreFamilyOf(song);
+  if (fam) {
+    _djFamilyHistory.push(fam);
+    if (_djFamilyHistory.length > 8) _djFamilyHistory.shift();
+  }
+  const genre = song?.genre;
   if (!genre) return;
   _djGenreHistory.push(genre.trim().toLowerCase());
   if (_djGenreHistory.length > DJ_GENRE_WINDOW) _djGenreHistory.shift();
@@ -2812,7 +2870,7 @@ async function autoDJPrefetch() {
     }
     // ─────────────────────────────────────────────────────────────────────────
     _djPushArtistHistory(song.artist);
-    _djGenreHistoryPush(song.genre);
+    _djGenreHistoryPush(song);
     _djLastPickFree = (song.bpm == null);
     // Only push if nothing was added while we were waiting (autoDJFetch race guard)
     if (S.queue.length <= S.idx + 1) {
@@ -2869,7 +2927,7 @@ async function autoDJFetch() {
     }
     // ─────────────────────────────────────────────────────────────────────────
     _djPushArtistHistory(song.artist);
-    _djGenreHistoryPush(song.genre);
+    _djGenreHistoryPush(song);
     _djLastPickFree = (song.bpm == null);
     _pruneQueue();
     song._dj = true;
@@ -11905,6 +11963,7 @@ function _launchPinnedViewOrHome() {
   if (v === 'genres')       { viewGenres(); return; }
   if (v === 'decades')      { viewDecades(); return; }
   if (v === 'autodj')       { viewAutoDJ(); return; }
+  if (v === 'ai-dj' && S.aiDjEnabled) { viewAiDj(); return; }
   if (v === 'playback')     { viewPlayback(); return; }
   viewHome(); // default — 'home' or no pin set
 }
@@ -14516,6 +14575,261 @@ function _buildGenreSections(genreGroups, allGenres) {
     ).join('');
     return `<div class="genre-section"><button class="genre-section-head"><span class="genre-section-name">${esc(grp.name)}</span><span class="genre-section-count">${grp.genres.length}</span><svg class="genre-section-chevron" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6,9 12,15 18,9"/></svg></button><div class="genre-grid">${chips}</div></div>`;
   }).join('');
+}
+
+// ── AI DJ ─────────────────────────────────────────────────────
+// Describe a set in words; the server asks Claude for a brief (genres, era,
+// tempo, flow) and builds the queue itself from the library. Hidden until the
+// admin switches the queue builder on (S.aiDjEnabled from /api/v1/ai/status).
+const _aiDj = { text: '', brief: null, result: null, songs: [], busy: false, vpaths: null, length: 'auto' };
+const _AIDJ_LENGTHS = [
+  { v: 'auto' }, { v: 'm30', minutes: 30 }, { v: 'm60', minutes: 60 }, { v: 'm120', minutes: 120 }, { v: 'm240', minutes: 240 },
+  { v: 's25', songs: 25 }, { v: 's50', songs: 50 }, { v: 's100', songs: 100 }, { v: 's250', songs: 250 }, { v: 's500', songs: 500 }, { v: 's1000', songs: 1000 },
+];
+
+function _aiDjScope() {
+  const meta = S.vpathMeta || {};
+  const selected = (_aiDj.vpaths && _aiDj.vpaths.length) ? _aiDj.vpaths : S.vpaths;
+  const allChildSameParent = selected.length > 0 && selected.every(v => meta[v]?.parentVpath) && new Set(selected.map(v => meta[v].parentVpath)).size === 1;
+  let ignoreVPaths, filepathPrefix = null;
+  if (allChildSameParent) {
+    const parent = meta[selected[0]].parentVpath;
+    ignoreVPaths = S.vpaths.filter(v => v !== parent && !meta[v]?.parentVpath);
+    filepathPrefix = selected.length === 1 ? meta[selected[0]].filepathPrefix : null;
+  } else {
+    ignoreVPaths = S.vpaths.filter(v => !selected.includes(v));
+  }
+  const abEx = _audioBookExclusions();
+  const ignore = [...new Set([...(ignoreVPaths || []), ...abEx.ignoreVPaths])];
+  return {
+    ...(ignore.length ? { ignoreVPaths: ignore } : {}),
+    ...(filepathPrefix ? { filepathPrefix } : {}),
+    ...(abEx.excludeFilepathPrefixes.length ? { excludeFilepathPrefixes: abEx.excludeFilepathPrefixes } : {}),
+  };
+}
+
+function _aiDjLengthLabel(o) {
+  if (o.minutes) return o.minutes >= 60 ? t('player.aidj.lengthHours', { n: o.minutes / 60 }) : t('player.aidj.lengthMinutes', { n: o.minutes });
+  if (o.songs) return t('player.aidj.lengthSongs', { n: o.songs });
+  return t('player.aidj.lengthAuto');
+}
+
+async function viewAiDj() {
+  setTitle(t('player.title.aiDj')); setBack(null); setNavActive('ai-dj'); S.view = 'ai-dj';
+  S.curSongs = [];
+  document.getElementById('play-all-btn').onclick = null;
+  document.getElementById('add-all-btn').onclick  = null;
+  if (!_aiDj.vpaths) _aiDj.vpaths = [...S.vpaths];
+  const examples = ['example1', 'example2', 'example3', 'example4'].map(k => t('player.aidj.' + k));
+  const lengths = _AIDJ_LENGTHS.filter(o => !o.songs || o.songs <= (S.aiDjMax || 500));
+  const body = document.getElementById('content-body');
+  body.innerHTML = `
+    <div class="autodj-panel aidj-panel">
+      <div class="autodj-hero">
+        <div class="autodj-icon">✨</div>
+        <h2>${t('player.title.aiDj')}</h2>
+        <p>${t('player.aidj.heroDesc')}</p>
+      </div>
+      <div class="autodj-opts aidj-form">
+        <textarea class="aidj-text" id="aidj-text" rows="3" maxlength="600" placeholder="${esc(t('player.aidj.placeholder'))}">${esc(_aiDj.text)}</textarea>
+        <div class="aidj-chips" id="aidj-examples">${examples.map(x => `<button class="aidj-chip" data-example="${esc(x)}">${esc(x)}</button>`).join('')}</div>
+        <div class="autodj-opt-row">
+          <div class="autodj-opt-label">${t('player.aidj.lengthLabel')}</div>
+          <select class="autodj-select" id="aidj-length">${lengths.map(o => `<option value="${o.v}"${_aiDj.length === o.v ? ' selected' : ''}>${esc(_aiDjLengthLabel(o))}</option>`).join('')}</select>
+        </div>
+        ${S.vpaths.length > 1 ? `
+        <div class="autodj-opt-row autodj-opt-col">
+          <div class="autodj-opt-label">${t('player.autodj.sourcesLabel')}</div>
+          <div class="dj-vpath-pills" id="aidj-vpaths">
+            ${S.vpaths.map(v => `<button class="dj-vpath-pill${_aiDj.vpaths.includes(v) ? ' on' : ''}" data-vpath="${esc(v)}">${esc(v)}</button>`).join('')}
+          </div>
+        </div>` : ''}
+        <button class="autodj-toggle aidj-build" id="aidj-build">${t('player.aidj.btnBuild')}</button>
+      </div>
+      <div id="aidj-result"></div>
+    </div>`;
+  const ta = document.getElementById('aidj-text');
+  ta.addEventListener('input', () => { _aiDj.text = ta.value; });
+  ta.addEventListener('keydown', e => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); _aiDjBuild(false); } });
+  document.getElementById('aidj-examples').addEventListener('click', e => {
+    const chip = e.target.closest('.aidj-chip');
+    if (!chip) return;
+    ta.value = chip.dataset.example; _aiDj.text = ta.value; ta.focus();
+  });
+  document.getElementById('aidj-length').addEventListener('change', e => { _aiDj.length = e.target.value; });
+  document.getElementById('aidj-vpaths')?.addEventListener('click', e => {
+    const pill = e.target.closest('.dj-vpath-pill');
+    if (!pill) return;
+    const v = pill.dataset.vpath;
+    if (_aiDj.vpaths.includes(v)) { if (_aiDj.vpaths.length > 1) _aiDj.vpaths = _aiDj.vpaths.filter(x => x !== v); }
+    else _aiDj.vpaths = [..._aiDj.vpaths, v];
+    document.querySelectorAll('#aidj-vpaths .dj-vpath-pill').forEach(p => p.classList.toggle('on', _aiDj.vpaths.includes(p.dataset.vpath)));
+  });
+  document.getElementById('aidj-build').addEventListener('click', () => _aiDjBuild(false));
+  if (_aiDj.result) _aiDjRender();
+  else if (!_aiDj.text) ta.focus();
+}
+
+function _aiDjApplyLength(brief) {
+  const o = _AIDJ_LENGTHS.find(x => x.v === _aiDj.length);
+  if (!o || o.v === 'auto') return brief;
+  return { ...brief, songs: o.songs ?? null, minutes: o.minutes ?? null };
+}
+
+function _aiDjError(e) {
+  const code = e?.status === 429 ? 'throttled' : null;
+  const known = { throttled: 'throttled', 'Daily limit reached': 'daily' };
+  const key = code || known[e?.message] || (/budget/i.test(e?.message || '') ? 'budget' : null) || (/api key/i.test(e?.message || '') ? 'nokey' : null) || (e?.status === 404 ? 'disabled' : null);
+  return key ? t('player.aidj.err.' + key) : t('player.aidj.err.generic', { error: e?.message || '' });
+}
+
+async function _aiDjBuild(reuseBrief) {
+  if (_aiDj.busy) return;
+  const ta = document.getElementById('aidj-text');
+  const text = (ta ? ta.value : _aiDj.text).trim();
+  if (text.length < 2) { toast(t('player.aidj.toastEmpty')); return; }
+  const btn = document.getElementById('aidj-build');
+  _aiDj.busy = true; _aiDj.text = text;
+  if (btn) { btn.disabled = true; btn.textContent = t(reuseBrief && _aiDj.brief ? 'player.aidj.btnRebuilding' : 'player.aidj.btnBuilding'); }
+  try {
+    const scope = _aiDjScope();
+    let brief = reuseBrief ? _aiDj.brief : null;
+    if (!brief) { const d = await api('POST', 'api/v1/ai/queue/brief', { text, ...scope }); brief = d.brief; _aiDj.source = d.source || 'claude'; }
+    _aiDj.brief = brief;
+    if (brief.clarification) { _aiDj.result = null; _aiDj.songs = []; _aiDjRender(); return; }
+    const r = await api('POST', 'api/v1/ai/queue/build', { brief: _aiDjApplyLength(brief), ...scope });
+    _aiDj.result = r;
+    _aiDj.songs = (r.songs || []).map(norm);
+    _aiDjRender();
+  } catch (e) {
+    toast(_aiDjError(e));
+  } finally {
+    _aiDj.busy = false;
+    if (btn) { btn.disabled = false; btn.textContent = t('player.aidj.btnBuild'); }
+  }
+}
+
+function _aiDjChips(brief, resolved) {
+  const chips = [];
+  for (const g of resolved.genres || []) chips.push(g);
+  for (const f of resolved.families || []) chips.push(t('player.aidj.family.' + f));
+  for (const g of resolved.excludeGenres || []) chips.push(t('player.aidj.chipNo', { name: g }));
+  if (brief.yearFrom != null || brief.yearTo != null) chips.push(t('player.aidj.chipYears', { from: brief.yearFrom ?? '…', to: brief.yearTo ?? '…' }));
+  if (brief.bpmFrom != null || brief.bpmTo != null) chips.push(t('player.aidj.chipBpm', { from: brief.bpmFrom ?? '…', to: brief.bpmTo ?? '…' }));
+  if (brief.energy && brief.energy !== 'steady') chips.push(t('player.aidj.energy.' + brief.energy));
+  for (const a of resolved.artists || []) chips.push(a);
+  if (brief.artistMode === 'only' && (resolved.artists || []).length) chips.push(t('player.aidj.chipOnly'));
+  if (resolved.similar) chips.push(t('player.aidj.chipSimilar', { count: resolved.similar }));
+  for (const a of brief.excludeArtists || []) chips.push(t('player.aidj.chipNo', { name: a }));
+  for (const f of resolved.folders || []) chips.push('📁 ' + f);
+  if (resolved.chart || brief.chart) chips.push(t('player.aidj.chipChart', { name: resolved.chart || brief.chart, from: resolved.chartFrom ?? brief.chartFrom ?? 1, to: resolved.chartTo ?? brief.chartTo ?? '…' }));
+  for (const a of resolved.albums || []) chips.push('💿 ' + a);
+  for (const ti of brief.titles || []) chips.push('♪ “' + ti + '”');
+  if (brief.minSeconds) chips.push(t('player.aidj.chipMinSeconds', { min: Math.round(brief.minSeconds / 60) }));
+  if (brief.maxSeconds) chips.push(t('player.aidj.chipMaxSeconds', { max: Math.round(brief.maxSeconds / 60) }));
+  for (const k of brief.keys || []) chips.push(t('player.aidj.chipKey', { key: k }));
+  if (brief.release && brief.release !== 'any') chips.push(t('player.aidj.release.' + brief.release));
+  if (brief.prefer && brief.prefer !== 'none') chips.push(t('player.aidj.prefer.' + brief.prefer));
+  if (brief.ranking && brief.ranking !== 'none') chips.push(t('player.aidj.ranking.' + brief.ranking));
+  for (const p of resolved.playlists || []) chips.push('≡ ' + p);
+  for (const c of brief.collections || []) chips.push('🗂 ' + c);
+  if (brief.starred) chips.push(t('player.aidj.chipStarred'));
+  if (brief.played === 'never') chips.push(t('player.aidj.chipNeverPlayed'));
+  if (brief.played === 'played') chips.push(t('player.aidj.chipPlayedBefore'));
+  if (brief.rated === 'unrated') chips.push(t('player.aidj.chipUnrated'));
+  if (brief.rated === 'rated') chips.push(t('player.aidj.chipRated'));
+  if (brief.minPlays != null) chips.push(t('player.aidj.chipMinPlays', { n: brief.minPlays }));
+  if (brief.maxPlays != null) chips.push(t('player.aidj.chipMaxPlays', { n: brief.maxPlays }));
+  if (brief.addedWithinDays) chips.push(t('player.aidj.chipAddedWithin', { days: brief.addedWithinDays }));
+  if (brief.playedWithinDays) chips.push(t('player.aidj.chipPlayedWithin', { days: brief.playedWithinDays }));
+  if (brief.notPlayedWithinDays) chips.push(t('player.aidj.chipNotPlayedWithin', { days: brief.notPlayedWithinDays }));
+  if (brief.lossless === true) chips.push(t('player.aidj.chipLossless'));
+  if (brief.lossless === false) chips.push(t('player.aidj.chipLossy'));
+  if (brief.hiRes) chips.push(t('player.aidj.chipHiRes'));
+  for (const k of brief.excludeKeywords || []) chips.push(t('player.aidj.chipNo', { name: k }));
+  if (brief.allVersions) chips.push(t('player.aidj.chipAllVersions'));
+  if (brief.cohesive) chips.push(t('player.aidj.chipCohesive'));
+  if (brief.order && brief.order !== 'dj') chips.push(t('player.aidj.order.' + brief.order));
+  if (brief.albumMode === 'oneAlbum' && !(resolved.albums || []).length) chips.push(t('player.aidj.chipOneAlbum'));
+  for (const a of brief.excludeAlbums || []) chips.push(t('player.aidj.chipNo', { name: a }));
+  for (const k of brief.keywords || []) chips.push('“' + k + '”');
+  if (brief.favourites) chips.push(t('player.aidj.chipFavourites'));
+  if (brief.discovery) chips.push(t('player.aidj.chipDiscovery'));
+  if (brief.minRating) chips.push(t('player.aidj.chipMinRating', { stars: Math.round(brief.minRating / 2) }));
+  return chips;
+}
+
+function _aiDjRender() {
+  const box = document.getElementById('aidj-result');
+  if (!box) return;
+  const brief = _aiDj.brief;
+  if (!brief) { box.innerHTML = ''; return; }
+  if (brief.clarification) {
+    box.innerHTML = `<div class="autodj-opts aidj-card"><h4>${t('player.aidj.clarificationTitle')}</h4><p class="aidj-summary">${esc(brief.clarification)}</p></div>`;
+    return;
+  }
+  const r = _aiDj.result || { notes: [], stats: {}, resolved: {} };
+  const songs = _aiDj.songs;
+  S.curSongs = songs;
+  const notes = (r.notes || []).map(n => t('player.aidj.note.' + n.code, { ...n, from: n.from ?? '…', to: n.to ?? '…', year: n.year ?? '—' }));
+  if (_aiDj.source === 'rules') notes.unshift(t('player.aidj.note.noAi'));
+  box.innerHTML = `
+    <div class="autodj-opts aidj-card">
+      <h3 class="aidj-title">${esc(brief.title || t('player.title.aiDj'))}</h3>
+      ${songs.length ? (brief.summary ? `<p class="aidj-summary">${esc(brief.summary)}</p>` : '') : `<p class="aidj-summary">${esc(t('player.aidj.nothingPlayed'))}</p>`}
+      <div class="aidj-chips">${_aiDjChips(brief, r.resolved || {}).map(c => `<span class="aidj-chip static">${esc(c)}</span>`).join('')}</div>
+      ${notes.length ? `<ul class="aidj-notes">${notes.map(n => `<li>${esc(n)}</li>`).join('')}</ul>` : ''}
+      <div class="aidj-stats">${t('player.aidj.stats', { songs: songs.length, minutes: r.stats?.minutes ?? 0, artists: r.stats?.artists ?? 0 })}${r.stats?.bpmFrom ? ` · ${r.stats.bpmFrom}–${r.stats.bpmTo} BPM` : ''}${r.stats?.maxStep != null ? ` · ${t('player.aidj.statsStep', { n: r.stats.maxStep })}` : ''}${r.stats?.transitions ? ` · ${t('player.aidj.statsHarmonic', { ok: r.stats.harmonic, total: r.stats.transitions })}` : ''}${r.stats?.withKey != null && songs.length > 1 && r.stats.withKey < songs.length ? ` · ${t('player.aidj.statsNoKey', { n: songs.length - r.stats.withKey })}` : ''}</div>
+      <div class="aidj-actions">
+        <button class="btn-sm aidj-primary" id="aidj-play" ${songs.length ? '' : 'disabled'}>${t('player.aidj.btnPlay')}</button>
+        <button class="btn-sm" id="aidj-add" ${songs.length ? '' : 'disabled'}>${t('player.aidj.btnAdd')}</button>
+        <button class="btn-sm" id="aidj-again">${t('player.aidj.btnAgain')}</button>
+      </div>
+      <div class="aidj-actions">
+        <input class="aidj-plname" id="aidj-pl-name" maxlength="80" placeholder="${esc(t('player.aidj.playlistNamePlaceholder'))}" value="${esc(brief.title || '')}">
+        <button class="btn-sm" id="aidj-save" ${songs.length ? '' : 'disabled'}>${t('player.aidj.btnSave')}</button>
+      </div>
+    </div>
+    ${songs.length ? `<div class="song-list">${renderSongRows(songs)}</div>` : ''}`;
+  document.getElementById('play-all-btn').onclick = () => { if (songs.length) { _setPlaySource(null); Player.setQueue(songs, 0); toast(t('player.aidj.toastPlaying', { count: songs.length })); } };
+  document.getElementById('add-all-btn').onclick  = () => { if (songs.length) Player.addAll(songs); };
+  document.getElementById('aidj-play').onclick = document.getElementById('play-all-btn').onclick;
+  document.getElementById('aidj-add').onclick = () => { if (songs.length) { Player.addAll(songs); toast(t('player.aidj.toastAdded', { count: songs.length })); } };
+  document.getElementById('aidj-again').onclick = () => {
+    const picked = (r.notes || []).filter(n => n.code === 'albumPicked').map(n => n.album);
+    if (picked.length && _aiDj.brief) _aiDj.brief = { ..._aiDj.brief, excludeAlbums: [...new Set([...(_aiDj.brief.excludeAlbums || []), ...picked])].slice(0, 25) };
+    _aiDjBuild(true);
+  };
+  document.getElementById('aidj-save').onclick = async () => {
+    const name = document.getElementById('aidj-pl-name').value.trim();
+    if (!name || !songs.length) return;
+    try {
+      await api('POST', 'api/v1/playlist/save', { title: name, songs: songs.map(s => s.filepath) });
+      await loadPlaylists();
+      toast(t('player.aidj.toastSaved', { count: songs.length, name }));
+    } catch (e) { toast(t('player.toast.saveFailed')); }
+  };
+  const list = box.querySelector('.song-list');
+  if (list) { attachSongListEvents(box, songs); highlightRow(); _fetchMissingArt(songs, list, '.row-art', 'data-ci'); }
+}
+
+function _aiDjShowNav() {
+  const btn = document.getElementById('ai-dj-nav-btn');
+  if (btn) btn.classList.toggle('hidden', !S.aiDjEnabled);
+}
+// The last known answer is applied at once so the menu item does not pop in
+// after the page has settled; the server's answer then confirms or hides it.
+async function _aiDjRefreshStatus() {
+  try { S.aiDjEnabled = localStorage.getItem(_uKey('aidj')) === '1'; } catch (_) {}
+  _aiDjShowNav();
+  try {
+    const st = await api('GET', 'api/v1/ai/status');
+    S.aiDjEnabled = st?.enabled === true;
+    S.aiDjMax = Number(st?.maxSongs) || 500;
+  } catch (_) { S.aiDjEnabled = false; }
+  try { localStorage.setItem(_uKey('aidj'), S.aiDjEnabled ? '1' : ''); } catch (_) {}
+  _aiDjShowNav();
+  if (!S.aiDjEnabled && S.view === 'ai-dj') viewHome();
 }
 
 async function viewGenres() {
@@ -22309,6 +22623,9 @@ function showApp() {
   // Reclaim the storage quota from any pathologically-large key BEFORE restoring
   // the queue, so a stale multi-MB value can never starve the queue write.
   _sanitizeLocalStorage();
+  // Both a fresh login and a restored session come through here: the AI DJ
+  // menu item is decided now, not somewhere down the boot sequence.
+  _aiDjRefreshStatus();
   // ── Boot overlay: show while queue/waveform restore is in progress ──────
   const _bootEl  = document.getElementById('boot-overlay');
   const _bootSt  = document.getElementById('boot-status');
@@ -22588,6 +22905,7 @@ function showApp() {
       if (pd.allowMpvCast        != null) { S.allowMpvCast         = pd.allowMpvCast         === true; _updateCastBtn(); }
       if (pd.allowServerRemote   != null)   S.allowServerRemote   = pd.allowServerRemote   !== false;
     } catch (_) {}
+    _aiDjRefreshStatus();
 
     // ── MPV heartbeat rescue ──────────────────────────────────────────────────
     // Browser timer throttling can stretch the 8 s setInterval to 30 s+ when
@@ -22849,6 +23167,9 @@ async function _rerenderCurrentViewForLanguageChange() {
     case 'autodj':
       await viewAutoDJ();
       return;
+    case 'ai-dj':
+      await viewAiDj();
+      return;
     case 'genres':
       await viewGenres();
       return;
@@ -23056,6 +23377,7 @@ document.querySelectorAll('.nav-btn').forEach(btn => {
     else if (v === 'history') viewHistory();
     else if (v === 'files')   { S.feDirStack = []; S.feFilter = ''; viewFiles('', false); }
     else if (v === 'autodj')  viewAutoDJ();
+    else if (v === 'ai-dj')   viewAiDj();
     else if (v === 'genres')        viewGenres();
     else if (v === 'decades')       viewDecades();
     else if (v === 'transcode') viewTranscode();

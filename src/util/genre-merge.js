@@ -18,7 +18,7 @@ const NOISE_SET = new Set([
 ]);
 
 /** Canonical key: lowercase, alphanumeric only (strips hyphens, spaces, &). */
-function toKey(s) {
+export function toKey(s) {
   return s.toLowerCase().replaceAll('&', 'and').replaceAll(/[^a-z0-9]/g, '');
 }
 
@@ -45,7 +45,7 @@ function richness(s) {
  * "R&B" and "Rock & Roll" stay intact (no split on &).
  * "Pop/Rock" → ["Pop", "Rock"], "Pub Rock/New Wave" → ["Pub Rock", "New Wave"].
  */
-function splitRaw(raw) {
+export function splitRaw(raw) {
   return raw.split(/\s*[,;/]\s*/)
     .map(s => s.trim())
     .filter(s => !isNoise(s));
