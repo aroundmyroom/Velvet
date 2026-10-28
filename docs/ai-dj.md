@@ -29,6 +29,7 @@ with examples:
 | You want | Say, for example |
 |---|---|
 | A set | *two hours of 80s italo and hi-nrg that slowly builds up, no Modern Talking* · *een uur house dat opbouwt* · *twee uur disco, rustig afbouwen* |
+| A set in phases | *start calm around 100 BPM for 15 minutes, then dance and disco from 100 to 120, then 30 minutes of club house a bit faster, then 30 minutes of dance, then trance* · *begin rustig, daarna disco, eindig met trance* — each phase is its own mixed set, in your order, and flows into the next |
 | Songs that must match each other | *create a mix of 3 songs which match tempo, key and genre* · *nummers die bij elkaar passen* — one tempo, harmonic keys, the same genre, different artists |
 | One song, or a few | *play Relax by FGTH* · *a 12-inch of Frankie Goes To Hollywood of +10 minutes* · *the longest version of Two Tribes* · *all versions of Relax* |
 | Named titles | *give me the Grandmix 1983 and 1986* · *speel de jaarmix van 1991* — one song per title |
@@ -67,6 +68,10 @@ A few rules of thumb:
   (♪), albums (💿), folders (📁), charts (🏆), playlists (≡), collections (🗂),
   version kind, key, history and format wishes, "songs that match each
   other", and "no …" for everything excluded.
+- **Phases** — for a set in phases, one line per phase in playing order:
+  its name, what it plays (genres or families), how many songs and minutes it
+  got, its tempo range and its arc. The song list below runs through the
+  phases in that order.
 - **Notes** — what happened on the way, in plain words. The honest ones
   matter most:
   - *"Grandmix 1986" is in your library (4 songs, in Music/Grandmix) but
@@ -131,6 +136,17 @@ The DJ behaves like a mix DJ, not like a shuffle. For a set in DJ order:
 Songs without an analysed tempo are spread through the set but cannot be
 judged; songs without a key cannot be matched harmonically. The analysis
 queue in the admin fills both in over time.
+
+**A set in phases** ("start calm at 100 BPM for 15 minutes, then disco up to
+120, then half an hour of club house, then dance, then trance") runs these
+steps once per phase. Each phase has its own genres, tempo, arc and length
+and inherits everything else from the request (era, artists, exclusions,
+your marks); it is picked from its own corridor, which starts at the tempo
+the previous phase ended on, and no song plays in two phases. **A build
+between two named tempos arrives**: "from 100 to 120" starts at 100 and ends
+at 120, climbing rung by rung, even when that means steps a little larger
+than usual — thirty minutes of six-minute disco mixes over twenty BPM is five
+songs, four steps.
 
 Album requests, chart requests, named titles and rankings skip the corridor:
 an album plays in track order, a chart in chart order, a ranking in the order

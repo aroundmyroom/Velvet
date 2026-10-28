@@ -1,5 +1,5 @@
 'use strict';
-const VELVET_VERSION = '0.8.0';
+const VELVET_VERSION = '0.8.1';
 // ── SERVER IDENTITY GUARD ────────────────────────────────────────────────────
 // Detects when this browser's localStorage belongs to a different Velvet
 // instance (fresh install, IP change, reverse-proxy swap, second server).
@@ -14749,6 +14749,7 @@ function _aiDjChips(brief, resolved) {
   for (const k of brief.excludeKeywords || []) chips.push(t('player.aidj.chipNo', { name: k }));
   if (brief.allVersions) chips.push(t('player.aidj.chipAllVersions'));
   if (brief.cohesive) chips.push(t('player.aidj.chipCohesive'));
+  if ((brief.segments || []).length) chips.push(t('player.aidj.chipPhases', { n: brief.segments.length }));
   if (brief.order && brief.order !== 'dj') chips.push(t('player.aidj.order.' + brief.order));
   if (brief.albumMode === 'oneAlbum' && !(resolved.albums || []).length) chips.push(t('player.aidj.chipOneAlbum'));
   for (const a of brief.excludeAlbums || []) chips.push(t('player.aidj.chipNo', { name: a }));
@@ -14757,6 +14758,14 @@ function _aiDjChips(brief, resolved) {
   if (brief.discovery) chips.push(t('player.aidj.chipDiscovery'));
   if (brief.minRating) chips.push(t('player.aidj.chipMinRating', { stars: Math.round(brief.minRating / 2) }));
   return chips;
+}
+
+function _aiDjPhase(p) {
+  const what = [...(p.genres || []), ...(p.families || []).map(f => t('player.aidj.family.' + f))].join(', ');
+  const parts = [t('player.aidj.phaseMeta', { songs: p.songs, minutes: p.minutes })];
+  if (p.bpmFrom) parts.push(`${p.bpmFrom}–${p.bpmTo} BPM`);
+  if (p.energy && p.energy !== 'steady') parts.push(t('player.aidj.energy.' + p.energy));
+  return `<li><b>${esc(p.name || t('player.aidj.phaseN', { n: p.index }))}</b>${what ? ` <span class="aidj-phase-what">${esc(what)}</span>` : ''}<span class="aidj-phase-meta">${esc(parts.join(' · '))}</span></li>`;
 }
 
 function _aiDjRender() {
@@ -14778,6 +14787,7 @@ function _aiDjRender() {
       <h3 class="aidj-title">${esc(brief.title || t('player.title.aiDj'))}</h3>
       ${songs.length ? (brief.summary ? `<p class="aidj-summary">${esc(brief.summary)}</p>` : '') : `<p class="aidj-summary">${esc(t('player.aidj.nothingPlayed'))}</p>`}
       <div class="aidj-chips">${_aiDjChips(brief, r.resolved || {}).map(c => `<span class="aidj-chip static">${esc(c)}</span>`).join('')}</div>
+      ${(r.resolved?.segments || []).length ? `<ol class="aidj-phases">${r.resolved.segments.map(_aiDjPhase).join('')}</ol>` : ''}
       ${notes.length ? `<ul class="aidj-notes">${notes.map(n => `<li>${esc(n)}</li>`).join('')}</ul>` : ''}
       <div class="aidj-stats">${t('player.aidj.stats', { songs: songs.length, minutes: r.stats?.minutes ?? 0, artists: r.stats?.artists ?? 0 })}${r.stats?.bpmFrom ? ` · ${r.stats.bpmFrom}–${r.stats.bpmTo} BPM` : ''}${r.stats?.maxStep != null ? ` · ${t('player.aidj.statsStep', { n: r.stats.maxStep })}` : ''}${r.stats?.transitions ? ` · ${t('player.aidj.statsHarmonic', { ok: r.stats.harmonic, total: r.stats.transitions })}` : ''}${r.stats?.withKey != null && songs.length > 1 && r.stats.withKey < songs.length ? ` · ${t('player.aidj.statsNoKey', { n: songs.length - r.stats.withKey })}` : ''}</div>
       <div class="aidj-actions">

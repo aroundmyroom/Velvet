@@ -115,7 +115,7 @@ export function parseBriefLocally(text, profile, { aliases } = {}) {
     titles: [], minSeconds: null, maxSeconds: null, keys: [], release: 'any', prefer: 'none', ranking: 'none',
     order: 'dj', starred: false, played: 'any', rated: 'any', minPlays: null, maxPlays: null, addedWithinDays: null, playedWithinDays: null, notPlayedWithinDays: null,
     lossless: null, hiRes: false, playlists: [], collections: [], excludeKeywords: [], allVersions: false,
-    favourites: false, discovery: false, minRating: null, chart: null, chartFrom: null, chartTo: null, cohesive: false, clarification: null,
+    favourites: false, discovery: false, minRating: null, chart: null, chartFrom: null, chartTo: null, cohesive: false, segments: [], clarification: null,
   };
   let lower = original.toLowerCase();
   const genreNames = (profile?.genres || []).map(g => g.genre);

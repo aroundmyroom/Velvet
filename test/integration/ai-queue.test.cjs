@@ -294,6 +294,25 @@ describe('AI DJ queue builder', async () => {
     setStub({ 'queue-brief': BRIEF });
   });
 
+  it('a set in phases plays each phase in turn, nothing twice, under one cap', async () => {
+    await sleep(1100);
+    const segments = [
+      { name: 'disco first', songs: 6, genres: ['Disco'], families: [], bpmFrom: null, bpmTo: null, energy: 'steady' },
+      { name: 'then house', songs: 6, genres: ['House'], families: [], bpmFrom: null, bpmTo: null, energy: 'build' },
+    ];
+    const r = await post('/api/v1/ai/queue/build', { brief: { ...BRIEF, songs: null, genres: [], yearFrom: null, yearTo: null, energy: 'steady', segments }, ignoreVPaths: ['testlib'] });
+    assert.equal(r.status, 200);
+    const out = await r.json();
+    const genres = out.songs.map(s => String(s.metadata.genre).toLowerCase());
+    assert.deepEqual(genres, [...Array(6).fill('disco'), ...Array(4).fill('house')], 'disco, then house, capped at 10 in all');
+    assert.equal(new Set(out.songs.map(s => s.filepath)).size, 10);
+    assert.ok(out.notes.some(n => n.code === 'cappedByAdmin' && n.max === 10));
+    assert.equal(out.resolved.segments.length, 2);
+    assert.deepEqual(out.resolved.segments.map(s => [s.name, s.songs, s.genres]), [['disco first', 6, ['Disco']], ['then house', 4, ['House']]]);
+    assert.deepEqual(out.resolved.genres, ['Disco', 'House']);
+    assert.equal(out.stats.picked, 10);
+  });
+
   it('"the grandmix 1983 and 1986" is those two mixes, one each — not the folder over 1983–1986', async () => {
     await sleep(1100);
     // the model read the years as an era and the series as a folder: the brief is corrected and two titles mean two songs

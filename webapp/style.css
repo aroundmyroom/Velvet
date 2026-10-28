@@ -888,6 +888,11 @@ body.sidebar-collapsed .footer-link,body.sidebar-collapsed .footer-action{justif
 .aidj-title{font-size:17px;font-weight:700;margin:0;}
 .aidj-summary{font-size:13px;color:var(--t2);line-height:1.5;margin:0;}
 .aidj-notes{margin:0;padding-left:18px;font-size:12px;color:var(--t3);line-height:1.6;}
+.aidj-phases{margin:0;padding-left:22px;font-size:12px;color:var(--t2);line-height:1.6;}
+.aidj-phases b{color:var(--t1);font-weight:600;}
+.aidj-phase-what{color:var(--t1);}
+.aidj-phase-meta{color:var(--t3);}
+.aidj-phase-meta::before{content:" — ";}
 .aidj-stats{font-size:12px;color:var(--t2);}
 .aidj-actions{display:flex;flex-wrap:wrap;gap:8px;align-items:center;}
 .aidj-primary{background:var(--primary);color:#fff;border-color:var(--primary);}

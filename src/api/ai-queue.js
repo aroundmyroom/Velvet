@@ -20,7 +20,7 @@ import { mergeGenreRows, toKey } from '../util/genre-merge.js';
 import { FAMILIES, keywordFamily } from '../util/genre-family.js';
 import { genreFamilyResolver } from '../util/genre-family-cache.js';
 import * as ai from '../util/ai-assist.js';
-import { BRIEF_SCHEMA, DEFAULT_SONGS, MAX_LIST, RELEASE_PATTERNS, artistKey, planQueue, validateBrief, versionKey } from '../util/ai-queue.js';
+import { BRIEF_SCHEMA, DEFAULT_SONGS, MAX_LIST, RELEASE_PATTERNS, artistKey, planQueue, queueStats, validateBrief, versionKey } from '../util/ai-queue.js';
 import { computeChildInclusions, renderMetadataObj, userDbVpaths } from './db.js';
 import { parseBriefLocally } from '../util/ai-brief-parser.js';
 import { chartPosition, detectCharts, findChart } from '../util/ai-charts.js';
@@ -91,6 +91,7 @@ Rules:
 - ranking: a request about the listener's own statistics, answered from them exactly: "the most played song(s)" → mostPlayed; "least played" → leastPlayed; "highest rated" / "my 5-star songs" → topRated; "recently added" / "newest additions" → recentlyAdded; "what I played last" / "recently played" → recentlyPlayed. Else "none". "The most played song" means ranking mostPlayed and songs 1; "my top 20 disco" means mostPlayed, songs 20, genres Disco. Use favourites only for a taste ("songs I love"), ranking for a list.
 - chart: the library holds numbered charts — the chart list below: folders whose file names start with the position. "The top 10 of the House Top 1000", "number 1 of 1983", "positions 50 to 60 of the Disco Top 700", "the Top 40 of 1988" → chart = that chart's name exactly as listed, chartFrom / chartTo = the positions asked (top 10 → 1 and 10; number 1 → 1 and 1; the whole chart → both null), songs null, genres and years empty (the chart is the content), ranking "none". Velvet plays those positions in chart order, number 1 first; order "countdown" only when the listener literally asks for a countdown (from the last position down to number 1). Only a chart from the list is a chart: "my top 10" or "the 10 most played" is a ranking of the listener's own statistics, and "10 songs from the House Top 1000" is folders with songs 10, not a chart.
 You know music history. Use it: expand abbreviations and nicknames to the full artist name as it appears in the artist list, or as commonly written (FGTH → Frankie Goes To Hollywood, MJ → Michael Jackson, GNR → Guns N' Roses, RHCP → Red Hot Chili Peppers, NKOTB → New Kids on the Block, SAW → Stock Aitken Waterman; but OMD, ABBA, ELO are names). Turn scenes, labels and producers into what this library has: "Chicago house" → genre House plus years 1985–1992; "the SAW years" → 1986–1990; "Motown" → the Motown folder or genre when listed, else families disco/soft with years 1960–1975; "Ben Liebrand remixes" → keywords ["liebrand"]; "Italo" → Italo-Disco when listed. A producer or remixer named ("the Liebrand mixes", "Bob Sinclar's Cerrone", "Frankie Knuckles remixes") becomes keywords with that surname plus release "remix". A single year ("from 1984") is yearFrom and yearTo 1984; "around 1985" is 1984–1986; "classics" is up to 1995; "oldies" before 1975; "new" or "recent" the last two years; "the 12-inch years" 1982–1991. Tempo knowledge when no genre is named: italo 110–128, hi-NRG 125–140, disco 100–130, house 118–130, trance 130–145. Spell every genre, folder and artist exactly as the library lists them.
+- segments: a set in phases, when the listener describes a sequence — "start calm around 100 BPM for 15 minutes, then dance and disco from 100 to 120, then 30 minutes of club house with a higher BPM, then 30 minutes of dance, then trance". One entry per phase, in the listener's order, two phases at least: name (a few words in the listener's language), minutes or songs when they say how long the phase lasts (both null otherwise), genres from the genre list and/or families for that phase only, bpmFrom / bpmTo for that phase (from the words, or from the genre's average BPM in the genre list: "with a higher BPM" means above the phase before, trance sits around 135–140), energy: build when the phase rises ("from 100 to 120"), steady when it stays, cooldown when it falls. Every phase is picked from this library on its own and mixed into the next, so each phase must name what to play — a phase without genres, families or tempo is the whole library. The top-level genres, families, bpmFrom / bpmTo, energy, songs and minutes then stay empty: the phases decide; era, artists, exclusions and the listener's marks still apply to every phase. One mood, one tempo, one genre is never a set in phases — then segments is empty.
 - clarification: only when the request is not about music, or cannot be met from this library at all; then explain in the listener's language and leave the rest empty. Otherwise null.`;
 
 let _lastfm = null;
@@ -889,6 +890,25 @@ async function buildQueueInScope(brief, scope) {
     };
   }
 
+  const resolved = {
+    genres: genres.matched, excludeGenres: excluded.matched, families: brief.families,
+    artists: artists.seedNames, similar: artists.similarFound,
+    folders: [...new Set(folders.map(f => f.label))],
+    titles: brief.titles, keys: brief.keys, release: brief.release,
+    playlists: notes.filter(x => x.code === 'playlistUsed').map(x => x.name), collections: brief.collections,
+  };
+  const set = { scope, profile, resolver, maxSongs };
+  if (brief.segments.length) {
+    const phased = buildPhasedQueue(brief, set, notes, r, ctx);
+    return { songs: render(phased.songs), notes, stats: phased.stats, resolved: { ...resolved, genres: phased.genres, families: phased.families, segments: phased.segments } };
+  }
+  const plan = pickSet(brief, set, notes, r, ctx);
+  return { songs: render(plan.songs), notes: [...notes, ...plan.notes], stats: plan.stats, resolved };
+}
+
+// The pool for one brief, relaxed tier by tier until it is big enough, and
+// the planned set from it. `exclude`: ids already playing in an earlier phase.
+function pickSet(brief, { scope, profile, resolver, maxSongs }, notes, r, ctx, exclude = null) {
   const want = Math.min(maxSongs, brief.songs ?? (brief.minutes ? Math.round(brief.minutes * 60 / (profile.avgDuration || 240)) : DEFAULT_SONGS));
   // a request for one song with one exact match is answered, not relaxed
   const enough = want <= 5 ? want : Math.max(Math.ceil(want * 1.25), want + 5);
@@ -908,6 +928,7 @@ async function buildQueueInScope(brief, scope) {
       const seen = new Set(pool.map(p => p.id));
       for (const row of familyPool(brief, scope, r, resolver, UNTAGGED_POOL)) if (!seen.has(row.id)) pool.push(row);
     }
+    if (exclude?.size) pool = pool.filter(row => !exclude.has(row.id));
     if (pool.length >= enough) break;
   }
   notes.push(...tierNotes(applied, brief, r));
@@ -915,20 +936,50 @@ async function buildQueueInScope(brief, scope) {
     const t = title.toLowerCase();
     if (!pool.some(row => String(row.title || '').toLowerCase().includes(t))) notes.push({ code: 'titleUnknown', name: title });
   }
+  return planQueue({ brief, pool, maxSongs, ctx });
+}
 
-  const plan = planQueue({ brief, pool, maxSongs, ctx });
-  return {
-    songs: render(plan.songs),
-    notes: [...notes, ...plan.notes],
-    stats: plan.stats,
-    resolved: {
-      genres: genres.matched, excludeGenres: excluded.matched, families: brief.families,
-      artists: artists.seedNames, similar: artists.similarFound,
-      folders: [...new Set(folders.map(f => f.label))],
-      titles: brief.titles, keys: brief.keys, release: brief.release,
-      playlists: notes.filter(x => x.code === 'playlistUsed').map(x => x.name), collections: brief.collections,
-    },
-  };
+// A set in phases: each phase is its own brief for genre, tempo, arc and
+// length, inheriting everything else (era, artists, marks, exclusions), built
+// as its own mixable set that starts where the phase before it ended. A song
+// plays in one phase only; the cap counts the whole set.
+function buildPhasedQueue(brief, set, notes, r, ctx) {
+  const { profile, resolver, maxSongs } = set;
+  const songs = [], segments = [], genresUsed = new Set(), familiesUsed = new Set();
+  const playing = new Set();
+  let startBpm = null, left = maxSongs, pool = 0;
+  for (const [i, seg] of brief.segments.entries()) {
+    if (left <= 0) { notes.push({ code: 'cappedByAdmin', max: maxSongs }); break; }
+    const sub = { ...brief, segments: [], genres: seg.genres, families: seg.families, bpmFrom: seg.bpmFrom, bpmTo: seg.bpmTo, energy: seg.energy, minutes: seg.minutes, songs: seg.songs };
+    const own = [];
+    const genres = matchGenres(seg.genres, profile, own, 'genreUnknown');
+    const fams = familyRaws(seg.families, profile, resolver);
+    const r2 = { ...r, whitelist: [...new Set([...genres.raws, ...fams])] };
+    // where the next phase opens, so this one can end near it
+    const next = brief.segments[i + 1];
+    const endBpm = next ? next.bpmFrom ?? next.bpmTo ?? null : null;
+    const ctx2 = { ...ctx, genreRaw: genres.raws, genreFamilies: new Set([...genres.raws].map(raw => resolver?.fromTag(raw) || keywordFamily(raw)).filter(f => f && f !== 'ignore')), startBpm, endBpm };
+    const plan = pickSet(sub, { ...set, maxSongs: left }, own, r2, ctx2, playing);
+    const corridor = plan.notes.find(n => n.code === 'flowCorridor');
+    segments.push({
+      index: i + 1, name: seg.name, genres: genres.matched, families: seg.families, energy: seg.energy,
+      songs: plan.songs.length, minutes: plan.stats.minutes, bpmFrom: plan.stats.bpmFrom, bpmTo: plan.stats.bpmTo,
+      corridor: corridor ? { from: corridor.from, to: corridor.to } : null,
+    });
+    for (const n of [...own, ...plan.notes]) {
+      if (n.code === 'flowCorridor') continue;
+      const note = n.code === 'cappedByAdmin' ? { ...n, max: maxSongs } : { ...n, phase: i + 1 };
+      if (!notes.some(x => JSON.stringify(x) === JSON.stringify(note))) notes.push(note);
+    }
+    for (const row of plan.songs) { playing.add(row.id); songs.push(row); }
+    for (const g of genres.matched) genresUsed.add(g);
+    for (const f of seg.families) familiesUsed.add(f);
+    const last = plan.songs.findLast(row => row.bpm > 0);
+    if (last) startBpm = last.bpm;
+    left -= plan.songs.length;
+    pool += plan.stats.pool;
+  }
+  return { songs, segments, genres: [...genresUsed], families: [...familiesUsed], stats: queueStats(songs, { pool, avgDuration: profile.avgDuration || 240 }) };
 }
 
 // On for every listener once the admin switches it on; off per user with allow-ai-dj: false.

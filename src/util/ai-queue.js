@@ -26,6 +26,7 @@ export const DEFAULT_SONGS = 25;
 export const MAX_MINUTES = 24 * 60;
 export const MAX_SONGS = 9999;
 export const MAX_LIST = 25;
+export const MAX_SEGMENTS = 12;
 const FALLBACK_DURATION = 240;
 const CHAIN_LIMIT = 1500;
 
@@ -124,10 +125,28 @@ export const BRIEF_SCHEMA = {
     chartFrom: nullableInt,
     chartTo: nullableInt,
     cohesive: { type: 'boolean' },
+    segments: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          name: { type: 'string' },
+          minutes: nullableInt,
+          songs: nullableInt,
+          genres: strList,
+          families: { type: 'array', items: { type: 'string', enum: FAMILIES } },
+          bpmFrom: nullableInt,
+          bpmTo: nullableInt,
+          energy: { type: 'string', enum: ENERGY },
+        },
+        required: ['name', 'minutes', 'songs', 'genres', 'families', 'bpmFrom', 'bpmTo', 'energy'],
+        additionalProperties: false,
+      },
+    },
     clarification: { type: ['string', 'null'] },
   },
   required: ['title', 'summary', 'songs', 'minutes', 'genres', 'excludeGenres', 'families', 'yearFrom', 'yearTo', 'bpmFrom', 'bpmTo',
-    'energy', 'artists', 'artistMode', 'excludeArtists', 'folders', 'keywords', 'albums', 'excludeAlbums', 'albumMode', 'titles', 'minSeconds', 'maxSeconds', 'keys', 'release', 'prefer', 'ranking', 'order', 'starred', 'played', 'rated', 'minPlays', 'maxPlays', 'addedWithinDays', 'playedWithinDays', 'notPlayedWithinDays', 'lossless', 'hiRes', 'playlists', 'collections', 'excludeKeywords', 'allVersions', 'favourites', 'discovery', 'minRating', 'chart', 'chartFrom', 'chartTo', 'cohesive', 'clarification'],
+    'energy', 'artists', 'artistMode', 'excludeArtists', 'folders', 'keywords', 'albums', 'excludeAlbums', 'albumMode', 'titles', 'minSeconds', 'maxSeconds', 'keys', 'release', 'prefer', 'ranking', 'order', 'starred', 'played', 'rated', 'minPlays', 'maxPlays', 'addedWithinDays', 'playedWithinDays', 'notPlayedWithinDays', 'lossless', 'hiRes', 'playlists', 'collections', 'excludeKeywords', 'allVersions', 'favourites', 'discovery', 'minRating', 'chart', 'chartFrom', 'chartTo', 'cohesive', 'segments', 'clarification'],
   additionalProperties: false,
 };
 
@@ -137,15 +156,27 @@ const str = Joi.string().trim().max(120).allow('');
 const strs = Joi.array().items(str).max(MAX_LIST).default([]);
 const year = Joi.number().integer().min(1900).max(2100).allow(null).default(null);
 const bpm = Joi.number().integer().min(40).max(300).allow(null).default(null);
+const count = Joi.number().integer().min(1).allow(null).default(null);
+const families = Joi.array().items(Joi.string().valid(...FAMILIES)).max(FAMILIES.length).default([]);
+const energy = Joi.string().valid(...ENERGY).default('steady');
+// One phase of a set in phases: "15 minutes calm around 100 BPM, then disco
+// up to 120, then half an hour of club house, then trance".
+const segmentJoi = Joi.object({
+  name: Joi.string().trim().max(80).allow('').default(''),
+  minutes: count, songs: count,
+  genres: strs, families,
+  bpmFrom: bpm, bpmTo: bpm,
+  energy,
+}).options({ stripUnknown: true });
 const briefJoi = Joi.object({
   title: Joi.string().trim().max(120).allow('').default(''),
   summary: Joi.string().trim().max(400).allow('').default(''),
-  songs: Joi.number().integer().min(1).allow(null).default(null),
-  minutes: Joi.number().integer().min(1).allow(null).default(null),
+  songs: count,
+  minutes: count,
   genres: strs, excludeGenres: strs,
-  families: Joi.array().items(Joi.string().valid(...FAMILIES)).max(FAMILIES.length).default([]),
+  families,
   yearFrom: year, yearTo: year, bpmFrom: bpm, bpmTo: bpm,
-  energy: Joi.string().valid(...ENERGY).default('steady'),
+  energy,
   artists: strs,
   artistMode: Joi.string().valid('feature', 'only').default('feature'),
   excludeArtists: strs,
@@ -179,14 +210,39 @@ const briefJoi = Joi.object({
   chartFrom: Joi.number().integer().min(1).max(MAX_SONGS).allow(null).default(null),
   chartTo: Joi.number().integer().min(1).max(MAX_SONGS).allow(null).default(null),
   cohesive: Joi.boolean().default(false),
+  segments: Joi.array().items(segmentJoi).max(MAX_SEGMENTS).default([]),
   clarification: Joi.string().trim().max(300).allow('', null).default(null),
 }).options({ stripUnknown: true });
+
+// A phase with no length gets the typical length of the phases that have
+// one, else its share of the set's length; a set in phases is a mixed set
+// (no chart, ranking, album or seed-song shape), one phase is no set in phases.
+function validateSegments(value) {
+  if (value.segments.length < 2) { value.segments = []; return; }
+  const med = l => median(l) ?? null;
+  const minutes = med(value.segments.map(s => s.minutes));
+  const songs = med(value.segments.map(s => s.songs));
+  for (const s of value.segments) {
+    if (s.bpmFrom != null && s.bpmTo != null && s.bpmFrom > s.bpmTo) [s.bpmFrom, s.bpmTo] = [s.bpmTo, s.bpmFrom];
+    s.genres = [...new Set(s.genres.map(g => g.trim()).filter(Boolean))];
+    if (s.minutes != null) s.minutes = Math.min(s.minutes, MAX_MINUTES);
+    if (s.songs != null) s.songs = Math.min(s.songs, MAX_SONGS);
+    if (s.minutes != null || s.songs != null) continue;
+    if (minutes != null) s.minutes = minutes;
+    else if (songs != null) s.songs = songs;
+    else if (value.minutes != null) s.minutes = Math.max(5, Math.round(value.minutes / value.segments.length));
+    else s.songs = Math.max(3, Math.round((value.songs ?? DEFAULT_SONGS) / value.segments.length));
+  }
+  Object.assign(value, { chart: null, chartFrom: null, chartTo: null, ranking: 'none', albumMode: 'songs', cohesive: false, titles: [], allVersions: false, prefer: 'none' });
+  if (value.order === 'countdown') value.order = 'dj';
+}
 
 export function validateBrief(raw) {
   const { error, value } = briefJoi.validate(raw ?? {});
   if (error) throw error;
   if (value.songs != null) value.songs = Math.min(value.songs, MAX_SONGS);
   if (value.minutes != null) value.minutes = Math.min(value.minutes, MAX_MINUTES);
+  validateSegments(value);
   if (value.yearFrom != null && value.yearTo != null && value.yearFrom > value.yearTo) [value.yearFrom, value.yearTo] = [value.yearTo, value.yearFrom];
   if (value.bpmFrom != null && value.bpmTo != null && value.bpmFrom > value.bpmTo) [value.bpmFrom, value.bpmTo] = [value.bpmTo, value.bpmFrom];
   const dedupe = l => [...new Set(l.map(s => s.trim()).filter(Boolean))];
@@ -492,7 +548,7 @@ function shape(withBpm, energy) {
 function smoothTempo(picked, candidates, ctx, tight = 1) {
   const keep = c => ctx.seedArtists.has(artistKey(c.row.artist)) || (ctx.titles || []).some(t => String(c.row.title || '').toLowerCase().includes(t));
   const chosen = new Set(picked);
-  for (let iter = 0; iter < picked.length; iter++) {
+  for (let iter = 0; iter < picked.length * 2; iter++) {
     const ladder = picked.filter(c => c.row.bpm > 0).sort((a, b) => a.row.bpm - b.row.bpm);
     if (ladder.length < 3) return picked;
     let gi = -1, gap = 0;
@@ -504,26 +560,77 @@ function smoothTempo(picked, candidates, ctx, tight = 1) {
     const lo = ladder[gi - 1].row.bpm, hi = ladder[gi].row.bpm;
     if (gap <= maxStep(lo) * tight) return picked;
     const seen = new Set(picked.map(c => versionKey(c.row)));
-    // the best song that sits in the gap — never a markedly weaker one than
-    // the song it replaces, so the asked era, the favourites, the similar
-    // artists are not traded for a rung
-    const filler = candidates
+    // the songs that sit in the gap — never a markedly weaker one than the
+    // song it replaces, so the asked era, the favourites, the similar artists
+    // are not traded for a rung; among the nearly-best, the one nearest the middle
+    const inGap = candidates
       .filter(c => !chosen.has(c) && c.row.bpm > lo && c.row.bpm < hi && !seen.has(versionKey(c.row)))
-      .sort((a, b) => b.score - a.score)[0];
-    if (!filler) return picked;
-    let victim = null, opens = Infinity;
+      .sort((a, b) => b.score - a.score);
+    if (!inGap.length) return picked;
+    const mid = (lo + hi) / 2;
+    const filler = inGap.filter(c => c.score >= inGap[0].score - 0.03).sort((a, b) => Math.abs(a.row.bpm - mid) - Math.abs(b.row.bpm - mid))[0];
+    // the victim: the song whose removal, with the filler in place, leaves
+    // the ladder with the smallest worst gap — its slot must still mix, or
+    // the worst gap must shrink. Never an end, never an end of the gap itself.
+    const d = ladder.map((c, i) => (i ? c.row.bpm - ladder[i - 1].row.bpm : 0));
+    d[gi] = 0;
+    const pre = [], suf = [];
+    for (let i = 0; i < d.length; i++) pre[i] = Math.max(d[i], pre[i - 1] ?? 0);
+    for (let i = d.length - 1; i >= 0; i--) suf[i] = Math.max(d[i], suf[i + 1] ?? 0);
+    const split = Math.max(filler.row.bpm - lo, hi - filler.row.bpm);
+    let victim = null, after = Infinity, opens = Infinity;
     for (let i = 1; i + 1 < ladder.length; i++) {
       const c = ladder[i];
-      if (keep(c)) continue;
-      const d = ladder[i + 1].row.bpm - ladder[i - 1].row.bpm;
-      if (d < opens || (d === opens && c.score < victim.score)) { opens = d; victim = c; }
+      if (keep(c) || i === gi - 1 || i === gi || filler.score < c.score - 0.03) continue;
+      const o = ladder[i + 1].row.bpm - ladder[i - 1].row.bpm;
+      const a = Math.max(pre[i - 1], suf[i + 2] ?? 0, o, split);
+      if (a < after || (a === after && c.score < victim.score)) { after = a; victim = c; opens = o; }
     }
-    if (!victim || opens > maxStep(lo) || filler.score < victim.score - 0.03) return picked;
+    if (!victim || after > gap || (after === gap && opens > maxStep(lo))) return picked;
     picked[picked.indexOf(victim)] = filler;
     chosen.delete(victim);
     chosen.add(filler);
   }
   return picked;
+}
+
+// "From 100 to 120 BPM": a build or cooldown between two named tempos is a
+// journey that must arrive. The ladder is laid out on evenly spaced rungs
+// from the one tempo to the other, each rung taking the best song within
+// half a rung of it (never twice the same artist back to back, one artist
+// never dominating); named artists and titles keep their slots, and a rung
+// nobody fits stays with the original pick.
+function journeyLadder(picked, candidates, ctx, lo, hi) {
+  const n = picked.length;
+  if (n < 2) return picked;
+  const keep = c => ctx.seedArtists.has(artistKey(c.row.artist)) || (ctx.titles || []).some(t => String(c.row.title || '').toLowerCase().includes(t));
+  const out = picked.filter(keep);
+  const chosen = new Set(out);
+  const seen = new Set(out.map(c => versionKey(c.row)));
+  const perArtist = clamp(Math.ceil(n / 12), 1, 8);
+  const byArtist = new Map();
+  for (const c of out) byArtist.set(artistKey(c.row.artist), (byArtist.get(artistKey(c.row.artist)) || 0) + 1);
+  const rung = (hi - lo) / (n - 1);
+  const fits = x => !chosen.has(x) && x.row.bpm > 0 && !seen.has(versionKey(x.row)) && (byArtist.get(artistKey(x.row.artist)) || 0) < perArtist;
+  for (let k = 0; k < n && out.length < n; k++) {
+    const target = lo + rung * k;
+    const reach = Math.max(rung / 2, maxStep(target) / 2);
+    // a rung nobody sits on exactly takes the nearest song, up to a step and a half away
+    let c = null;
+    for (const widen of [1, 2, 3]) {
+      c = candidates
+        .filter(x => fits(x) && Math.abs(x.row.bpm - target) <= reach * widen)
+        .sort((a, b) => b.score - a.score || Math.abs(a.row.bpm - target) - Math.abs(b.row.bpm - target))[0];
+      if (c) break;
+    }
+    if (!c) continue;
+    out.push(c);
+    chosen.add(c);
+    seen.add(versionKey(c.row));
+    byArtist.set(artistKey(c.row.artist), (byArtist.get(artistKey(c.row.artist)) || 0) + 1);
+  }
+  for (const c of picked) if (out.length < n && !chosen.has(c) && !seen.has(versionKey(c.row))) { out.push(c); chosen.add(c); seen.add(versionKey(c.row)); }
+  return out;
 }
 
 function orderBy(picked, order) {
@@ -602,9 +709,20 @@ function harmonicChain(seq, candidates, ctx) {
   return out;
 }
 
-function harmonize(seq) {
+// A build climbs and a cooldown falls: a swap for a key or an artist may not
+// turn the arc back on itself (a wobble of half a step is nothing).
+function arcKeeper(seq, energy) {
+  const dir = { build: 1, cooldown: -1 }[energy] || 0;
+  if (!dir) return () => true;
+  const known = c => c.row.bpm > 0;
+  const ok = (a, b) => !known(a) || !known(b) || (b.row.bpm - a.row.bpm) * dir >= -maxStep(Math.min(a.row.bpm, b.row.bpm)) / 2;
+  return pos => (pos === 0 || ok(seq[pos - 1], seq[pos])) && (pos + 1 >= seq.length || ok(seq[pos], seq[pos + 1]));
+}
+
+function harmonize(seq, energy = 'steady') {
   const gap = (a, b) => (a.row.bpm > 0 && b.row.bpm > 0 ? Math.abs(a.row.bpm - b.row.bpm) : 0);
-  const smoothAt = pos => (pos === 0 || gap(seq[pos - 1], seq[pos]) <= maxStep(seq[pos].row.bpm)) && (pos + 1 >= seq.length || gap(seq[pos], seq[pos + 1]) <= maxStep(seq[pos].row.bpm));
+  const arc = arcKeeper(seq, energy);
+  const smoothAt = pos => arc(pos) && (pos === 0 || gap(seq[pos - 1], seq[pos]) <= maxStep(seq[pos].row.bpm)) && (pos + 1 >= seq.length || gap(seq[pos], seq[pos + 1]) <= maxStep(seq[pos].row.bpm));
   const sameArtist = (a, b) => a && b && artistKey(a.row.artist) === artistKey(b.row.artist);
   const clashAt = pos => sameArtist(seq[pos], seq[pos - 1]) || sameArtist(seq[pos], seq[pos + 1]);
   for (let i = 0; i + 1 < seq.length; i++) {
@@ -707,10 +825,16 @@ const STRICT_STEPS = [
   { lo: 0.08, hi: 0.08, key: 0, genre: 'family' },
 ];
 const FLOW_SPAN = { steady: [0.06, 0.06], build: [0.02, 0.14], cooldown: [0.02, 0.14], peak: [0.02, 0.12], wave: [0.02, 0.12] };
-function flowSteps(energy) {
-  const [lo, hi] = FLOW_SPAN[energy] || FLOW_SPAN.steady;
+// a phase that follows another drifts up from where that one ended rather
+// than opening below it
+const FOLLOW_SPAN = [0.02, 0.1];
+// A journey between two named tempos spans too many rungs to keep every song
+// in a key compatible with one seed: there the keys are matched transition
+// by transition, later, and the corridor is only the genre family.
+function flowSteps(energy, follows = false, keyed = true) {
+  const [lo, hi] = follows && energy === 'steady' ? FOLLOW_SPAN : FLOW_SPAN[energy] || FLOW_SPAN.steady;
   return [
-    { lo, hi, key: 0.5, genre: 'family' },
+    { lo, hi, key: keyed ? 0.5 : 0, genre: 'family' },
     { lo, hi, key: 0, genre: 'family' },
     { lo: lo * 1.5, hi: hi * 1.5, key: 0, genre: 'family' },
     { lo: lo * 1.5, hi: hi * 1.5, key: 0, genre: 'any' },
@@ -732,11 +856,18 @@ function mixableSubset(scored, n, brief, ctx, notes) {
   // seed is where the arc starts — a build climbs from a slow song, a cooldown
   // falls from a fast one — so the corridor can hold the whole climb
   const complete = c => (c.key ? 1 : 0) + (genreOf(c.row) ? 1 : 0);
-  const seeds = (!strict && arc !== 'steady'
-    ? [...candidates].sort((a, b) => (arc === 'cooldown' ? b.row.bpm - a.row.bpm : a.row.bpm - b.row.bpm) || complete(b) - complete(a))
-    : [...candidates].sort((a, b) => complete(b) - complete(a))
-  ).slice(0, 16);
-  const steps = strict ? STRICT_STEPS : flowSteps(arc).map(s => (arc === 'cooldown' ? { ...s, lo: s.hi, hi: s.lo } : s));
+  // a phase that follows another starts where that one ended: the seed is
+  // the song nearest that tempo, whatever the arc does from there
+  const start = !strict && ctx.startBpm > 0 ? ctx.startBpm : null;
+  let seeds;
+  if (start) seeds = [...candidates].sort((a, b) => Math.abs(a.row.bpm - start) - Math.abs(b.row.bpm - start) || complete(b) - complete(a));
+  else if (!strict && arc !== 'steady') seeds = [...candidates].sort((a, b) => (arc === 'cooldown' ? b.row.bpm - a.row.bpm : a.row.bpm - b.row.bpm) || complete(b) - complete(a));
+  else seeds = [...candidates].sort((a, b) => complete(b) - complete(a));
+  seeds = seeds.slice(0, 16);
+  // "from 100 to 120": a journey between two named tempos is the corridor at
+  // least; a steady set "around 100" keeps its tight corridor inside the range
+  const asked = !strict && (arc === 'build' || arc === 'cooldown') && brief.bpmFrom != null && brief.bpmTo != null;
+  const steps = strict ? STRICT_STEPS : flowSteps(arc, !!start, !asked).map(s => (arc === 'cooldown' ? { ...s, lo: s.hi, hi: s.lo } : s));
   // a corridor is only worth it when it costs no quality: it must hold enough
   // distinct songs, enough room under the per-artist cap, and its best picks
   // must score as the best picks of the whole pool do (the asked era, the
@@ -774,9 +905,11 @@ function mixableSubset(scored, n, brief, ctx, notes) {
   for (const step of steps) {
     for (const seed of seeds) {
       const g = genreOf(seed.row), f = ctx.familyOf(seed.row);
+      const lo = asked ? Math.max(step.lo, (seed.row.bpm - brief.bpmFrom) / seed.row.bpm) : step.lo;
+      const hi = asked ? Math.max(step.hi, (brief.bpmTo - seed.row.bpm) / seed.row.bpm) : step.hi;
       const subset = withBpm.filter(c => {
         const d = c.row.bpm - seed.row.bpm;
-        if (d < -seed.row.bpm * step.lo || d > seed.row.bpm * step.hi) return false;
+        if (d < -seed.row.bpm * lo || d > seed.row.bpm * hi) return false;
         if (step.key > 0 && seed.key && (!c.key || camelotScore(seed.key, c.key) < step.key)) return false;
         if (step.genre === 'tag' && g) return genreOf(c.row) === g;
         if (step.genre !== 'any' && f) return ctx.familyOf(c.row) === f;
@@ -785,7 +918,7 @@ function mixableSubset(scored, n, brief, ctx, notes) {
       if (subset.length > best.subset.length) best = { subset, seed, step };
       if (good(subset)) {
         if (!strict) {
-          notes.push({ code: 'flowCorridor', from: Math.round(seed.row.bpm * (1 - step.lo)), to: Math.round(seed.row.bpm * (1 + step.hi)), genre: f || '' });
+          notes.push({ code: 'flowCorridor', from: Math.round(seed.row.bpm * (1 - lo)), to: Math.round(seed.row.bpm * (1 + hi)), genre: f || '' });
           return [...subset, ...without];
         }
         report(seed, step, subset.length);
@@ -809,15 +942,60 @@ function mixableSubset(scored, n, brief, ctx, notes) {
   }
 }
 
-function arrange(picked, energy) {
+// A steady phase between other phases starts near the tempo the phase before
+// ended on and ends near the one the next phase opens with. A hill's two ends
+// are the two slowest songs, one rung apart, so the hill can be turned to
+// start anywhere and every step stays small; a plain ramp (the hill's
+// fallback) can only be turned round.
+function fromStart(shaped, energy, startBpm, endBpm) {
+  const start = startBpm > 0 ? startBpm : null, end = endBpm > 0 ? endBpm : null;
+  if (energy !== 'steady' || (!start && !end) || shaped.length < 4 || shaped.length > CHAIN_LIMIT) return shaped;
+  const cost = seq => (start ? Math.abs(seq[0].row.bpm - start) : 0) + (end ? Math.abs(seq.at(-1).row.bpm - end) : 0);
+  // a hill always ends next to where it starts; between a slower and a faster
+  // phase the plain climb (or descent) through the corridor is the better bridge
+  const asc = [...shaped].sort((a, b) => a.row.bpm - b.row.bpm);
+  const options = [shaped, asc, [...asc].reverse()];
+  const first = shaped[0].row.bpm, last = shaped.at(-1).row.bpm;
+  if (Math.abs(last - first) <= maxStep(Math.min(first, last))) {
+    for (let at = 1; at < shaped.length; at++) options.push([...shaped.slice(at), ...shaped.slice(0, at)]);
+  }
+  let best = shaped, bestCost = cost(shaped);
+  for (const seq of options) {
+    const c = cost(seq);
+    if (c < bestCost) { best = seq; bestCost = c; }
+  }
+  return best;
+}
+
+function arrange(picked, energy, startBpm = null, endBpm = null) {
   const withBpm = picked.filter(c => c.row.bpm > 0);
   const hasBpm = new Set(withBpm);
   const without = picked.filter(c => !hasBpm.has(c));
   // keys are harmonised again after the artist spacing, which may have moved a song
-  return harmonize(spaceArtists(harmonize(sprinkle(shape(withBpm, energy), without))));
+  return harmonize(spaceArtists(harmonize(sprinkle(fromStart(shape(withBpm, energy), energy, startBpm, endBpm), without), energy)), energy);
 }
 
 const dur = (row, fallback) => (Number(row.duration) > 0 ? Number(row.duration) : fallback);
+
+// What the player shows about a set: how it moves in tempo and in key.
+export function queueStats(songs, { pool = 0, avgDuration = FALLBACK_DURATION } = {}) {
+  const bpms = songs.map(s => s.bpm).filter(b => b > 0);
+  let maxStepTaken = null;
+  let harmonicOk = 0, harmonicTotal = 0;
+  for (let i = 1; i < songs.length; i++) {
+    if (songs[i].bpm > 0 && songs[i - 1].bpm > 0) maxStepTaken = Math.max(maxStepTaken ?? 0, Math.abs(songs[i].bpm - songs[i - 1].bpm));
+    const a = toCamelot(songs[i - 1].musical_key), b = toCamelot(songs[i].musical_key);
+    if (a && b) { harmonicTotal++; if (harmonic(a, b)) harmonicOk++; }
+  }
+  const minutes = Math.round(songs.reduce((s, r) => s + dur(r, avgDuration), 0) / 60);
+  return {
+    pool, picked: songs.length, minutes,
+    artists: new Set(songs.map(s => artistKey(s.artist))).size,
+    bpmFrom: bpms.length ? Math.min(...bpms) : null, bpmTo: bpms.length ? Math.max(...bpms) : null,
+    withBpm: bpms.length, maxStep: maxStepTaken == null ? null : Math.round(maxStepTaken * 10) / 10,
+    harmonic: harmonicOk, transitions: harmonicTotal, withKey: songs.filter(s => toCamelot(s.musical_key)).length,
+  };
+}
 
 export function planQueue({ brief, pool, maxSongs, ctx }) {
   const notes = [];
@@ -852,32 +1030,15 @@ export function planQueue({ brief, pool, maxSongs, ctx }) {
       if (n2 !== picked.length) picked = ensureSeeds(selectSongs(scored, n2, brief, ctx), scored, ctx);
     }
   }
+  const journey = flow && (brief.energy === 'build' || brief.energy === 'cooldown') && brief.bpmFrom != null && brief.bpmTo != null;
+  if (journey) picked = journeyLadder(picked, scored, ctx, brief.bpmFrom, brief.bpmTo);
   if (flow) picked = smoothTempo(picked, scored, ctx, ['steady', 'peak', 'wave'].includes(brief.energy) ? 0.5 : 1);
   // countdown only means something for a chart; a mixed set keeps its flow, and
   // "random" songs that must match each other are still laid out as a mix
-  let seq = brief.order === 'dj' || brief.order === 'countdown' || brief.cohesive ? arrange(picked, brief.energy) : orderBy(picked, brief.order);
+  let seq = brief.order === 'dj' || brief.order === 'countdown' || brief.cohesive ? arrange(picked, brief.energy, ctx.startBpm, ctx.endBpm) : orderBy(picked, brief.order);
   // then the keys: a transition that does not mix is repaired from the corridor
   if (flow) seq = harmonicChain(seq, scored, ctx);
 
-  const avgDuration = typical;
   const songs = seq.map(c => c.row);
-  const bpms = songs.map(s => s.bpm).filter(b => b > 0);
-  let maxStepTaken = null;
-  let harmonicOk = 0, harmonicTotal = 0;
-  for (let i = 1; i < songs.length; i++) {
-    if (songs[i].bpm > 0 && songs[i - 1].bpm > 0) maxStepTaken = Math.max(maxStepTaken ?? 0, Math.abs(songs[i].bpm - songs[i - 1].bpm));
-    const a = toCamelot(songs[i - 1].musical_key), b = toCamelot(songs[i].musical_key);
-    if (a && b) { harmonicTotal++; if (harmonic(a, b)) harmonicOk++; }
-  }
-  const minutes = Math.round(songs.reduce((s, r) => s + (Number(r.duration) > 0 ? Number(r.duration) : avgDuration), 0) / 60);
-  return {
-    songs, notes,
-    stats: {
-      pool: pool.length, picked: songs.length, minutes,
-      artists: new Set(songs.map(s => artistKey(s.artist))).size,
-      bpmFrom: bpms.length ? Math.min(...bpms) : null, bpmTo: bpms.length ? Math.max(...bpms) : null,
-      withBpm: bpms.length, maxStep: maxStepTaken == null ? null : Math.round(maxStepTaken * 10) / 10,
-      harmonic: harmonicOk, transitions: harmonicTotal, withKey: songs.filter(s => toCamelot(s.musical_key)).length,
-    },
-  };
+  return { songs, notes, stats: queueStats(songs, { pool: pool.length, avgDuration: typical }) };
 }

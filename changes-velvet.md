@@ -1,3 +1,43 @@
+## v0.8.1 (2026-10-28)
+
+AI DJ: a set in phases
+
+### Added
+
+- **A set in phases.** *"Start calm around 100 BPM for 15 minutes, then
+  dance and disco from 100 to 120, then 30 minutes of club house a bit
+  faster, then 30 minutes of dance, then trance"* used to come back as one
+  25-song set from one tempo corridor, without a single trance record: the
+  brief had no way to say "first this, then that". It now has `segments`:
+  one entry per phase with its own genres or families, tempo range, arc and
+  length (minutes or songs); everything else — era, artists, exclusions, the
+  listener's marks and format wishes — applies to every phase. Each phase is
+  built as its own mixable set whose corridor starts at the tempo the phase
+  before it ended on, no song plays in two phases, and the admin cap counts
+  the whole set. A phase without a length gets the typical length of the
+  phases that have one. The result page lists the phases in playing order
+  with what each one got (songs, minutes, BPM range, arc), and the song list
+  runs through them in that order. (`docs/ai-dj.md`, `docs/API/ai-queue.md`.)
+- **A build between two named tempos arrives.** "From 100 to 120 BPM" now
+  starts at 100 and ends at 120: the corridor is at least the asked range, and
+  the set is laid out on evenly spaced rungs from the one tempo to the other,
+  each rung taking the best-scoring song within half a rung of it. Five
+  eight-minute disco mixes over twenty BPM are 100, 105, 110, 115, 120 — the
+  steps are what the listener asked for. Before, such a build stopped
+  wherever the +14% corridor ran out (100 → 113) and the next phase opened
+  with a 10 BPM jump.
+
+### Fixed
+
+- The gap filler refused to repair a wide tempo hole in the ladder (101 →
+  113) when removing a song elsewhere would open a 3 BPM gap. It now judges a
+  swap by the ladder it leaves behind, with the newcomer in place, and takes
+  any swap that shrinks the worst gap.
+- The key and artist passes could turn a build back on itself at the end
+  (… 129, 132, 130, 128) because they only checked the size of a step, not
+  its direction. A build climbs and a cooldown falls through those passes;
+  a wobble of half a step is allowed.
+
 ## v0.8.0 (2026-10-28)
 
 AI DJ and AI-assist: a set from a sentence

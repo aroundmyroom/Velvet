@@ -167,6 +167,65 @@ describe('songs that match each other', () => {
   });
 });
 
+describe('a set in phases', () => {
+  it('keeps two or more phases, gives a phase without a length the typical one, and drops the other set shapes', () => {
+    const one = validateBrief({ segments: [{ name: 'only', genres: ['House'] }] });
+    assert.deepEqual(one.segments, [], 'one phase is no set in phases');
+    const b = validateBrief({
+      chart: 'Top 40', chartFrom: 1, chartTo: 10, ranking: 'mostPlayed', cohesive: true, order: 'countdown', minutes: 120,
+      segments: [
+        { name: 'rustig', minutes: 15, families: ['ambient'], bpmFrom: 110, bpmTo: 95 },
+        { name: 'disco', minutes: 30, genres: ['Disco', ' disco ', ''], bpmFrom: 100, bpmTo: 120, energy: 'build' },
+        { name: 'trance', genres: ['Trance'] },
+      ],
+    });
+    assert.equal(b.segments.length, 3);
+    assert.deepEqual([b.segments[0].bpmFrom, b.segments[0].bpmTo], [95, 110]);
+    assert.deepEqual(b.segments[1].genres, ['Disco', 'disco']);
+    assert.equal(b.segments[2].minutes, 30, 'the typical length of the phases that have one');
+    assert.equal(b.chart, null);
+    assert.equal(b.ranking, 'none');
+    assert.equal(b.cohesive, false);
+    assert.equal(b.order, 'dj');
+    const bySongs = validateBrief({ segments: [{ songs: 4 }, {}, { songs: 8 }, { songs: 6 }] });
+    assert.equal(bySongs.segments[1].songs, 6);
+    const open = validateBrief({ segments: [{}, {}, {}, {}, {}] });
+    assert.ok(open.segments.every(s => s.songs === 5), 'a share of the default set');
+    assert.throws(() => validateBrief({ segments: [{ energy: 'explode' }, {}] }));
+  });
+
+  it('"from 118 to 133 BPM" is a journey that arrives, in small steps', () => {
+    // every song its own artist and one genre: the arc is tested on its own,
+    // not the spacing, and not the corridor (in this pool each rung holds one genre)
+    const p = pool(400, i => ({ artist: `Artist ${i}`, genre: 'house' }));
+    for (let t = 0; t < 5; t++) {
+      const plan = planQueue({ brief: brief({ songs: 8, energy: 'build', bpmFrom: 118, bpmTo: 133 }), pool: p, maxSongs: 500, ctx: ctx() });
+      const bpms = plan.songs.map(s => s.bpm);
+      assert.ok(bpms[0] <= 121, 'starts at the named tempo: ' + bpms.join(','));
+      // within a step of the end, less the half step a key repair may take
+      assert.ok(bpms.at(-1) >= 128, 'arrives at the named tempo: ' + bpms.join(','));
+      assert.ok(bpms.slice(1).every((v, i) => Math.abs(v - bpms[i]) <= 4.5), 'in steps: ' + bpms.join(','));
+    }
+  });
+
+  it('a phase that follows another starts where that one ended', () => {
+    const p = pool(400, i => ({ artist: `Artist ${i % 97}`, genre: 'house' }));
+    for (const start of [119, 126, 132]) {
+      for (const energy of ['steady', 'build']) {
+        const plan = planQueue({ brief: brief({ songs: 20, energy }), pool: p, maxSongs: 500, ctx: ctx({ startBpm: start }) });
+        const bpms = plan.songs.map(s => s.bpm);
+        assert.ok(Math.abs(bpms[0] - start) <= 3, `${energy} starts near ${start}: ` + bpms.join(','));
+        assert.ok(bpms.slice(1).every((v, i) => Math.abs(v - bpms[i]) <= 3.5), 'still in small steps: ' + bpms.join(','));
+      }
+    }
+    // a steady phase before a faster one ends high, so the next phase opens close by
+    const plan = planQueue({ brief: brief({ songs: 20, energy: 'steady', bpmFrom: 120, bpmTo: 128 }), pool: p, maxSongs: 500, ctx: ctx({ startBpm: 121, endBpm: 132 }) });
+    const bpms = plan.songs.map(s => s.bpm);
+    assert.ok(bpms[0] <= 124, 'starts low: ' + bpms.join(','));
+    assert.ok(bpms.at(-1) >= 125, 'ends high: ' + bpms.join(','));
+  });
+});
+
 describe('named titles', () => {
   it('"the Grandmix 1983 and 1986" is two songs, one per title, whatever else is in the pool', () => {
     const p = [
