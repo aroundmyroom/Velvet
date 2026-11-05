@@ -1,5 +1,5 @@
 'use strict';
-const VELVET_VERSION = '0.8.1';
+const VELVET_VERSION = '0.8.2';
 // ── SERVER IDENTITY GUARD ────────────────────────────────────────────────────
 // Detects when this browser's localStorage belongs to a different Velvet
 // instance (fresh install, IP change, reverse-proxy swap, second server).
@@ -23722,6 +23722,41 @@ document.getElementById('qp-shuffle-btn').addEventListener('click', () => {
   persistQueue();
   _syncQueueToDb();
 });
+// Flow: the song playing stays where it is, every song after it is re-ordered
+// so each flows into the next — the DJ's own tempo ladder, Camelot pass and
+// artist spacing applied to the listener's own picks. One Undo toast.
+async function _flowQueue() {
+  const btn = document.getElementById('qp-flow-btn');
+  if (btn.disabled) return;
+  const from = S.idx >= 0 ? S.idx : 0;
+  const slice = S.queue.slice(from);
+  if (slice.length < 3) { toast(t('player.toast.flowTooFew')); return; }
+  const before = [...S.queue], beforeIdx = S.idx;
+  const capped = slice.slice(0, 1000), tail = slice.slice(1000);
+  btn.disabled = true;
+  try {
+    const r = await api('POST', 'api/v1/queue/flow', { songs: capped.map(s => s.filepath), pinFirst: S.idx >= 0 });
+    if (S.queue.length !== before.length || S.queue.some((s, i) => s !== before[i])) { toast(t('player.toast.flowChanged')); return; }
+    const ordered = r.order.map(i => capped[i]);
+    S.queue = [...before.slice(0, from), ...ordered, ...tail]; _qvsVersion++;
+    S.idx = beforeIdx >= 0 ? from : 0;
+    refreshQueueUI(); persistQueue(); _syncQueueToDb();
+    const st = r.stats || {};
+    const parts = [t('player.toast.queueFlowed', { count: ordered.length - (beforeIdx >= 0 ? 1 : 0) })];
+    if (st.maxStep != null) parts.push(t('player.aidj.statsStep', { n: st.maxStep }));
+    if (st.transitions) parts.push(t('player.aidj.statsHarmonic', { ok: st.harmonic, total: st.transitions }));
+    if (r.unplaced?.length) parts.push(t('player.toast.flowUnplaced', { count: r.unplaced.length }));
+    _showToast(parts.join(' · '), { action: { label: t('player.toast.undo'), onClick: () => {
+      S.queue = before; S.idx = beforeIdx; _qvsVersion++;
+      refreshQueueUI(); persistQueue(); _syncQueueToDb();
+    } } });
+  } catch (e) {
+    toastError(t('player.toast.flowFailed'));
+  } finally {
+    btn.disabled = false;
+  }
+}
+document.getElementById('qp-flow-btn').addEventListener('click', _flowQueue);
 document.getElementById('qp-undo-btn').addEventListener('click', _restorePrevQueue);
 document.getElementById('qp-clear-btn').addEventListener('click', () => {
   _snapshotQueueForUndo(null);

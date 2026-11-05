@@ -975,6 +975,21 @@ function arrange(picked, energy, startBpm = null, endBpm = null) {
   return harmonize(spaceArtists(harmonize(sprinkle(fromStart(shape(withBpm, energy), energy, startBpm, endBpm), without), energy)), energy);
 }
 
+// The listener's own list of songs, back in an order where each one flows
+// into the next: the same tempo ladder, key pass and artist spacing a DJ set
+// gets. With `pinFirst` the first song stays first — the one playing — and
+// the rest take off from its tempo. Answers the input indices, so duplicates
+// in a queue keep their identity.
+export function flowOrder(rows, { energy = 'steady', pinFirst = false } = {}) {
+  const arc = ENERGY.includes(energy) ? energy : 'steady';
+  const cands = rows.map((row, i) => ({ row, key: toCamelot(row.musical_key), score: 0.5, i }));
+  const head = pinFirst && cands.length ? [cands[0]] : [];
+  const rest = cands.slice(head.length);
+  const startBpm = head.length && head[0].row.bpm > 0 ? head[0].row.bpm : null;
+  const ordered = [...head, ...(rest.length > 1 ? arrange(rest, arc, startBpm) : rest)];
+  return { order: ordered.map(c => c.i), stats: queueStats(ordered.map(c => c.row)) };
+}
+
 const dur = (row, fallback) => (Number(row.duration) > 0 ? Number(row.duration) : fallback);
 
 // What the player shows about a set: how it moves in tempo and in key.

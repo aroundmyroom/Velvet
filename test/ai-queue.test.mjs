@@ -10,7 +10,7 @@
 
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { artistKey, baseTitle, planQueue, targetCount, toCamelot, validateBrief, versionKey, DEFAULT_SONGS, MAX_SONGS } from '../src/util/ai-queue.js';
+import { artistKey, baseTitle, flowOrder, planQueue, targetCount, toCamelot, validateBrief, versionKey, DEFAULT_SONGS, MAX_SONGS } from '../src/util/ai-queue.js';
 import { keywordFamily } from '../src/util/genre-family.js';
 
 function row(i, over = {}) {
@@ -223,6 +223,32 @@ describe('a set in phases', () => {
     const bpms = plan.songs.map(s => s.bpm);
     assert.ok(bpms[0] <= 124, 'starts low: ' + bpms.join(','));
     assert.ok(bpms.at(-1) >= 125, 'ends high: ' + bpms.join(','));
+  });
+});
+
+describe('flow the queue', () => {
+  it('re-orders the listener\'s own songs into small tempo steps, the playing song pinned first', () => {
+    const rows = Array.from({ length: 30 }, (_, i) => row(i, { artist: `Artist ${i}`, genre: 'house', bpm: 118 + ((i * 7) % 16) }));
+    const { order, stats } = flowOrder(rows, { pinFirst: true });
+    assert.deepEqual([...order].sort((a, b) => a - b), rows.map((_, i) => i), 'a permutation of the input');
+    assert.equal(order[0], 0, 'the first song stays first');
+    const bpms = order.map(i => rows[i].bpm);
+    assert.ok(bpms.slice(1).every((v, i) => Math.abs(v - bpms[i]) <= 3.5), 'small steps: ' + bpms.join(','));
+    assert.equal(stats.picked, 30);
+    assert.ok(stats.maxStep <= 3.5);
+
+    const free = flowOrder(rows, { pinFirst: false }).order;
+    assert.deepEqual([...free].sort((a, b) => a - b), rows.map((_, i) => i));
+
+    // songs without a tempo are spread through the list, not dumped at the end;
+    // duplicates keep their own index
+    const mixed = [...rows.slice(0, 10), ...rows.slice(0, 4).map(r => ({ ...r, bpm: null })), rows[2]];
+    const m = flowOrder(mixed, { pinFirst: true }).order;
+    assert.equal(m.length, 15);
+    assert.equal(new Set(m).size, 15);
+    assert.ok(m.slice(-2).some(i => mixed[i].bpm > 0), 'unknown tempos are not all at the end');
+    assert.deepEqual(flowOrder([rows[0]], { pinFirst: true }).order, [0]);
+    assert.deepEqual(flowOrder([], {}).order, []);
   });
 });
 

@@ -426,6 +426,7 @@ small local window for instant boot, then lazy-loads the rest from here.
 |---|---|---|---|
 | `GET` | `/api/v1/queue` | — | Return the full saved queue for the authenticated user. Returns the queue object `{ queue[], idx, currentFilepath, time, playing, savedAt, browserId }` or `null`. |
 | `POST` | `/api/v1/queue` | queue object | Overwrite the saved queue. Body is the same shape as the GET response. |
+| `POST` | `/api/v1/queue/flow` | `{ songs: string[] (2–1000 file paths), pinFirst?: true, energy?: "steady" }` | **Flow the queue**: the given songs back in an order where each flows into the next — the Auto-DJ / AI DJ ordering (tempo ladder in steps of about 2.5%, Camelot key pass, artist spacing, songs without a tempo spread through the list) applied to the listener's own picks. With `pinFirst` the first song stays first (the one playing) and the rest take off from its tempo. `energy` shapes the arc (`steady`, `build`, `peak`, `wave`, `cooldown`). Returns `{ order: number[], unplaced: number[], stats }`: `order` is a permutation of the **input indices** (duplicates keep their identity), songs the caller cannot resolve (missing, outside their libraries) come last in their own order and are listed in `unplaced`; `stats` has `maxStep`, `harmonic`/`transitions`, `withKey`, `withBpm`, `bpmFrom`/`bpmTo`. No model call, works without AI-assist. `400` on an invalid body. |
 
 ---
 

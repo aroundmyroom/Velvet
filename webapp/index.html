@@ -13,7 +13,7 @@
   <script defer src="../assets/js/lib/butterchurn.min.js"></script>
   <script defer src="../assets/js/lib/audiomotion-analyzer.js"></script>
   <script defer src="../assets/js/lib/qr.js"></script>
-  <link rel="stylesheet" href="/style.css?v=0.8.1-5dadec62">
+  <link rel="stylesheet" href="/style.css?v=0.8.2-5dadec62">
   <script src="/assets/js/lib/simplewebauthn-browser.js"></script>
   <script src="/assets/js/i18n.js"></script>
 </head>
@@ -27,7 +27,7 @@
       <h1>Velvet</h1>
       <p data-i18n="player.login.tagline">a music server — evolved.</p>
       <p data-i18n="player.login.tagline2">Enter the danger zone.</p>
-      <p id="login-version" class="login-version-tag">v0.8.1</p>
+      <p id="login-version" class="login-version-tag">v0.8.2</p>
     </div>
     <form id="login-form">
       <label class="field-label" for="l-user" data-i18n="player.login.username">Username</label>
@@ -732,6 +732,9 @@
         <button id="qp-jump-btn" title="Jump to now playing" data-i18n="player.ctrl.jumpToNowPlaying" data-i18n-attr="title">
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><line x1="12" y1="2" x2="12" y2="5"/><line x1="12" y1="19" x2="12" y2="22"/><line x1="2" y1="12" x2="5" y2="12"/><line x1="19" y1="12" x2="22" y2="12"/></svg>
         </button>
+        <button id="qp-flow-btn" title="Flow the queue" data-i18n="player.ctrl.flowQueue" data-i18n-attr="title">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12c3 0 3-5 6-5s3 10 6 10 3-5 6-5"/></svg>
+        </button>
         <button id="qp-shuffle-btn" title="Shuffle queue" data-i18n="player.ctrl.shuffleQueue" data-i18n-attr="title">
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="16,3 21,3 21,8"/><line x1="4" y1="20" x2="21" y2="3"/><polyline points="21,16 21,21 16,21"/><line x1="4" y1="4" x2="9" y2="9"/></svg>
         </button>
@@ -1082,7 +1085,7 @@
 
 <div id="tip-box"></div>
 <script src="/assets/js/player-locale.js"></script>
-  <script src="/app.js?v=0.8.1-9bb87b99"></script>
+  <script src="/app.js?v=0.8.2-d43f6b5f"></script>
 
 </body>
 </html>

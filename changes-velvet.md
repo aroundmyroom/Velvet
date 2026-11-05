@@ -1,3 +1,21 @@
+## v0.8.2 (2026-11-05)
+
+Flow the queue
+
+### Added
+
+- **Flow the queue** (queue panel, the wave button left of Shuffle). Auto-DJ
+  and the AI DJ mix the songs they pick; this does the same for the songs
+  *you* queued — an album, a folder, a playlist, a handful of songs added by
+  hand — without changing which songs they are. The playing song stays where
+  it is; every song after it is re-ordered so each flows into the next, taking
+  off from the playing song's tempo: the DJ's tempo ladder, Camelot key pass
+  and artist spacing, songs without a tempo spread through the list. The
+  toast reports the largest tempo step and the harmonic transitions and has
+  **Undo**. `POST /api/v1/queue/flow` returns a permutation of the input
+  indices (songs the server cannot resolve kept at the end); no model call,
+  works without AI-assist. (`docs/queue-flow.md`, `docs/API.md`.)
+
 ## v0.8.1 (2026-10-28)
 
 AI DJ: a set in phases
