@@ -103,6 +103,11 @@ describe('rule-based brief', () => {
     assert.equal(a.lossless, true);
     assert.deepEqual(a.excludeKeywords, ['remix']);
     assert.equal(a.order, 'chronological');
+    // a kind of version from the version-word list, however it is spelled
+    assert.deepEqual(parseBriefLocally("uptempo disco, geen acapella's, geen live versies", prof).excludeKeywords, ['acapella', 'live']);
+    assert.deepEqual(parseBriefLocally('disco without a cappella', prof).excludeKeywords, ['acapella']);
+    const own = [{ name: 'vocal', says: ['vocal'], match: ['acapel', 'vocal mix'] }];
+    assert.deepEqual(parseBriefLocally('disco, no acapellas', prof, { versionWords: own }).excludeKeywords, ['vocal']);
     const b = parseBriefLocally('songs added in the last 2 weeks that I played more than 3 times, from playlist Best Remixes, only from the 12 inches', prof);
     assert.equal(b.addedWithinDays, 14);
     assert.equal(b.minPlays, 4);

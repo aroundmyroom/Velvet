@@ -319,6 +319,33 @@ describe('AI-assist genre families', async () => {
     assert.equal(j.notes.length, 1);
     await post('/api/v1/admin/ai/config', { enabled: true, apiKey: '', model: 'claude-haiku-5-5', monthlyBudgetUsd: 2 });
   });
+
+  it('version words: built-in until the admin saves an own list, which a config save keeps, until reset', async () => {
+    let j = await (await get('/api/v1/admin/ai/version-words')).json();
+    assert.equal(j.custom, false);
+    assert.ok(j.families.some(f => f.name === 'acapella' && f.match.includes('accapel')));
+    assert.deepEqual(j.families, j.defaults);
+
+    const own = [{ name: 'acapella', says: ['acapella'], match: ['acapel', 'annecapella'] }];
+    let r = await post('/api/v1/admin/ai/version-words', { families: own });
+    assert.equal(r.status, 200);
+    j = await (await get('/api/v1/admin/ai/version-words')).json();
+    assert.equal(j.custom, true);
+    assert.deepEqual(j.families, own);
+
+    // saving the other AI settings leaves the own list alone
+    await post('/api/v1/admin/ai/config', { enabled: true, apiKey: '', model: 'claude-haiku-5-5', monthlyBudgetUsd: 2 });
+    assert.deepEqual((await (await get('/api/v1/admin/ai/version-words')).json()).families, own);
+
+    assert.equal((await post('/api/v1/admin/ai/version-words', { families: [...own, own[0]] })).status, 400, 'names are unique');
+    assert.equal((await post('/api/v1/admin/ai/version-words', { families: [] })).status, 400);
+
+    r = await post('/api/v1/admin/ai/version-words/reset', {});
+    assert.equal(r.status, 200);
+    j = await (await get('/api/v1/admin/ai/version-words')).json();
+    assert.equal(j.custom, false);
+    assert.deepEqual(j.families, j.defaults);
+  });
 });
 
 describe('AI-assist stays invisible by default', async () => {

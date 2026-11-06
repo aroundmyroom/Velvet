@@ -80,6 +80,38 @@ first flag.
   windows may not manage — run it on Claude once and keep the local model
   for the AI DJ if that happens.
 
+### Version words
+
+Under the house notes, when the AI DJ is on. A listener who says *"geen
+acapella's"* means every acapella in the library, however it is spelled:
+*Acapella*, *a cappella*, *Accapella Version*, *Acappella*, *Percapella*,
+*Dubcapella*. The model writes the plain word; Velvet turns it into every
+spelling with this list before it filters titles and file names. The same
+goes for a wish ("only instrumentals").
+
+Each row is one kind of version:
+
+| Column | Meaning |
+|---|---|
+| Kind | The family's name, e.g. `acapella`. |
+| Words a listener may use | Other ways of saying it: `a cappella`, `acapellas`, `vocals only`. |
+| Matched in titles and file names | Pieces looked for anywhere in a title or file name: `acapel`, `acappel`, `accapel`, `percapel`. |
+
+Built in are acapella, instrumental, karaoke, remix, dub, live, radio edit
+and megamix. A word that is in no family is matched as written, as before.
+
+Keep matched pieces specific, because they are found anywhere in a title or
+path: `(live` and `live version`, not `live` (that also catches *Alive*);
+`acapel`, not `cappel` (that also catches the band *Cappella*); `(rmx` and
+`rmx)`, not `rmx` (that also catches *YRMX2024*).
+
+**Your list is yours.** As long as you have not saved anything, Velvet uses
+the built-in list, and a Velvet update may improve it. Once you press *Save
+list*, your list is stored in the config (`aiAssist.versionWords`) and used
+as it is: updates never overwrite it, and neither does saving the other AI
+settings. *Back to built-in list* removes your list again. On a fresh install
+there is no list, so the built-in one applies.
+
 ### What the AI sees and does
 
 The provider, model and endpoint in use (the key's last characters, or

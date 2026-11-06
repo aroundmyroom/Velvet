@@ -9958,6 +9958,7 @@ const aiAssistView = Vue.component('ai-assist-view', {
       djNotes: '',
       notes: [], notesPlan: null, notesAnalysis: null, noteKinds: [], notesFilter: '', editing: null, editBuf: {},
       estimate: null, analyseOnSave: false,
+      vw: { rows: [], custom: false, defaults: [], dirty: false, open: false },
     };
   },
   computed: {
@@ -10053,6 +10054,37 @@ const aiAssistView = Vue.component('ai-assist-view', {
                 <p style="font-size:.85rem;color:var(--t2);margin:.3rem 0 .5rem;">{{ t('admin.ai.notesDesc') }}</p>
                 <textarea v-model="djNotes" rows="6" maxlength="4000" :placeholder="t('admin.ai.notesPlaceholder')" style="width:100%;box-sizing:border-box;font-size:.85rem;font-family:monospace;padding:.5rem;"></textarea>
                 <p style="font-size:.8rem;color:var(--t3);margin-top:.3rem;">{{ t('admin.ai.notesHint') }}</p>
+              </div>
+              <div v-if="queueBuilder" style="margin-top:1rem;padding:.75rem;border:1px solid var(--border);border-radius:6px;">
+                <a href="#" @click.prevent="vw.open = !vw.open" style="font-weight:700;">{{ vw.open ? '▾' : '▸' }} {{ t('admin.ai.vwTitle') }}</a>
+                <span style="font-size:.8rem;color:var(--t3);margin-left:.5rem;">{{ vw.custom ? t('admin.ai.vwCustom') : t('admin.ai.vwDefault') }}</span>
+                <div v-if="vw.open">
+                  <p style="font-size:.85rem;color:var(--t2);margin:.3rem 0 .5rem;">{{ t('admin.ai.vwDesc') }}</p>
+                  <table style="width:100%;">
+                    <thead>
+                      <tr>
+                        <th style="text-align:left;width:16%;">{{ t('admin.ai.vwColName') }}</th>
+                        <th style="text-align:left;width:38%;">{{ t('admin.ai.vwColSays') }}</th>
+                        <th style="text-align:left;">{{ t('admin.ai.vwColMatch') }}</th>
+                        <th style="width:2rem;"></th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <tr v-for="(r, i) in vw.rows" :key="i">
+                        <td><input v-model="r.name" @input="vw.dirty = true" maxlength="60" style="margin:0;width:100%;box-sizing:border-box;" /></td>
+                        <td><input v-model="r.says" @input="vw.dirty = true" style="margin:0;width:100%;box-sizing:border-box;font-size:.85rem;" /></td>
+                        <td><input v-model="r.match" @input="vw.dirty = true" style="margin:0;width:100%;box-sizing:border-box;font-size:.85rem;font-family:monospace;" /></td>
+                        <td><button class="btn btn-flat" @click="vwRemove(i)" :title="t('admin.ai.vwRemove')">✕</button></td>
+                      </tr>
+                    </tbody>
+                  </table>
+                  <p style="font-size:.8rem;color:var(--t3);margin-top:.3rem;">{{ t('admin.ai.vwHint') }}</p>
+                  <div style="display:flex;gap:.5rem;flex-wrap:wrap;margin-top:.5rem;">
+                    <button class="btn btn-secondary" @click="vwAdd">{{ t('admin.ai.vwAdd') }}</button>
+                    <button class="btn btn-primary" :disabled="!vw.dirty" @click="vwSave">{{ t('admin.ai.vwSave') }}</button>
+                    <button class="btn btn-secondary" :disabled="!vw.custom" @click="vwReset">{{ t('admin.ai.vwReset') }}</button>
+                  </div>
+                </div>
               </div>
               <div style="margin-top:1rem;">
                 <a href="#" @click.prevent="advanced = !advanced" style="font-size:.9rem;">{{ advanced ? '▾' : '▸' }} {{ t('admin.ai.advancedTitle') }}</a>
@@ -10312,8 +10344,44 @@ const aiAssistView = Vue.component('ai-assist-view', {
     await this.loadFamilies();
     await this.loadActivity();
     await this.loadNotes();
+    await this.loadVersionWords();
   },
   methods: {
+    vwRows(families) {
+      return families.map(f => ({ name: f.name, says: (f.says || []).join(', '), match: (f.match || []).join(', ') }));
+    },
+    async loadVersionWords() {
+      try {
+        const res = await API.axios({ method: 'GET', url: `${API.url()}/api/v1/admin/ai/version-words` });
+        this.vw = { ...this.vw, rows: this.vwRows(res.data.families || []), custom: !!res.data.custom, defaults: res.data.defaults || [], dirty: false };
+      } catch (e) { console.debug('[velvet]', e?.message ?? e); }
+    },
+    vwAdd() { this.vw.rows.push({ name: '', says: '', match: '' }); this.vw.dirty = true; },
+    vwRemove(i) { this.vw.rows.splice(i, 1); this.vw.dirty = true; },
+    async vwSave() {
+      const list = s => s.split(',').map(x => x.trim().toLowerCase()).filter(x => x.length >= 2);
+      const families = this.vw.rows
+        .map(r => ({ name: r.name.trim().toLowerCase(), says: list(r.says), match: list(r.match) }))
+        .filter(f => f.name.length >= 2 && f.match.length);
+      if (!families.length) { iziToast.error({ title: this.t('admin.ai.vwToastEmpty'), position: 'topCenter', timeout: 4000 }); return; }
+      try {
+        const res = await API.axios({ method: 'POST', url: `${API.url()}/api/v1/admin/ai/version-words`, data: { families } });
+        this.vw = { ...this.vw, rows: this.vwRows(res.data.families), custom: true, dirty: false };
+        iziToast.success({ title: this.t('admin.ai.vwToastSaved'), position: 'topCenter', timeout: 3000 });
+      } catch (e) {
+        iziToast.error({ title: this.t('admin.ai.vwToastFailed'), message: e?.response?.data?.error || e?.message || '', position: 'topCenter', timeout: 6000 });
+      }
+    },
+    async vwReset() {
+      if (!confirm(this.t('admin.ai.vwConfirmReset'))) return;
+      try {
+        const res = await API.axios({ method: 'POST', url: `${API.url()}/api/v1/admin/ai/version-words/reset` });
+        this.vw = { ...this.vw, rows: this.vwRows(res.data.families), custom: false, dirty: false };
+        iziToast.success({ title: this.t('admin.ai.vwToastReset'), position: 'topCenter', timeout: 3000 });
+      } catch (e) {
+        iziToast.error({ title: this.t('admin.ai.vwToastFailed'), message: e?.response?.data?.error || e?.message || '', position: 'topCenter', timeout: 6000 });
+      }
+    },
     familyLabel(f) { return f ? this.t('admin.ai.family.' + f) : '—'; },
     evidenceOf(r, kind) {
       const tempo = kind === 'genre' ? (r.bpmN ? ` · ~${r.bpmAvg} BPM` : '') : (r.bpmN ? ` · ~${r.bpmMedian} BPM` : '');

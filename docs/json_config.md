@@ -554,6 +554,7 @@ admin page. Full guide: [ai-assist.md](ai-assist.md); listener page:
 | `provider` | `anthropic` | `openai` for a self-hosted server with an OpenAI-compatible API. |
 | `localBaseUrl`, `localModel`, `localApiKey` | `""` | The self-hosted server (`…/v1`), its model name and an optional bearer key. |
 | `djNotes` | `""` | House notes for the DJ, up to 4000 characters; `A = B` lines also act as aliases. |
+| `versionWords` | *(absent)* | The admin's own version-word families, `[{ "name", "says": [], "match": [] }]`, written by Admin → AI-assist → *Version words*. Absent means the built-in list, which a Velvet update may improve; once present, it is used as it is and never overwritten. Remove the key (or press *Back to built-in list*) to return to the built-in one. |
 
 Saving a key reads nothing; the admin page shows the cost of a full pass and
 asks before running it.

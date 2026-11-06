@@ -1,3 +1,34 @@
+## v0.8.3 (2026-11-06)
+
+AI DJ: "geen acapella's" means every acapella
+
+### Fixed
+
+- **A kind of version left out is left out however it is spelled.** *"Geen
+  acapella's"* came back with *New Dimension (Accapella Version)*, *Chica
+  Cubana (a cappella)* and *Cold Hearted (Percapella)*. The model read the
+  request right (`excludeKeywords: ["acapella"]`); Velvet then looked for the
+  literal word, and this library spells acapella at least six ways (292
+  *acapella*, 178 *a cappella*, 134 *acappella*, 61 *accapella*, 36
+  *percapella* …). Exclusions and keyword wishes now go through **version
+  words**: each kind of version — acapella, instrumental, karaoke, remix, dub,
+  live, radio edit, megamix — with the words a listener uses for it and every
+  spelling it has in titles and file names. The pieces are chosen not to catch
+  look-alikes: the band *Cappella* stays in, *Alive* is not a live version,
+  *YRMX2024* is not a remix. The rule-based reader (no model) recognises the
+  families too.
+
+### Added
+
+- **Admin → AI-assist → Version words** (under the house notes). The list is
+  editable: add a kind, add spellings, remove what does not fit this library.
+  Until the admin saves, the built-in list applies and an update may improve
+  it; a saved list is stored as `aiAssist.versionWords` and used as it is —
+  never overwritten by an update or by saving the other AI settings. *Back to
+  built-in list* removes it. Endpoints `GET/POST /api/v1/admin/ai/version-words`
+  and `POST …/version-words/reset`. (`docs/ai-assist.md`, `docs/API.md`,
+  `docs/json_config.md`.)
+
 ## v0.8.2 (2026-11-05)
 
 Flow the queue

@@ -4,6 +4,7 @@
 // italo, no Modern Talking"; the model remains the upgrade for the fuzzy rest.
 import { toKey } from './genre-merge.js';
 import { matchChart, parseChartRange, stripChartWords } from './ai-charts.js';
+import { familyOf } from './version-words.js';
 
 const DECADE_WORDS = {
   fifties: 1950, sixties: 1960, seventies: 1970, eighties: 1980, nineties: 1990, noughties: 2000,
@@ -106,7 +107,7 @@ function matchNames(text, names, max) {
   return out;
 }
 
-export function parseBriefLocally(text, profile, { aliases } = {}) {
+export function parseBriefLocally(text, profile, { aliases, versionWords } = {}) {
   const original = String(text || '').trim();
   const b = {
     title: original.slice(0, 80), summary: '', songs: null, minutes: null, genres: [], excludeGenres: [], families: [],
@@ -139,7 +140,10 @@ export function parseBriefLocally(text, profile, { aliases } = {}) {
     b.excludeGenres.push(...matchNames(phrase, genreNames, 5));
     b.excludeArtists.push(...matchNames(phrase, artistNames, 5));
     const version = phrase.trim().match(/^(remixes|remix|live versions|live|instrumentals|instrumental|edits|radio edits|covers|karaoke|dubs|mixes)\b/);
-    if (version) b.excludeKeywords.push(EXCLUDE_WORDS[version[1]]);
+    // "geen acapella's", "no a cappella": a kind of version the admin's list knows
+    const family = familyOf(phrase.trim().split(/\s+(?:of|or|en|and|noch)\s+/)[0], versionWords);
+    if (family) b.excludeKeywords.push(family.name);
+    else if (version) b.excludeKeywords.push(EXCLUDE_WORDS[version[1]]);
     lower = lower.replace(m[0], ' ');
   }
 

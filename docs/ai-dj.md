@@ -40,7 +40,7 @@ with examples:
 | A scene, label, producer or service | *Chicago house* · *the SAW years* · *Ben Liebrand remixes* · *a DMC remix of Level 42* · *an hour of Disconet medleys* · *een Disconet versie van Donna Summer* |
 | Flow and layout | *builds up* · *peak-time* · *winding down* · *two peaks* · *chronological* · *newest first* · *A–Z* · *shuffled* |
 | Format and history | *lossless only* · *mp3 only* · *hi-res* · *starred* · *rated* · *played more than 5 times* · *added this month* · *not played in a year* |
-| Leaving things out | *no remixes* · *no live versions* · *geen Modern Talking* · *zonder disco* |
+| Leaving things out | *no remixes* · *no live versions* · *geen acapella's* · *geen Modern Talking* · *zonder disco* — a kind of version is left out however the library spells it (*a cappella*, *Accapella*, *Percapella* …), from the admin's version-word list |
 
 A few rules of thumb:
 

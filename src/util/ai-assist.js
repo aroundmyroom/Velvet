@@ -30,6 +30,8 @@ export function settings() {
     provider: a.provider === 'openai' ? 'openai' : 'anthropic',
     localBaseUrl: (a.localBaseUrl || '').trim().replace(/\/+$/, ''), localModel: (a.localModel || '').trim(), localApiKey: a.localApiKey || '',
     djNotes: String(a.djNotes || '').slice(0, 4000),
+    // null until the admin saves an own list; then that list, kept through updates
+    versionWords: Array.isArray(a.versionWords) && a.versionWords.length ? a.versionWords : null,
   };
 }
 

@@ -16,6 +16,7 @@
  *   GET  /api/v1/admin/ai/context    — the exact texts each task sends
  *   GET  /api/v1/admin/ai/overview   — the library as one profile's families see it
  *   GET  /api/v1/admin/ai/profiles                 POST …/profiles { name, copyFrom? }, …/activate { id }, …/rename { id, name }, …/delete { id }
+ *   GET  /api/v1/admin/ai/version-words           POST …/version-words { families }, …/version-words/reset
  * Rules live in profiles (Profile 1, 2, …); Auto-DJ uses the active one.
  */
 import Joi from 'joi';
@@ -29,6 +30,7 @@ import { allVpaths, genreRuleKey, invalidateGenreFamilyResolver } from '../util/
 import * as ai from '../util/ai-assist.js';
 import { NOTES_SCHEMA, NOTES_SYSTEM, NOTE_KINDS, digestLine, folderDigest } from '../util/ai-library-notes.js';
 import { aiDjContext, invalidateLibraryNotes } from './ai-queue.js';
+import { DEFAULT_VERSION_WORDS, VERSION_WORDS_SCHEMA, versionFamilies } from '../util/version-words.js';
 
 const FAMILY_GUIDE = `Families, chosen for DJ mixing compatibility:
 - electronic: house, techno, trance, dance, eurodance, electro, synth-pop, new beat, freestyle, drum & bass, breaks, EDM
@@ -406,6 +408,18 @@ function profileOf(req, res) {
   return id;
 }
 
+// null removes the admin's list, so the built-in defaults apply again.
+async function saveVersionWords(families) {
+  const loadConfig = await admin.loadFile(config.configFile);
+  const a = { ...(loadConfig.aiAssist || {}) };
+  if (families) a.versionWords = families; else delete a.versionWords;
+  loadConfig.aiAssist = a;
+  await admin.saveFile(loadConfig, config.configFile);
+  const live = { ...(config.program.aiAssist || {}) };
+  if (families) live.versionWords = families; else delete live.versionWords;
+  config.program.aiAssist = live;
+}
+
 export function setup(velvet) {
   velvet.get('/api/v1/admin/ai/config', (req, res) => {
     if (req.user.admin !== true) return res.status(403).json({ error: 'Admin only' });
@@ -439,6 +453,31 @@ export function setup(velvet) {
     const canAsk = value.enabled && (value.provider === 'openai' ? !!value.localBaseUrl : !!value.apiKey);
     const analysing = analyse && canAsk ? startAnalysis(db.activeGenreFamilyProfile()) : false;
     res.json({ analysing, estimate: analysisEstimate(db.activeGenreFamilyProfile()) });
+  });
+
+  // Version words: the kinds of version a listener can leave out, each with
+  // every spelling the library uses. Built-in defaults until the admin saves
+  // an own list; that list is kept through updates, and only "reset" brings
+  // the defaults back.
+  velvet.get('/api/v1/admin/ai/version-words', (req, res) => {
+    if (req.user.admin !== true) return res.status(403).json({ error: 'Admin only' });
+    const own = ai.settings().versionWords;
+    res.json({ families: versionFamilies(own), custom: !!own, defaults: DEFAULT_VERSION_WORDS });
+  });
+
+  velvet.post('/api/v1/admin/ai/version-words', async (req, res) => {
+    if (req.user.admin !== true) return res.status(403).json({ error: 'Admin only' });
+    const { value } = joiValidate(Joi.object({ families: VERSION_WORDS_SCHEMA.min(1).required() }), req.body);
+    const names = value.families.map(f => f.name);
+    if (new Set(names).size !== names.length) return res.status(400).json({ error: 'Each family needs its own name' });
+    await saveVersionWords(value.families);
+    res.json({ families: value.families, custom: true });
+  });
+
+  velvet.post('/api/v1/admin/ai/version-words/reset', async (req, res) => {
+    if (req.user.admin !== true) return res.status(403).json({ error: 'Admin only' });
+    await saveVersionWords(null);
+    res.json({ families: DEFAULT_VERSION_WORDS, custom: false });
   });
 
   // One tiny structured request to whichever provider is configured — the

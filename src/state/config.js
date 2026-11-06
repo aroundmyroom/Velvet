@@ -5,6 +5,7 @@ import Joi from 'joi';
 import winston from 'winston';
 import { getDirname } from '../util/esm-helpers.js';
 import { getTransAlgos, getTransCodecs, getTransBitrates } from '../api/transcode.js';
+import { VERSION_WORDS_SCHEMA } from '../util/version-words.js';
 
 const __dirname = getDirname(import.meta.url);
 
@@ -77,6 +78,8 @@ const aiAssistOptions = Joi.object({
   localApiKey:      Joi.string().allow('').default(''),
   // The library owner's own notes for the DJ brief: aliases, house meanings, taste.
   djNotes:          Joi.string().allow('').max(4000).default(''),
+  // The admin's own version-word families; absent means the built-in defaults.
+  versionWords:     VERSION_WORDS_SCHEMA.optional(),
 });
 
 const discordWebhookOptions = Joi.object({

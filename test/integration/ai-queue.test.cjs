@@ -51,6 +51,9 @@ function buildLibrary() {
   makeTrack(root, 'House Top 1000/2021 - NW/003 - New Entry - Chart 3 (2021).mp3', { artist: 'New Entry', title: 'Chart 3 (2021)', genre: 'techno', date: '2021' });
   // a yearly mix series: "name + year" is a title, with several versions of a year
   for (const y of [1983, 1984, 1985, 1986]) makeTrack(root, `Grandmix/Grandmix ${y}.mp3`, { artist: 'Ben Liebrand', title: `Grandmix ${y}`, genre: 'megamix', date: String(y) });
+  // one kind of version, spelled every way a real library spells it — and a band whose name looks like it
+  const vocals = [['Imagination', 'New Dimension (Accapella Version)'], ['Tatjana', 'Chica Cubana (a cappella)'], ['Paula Abdul', 'Cold Hearted (Percapella)'], ['Man Friday', 'Honey (Acapella)'], ['Robin S', 'Show Me Love (Acappella)'], ['Cappella', 'U Got 2 Know'], ['Imagination', 'New Dimension (Club Mix)']];
+  for (const [artist, title] of vocals) makeTrack(root, `Vocals/${artist} - ${title}.mp3`, { artist, title, genre: 'vocaltest', date: '1983' });
   makeTrack(root, 'Grandmix/Mastertapes/Grandmix 1983 (Mastertape).mp3', { artist: 'Ben Liebrand', title: 'Grandmix 1983 (Mastertape)', genre: 'megamix', date: '2009' });
   makeTrack(root, 'Grandmix/538/Ben Liebrand - Grandmix 1983 (Radio 538 FM Recording).mp3', { title: 'Ben Liebrand - Grandmix 1983 (Radio 538 FM Recording)', genre: 'megamix' });
   return root;
@@ -292,6 +295,14 @@ describe('AI DJ queue builder', async () => {
     assert.deepEqual([out.brief.chartFrom, out.brief.chartTo], [1, 10]);
     assert.deepEqual(out.brief.genres, []);
     setStub({ 'queue-brief': BRIEF });
+  });
+
+  it('"geen acapella\'s" leaves out every spelling of acapella, and only that', async () => {
+    await sleep(1100);
+    const r = await post('/api/v1/ai/queue/build', { brief: { ...BRIEF, songs: 10, genres: [], folders: ['lib/Vocals'], yearFrom: null, yearTo: null, excludeKeywords: ["acapella's"] }, ignoreVPaths: ['testlib'] });
+    assert.equal(r.status, 200);
+    const out = await r.json();
+    assert.deepEqual(out.songs.map(s => s.metadata.title).sort(), ['New Dimension (Club Mix)', 'U Got 2 Know'], 'the band Cappella stays');
   });
 
   it('a set in phases plays each phase in turn, nothing twice, under one cap', async () => {

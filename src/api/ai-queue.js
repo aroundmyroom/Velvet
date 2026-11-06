@@ -25,6 +25,7 @@ import { computeChildInclusions, renderMetadataObj, userDbVpaths } from './db.js
 import { parseBriefLocally } from '../util/ai-brief-parser.js';
 import { chartPosition, detectCharts, findChart } from '../util/ai-charts.js';
 import { noteAliases, noteLine, notesText } from '../util/ai-library-notes.js';
+import { expandVersionWords, versionFamilies } from '../util/version-words.js';
 
 // The library notes as the DJ reads them, refreshed when the admin or the
 // analysis changes them.
@@ -84,7 +85,7 @@ Rules:
 - addedWithinDays / playedWithinDays / notPlayedWithinDays: "added this month" → addedWithinDays 30; "played last week" → playedWithinDays 7; "not played in a year" → notPlayedWithinDays 365.
 - lossless: true for "lossless / flac / wav only", false for "mp3 only", null otherwise. hiRes: true for "hi-res / 24-bit".
 - playlists: names of the listener's own playlists from the playlist list below, when they ask to play from one ("my playlist Sunday", "the Best Remixes list"). collections: names from the collection list when they restrict to one ("only from the 12 inches").
-- excludeKeywords: words that must not appear in a title or file name ("no remixes" → ["remix"]; "no live versions" → ["live"]).
+- excludeKeywords: words that must not appear in a title or file name ("no remixes" → ["remix"]; "no live versions" → ["live"]; "geen acapella's" → ["acapella"]). Write the kind of version in its plain form; Velvet knows every way the library spells it (acapella is also "a cappella", "Accapella", "Percapella").
 - allVersions: true only when the listener wants every version of a song ("all versions of Relax", "every mix of Two Tribes"); otherwise one version per song is played.
 - cohesive: true when the songs must match each other — "songs that match in tempo, key and genre", "a harmonic mix", "tracks that mix together", "nummers die bij elkaar passen", "same key and tempo". Velvet then picks one song as the seed and keeps the others within a few BPM of it, in a compatible key and of the same genre. Such a request never becomes bpmFrom/bpmTo or keys; those are only for a tempo or key the listener names.
 - order: how the set is laid out — "dj" (tempo flow, the default), "chronological" (oldest first), "newestFirst", "alphabetical", "random" (plain shuffle).
@@ -358,7 +359,7 @@ async function writeBrief(user, text, scope) {
   } catch (e) {
     console.warn(`[aidj] Claude unavailable (${e.code || e.name || 'error'}: ${String(e.message).slice(0, 160)}) — reading the request with rules`);
     // the notes' aliases first, the owner's house notes on top
-    brief = validateBrief(parseBriefLocally(text, profile, { aliases: new Map([...libraryNotes().aliases, ...ai.parseDjNotes(ai.settings().djNotes).aliases]) }));
+    brief = validateBrief(parseBriefLocally(text, profile, { aliases: new Map([...libraryNotes().aliases, ...ai.parseDjNotes(ai.settings().djNotes).aliases]), versionWords: versionFamilies(ai.settings().versionWords) }));
     source = 'rules';
   }
   brief = enforceTitleByArtist(text, brief, scope);
@@ -558,7 +559,7 @@ function poolOpts(brief, scope, r, tier, limit) {
     folderPrefixes: tier.dropFolders ? [] : r.folders.map(f => ({ vpath: f.vpath, prefix: f.prefix })),
     titles: brief.titles,
     patterns: tier.dropRelease ? [] : (RELEASE_PATTERNS[brief.release] || []),
-    excludePatterns: brief.excludeKeywords,
+    excludePatterns: expandVersionWords(brief.excludeKeywords, versionFamilies(ai.settings().versionWords)),
     starred: brief.starred, played: brief.played, rated: brief.rated,
     minPlays: brief.minPlays, maxPlays: brief.maxPlays,
     addedWithinDays: brief.addedWithinDays, playedWithinDays: brief.playedWithinDays, notPlayedWithinDays: brief.notPlayedWithinDays,
@@ -718,7 +719,7 @@ function buildChartQueue(brief, scope, notes, r, profile) {
     folderPrefixes: [{ vpath: chart.vpath, prefix: `${chart.folder}/` }],
     artists: brief.artistMode === 'only' ? r.seedVariants : [],
     ignoreArtists: r.ignoreArtists,
-    excludePatterns: brief.excludeKeywords,
+    excludePatterns: expandVersionWords(brief.excludeKeywords, versionFamilies(ai.settings().versionWords)),
     starred: brief.starred, played: brief.played, rated: brief.rated,
     minPlays: brief.minPlays, maxPlays: brief.maxPlays,
     addedWithinDays: brief.addedWithinDays, playedWithinDays: brief.playedWithinDays, notPlayedWithinDays: brief.notPlayedWithinDays,
@@ -877,7 +878,8 @@ async function buildQueueInScope(brief, scope) {
     genreRaw: genres.raws,
     genreFamilies: new Set([...genres.raws].map(raw => resolver?.fromTag(raw) || keywordFamily(raw)).filter(f => f && f !== 'ignore')),
     familyOf: row => resolver ? (resolver.resolve(row)?.family ?? null) : keywordFamily(row.genre),
-    keywords: brief.keywords,
+    // "acapella" is every way the library spells it, in a wish as in an exclusion
+    keywords: expandVersionWords(brief.keywords, versionFamilies(ai.settings().versionWords)),
     titles: brief.titles.map(t => t.toLowerCase()),
   };
 
