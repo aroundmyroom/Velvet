@@ -1,3 +1,22 @@
+## v0.8.5 (2026-11-10)
+
+Maintenance: dependency updates
+
+### Changed
+
+- Merged the open Dependabot updates (#119–#124): `file-type` 22.3.0,
+  `music-metadata` 12.3.5, `m3u8-parser` 7.2.1, `ws` 8.22.2, and the dev
+  tooling `eslint` 10.14.0 and `globals` 17.14.0.
+- Brought the remaining dependencies up to date: `@anthropic-ai/sdk` 1.8.0
+  (AI-assist and AI DJ, checked live), `@simplewebauthn/server` 14.1.0,
+  `axios` 1.21.1, `commander` 15.1.0, `fast-xml-parser` 5.12.0 (podcasts,
+  Syncthing) and `joi` 18.3.2.
+- Node.js: no change needed. Velvet and the Docker image stay on Node 24 LTS
+  (`node:24-slim` picks up the latest 24.x on every build); the minimum stays
+  22.5 for `node:sqlite`.
+
+`npm outdated` is empty and `npm audit` reports no vulnerabilities.
+
 ## v0.8.4 (2026-11-10)
 
 Security: follow-redirects and minimatch updates
