@@ -1,3 +1,21 @@
+## v0.8.4 (2026-11-10)
+
+Security: follow-redirects and minimatch updates
+
+### Security
+
+- **follow-redirects 1.16.1 → 1.16.2** (high). Cross-realm `sensitiveHeaders`
+  arrays were discarded, so custom sensitive headers could be forwarded on a
+  redirect to another host. Velvet reaches it through axios (outbound requests
+  for metadata, art and radio) and http-proxy.
+- **minimatch 10.2.6 → 11.0.5** (moderate). A crafted glob pattern could drive
+  a denial of service through glob-part amplification. Velvet reaches it
+  through archiver (zip downloads and backups) and the lint tooling. The fix
+  exists only in the 11 line, so it is pinned with an `overrides` entry, like
+  `qs`; zip downloads of folders were checked by hand.
+
+`npm audit` reports no vulnerabilities.
+
 ## v0.8.3 (2026-11-06)
 
 AI DJ: "geen acapella's" means every acapella

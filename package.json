@@ -1,6 +1,6 @@
 {
   "name": "velvet",
-  "version": "0.8.3",
+  "version": "0.8.4",
   "description": "Velvet — your personal music server",
   "type": "module",
   "main": "cli-boot-wrapper.js",
@@ -66,6 +66,8 @@
     "globals": "^17.13.0"
   },
   "overrides": {
-    "qs": "6.17.0"
+    "qs": "6.17.0",
+    "follow-redirects": "1.16.2",
+    "minimatch": "11.0.5"
   }
 }
