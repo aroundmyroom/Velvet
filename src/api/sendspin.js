@@ -42,7 +42,7 @@ import * as vpath from '../util/vpath.js';
 import { loadFile, saveFile } from '../util/admin.js';
 import { resolvePathWithinRoot } from '../util/path-security.js';
 import { resolveTrackGain } from './db.js';
-import { RoomsService, RoomError } from '../sendspin/service.js';
+import { RoomsService, RoomError, STOP_TIMEOUT_MS } from '../sendspin/service.js';
 import { createArtwork } from '../sendspin/artwork.js';
 import { PairingInputError, decodePskToken } from '../sendspin/pairing.js';
 
@@ -54,7 +54,6 @@ const PAIR_LIMIT = { windowMs: 60_000, mutate: 20, poll: 180 };
 let service = null;
 let serviceOpts = {};
 let sigHandler = null;
-const roomItems = new Map();
 const pairHits = new Map();
 
 export function sendspinDataDir() {
@@ -195,7 +194,7 @@ function installSignalHandlers() {
     process.off('SIGINT', sigHandler);
     sigHandler = null;
     const done = () => process.kill(process.pid, signal);
-    Promise.race([service?.stop(), new Promise((r) => setTimeout(r, 3000).unref())]).then(done, done);
+    Promise.race([service?.stop(), new Promise((r) => setTimeout(r, STOP_TIMEOUT_MS + 1000).unref())]).then(done, done);
   };
   process.on('SIGTERM', sigHandler);
   process.on('SIGINT', sigHandler);
@@ -378,16 +377,6 @@ function checkMembers(sv, members) {
   for (const m of members) if (!known.has(m)) fail(404, 'not_found', 'unknown speaker');
 }
 
-async function itemsFor(sv, id, user) {
-  const view = sv.rooms.getRoom(id);
-  const cached = roomItems.get(id);
-  if (cached && cached.length === view.queue.length && cached.every((it, i) => it.filepath === view.queue[i].filepath)) return cached;
-  const { items } = await resolveSongs(view.queue.map((q) => q.filepath), user);
-  if (items.length !== view.queue.length) fail(409, 'empty_queue', 'the room queue changed; play it again');
-  roomItems.set(id, items);
-  return items;
-}
-
 // ── Routes ─────────────────────────────────────────────────────────────────
 
 export function setup(velvet) {
@@ -442,7 +431,7 @@ export function setup(velvet) {
     const sv = requireRunning();
     requireDevice(sv, id);
     await sv.server.forget(id);
-    if (typeof sv.rooms.forget === 'function') sv.rooms.forget(id);
+    sv.rooms.forget(id);
     sv.forgetName(id);
     return { ok: true };
   }));
@@ -530,7 +519,6 @@ export function setup(velvet) {
     const view = lightView(service, req.params.id);
     if (view.members.length <= 1) fail(409, 'solo_room', 'a one-speaker room cannot be deleted');
     service.rooms.deleteRoom(req.params.id);
-    roomItems.delete(req.params.id);
     return { ok: true };
   });
 
@@ -540,7 +528,7 @@ export function setup(velvet) {
     const view = service.rooms.getRoom(req.params.id);
     const idle = view.queueLength === 0;
     return {
-      queueVersion: service.queueVersion(view.id),
+      queueVersion: view.queueVersion,
       index: idle ? -1 : view.index,
       songs: view.queue.map((q) => ({
         filepath: q.filepath,
@@ -562,10 +550,7 @@ export function setup(velvet) {
     if (!items.length) fail(400, 'invalid_body', 'no playable song in songs', { skipped });
     checkPlayable(service, id);
     const index = Math.min(body.index, items.length - 1);
-    service.rooms.play(id, { items, index, positionMs: body.positionMs });
-    if (body.paused) service.rooms.pause(id);
-    roomItems.set(id, items);
-    service.bumpQueue(id);
+    service.rooms.play(id, { items, index, positionMs: body.positionMs, paused: body.paused });
     return { ...service.room(id), skipped };
   });
 
@@ -578,25 +563,21 @@ export function setup(velvet) {
     if (before.queueLength === 0) {
       checkPlayable(service, id);
       service.rooms.play(id, { items });
-      roomItems.set(id, items);
     } else {
       service.rooms.add(id, items, { next: body.next });
-      roomItems.delete(id);
     }
-    service.bumpQueue(id);
     const after = lightView(service, id);
-    return { ok: true, queueLength: after.queueLength, queueVersion: service.queueVersion(id), skipped };
+    return { ok: true, queueLength: after.queueLength, queueVersion: after.queueVersion, skipped };
   });
 
-  player('post', '/:id/jump', async (req) => {
+  player('post', '/:id/jump', (req) => {
     const { index } = validate(SCHEMAS.index, req.body);
     const { id } = req.params;
     const view = lightView(service, id);
     if (!view.queueLength) fail(409, 'empty_queue', 'the room has no queue');
     if (index >= view.queueLength) fail(400, 'invalid_body', 'index is invalid');
     checkPlayable(service, id);
-    if (typeof service.rooms.jump === 'function') service.rooms.jump(id, index);
-    else service.rooms.play(id, { items: await itemsFor(service, id, req.user), index });
+    service.rooms.jump(id, index);
     return service.room(id);
   });
 

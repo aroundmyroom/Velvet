@@ -10,6 +10,8 @@ export const JOIN_MARGIN_MS = 150;
 export const LOW_WATER_MS = 2_000;
 export const READ_AHEAD_MS = 15_000;
 export const HISTORY_KEEP_MS = 1_000;
+// A tail change keeps this much beyond the send-ahead: room for one whole chunk (<= 150 ms) before the cut.
+export const SPLICE_MARGIN_MS = 200;
 export const MASTER_CHANNELS = 2;
 export const DEFAULT_MASTER_RATE = 48_000;
 
@@ -183,7 +185,7 @@ export class GroupStream extends EventEmitter {
     const ep = {
       rate, frameBytes: MASTER_BYTES_PER_SAMPLE * MASTER_CHANNELS, ac: new AbortController(), t0: null,
       history: [], historyOffset: 0, decodedEnd: 0, decodeDone: false, boundaries: [], pendingTracks: [],
-      waiter: null, ended: false,
+      waiter: null, ended: false, decodeGen: 0, decodeAc: null, splice: null,
     };
     this.#epoch = ep;
     for (const m of this.#members.values()) {
@@ -205,6 +207,29 @@ export class GroupStream extends EventEmitter {
       if (hasPlayerStream(m.member)) this.#call(m, () => m.member.streamEnd(['player']));
     }
     return pos;
+  }
+
+  // Replaces what plays after the current track without touching audible audio. makeTail(anchor, atUs) is called
+  // synchronously with the track the new tail follows and the cut's audible time (null when nothing was announced
+  // past it) and returns the new tracks. A cut already decoded and sent becomes stream/clear with from_timestamp;
+  // otherwise the cut waits for the next track boundary of the running decode. -> false while nothing is decoded yet.
+  replaceUpcoming(makeTail) {
+    const ep = this.#epoch;
+    if (!ep || !ep.boundaries.length) return false;
+    let minSample = 1;
+    if (ep.t0 !== null) {
+      const minUs = this.#now() + this.sendAheadUs + SPLICE_MARGIN_MS * 1000 - ep.t0;
+      minSample = Math.max(1, usToSamples(minUs, ep.rate));
+    }
+    const at = ep.boundaries.findIndex((b) => b.sample >= minSample);
+    const cutAt = (anchor, cut) => {
+      const atUs = ep.t0 === null ? null : ep.t0 + samplesToUs(cut, ep.rate);
+      this.#cut(ep, cut, makeTail(anchor, atUs));
+    };
+    if (at > 0) cutAt(ep.boundaries[at - 1].track, ep.boundaries[at].sample);
+    else if (ep.decodeDone) cutAt(ep.boundaries.at(-1).track, ep.decodedEnd);
+    else ep.splice = makeTail(ep.boundaries.at(-1).track, null);
+    return true;
   }
 
   close() {
@@ -267,7 +292,7 @@ export class GroupStream extends EventEmitter {
       if (kind === 'restart' && active) {
         m.member.streamClear({ roles: ['player'] });
         if (!sameFormat(m.streamFormat, m.format)) m.member.streamStart({ player });
-      } else {
+      } else if (kind !== 'splice' || !active) {
         m.member.streamStart({ player });
       }
       return true;
@@ -328,34 +353,99 @@ export class GroupStream extends EventEmitter {
     }
   }
 
-  async #decode(ep, tracks) {
+  #current(ep, gen) {
+    return this.#epoch === ep && ep.decodeGen === gen;
+  }
+
+  async #decode(ep, tracks, base = 0) {
+    ep.decodeAc?.abort();
+    const ac = new AbortController();
+    ep.decodeAc = ac;
+    const gen = ++ep.decodeGen;
+    const waiter = ep.waiter;
+    ep.waiter = null;
+    waiter?.();
     try {
       for await (const item of decodeQueue(tracks, {
-        sampleRate: ep.rate, channels: MASTER_CHANNELS, signal: ep.ac.signal, ffmpeg: this.#ffmpeg,
+        sampleRate: ep.rate, channels: MASTER_CHANNELS, signal: AbortSignal.any([ep.ac.signal, ac.signal]), ffmpeg: this.#ffmpeg,
       })) {
-        if (!(await this.#take(ep, item))) return;
+        if (!(await this.#take(ep, base ? { ...item, sample: item.sample + base } : item, gen))) return;
       }
-      if (this.#epoch !== ep) return;
+      if (!this.#current(ep, gen)) return;
+      if (ep.splice) {
+        const tail = ep.splice;
+        ep.splice = null;
+        this.#decode(ep, tail, ep.decodedEnd);
+        return;
+      }
       ep.decodeDone = true;
       for (const m of this.#members.values()) if (m.live && m.seg) m.seg.encoder.end();
       this.#kick();
     } catch (err) {
-      if (this.#epoch === ep && !ep.ac.signal.aborted) this.#fail(err);
+      if (this.#current(ep, gen) && !ep.ac.signal.aborted) this.#fail(err);
     }
   }
 
-  async #take(ep, item) {
-    if (this.#epoch !== ep) return false;
+  async #take(ep, item, gen) {
+    if (!this.#current(ep, gen)) return false;
+    if (ep.splice && item.trackStart && item.sample > 0) {
+      // Nothing past this boundary was fed to anyone: switch the decode, the encoders run on.
+      const tail = ep.splice;
+      ep.splice = null;
+      this.#decode(ep, tail, item.sample);
+      return false;
+    }
     ep.history.push(item);
     ep.decodedEnd = item.sample + item.pcm.length / ep.frameBytes;
     if (item.trackStart) this.#boundary(ep, item);
     const live = [...this.#members.values()].filter((m) => m.live && m.seg);
     await Promise.all(live.map((m) => this.#feed(m, m.seg, item)));
-    if (this.#epoch !== ep) return false;
+    if (!this.#current(ep, gen)) return false;
     this.#kick();
-    if (!this.#needsMore(ep)) await new Promise((resolve) => { ep.waiter = resolve; });
-    ep.waiter = null;
-    return this.#epoch === ep;
+    if (!this.#needsMore(ep)) {
+      let resume;
+      await new Promise((resolve) => {
+        resume = resolve;
+        ep.waiter = resolve;
+      });
+      if (ep.waiter === resume) ep.waiter = null;
+    }
+    return this.#current(ep, gen);
+  }
+
+  #cut(ep, cut, tail) {
+    ep.splice = null;
+    const drop = ep.history.findIndex((it) => it.sample >= cut);
+    if (drop >= 0) ep.history.length = drop;
+    ep.decodedEnd = cut;
+    ep.boundaries = ep.boundaries.filter((b) => b.sample < cut);
+    ep.pendingTracks = ep.pendingTracks.filter((b) => b.sample < cut);
+    ep.decodeDone = false;
+    ep.ended = false;
+    for (const m of [...this.#members.values()]) if (m.seg) this.#resplice(m, ep, cut);
+    this.#decode(ep, tail, cut);
+    this.#kick();
+  }
+
+  // Re-encode a member from the first chunk that reaches the cut; chunks already sent from there on are
+  // withdrawn with stream/clear from_timestamp, everything before keeps playing.
+  #resplice(m, ep, cut) {
+    let resumeUs = m.sentEndUs;
+    let from = null;
+    if (ep.t0 !== null) {
+      const cutUs = ep.t0 + samplesToUs(cut, ep.rate);
+      const i = m.inflight.findIndex((f) => f.endUs > cutUs);
+      if (i >= 0) {
+        from = m.inflight[i].ts;
+        for (const f of m.inflight.splice(i)) m.bytes -= f.size;
+        resumeUs = from - ep.t0;
+      }
+    }
+    this.#closeFeed(m);
+    if (from !== null && this.#call(m, () => m.member.streamClear({ roles: ['player'], fromTimestamp: from })) === undefined) return;
+    const first = ep.history[0]?.sample ?? 0;
+    const start = Math.max(usToSamples(resumeUs, ep.rate), first);
+    this.#openFeed(m, start, Math.max(resumeUs, samplesToUs(start, ep.rate)), 'splice');
   }
 
   #boundary(ep, item) {
@@ -475,7 +565,7 @@ export class GroupStream extends EventEmitter {
       if (m.bytes + size > cap) return m.inflight[0].endUs - od;
       if (this.#call(m, () => m.member.sendAudioChunk(BigInt(ts), c.frame)) === undefined) return Infinity;
       seg.pending.shift();
-      m.inflight.push({ endUs: ts + c.durationUs, size });
+      m.inflight.push({ ts, endUs: ts + c.durationUs, size });
       m.bytes += size;
       m.sentChunks++;
       m.sentEndUs = seg.offsetUs + c.startUs + c.durationUs;

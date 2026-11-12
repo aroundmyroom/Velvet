@@ -137,7 +137,7 @@ export class RoomManager extends EventEmitter {
     Object.assign(room, {
       members: [...(r.members ?? [])], queue: r.queue ?? [], index: r.index ?? 0, positionMs: r.positionMs ?? 0,
       repeat: REPEAT_MODES.includes(r.repeat) ? r.repeat : 'off', shuffle: Boolean(r.shuffle),
-      lastPlayedAt: r.lastPlayedAt ?? null,
+      lastPlayedAt: r.lastPlayedAt ?? null, queueVersion: Number.isInteger(r.queueVersion) ? r.queueVersion : 1,
       state: r.state === 'playing' || r.state === 'paused' ? 'paused' : 'stopped',
     });
     room.order = Array.isArray(r.order) && r.order.length === room.queue.length ? r.order : room.queue.map((_, i) => i);
@@ -265,45 +265,89 @@ export class RoomManager extends EventEmitter {
       const c = this.#clients.get(cid);
       this.#moveTo(c, this.#soloRoomFor(c, room));
     }
-    room.stream?.close();
-    clearTimeout(room.idleTimer);
-    this.#rooms.delete(id);
-    for (const c of this.#clients.values()) if (c.previousRoomId === id) c.previousRoomId = null;
+    this.#dropRoom(room);
     this.#save();
-    this.emit('change', id);
   }
 
-  play(id, { items, index = 0, positionMs = 0 } = {}) {
+  #dropRoom(room) {
+    if (room.state === 'playing') this.#halt(room, 'stopped');
+    room.stream?.close();
+    this.#clearTimers(room);
+    clearTimeout(room.idleTimer);
+    this.#rooms.delete(room.id);
+    for (const c of this.#clients.values()) if (c.previousRoomId === room.id) c.previousRoomId = null;
+    this.emit('change', room.id);
+  }
+
+  play(id, { items, index = 0, positionMs = 0, paused = false } = {}) {
     const room = this.#room(id);
     if (items) {
-      room.queue = items.slice();
+      if (room.state === 'playing' && paused) this.#halt(room, 'paused');
+      room.queue = items.map((it) => ({ ...it }));
       room.order = room.queue.map((_, i) => i);
       room.index = Math.max(0, Math.min(index, room.queue.length - 1));
       room.positionMs = Math.max(0, positionMs);
-      if (room.shuffle) this.#shuffleOrder(room);
+      room.current = null;
+      if (room.shuffle) this.#shuffleOrder(room, room.index);
+      room.queueVersion++;
     } else if (room.state === 'playing') {
       return this.getRoom(id);
     }
     if (!room.queue.length) throw new RoomError('empty', 'nothing to play');
-    this.#start(room, room.index, room.positionMs);
+    if (paused) this.#load(room, room.index, room.positionMs);
+    else this.#start(room, room.index, room.positionMs);
     return this.getRoom(id);
   }
 
-  add(id, items) {
+  add(id, items, { next = false } = {}) {
     const room = this.#room(id);
-    const base = room.queue.length;
-    room.queue.push(...items);
-    const added = items.map((_, i) => base + i);
-    if (room.shuffle) {
-      const rest = room.order.slice(room.order.indexOf(this.#currentIndex(room)) + 1).concat(added);
-      this.#shuffleArray(rest);
-      room.order = room.order.slice(0, room.order.length - rest.length + added.length).concat(rest);
-    } else {
-      room.order.push(...added);
-    }
+    const fresh = items.map((it) => ({ ...it }));
+    this.#editTail(room, (anchor) => (next && room.queue.length ? this.#insertAfter(room, anchor, fresh) : this.#append(room, anchor, fresh)));
+    room.queueVersion++;
+    this.#pushController(room);
     this.#save();
     this.#changed(room);
     return room.queue.length;
+  }
+
+  jump(id, index) {
+    const room = this.#room(id);
+    if (!room.queue.length) throw new RoomError('empty', 'nothing to play');
+    if (!Number.isInteger(index) || index < 0 || index >= room.queue.length) throw new RoomError('invalid', 'index is out of range');
+    this.#start(room, index, 0);
+    return this.getRoom(id);
+  }
+
+  forget(clientId) {
+    const c = this.#clients.get(clientId);
+    if (!c) return false;
+    const member = c.member;
+    if (member) this.detach(clientId);
+    const from = this.#rooms.get(c.roomId);
+    if (from) {
+      from.members = from.members.filter((x) => x !== clientId);
+      from.stream?.removeMember(clientId);
+      if (!from.members.length && from.state === 'playing') this.#halt(from, 'paused');
+      this.#pushController(from);
+      this.#changed(from);
+    }
+    this.#clients.delete(clientId);
+    this.#releaseSoloRooms(c);
+    if (member && member.isOpen !== false) this.attach(member);
+    this.#save();
+    return true;
+  }
+
+  // An empty solo room goes; one others still use becomes a named room.
+  #releaseSoloRooms(c) {
+    for (const room of [...this.#rooms.values()].filter((r) => r.solo === c.id)) {
+      if (room.name === null && !room.members.length) {
+        this.#dropRoom(room);
+        continue;
+      }
+      room.name ??= c.name;
+      room.solo = null;
+    }
   }
 
   pause(id) {
@@ -381,7 +425,10 @@ export class RoomManager extends EventEmitter {
   setRepeat(id, mode) {
     if (!REPEAT_MODES.includes(mode)) throw new RoomError('invalid', 'repeat must be off, one or all');
     const room = this.#room(id);
-    room.repeat = mode;
+    if (room.repeat === mode) return;
+    this.#editTail(room, () => {
+      room.repeat = mode;
+    });
     this.#pushController(room);
     this.#save();
     this.#changed(room);
@@ -391,8 +438,11 @@ export class RoomManager extends EventEmitter {
     const room = this.#room(id);
     if (room.shuffle === Boolean(on)) return;
     room.shuffle = Boolean(on);
-    if (room.shuffle) this.#shuffleOrder(room);
-    else room.order = room.queue.map((_, i) => i);
+    this.#editTail(room, (anchor) => {
+      if (room.shuffle) this.#shuffleOrder(room, anchor);
+      else room.order = room.queue.map((_, i) => i);
+    });
+    room.queueVersion++;
     this.#pushController(room);
     this.#save();
     this.#changed(room);
@@ -414,7 +464,7 @@ export class RoomManager extends EventEmitter {
     const room = {
       id, name, solo, members: [], queue: [], order: [], index: 0, positionMs: 0, state: 'stopped',
       repeat: 'off', shuffle: false, lastPlayedAt: null, stream: null, timers: [], idleTimer: null,
-      current: null, scheduled: null, token: 0,
+      current: null, scheduled: null, token: 0, queueVersion: 1,
     };
     this.#rooms.set(room.id, room);
     return room;
@@ -659,6 +709,68 @@ export class RoomManager extends EventEmitter {
     return undefined;
   }
 
+  #load(room, index, positionMs) {
+    if (room.state === 'playing') this.#halt(room, 'paused');
+    room.state = 'paused';
+    this.#jump(room, index, positionMs);
+    for (const cid of room.members) this.#sendGroup(this.#clients.get(cid));
+    this.#idleLater(room);
+  }
+
+  // A queue/order change while playing: the current track plays on, what the decode already read ahead is
+  // replaced from the track the scheduler can still change (see GroupStream.replaceUpcoming).
+  #editTail(room, edit) {
+    if (room.state !== 'playing' || !room.stream?.playing) {
+      edit(this.#currentIndex(room));
+      return;
+    }
+    const spliced = room.stream.replaceUpcoming((anchor, atUs) => {
+      edit(anchor.index);
+      this.#dropScheduledFrom(room, atUs);
+      return this.#tracksAfter(room, anchor.item);
+    });
+    if (spliced) return;
+    const pos = this.#currentPosition(room);
+    edit(this.#currentIndex(room));
+    this.#start(room, this.#currentIndex(room), pos);
+  }
+
+  #insertAfter(room, anchor, items) {
+    const at = anchor + 1;
+    const k = items.length;
+    room.queue.splice(at, 0, ...items);
+    room.order = room.order.map((i) => (i >= at ? i + k : i));
+    room.order.splice(room.order.indexOf(anchor) + 1, 0, ...items.map((_, j) => at + j));
+    if (room.index >= at) room.index += k;
+  }
+
+  #append(room, anchor, items) {
+    const base = room.queue.length;
+    room.queue.push(...items);
+    const added = items.map((_, i) => base + i);
+    const pos = room.order.indexOf(anchor);
+    if (room.shuffle && pos >= 0) {
+      const rest = this.#shuffleArray(room.order.slice(pos + 1).concat(added));
+      room.order = room.order.slice(0, pos + 1).concat(rest);
+    } else {
+      room.order.push(...added);
+    }
+  }
+
+  #dropScheduledFrom(room, atUs) {
+    if (atUs === null) return;
+    room.timers = room.timers.filter((t) => {
+      if (t.forUs < atUs) return true;
+      clearTimeout(t);
+      return false;
+    });
+    room.lastScheduledUs = Math.max(room.current?.timestampUs ?? 0, ...room.timers.map((t) => t.forUs));
+    if (room.scheduled && room.scheduled.timestampUs >= atUs) {
+      room.scheduled = null;
+      for (const cid of room.members) this.#cancelScheduledArtwork(this.#clients.get(cid));
+    }
+  }
+
   #halt(room, state) {
     const pos = room.stream?.stop() ?? null;
     if (pos && room.state === 'playing') {
@@ -700,15 +812,30 @@ export class RoomManager extends EventEmitter {
     this.emit('error', Object.assign(err, { roomId: room.id }));
   }
 
+  // Tracks follow queue entries by identity, so an insert while playing never shifts what is decoded.
+  #track(room, item, startMs) {
+    return {
+      file: item.file, startMs, gainDb: item.gainDb ?? 0, item,
+      get index() { return room.queue.indexOf(item); },
+    };
+  }
+
+  #after(room, item) {
+    const i = room.queue.indexOf(item);
+    if (i < 0) return null;
+    const n = room.repeat === 'one' ? i : this.#step(room, i, 1);
+    return n === null ? null : room.queue[n];
+  }
+
   *#tracksFrom(room, index, positionMs) {
-    let i = index;
-    let startMs = positionMs;
-    while (i !== null && i < room.queue.length) {
-      const item = room.queue[i];
-      yield { file: item.file, startMs, gainDb: item.gainDb ?? 0, index: i, item };
-      startMs = 0;
-      i = room.repeat === 'one' ? i : this.#step(room, i, 1);
-    }
+    const first = room.queue[index];
+    if (!first) return;
+    yield this.#track(room, first, positionMs);
+    yield* this.#tracksAfter(room, first);
+  }
+
+  *#tracksAfter(room, item) {
+    for (let it = this.#after(room, item); it; it = this.#after(room, it)) yield this.#track(room, it, 0);
   }
 
   #step(room, index, dir) {
@@ -727,8 +854,7 @@ export class RoomManager extends EventEmitter {
     return a;
   }
 
-  #shuffleOrder(room) {
-    const cur = this.#currentIndex(room);
+  #shuffleOrder(room, cur = this.#currentIndex(room)) {
     const rest = this.#shuffleArray(room.queue.map((_, i) => i).filter((i) => i !== cur));
     room.order = room.queue.length ? [cur, ...rest] : [];
   }
@@ -744,7 +870,11 @@ export class RoomManager extends EventEmitter {
 
   #onTrack(room, { track, timestampUs, first }) {
     const token = room.token;
-    const entry = { index: track.index, item: track.item, startMs: track.startMs ?? 0, timestampUs };
+    const { item } = track;
+    const entry = {
+      item, startMs: track.startMs ?? 0, timestampUs,
+      get index() { return room.queue.indexOf(item); },
+    };
     if (first) {
       room.lastScheduledUs = timestampUs;
       this.#becomeCurrent(room, entry);
@@ -752,12 +882,12 @@ export class RoomManager extends EventEmitter {
     }
     const sendAt = Math.max(this.#now(), timestampUs - SCHEDULE_AHEAD_MS * 1000, (room.lastScheduledUs ?? 0) + 1000);
     room.lastScheduledUs = timestampUs;
-    this.#later(room, sendAt, () => {
+    this.#later(room, sendAt, timestampUs, () => {
       if (room.token !== token) return;
       room.scheduled = entry;
       this.#pushTrackState(room, timestampUs, entry);
     });
-    this.#later(room, timestampUs, () => {
+    this.#later(room, timestampUs, timestampUs, () => {
       if (room.token !== token) return;
       room.scheduled = null;
       this.#becomeCurrent(room, entry, { announce: false });
@@ -774,11 +904,12 @@ export class RoomManager extends EventEmitter {
     this.#changed(room);
   }
 
-  #later(room, atUs, fn) {
+  #later(room, atUs, forUs, fn) {
     const t = setTimeout(() => {
       room.timers = room.timers.filter((x) => x !== t);
       fn();
     }, Math.max(0, Math.ceil((atUs - this.#now()) / 1000)));
+    t.forUs = forUs;
     t.unref?.();
     room.timers.push(t);
   }
@@ -1091,6 +1222,7 @@ export class RoomManager extends EventEmitter {
       muted: ctl.muted,
       supportedCommands: ctl.supported_commands,
       lastPlayedAt: room.lastPlayedAt,
+      queueVersion: room.queueVersion,
       members: room.members.map((cid) => this.#memberView(room, this.#clients.get(cid))),
     };
     if (queue) {
@@ -1135,7 +1267,7 @@ export class RoomManager extends EventEmitter {
       return {
         id: r.id, name: r.name, solo: r.solo, members: r.members, queue: r.queue, order: r.order,
         index: pos?.track.index ?? r.index, positionMs: pos?.positionMs ?? r.positionMs,
-        repeat: r.repeat, shuffle: r.shuffle, state: r.state, lastPlayedAt: r.lastPlayedAt,
+        repeat: r.repeat, shuffle: r.shuffle, state: r.state, lastPlayedAt: r.lastPlayedAt, queueVersion: r.queueVersion,
       };
     });
     const clients = Object.fromEntries([...this.#clients.values()].map((c) => [c.id, {

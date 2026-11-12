@@ -43,6 +43,24 @@ describe('Velvet Rooms REST', async () => {
   const tokens = {};
   const PW = Object.fromEntries(['admin', 'plain', 'caster'].map(u => [u, crypto.randomBytes(9).toString('hex')]));
 
+  const roomsFile = () => {
+    try {
+      return JSON.parse(fs.readFileSync(path.join(srv.tmpDir, 'sendspin', 'rooms.json'), 'utf8'));
+    } catch {
+      return null;
+    }
+  };
+  const waitFile = async (pred, ms = 5000) => {
+    const t0 = Date.now();
+    for (;;) {
+      const f = roomsFile();
+      if (f && pred(f)) return f;
+      if (Date.now() - t0 > ms) throw new Error('rooms.json did not reach the expected state');
+      await new Promise(r => setTimeout(r, 50));
+    }
+  };
+  const inboxCount = (type, pred = () => true) => speaker.inbox.filter(m => m.type === type && pred(m.payload)).length;
+
   const call = async (who, method, p, body) => {
     const headers = { 'x-access-token': tokens[who] };
     if (body !== undefined) headers['Content-Type'] = 'application/json';
@@ -56,6 +74,7 @@ describe('Velvet Rooms REST', async () => {
     secret = fs.mkdtempSync(path.join(os.tmpdir(), 'velvet-rooms-secret-'));
     makeTone(lib, 'Tones/a.flac', 440, 12, 'Tone A');
     makeTone(lib, 'Tones/b.flac', 660, 12, 'Tone B');
+    makeTone(lib, 'Tones/c.flac', 770, 12, 'Tone C');
     makeTone(secret, 'Hidden/x.flac', 550, 2, 'Hidden');
     ssPort = await freePort();
     srv = await startServer({
@@ -77,7 +96,7 @@ describe('Velvet Rooms REST', async () => {
     assert.equal(r.status, 200);
     for (let i = 0; i < 100; i++) {
       const s = await call('admin', 'GET', '/api/v1/db/status');
-      if (s.body && !s.body.locked && s.body.totalFileCount >= 7) break;
+      if (s.body && !s.body.locked && s.body.totalFileCount >= 8) break;
       await new Promise(res => setTimeout(res, 200));
     }
   });
@@ -236,6 +255,65 @@ describe('Velvet Rooms REST', async () => {
     assert.equal(typeof state.body.positionAt, 'number');
   });
 
+  it('jumps, plays next and loads paused without resending the queue', async () => {
+    const id = (await call('caster', 'GET', '/api/v1/rooms')).body.rooms[0].id;
+    const T = ['lib/Tones/a.flac', 'lib/Tones/b.flac', 'lib/Tones/c.flac'];
+    await call('caster', 'POST', `/api/v1/rooms/${id}/shuffle`, { shuffle: false });
+    const played = await call('caster', 'POST', `/api/v1/rooms/${id}/play`, { songs: T });
+    assert.equal(played.body.state, 'playing');
+    const shuf = await call('caster', 'POST', `/api/v1/rooms/${id}/shuffle`, { shuffle: true });
+    assert.ok(shuf.body.queueVersion > played.body.queueVersion, 'shuffle changes the play order');
+    const saved = await waitFile(f => f.rooms.find(r => r.id === id)?.shuffle === true);
+    const order = saved.rooms.find(r => r.id === id).order;
+    const target = order[2];
+    const jump = await call('caster', 'POST', `/api/v1/rooms/${id}/jump`, { index: target });
+    assert.equal(jump.status, 200);
+    assert.equal(jump.body.index, target);
+    assert.equal(jump.body.current.filepath, T[target]);
+    assert.equal(jump.body.queueVersion, shuf.body.queueVersion, 'jump is not a queue change');
+    const after = await waitFile(f => f.rooms.find(r => r.id === id)?.index === target);
+    assert.deepEqual(after.rooms.find(r => r.id === id).order, order, 'jump keeps the shuffle order');
+    assert.equal((await call('caster', 'POST', `/api/v1/rooms/${id}/jump`, { index: 3 })).body.code, 'invalid_body');
+
+    await call('caster', 'POST', `/api/v1/rooms/${id}/shuffle`, { shuffle: false });
+    const jumpClears = inboxCount('stream/clear', p => p.from_timestamp === undefined);
+    await call('caster', 'POST', `/api/v1/rooms/${id}/jump`, { index: 0 });
+    await speaker.until(() => inboxCount('stream/clear', p => p.from_timestamp === undefined) > jumpClears);
+    const audio = speaker.audio;
+    await speaker.until(() => speaker.audio > audio + 50);
+    const starts = inboxCount('stream/start');
+    const plainClears = inboxCount('stream/clear', p => p.from_timestamp === undefined);
+    const next = await call('caster', 'POST', `/api/v1/rooms/${id}/add`, { songs: ['lib/Tones/c.flac'], next: true });
+    assert.equal(next.status, 200);
+    assert.equal(next.body.queueLength, 4);
+    const q = await call('caster', 'GET', `/api/v1/rooms/${id}/queue`);
+    assert.deepEqual(q.body.songs.map(x => x.filepath), [T[0], T[2], T[1], T[2]]);
+    assert.equal(q.body.index, 0);
+    assert.equal(q.body.queueVersion, next.body.queueVersion);
+    await speaker.waitFor('stream/clear', p => p.from_timestamp !== undefined);
+    const st = await call('caster', 'GET', `/api/v1/rooms/${id}/state`);
+    assert.equal(st.body.state, 'playing');
+    assert.equal(st.body.current.filepath, T[0]);
+    assert.equal(inboxCount('stream/start'), starts, 'play next does not restart the stream');
+    assert.equal(inboxCount('stream/clear', p => p.from_timestamp === undefined), plainClears, 'the current track is not cleared');
+
+    const ends = inboxCount('stream/end');
+    const paused = await call('caster', 'POST', `/api/v1/rooms/${id}/play`, { songs: [T[1], T[0]], index: 1, positionMs: 2000, paused: true });
+    assert.equal(paused.status, 200);
+    assert.equal(paused.body.state, 'paused');
+    assert.equal(paused.body.index, 1);
+    assert.equal(paused.body.positionMs, 2000);
+    assert.equal(paused.body.current.filepath, T[0]);
+    assert.equal(paused.body.queueLength, 2);
+    await speaker.until(() => inboxCount('stream/end') > ends);
+    await new Promise(r => setTimeout(r, 300));
+    assert.equal(inboxCount('stream/start'), starts, 'a paused load streams nothing');
+    const resumed = await call('caster', 'POST', `/api/v1/rooms/${id}/resume`);
+    assert.equal(resumed.body.state, 'playing');
+    await speaker.until(() => inboxCount('stream/start') > starts);
+    await call('caster', 'POST', `/api/v1/rooms/${id}/stop`);
+  });
+
   it('manages rooms', async () => {
     const solo = (await call('caster', 'GET', '/api/v1/rooms')).body.rooms[0];
     assert.equal((await call('caster', 'DELETE', `/api/v1/rooms/${solo.id}`)).body.code, 'solo_room');
@@ -279,6 +357,26 @@ describe('Velvet Rooms REST', async () => {
     assert.equal(rn.body.device.name, 'Kitchen left');
     const rv = await call('admin', 'POST', '/api/v1/admin/sendspin/devices/revoke', { clientId: speaker.clientId });
     assert.equal(rv.body.device.trust, 'unknown');
+  });
+
+  it('forgets a device together with its solo room', async () => {
+    const id = speaker.clientId;
+    await waitFile(f => f.rooms.some(r => r.solo === id && r.name === null));
+    speaker.close();
+    for (let i = 0; i < 50; i++) {
+      const d = (await call('admin', 'GET', '/api/v1/admin/sendspin/status')).body.devices.find(x => x.clientId === id);
+      if (d?.connection === 'offline') break;
+      await new Promise(r => setTimeout(r, 100));
+    }
+    const r = await call('admin', 'POST', '/api/v1/admin/sendspin/devices/forget', { clientId: id });
+    assert.equal(r.status, 200);
+    const f = await waitFile(x => !x.clients[id]);
+    assert.ok(!f.rooms.some(x => x.solo === id), 'no solo room left');
+    assert.ok(f.rooms.every(x => !x.members.includes(id)), 'no seat in a named room');
+    assert.deepEqual(f.rooms.find(x => x.name === 'Lounge').members, []);
+    const st = await call('admin', 'GET', '/api/v1/admin/sendspin/status');
+    assert.ok(!st.body.devices.some(d => d.clientId === id));
+    assert.equal((await call('admin', 'POST', '/api/v1/admin/sendspin/devices/forget', { clientId: id })).status, 404);
   });
 
   it('backs up the server key and the trust store together', async () => {

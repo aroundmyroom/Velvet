@@ -4,6 +4,7 @@ import { RoomManager, RoomError } from './rooms.js';
 import { IMPLEMENTED_ROLES } from './connection.js';
 
 const START_TIMEOUT_MS = 15_000;
+export const STOP_TIMEOUT_MS = 3_000;
 
 function withTimeout(promise, ms, what) {
   let timer;
@@ -23,7 +24,6 @@ export class RoomsService extends EventEmitter {
   #rooms = null;
   #error = null;
   #settings = null;
-  #queueVersions = new Map();
   #names = new Map();
   #busy = Promise.resolve();
 
@@ -83,7 +83,6 @@ export class RoomsService extends EventEmitter {
       });
       rooms.on('error', (err) => this.#log.warn(`[rooms] ${err.message}`));
       rooms.on('member-error', (roomId, clientId, err) => this.#log.debug(`[rooms] ${String(clientId).slice(0, 8)} dropped: ${err.message}`));
-      rooms.on('change', (roomId) => this.#trackQueue(roomId));
       server.on('client', (conn) => rooms.attach(conn));
       server.on('client-removed', (conn) => rooms.detach(conn.clientId));
       for (const conn of server.clients.values()) if (conn.isActivated) rooms.attach(conn);
@@ -96,44 +95,29 @@ export class RoomsService extends EventEmitter {
     }
   }
 
+  // Bounded: a peer that never answers or a half-open socket must not keep Velvet from exiting.
   async #stop() {
     const { server } = this;
     const rooms = this.#rooms;
     this.#server = null;
     this.#rooms = null;
-    if (rooms) {
-      rooms.removeAllListeners();
-      await rooms.close().catch((err) => this.#log.warn(`[rooms] close failed: ${err.message}`));
+    const graceful = async () => {
+      if (rooms) {
+        rooms.removeAllListeners();
+        await rooms.close().catch((err) => this.#log.warn(`[rooms] close failed: ${err.message}`));
+      }
+      if (server) {
+        server.removeAllListeners('client');
+        server.removeAllListeners('client-removed');
+        await server.stop().catch((err) => this.#log.warn(`[rooms] Sendspin stop failed: ${err.message}`));
+      }
+    };
+    try {
+      await withTimeout(graceful(), STOP_TIMEOUT_MS, 'Sendspin stop');
+    } catch (err) {
+      this.#log.warn(`[rooms] ${err.message}; closing everything now`);
+      server?.destroy();
     }
-    if (server) {
-      server.removeAllListeners('client');
-      server.removeAllListeners('client-removed');
-      await server.stop().catch((err) => this.#log.warn(`[rooms] Sendspin stop failed: ${err.message}`));
-    }
-  }
-
-  #fingerprint(view) {
-    return `${view.queueLength}|${view.shuffle}`;
-  }
-
-  #trackQueue(roomId) {
-    const view = this.#rooms?.listRooms().find((r) => r.id === roomId);
-    if (!view) return;
-    const fp = this.#fingerprint(view);
-    const entry = this.#queueVersions.get(roomId);
-    if (!entry) this.#queueVersions.set(roomId, { version: 1, fp });
-    else if (entry.fp !== fp) this.#queueVersions.set(roomId, { version: entry.version + 1, fp });
-  }
-
-  bumpQueue(roomId) {
-    const view = this.#rooms?.listRooms().find((r) => r.id === roomId);
-    const prev = this.#queueVersions.get(roomId);
-    this.#queueVersions.set(roomId, { version: (prev?.version ?? 0) + 1, fp: view ? this.#fingerprint(view) : null });
-  }
-
-  queueVersion(roomId) {
-    if (!this.#queueVersions.has(roomId)) this.#trackQueue(roomId);
-    return this.#queueVersions.get(roomId)?.version ?? 1;
   }
 
   setName(clientId, name) {
@@ -210,7 +194,7 @@ export class RoomsService extends EventEmitter {
       positionAt: Date.now(),
       index: idle ? -1 : view.index,
       queueLength: view.queueLength,
-      queueVersion: this.queueVersion(view.id),
+      queueVersion: view.queueVersion,
       volume: view.volume,
       muted: view.muted,
       repeat: view.repeat,

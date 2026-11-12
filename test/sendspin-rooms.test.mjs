@@ -1,11 +1,14 @@
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import fsp from 'node:fs/promises';
+import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { RoomManager, RoomError, groupVolumes } from '../src/sendspin/rooms.js';
 import { serverNow } from '../src/sendspin/scheduler.js';
-import { FakeMember, FFMPEG, PCM48, FLAC44, tone, until, sleep } from './helpers/sendspin-fake-member.mjs';
+import { RoomsService, STOP_TIMEOUT_MS } from '../src/sendspin/service.js';
+import { FakeMember, FFMPEG, PCM48, FLAC44, tone, until, sleep, pcmDurationUs } from './helpers/sendspin-fake-member.mjs';
+import { RoomClient } from './helpers/sendspin-room-client.mjs';
 
 let dir;
 const F = {};
@@ -15,6 +18,7 @@ before(async () => {
   F.a = await tone(path.join(dir, 'a.wav'), { freq: 440, seconds: 0.6 });
   F.b = await tone(path.join(dir, 'b.wav'), { freq: 660, seconds: 0.5 });
   F.long = await tone(path.join(dir, 'long.wav'), { freq: 220, seconds: 4 });
+  F.mid = await tone(path.join(dir, 'mid.wav'), { freq: 330, seconds: 1.5 });
 });
 
 after(() => fsp.rm(dir, { recursive: true, force: true }));
@@ -459,4 +463,198 @@ test('pcm and flac members in one room stay on one timeline', async () => {
   const endA = a.chunks.at(-1).ts + (a.chunks.at(-1).frame.length / 4) * 1e6 / 48000;
   assert.ok(Math.abs(endA - (a.chunks[0].ts + 1_100_000)) < 100);
   await rm.close();
+});
+
+// What a client ends up showing: a later update with an earlier-or-equal timestamp replaces a pending one.
+const titles = (m) => {
+  const md = metadataOf(m).filter((x) => x.title && x.progress?.playback_speed === 1000);
+  return md.filter((x, i) => !md.slice(i + 1).some((y) => y.timestamp <= x.timestamp)).map((x) => x.title);
+};
+const dedupe = (a) => a.filter((x, i) => x !== a[i - 1]);
+
+test('jump keeps the shuffle order; play paused loads without streaming', async () => {
+  let r = 0;
+  const random = () => {
+    r = (r * 7 + 3) % 10;
+    return r / 10;
+  };
+  const rm = await manager({ random });
+  const a = new FakeMember();
+  const id = rm.attach(a);
+  const items = [item(F.long, 'L1', 4000), item(F.long, 'L2', 4000), item(F.long, 'L3', 4000), item(F.a, 'A', 600)];
+  rm.play(id, { items, index: 1, positionMs: 500, paused: true });
+  let view = rm.getRoom(id);
+  assert.equal(view.state, 'paused');
+  assert.equal(view.index, 1);
+  assert.equal(view.positionMs, 500);
+  assert.equal(a.of('stream/start').length, 0, 'paused load sends no stream/start');
+  assert.equal(a.of('server/activate').length, 0);
+  assert.deepEqual(metadataOf(a).at(-1).progress, { track_progress: 500, track_duration: 4000, playback_speed: 0 });
+  assert.equal(metadataOf(a).at(-1).title, 'L2');
+
+  rm.setShuffle(id, true);
+  const { order, queueVersion } = rm.getRoom(id);
+  assert.equal(order[0], 1);
+  rm.jump(id, 3);
+  view = rm.getRoom(id);
+  assert.equal(view.state, 'playing');
+  assert.equal(view.index, 3);
+  assert.deepEqual(view.order, order, 'jump keeps the shuffle order');
+  assert.equal(view.queueVersion, queueVersion, 'jump is not a queue change');
+  await until(() => a.chunks.length > 0);
+  rm.jump(id, 0);
+  assert.equal(last(a, 'stream/clear').payload.fromTimestamp, undefined, 'a jump is a plain stream/clear');
+  assert.equal(a.of('stream/start').length, 1);
+  assert.deepEqual(rm.getRoom(id).order, order);
+  await until(() => metadataOf(a).at(-1).title === 'L1');
+  assert.throws(() => rm.jump(id, 4), (err) => err instanceof RoomError && err.code === 'invalid');
+
+  const starts = a.of('stream/start').length;
+  rm.play(id, { items: queue(), index: 1, positionMs: 100, paused: true });
+  assert.equal(last(a, 'stream/end').payload.roles[0], 'player');
+  view = rm.getRoom(id);
+  assert.equal(view.state, 'paused');
+  assert.equal(view.current.meta.title, 'B');
+  assert.ok(view.queueVersion > queueVersion);
+  await sleep(150);
+  assert.equal(a.of('stream/start').length, starts);
+  await rm.close();
+});
+
+test('play next while playing: the cut is withdrawn with stream/clear from_timestamp, the current track plays on', async () => {
+  const rm = await manager();
+  const a = new FakeMember({ formats: [PCM48] });
+  const b = new FakeMember({ formats: [FLAC44] });
+  rm.attach(a);
+  rm.attach(b);
+  const id = rm.createRoom('Next', [a.clientId, b.clientId]);
+  rm.play(id, { items: [item(F.mid, 'M', 1500), item(F.a, 'A', 600)] });
+  await until(() => a.chunks.length > 0 && serverNow() > a.chunks[0].ts + 200_000);
+  assert.ok(serverNow() + 400_000 < a.chunks[0].ts + 1_500_000, 'still well inside the first track');
+  const sentPastCut = a.chunks.some((c) => c.ts >= a.chunks[0].ts + 1_500_000);
+  assert.ok(sentPastCut, 'the next track was already sent ahead');
+  const version = rm.getRoom(id).queueVersion;
+  const mark = new Map([a, b].map((m) => [m, m.calls.length]));
+  const ended = new Promise((res) => rm.once('ended', res));
+  assert.equal(rm.add(id, [item(F.b, 'B', 500)], { next: true }), 3);
+  const view = rm.getRoom(id);
+  assert.deepEqual(view.queue.map((q) => q.meta.title), ['M', 'B', 'A']);
+  assert.equal(view.index, 0);
+  assert.equal(view.queueVersion, version + 1);
+  for (const m of [a, b]) {
+    const before = mark.get(m);
+    const after = m.calls.slice(before);
+    const clears = after.filter((c) => c.type === 'stream/clear');
+    const pastCut = m.calls.slice(0, before).some((c) => c.type === 'chunk' && c.ts + 50_000 > m.chunks[0].ts + 1_500_000);
+    assert.equal(clears.length, pastCut ? 1 : 0, 'stream/clear only when audio past the cut was sent');
+    if (!pastCut) continue;
+    const from = clears[0].payload.fromTimestamp;
+    assert.ok(from > clears[0].at + 100_000, 'from_timestamp keeps the lead');
+    assert.ok(from <= m.chunks[0].ts + 1_500_000 && from > m.chunks[0].ts + 1_300_000, 'the cut is at the first track boundary');
+    assert.ok(!after.some((c) => c.type === 'stream/start' || c.type === 'stream/end'), 'no restart');
+    await until(() => m.calls.slice(before).some((c) => c.type === 'chunk'));
+    const next = m.calls.slice(before).find((c) => c.type === 'chunk');
+    assert.ok(next.ts >= from && next.ts - from < 100, `first chunk after the clear starts at from_timestamp (${next.ts - from})`);
+  }
+  await ended;
+  const split = a.calls[mark.get(a)].at;
+  const kept = a.chunks.filter((c) => c.at < split && c.ts < last(a, 'stream/clear').payload.fromTimestamp);
+  const timeline = [...kept, ...a.chunks.filter((c) => c.at >= split)];
+  for (let i = 1; i < timeline.length; i++) {
+    assert.equal(timeline[i].ts, timeline[i - 1].ts + pcmDurationUs(timeline[i - 1], PCM48), `gapless at chunk ${i}`);
+  }
+  assert.equal(timeline.at(-1).ts + pcmDurationUs(timeline.at(-1), PCM48) - timeline[0].ts, 2_600_000);
+  assert.deepEqual(dedupe(titles(a)), ['M', 'B', 'A']);
+  const md = metadataOf(a).filter((x) => x.title === 'B' && x.progress?.playback_speed === 1000);
+  assert.equal(md.at(-1).timestamp, a.chunks[0].ts + 1_500_000);
+  await rm.close();
+});
+
+test('play next before the decode reached the boundary takes effect there without any stream command', async () => {
+  const rm = await manager({ streamOptions: { readAheadMs: 300, lowWaterMs: 200 } });
+  const a = new FakeMember({ formats: [PCM48] });
+  const id = rm.attach(a);
+  rm.setShuffle(id, true);
+  rm.play(id, { items: [item(F.mid, 'M', 1500), item(F.a, 'A', 600)] });
+  await until(() => a.chunks.length > 0);
+  const ended = new Promise((res) => rm.once('ended', res));
+  rm.add(id, [item(F.b, 'B', 500), item(F.a, 'C', 600)], { next: true });
+  const { order, queue: q } = rm.getRoom(id);
+  assert.deepEqual(order.slice(0, 3).map((i) => q[i].meta.title), ['M', 'B', 'C'], 'inserted after the current track in shuffle order');
+  await ended;
+  assert.equal(a.of('stream/clear').length, 0);
+  assert.equal(a.of('stream/start').length, 1);
+  assert.deepEqual(dedupe(titles(a)), ['M', 'B', 'C', 'A']);
+  const t0 = a.chunks[0].ts;
+  const end = a.chunks.at(-1).ts + pcmDurationUs(a.chunks.at(-1), PCM48);
+  assert.equal(end - t0, 3_200_000);
+  await rm.close();
+});
+
+test('appending to a queue whose decode already ended still plays the new track', async () => {
+  const rm = await manager();
+  const a = new FakeMember();
+  const id = rm.attach(a);
+  rm.play(id, { items: [item(F.mid, 'M', 1500)] });
+  await until(() => a.chunks.length > 0 && serverNow() > a.chunks[0].ts + 100_000);
+  const ended = new Promise((res) => rm.once('ended', res));
+  rm.add(id, [item(F.b, 'B', 500)]);
+  await ended;
+  assert.deepEqual(dedupe(titles(a)), ['M', 'B']);
+  await rm.close();
+});
+
+test('forget drops the speaker\'s solo room and its seat in named rooms', async () => {
+  const d = path.join(dir, 'forget');
+  const rm = await manager({ dir: d });
+  const a = new FakeMember({ name: 'A' });
+  const b = new FakeMember({ name: 'B' });
+  const soloA = rm.attach(a);
+  const soloB = rm.attach(b);
+  const id = rm.createRoom('Pair', [a.clientId, b.clientId]);
+  b.close();
+  assert.equal(rm.forget(b.clientId), true);
+  assert.deepEqual(rm.getRoom(id).members.map((m) => m.clientId), [a.clientId]);
+  assert.throws(() => rm.getRoom(soloB), RoomError);
+  assert.equal(rm.roomOf(b.clientId), null);
+  assert.equal(rm.forget(b.clientId), false);
+
+  assert.equal(rm.forget(a.clientId), true);
+  assert.deepEqual(rm.getRoom(id).members, []);
+  assert.throws(() => rm.getRoom(soloA), RoomError);
+  const fresh = rm.roomOf(a.clientId);
+  assert.ok(fresh && fresh !== soloA, 'a connected speaker gets a new solo room');
+  assert.equal(last(a, 'group/update').payload.groupId, fresh);
+  await rm.flush();
+  const raw = JSON.parse(await fsp.readFile(path.join(d, 'rooms.json'), 'utf8'));
+  assert.deepEqual(raw.rooms.map((r) => r.id).sort(), [id, fresh].sort());
+  assert.deepEqual(Object.keys(raw.clients), [a.clientId]);
+  await rm.close();
+});
+
+test('service stop is bounded: a playing room, a speaker that never answers and a silent socket', { timeout: 15_000 }, async () => {
+  const quiet = { info() {}, warn() {}, debug() {}, error() {} };
+  const sv = new RoomsService({ dataDir: path.join(dir, 'svc'), logger: quiet, roomOptions: { ffmpeg: FFMPEG } });
+  await sv.apply({ enabled: true, name: 'Stop test', languages: ['en'], bind: '127.0.0.1', port: 0, path: '/sendspin', discovery: false });
+  assert.ok(sv.running);
+  const port = sv.server.port;
+  const speaker = new RoomClient({ name: 'Mute' });
+  await speaker.dial(`ws://127.0.0.1:${port}/sendspin`);
+  await speaker.connect();
+  await sv.server.approve(speaker.clientId);
+  await until(() => sv.rooms.getRoom(sv.rooms.roomOf(speaker.clientId)).members[0]?.player);
+  const id = sv.rooms.roomOf(speaker.clientId);
+  sv.rooms.play(id, { items: [item(F.long, 'L', 4000)] });
+  await speaker.until(() => speaker.audio > 3);
+  speaker.ws._socket.pause();
+  const idle = net.connect(port, '127.0.0.1');
+  idle.on('error', () => {});
+  await new Promise((res) => idle.once('connect', res));
+  const t = Date.now();
+  await sv.stop();
+  const took = Date.now() - t;
+  assert.ok(took < STOP_TIMEOUT_MS, `stop took ${took} ms`);
+  assert.equal(sv.running, false);
+  speaker.close();
+  idle.destroy();
 });

@@ -21,6 +21,7 @@ const DEFAULT_RECONNECT = Object.freeze({ minMs: 1000, maxMs: 300_000, concurren
 export const KNOWN_DEVICES_FILE = 'known-devices.json';
 export const PAIRING_STATUS_TTL_MS = 60_000;
 const MAX_KNOWN_DEVICES = 256;
+export const CLOSE_GRACE_MS = 1_500;
 const OTHER_SERVER_GOODBYES = new Set(['another_server', 'concurrent_attempt']);
 const STATUS_BY_EVENT = Object.freeze({
   started: 'waiting', code_queued: 'waiting', code_sent: 'waiting', confirmed: 'waiting', persist: 'waiting',
@@ -396,12 +397,7 @@ export class SendspinServer extends EventEmitter {
   async stop() {
     this.#stopping = true;
     this.#clearTimers();
-    for (const dial of this.#dials.values()) {
-      clearTimeout(dial.timer);
-      dial.wanted = false;
-      if (!dial.conn) dial.socket?.terminate();
-    }
-    this.#dials.clear();
+    this.#dropDials();
     const conns = [...this.#clients.values(), ...this.#pending];
     for (const conn of conns) {
       if (conn.isActivated && conn.activeStreams.length) {
@@ -413,22 +409,51 @@ export class SendspinServer extends EventEmitter {
       }
       conn.close(1001, 'server shutdown');
     }
-    await Promise.race([Promise.all(conns.map((c) => c.closed)), new Promise((r) => setTimeout(r, 3000).unref?.())]);
-    if (this.#discovery) {
-      await this.#discovery.stop();
-      this.#discovery = null;
-    }
-    if (this.#wss) {
-      for (const ws of this.#wss.clients) ws.terminate();
-      await new Promise((resolve) => this.#wss.close(() => resolve()));
-      this.#wss = null;
-    }
-    if (this.#http) {
-      await new Promise((resolve) => this.#http.close(() => resolve()));
-      this.#http = null;
-    }
+    await Promise.race([Promise.all(conns.map((c) => c.closed)), new Promise((r) => setTimeout(r, CLOSE_GRACE_MS).unref?.())]);
+    for (const conn of conns) conn.terminate();
+    const discovery = this.#discovery;
+    this.#discovery = null;
+    await discovery?.stop().catch((err) => this.#log.debug(`[sendspin] mDNS stop failed: ${err.message}`));
+    await this.#closeListener();
     await this.#store?.flush();
     await this.#saveKnown();
+  }
+
+  // Last resort when stop() did not finish in time: drop every socket without waiting for anyone.
+  destroy() {
+    this.#stopping = true;
+    this.#clearTimers();
+    this.#dropDials();
+    for (const conn of [...this.#clients.values(), ...this.#pending]) conn.terminate();
+    const discovery = this.#discovery;
+    this.#discovery = null;
+    discovery?.stop().catch(() => {});
+    this.#closeListener();
+  }
+
+  #dropDials() {
+    for (const dial of this.#dials.values()) {
+      clearTimeout(dial.timer);
+      dial.wanted = false;
+      if (!dial.conn) dial.socket?.terminate();
+    }
+    this.#dials.clear();
+  }
+
+  // http.close() alone waits for every TCP connection, including one that never sends a request.
+  #closeListener() {
+    const wss = this.#wss;
+    const server = this.#http;
+    this.#wss = null;
+    this.#http = null;
+    if (wss) {
+      for (const ws of wss.clients) ws.terminate();
+      wss.close();
+    }
+    if (!server) return Promise.resolve();
+    const closed = new Promise((resolve) => server.close(() => resolve()));
+    server.closeAllConnections();
+    return closed;
   }
 
   #clearTimers() {

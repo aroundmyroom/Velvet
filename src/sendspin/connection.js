@@ -800,6 +800,10 @@ export class SendspinConnection extends EventEmitter {
     t.unref?.();
   }
 
+  terminate() {
+    if (!this.#closed) this.#ws.terminate();
+  }
+
   close(code = 1000, reason = '') {
     if (this.#closed) return;
     if (this.#ws.readyState === 1) this.#ws.close(code, String(reason).slice(0, 120));

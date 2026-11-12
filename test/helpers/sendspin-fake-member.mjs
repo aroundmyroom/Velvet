@@ -114,10 +114,10 @@ export class FakeMember extends EventEmitter {
     return true;
   }
 
-  streamClear({ roles } = {}) {
+  streamClear({ roles, fromTimestamp } = {}) {
     const targets = roles ?? ['player'];
     if (!targets.every((r) => this.#streams.has(r))) throw new Error('stream/clear on an inactive stream');
-    this.#rec('stream/clear', { roles });
+    this.#rec('stream/clear', fromTimestamp === undefined ? { roles } : { roles, fromTimestamp });
     return true;
   }
 

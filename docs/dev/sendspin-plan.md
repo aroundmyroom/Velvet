@@ -218,7 +218,9 @@ export class SendspinServer {          // EventEmitter
   constructor({ dataDir, name, languages, host = '0.0.0.0', port = 8927, path = '/sendspin', roles = ['player@v1'] /*roles we
                 activate when allowed*/, logger, maxClients = 64, maxPending = 32, reconnect: { minMs, maxMs, concurrentMs, stableMs },
                 timeouts, discovery = false | SendspinDiscovery, allowLoopback = false, cooldown? /*{initialMs, maxMs}, tests*/ });
-  async start(); async stop();        // stop: stream/end, close 1001 all, goodbye mDNS, flush the store
+  async start(); async stop();        // stop: stream/end, close 1001 all (1.5 s grace, then terminate), goodbye mDNS,
+                                      //   closeAllConnections (half-open sockets), flush the store
+  destroy();                          // sync last resort: terminate every socket, no waiting
   serverId, port, name, clients /*Map copy*/, getClient(id), trustStore;
   connectTo(wsUrl, { source }) /* ws:// + path-absolute only; redial per reconnectDecision with exponential back-off */;
   disconnectFrom(wsUrl);
@@ -268,6 +270,12 @@ export class GroupStream extends EventEmitter {
   memberChanged(clientId);     // call on every client/state: new format -> in-place stream/start, contiguous timeline
   play(tracks);                // (async) iterable of { file, startMs?, gainDb?, ...own fields }, pulled one track ahead;
                                //   while playing it is a seek/jump: stream/clear + new timeline
+  replaceUpcoming(makeTail);   // queue edit while playing: makeTail(anchorTrack, atUs|null) -> new tracks after anchor,
+                               //   called synchronously. Cut = first decoded boundary >= now + sendAhead + 200 ms: history
+                               //   truncated there, each member re-encoded from its first sent chunk reaching the cut
+                               //   (stream/clear from_timestamp = that chunk's ts, only if such a chunk was sent), decode
+                               //   restarts at the cut on the same timeline. No decoded boundary yet -> the swap happens at
+                               //   the next track start of the running decode (no stream command). -> false if nothing decoded
   stop();                      // stream/end player for all; -> position() taken just before
   close();
   position();                  // { track, positionMs, atUs, audibleAtUs } | null
@@ -286,7 +294,13 @@ export class RoomManager extends EventEmitter {
                            // <dir>/rooms.json (0600, atomic, debounced 250 ms)
   attach(member) /* -> roomId */; detach(clientId); roomOf(clientId); listRooms(); getRoom(id);
   createRoom(name, clientIds) /* -> id */; renameRoom(id, name); setMembers(id, clientIds); deleteRoom(id);
-  play(id, { items?, index = 0, positionMs = 0 }) /* no items = resume / last played */; add(id, items);
+  play(id, { items?, index = 0, positionMs = 0, paused = false }) /* no items = resume / last played; paused: load queue
+          + position, stream/end if it was playing, never stream/start */;
+  add(id, items, { next = false }) /* next: insert after the current track (array + shuffle order); while playing the
+          read-ahead tail is replaced via GroupStream.replaceUpcoming, the current track is never cleared */;
+  jump(id, index) /* play entry from 0 ms: stream/clear + new timeline, shuffle order kept, no queue change */;
+  forget(clientId) /* drop its client record, its empty solo room(s) and its seat in named rooms; still connected ->
+          re-attached to a fresh solo room */;
   pause(id); resume(id); stop(id); next(id); previous(id) /* restart when >= 3 s in */; seek(id, ms); seekRelative(id, ms);
   setVolume(id, v) /* -> { clientId: volume } */; setMemberVolume(id, clientId, v); mute(id, bool);
   setMemberMute(id, clientId, bool); setRepeat(id, 'off'|'one'|'all'); setShuffle(id, bool); flush(); close();
@@ -295,7 +309,8 @@ export class RoomManager extends EventEmitter {
 // item = { filepath, file /*absolute, already resolved*/, meta: { title, artist, album_artist, album, year, track,
 //          durationMs, artworkUrl? }, gainDb? }   (resolving paths, metadata and gain is the REST layer's job)
 // getRoom(id) -> { id, name, named, state, repeat, shuffle, index, positionMs, durationMs, current: { filepath, meta },
-//   queueLength, queue: [{ filepath, meta }], order, volume, muted, supportedCommands, lastPlayedAt,
+//   queueLength, queue: [{ filepath, meta }], order, volume, muted, supportedCommands, lastPlayedAt, queueVersion /*play with
+//   items, add, shuffle; persisted*/,
 //   members: [{ clientId, name, connected, available, player, volume, muted, volumeSettable, muteSettable, format,
 //               streaming, parked }] }   listRooms() = the same without queue/order; solo rooms only while occupied
 ```
@@ -663,6 +678,16 @@ second test instance on another port for the owner.
   `#needsMore`), so a display-only room "plays" with no track metadata (metadata scenarios). With both fixed in
   a scratch copy: 14/14 aiosendspin, 12/14 sendspin-cpp (its 2 = client cannot send `format`). sendspin-js
   failures are peer limits (48/44.1 kHz stereo only, no FLAC/artwork/24-bit/baseline, no raw frames).
+
+- 2026-11-12 — RoomManager gaps closed, REST adapters removed: `jump` (no queue resend, shuffle order kept), `add … next`
+  (insert after current; tracks follow queue entries by identity; while playing the read-ahead tail is cut at the first
+  boundary past the send-ahead, members re-encoded from that point with `stream/clear from_timestamp`, gapless; if the decode
+  has not reached the boundary the swap happens there with no stream command; also used for append/shuffle/repeat while
+  playing), `play … paused` (no `stream/start`), `forget` (solo room + named seats out of `rooms.json`), `queueVersion`
+  owned by RoomManager. Shutdown hang: `http.close()` in `SendspinServer.stop()` waited forever for any TCP connection that
+  had not sent a full request (reproduced: idle/partial socket → stop never resolved, Velvet only exited via the signal
+  handler's fallback timer); now `closeAllConnections()`, 1.5 s close grace + terminate, and `RoomsService` stop bounded at
+  3 s with `server.destroy()`. Tests: rooms 23 (+6), REST 13 (+2), sendspin unit 188, `npm test` 699.
 
 ### Second test instance (owner)
 
