@@ -457,8 +457,6 @@ Phase 1 complete (v6.14.17): `audio_features` table, `essentia-bpm-worker.mjs`, 
 - [ ] Sonos as a room member
 - [ ] Send browser-queue reorder/remove to the room (today only add/jump/play)
 - [ ] Auto-DJ top-up for a room's server-side queue
-- [ ] Player repeat/shuffle buttons → room (`/rooms/:id/repeat|shuffle` exist, the player does not call them)
-- [ ] Pass the listener's ReplayGain mode/preamp to `play`/`add` (API accepts `rg*`, the player does not send them)
 - [ ] Room editing in the player (today admin page only)
 - [ ] `_velvet_…` vendor roles (e.g. queue, lyrics) for speakers that want them
 - [ ] IPv6 mDNS discovery

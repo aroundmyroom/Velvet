@@ -217,7 +217,7 @@ states (`paired`, `aborted`) stay readable for 60 s after they occur.
 | `GET` | `/api/v1/rooms/:id/state` | — | `Room`. **Remote UI polls this ~1 s** while a room is active and the page is visible; back off to ≥ 5 s when hidden or idle. Cheap: no DB access beyond the cached current entry. |
 | `GET` | `/api/v1/rooms/:id/queue` | — | `{ queueVersion, index, songs: QueueEntry[] }` |
 | `POST` | `/api/v1/rooms/:id/play` | `{ songs: string[], index?: integer = 0, positionMs?: integer = 0, paused?: boolean = false, rgEnabled?, rgMode?, rgPreamp?, rgClip? }` | `Room` + `skipped: number`. Replaces the room queue (server-side queue from now on), starts at `index`/`positionMs`. 400 if no entry survives resolution. 409 `not_playable`. |
-| `POST` | `/api/v1/rooms/:id/add` | `{ songs: string[], next?: boolean = false }` | `{ ok: true, queueLength, queueVersion, skipped }`. `next: true` inserts after the current track. Starts playback if the room was idle. |
+| `POST` | `/api/v1/rooms/:id/add` | `{ songs: string[], next?: boolean = false, rgEnabled?, rgMode?, rgPreamp?, rgClip? }` | `{ ok: true, queueLength, queueVersion, skipped }`. `next: true` inserts after the current track. Starts playback if the room was idle. |
 | `POST` | `/api/v1/rooms/:id/jump` | `{ index }` | `Room`. Play the queue entry at `index` from 0 ms. |
 | `POST` | `/api/v1/rooms/:id/pause` | — | `Room` (`paused`; position kept). |
 | `POST` | `/api/v1/rooms/:id/resume` | — | `Room`. On an idle room resumes what it last played (survives restarts). |
@@ -232,8 +232,17 @@ states (`paired`, `aborted`) stay readable for 60 s after they occur.
 
 ### ReplayGain
 
-`play` and `add` accept Server Audio's optional ReplayGain fields: `rgEnabled`
-(default on), `rgMode` (`'track'` default / `'album'`), `rgPreamp` (dB, −15…15).
+`play` and `add` accept Server Audio's optional ReplayGain fields (the player
+sends the listener's Loudness Normalisation settings, as `_mpvLoadSong` does for
+Server Audio). Each one is optional; when absent the server default applies.
+
+| Field | Type | Server default |
+|---|---|---|
+| `rgEnabled` | boolean | `true` |
+| `rgMode` | `'track' \| 'album'` | `'track'` |
+| `rgPreamp` | number, dB, −15…15 | `0` |
+| `rgClip` | boolean | `true` |
+
 The gain comes from the DB (`resolveTrackGain`: measured → R128 → tag) and is
 applied in the server's decode. Without a limiter in that path, positive gain is
 always capped so the stored peak stays ≤ 0 dBFS (no peak known → never above
@@ -250,8 +259,11 @@ always capped so the stored peak stays ≤ 0 dBFS (no peak known → never above
   `positionMs = audio.currentTime * 1000`; then pauses the local `<audio>` and
   becomes a remote. A queue row click sends `jump` when the browser queue is the
   one it handed over (same `queueVersion` as last seen), otherwise `play` with
-  the whole queue. Adding songs sends `add`. Take back: `stop` →
-  `stoppedAt` → play locally from that index/position.
+  the whole queue. Adding songs sends `add`. `play` and `add` carry the
+  listener's `rgEnabled`/`rgMode`/`rgPreamp`/`rgClip`. The repeat and
+  shuffle buttons send `repeat`/`shuffle` and show the room's `repeat`/`shuffle`
+  from the polled state; the browser's own values come back on leaving the
+  room. Take back: `stop` → `stoppedAt` → play locally from that index/position.
 - Remotes treat `queueVersion` changes they did not cause as "someone else
   changed the queue" and refetch `GET …/queue`.
 - Room `index` counts the room queue. The browser drops radio/podcast URL

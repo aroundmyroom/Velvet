@@ -296,10 +296,12 @@ Audio goes out as FLAC or PCM, in the format the speaker prefers, up to
 
 ## ReplayGain
 
-Rooms apply ReplayGain on the server, before the audio is sent: track gain,
-from Velvet's own measurement when there is one, otherwise from the R128 or
-ReplayGain tags. Gain that would push a song's peak above full scale is capped,
-so a room never clips. See [replaygain-info.md](replaygain-info.md).
+Rooms apply ReplayGain on the server, before the audio is sent: from Velvet's
+own measurement when there is one, otherwise from the R128 or ReplayGain tags.
+When you start a room or add songs from the player, your Loudness
+Normalisation settings go along (on/off, track or album mode, preamp), the same
+way Server Audio uses them. Gain that would push a song's peak above full scale
+is capped, so a room never clips. See [replaygain-info.md](replaygain-info.md).
 
 ---
 
@@ -315,11 +317,8 @@ so a room never clips. See [replaygain-info.md](replaygain-info.md).
   the queue again from the browser (click a song after reordering: the whole
   queue is sent).
 - **Auto-DJ does not top up a room.** When the room's queue ends, it stops.
-- **The player's repeat and shuffle buttons do not control the room.** Use the
-  speaker's buttons, if it has them.
-- **Browser-only audio settings do not apply:** the equaliser, crossfade and
-  your personal ReplayGain mode and preamp stay in the browser. Rooms use
-  track gain without preamp.
+- **Browser-only audio settings do not apply:** the equaliser and crossfade
+  stay in the browser.
 - **Rooms are created and edited on the admin page only.**
 - Discovery is IPv4 only.
 

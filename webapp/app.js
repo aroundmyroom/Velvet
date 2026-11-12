@@ -19777,6 +19777,7 @@ let _roomHandedVersion = -1;
 let _roomQvs = -1;
 let _roomVolTimer = null;
 let _roomVolTouchedAt = 0;
+let _roomModeTouchedAt = 0;
 const _ROOM_MAX_SONGS = 10000;
 
 function _roomActive() { return !!_room; }
@@ -19802,6 +19803,9 @@ function _playerDurSec() {
 function _playerPosSec() {
   if (_room) return _roomPosSec();
   return Number.isFinite(audioEl.currentTime) ? audioEl.currentTime : 0;
+}
+function _roomRgFields() {
+  return { rgEnabled: S.rgEnabled, rgMode: S.rgMode, rgPreamp: S.rgPreamp, rgClip: S.rgClip };
 }
 function _roomQueuePayload(at) {
   let songs = [];
@@ -19856,12 +19860,15 @@ function _roomEnter(room) {
     id: room.id, name: room.name, state: room.state, positionMs: room.positionMs || 0, positionAt: Date.now(),
     durationMs: room.current?.durationMs ?? null, volume: room.volume, muted: room.muted === true,
     queueVersion: room.queueVersion, index: room.index, canSeek: room.canSeek !== false,
+    repeat: room.repeat || 'off', shuffle: room.shuffle === true,
   };
   _roomPollFails = 0;
   try { localStorage.setItem(_uKey('room'), room.id); } catch (_) {}
   if (!audioEl.paused) audioEl.pause();
   document.body.classList.add('room-remote');
   _roomApply(room);
+  _syncRepeatIcon();
+  _syncShuffleBtn();
   _roomStartPoll();
   _updateOutputBtn();
 }
@@ -19876,6 +19883,8 @@ function _roomExit({ keepKey = false } = {}) {
   document.body.classList.remove('room-remote');
   _roomRenderIndicator();
   _roomRestoreLocalVolume();
+  _syncRepeatIcon();
+  _syncShuffleBtn();
   syncPlayIcons();
   _updateOutputBtn();
 }
@@ -19924,7 +19933,7 @@ async function _roomStart(room) {
   if (S.castingToSonos) _deactivateSonosCast(false);
   if (_sonosFav) _exitSonosFavorite({ stopDevice: true });
   try {
-    const st = await api('POST', _roomUrl(room.id, 'play'), { songs, index, positionMs, paused: !wasPlaying });
+    const st = await api('POST', _roomUrl(room.id, 'play'), { songs, index, positionMs, paused: !wasPlaying, ..._roomRgFields() });
     if (prev) {
       api('POST', _roomUrl(prev.id, 'stop')).catch(() => {});
       _roomExit();
@@ -20022,7 +20031,7 @@ function _roomPlayAt(idx) {
     return;
   }
   const { songs, index, complete } = _roomQueuePayload(idx);
-  _roomCmd('play', { songs, index, positionMs: 0 }).then(st => {
+  _roomCmd('play', { songs, index, positionMs: 0, ..._roomRgFields() }).then(st => {
     if (!st) return;
     _roomHandedVersion = st.queueVersion ?? -1;
     if (_room) _room.queueVersion = _roomHandedVersion;
@@ -20036,7 +20045,7 @@ function _roomAddSongs(songs, next) {
   if (!fps.length) return;
   const id = _room.id;
   const inSync = _roomQvs !== -1 && _room.queueVersion === _roomHandedVersion;
-  api('POST', _roomUrl(id, 'add'), { songs: fps.slice(0, _ROOM_MAX_SONGS), next: next === true }).then(r => {
+  api('POST', _roomUrl(id, 'add'), { songs: fps.slice(0, _ROOM_MAX_SONGS), next: next === true, ..._roomRgFields() }).then(r => {
     if (!_room || _room.id !== id) return;
     _roomHandedVersion = r?.queueVersion ?? -1;
     _room.queueVersion = _roomHandedVersion;
@@ -20111,6 +20120,12 @@ function _roomApply(st) {
   if (Date.now() - _roomVolTouchedAt > 1500) {
     _room.volume = st.volume;
     _room.muted = st.muted === true;
+  }
+  if (Date.now() - _roomModeTouchedAt > 1500) {
+    const repeat = st.repeat || 'off';
+    const shuffle = st.shuffle === true;
+    if (repeat !== _room.repeat) { _room.repeat = repeat; _syncRepeatIcon(); }
+    if (shuffle !== _room.shuffle) { _room.shuffle = shuffle; _syncShuffleBtn(); }
   }
   if (st.queueVersion != null && st.queueVersion !== _room.queueVersion) {
     _room.queueVersion = st.queueVersion;
@@ -20215,6 +20230,27 @@ function _roomSetVolume(val) {
     _roomVolTouchedAt = Date.now();
     _roomCmd('volume', { volume });
   }, 150);
+}
+
+function _roomCycleRepeat() {
+  if (!_room) return;
+  const modes = ['off', 'all', 'one'];
+  const repeat = modes[(modes.indexOf(_room.repeat) + 1) % modes.length];
+  _roomModeTouchedAt = Date.now();
+  _room.repeat = repeat;
+  _syncRepeatIcon();
+  _showInfoStrip('', _repeatStripHtml(repeat), 3000, true);
+  _roomCmd('repeat', { repeat }).then(() => { _roomModeTouchedAt = Date.now(); });
+}
+
+function _roomToggleShuffle() {
+  if (!_room) return;
+  const shuffle = !_room.shuffle;
+  _roomModeTouchedAt = Date.now();
+  _room.shuffle = shuffle;
+  _syncShuffleBtn();
+  _showInfoStrip('', `<span class="dj-strip-label">Shuffle: <strong>${shuffle ? 'On' : 'Off'}</strong></span>`, 3000, true);
+  _roomCmd('shuffle', { shuffle }).then(() => { _roomModeTouchedAt = Date.now(); });
 }
 
 function _roomToggleMute() {
@@ -22892,7 +22928,7 @@ function _applyServerSettings(data) {
   if (prefs.shuffle != null) {
     ls('ms2_shuffle_' + u, prefs.shuffle);
     S.shuffle = prefs.shuffle === '1';
-    document.getElementById('shuffle-btn')?.classList.toggle('active', S.shuffle);
+    _syncShuffleBtn();
   }
   if (prefs.mute != null) {
     // Guard: only apply server mute='1' if the local mute key agrees.
@@ -24101,7 +24137,11 @@ function _shuffleStripHtml() {
     return '<span class="dj-strip-label">Shuffle: <strong>On</strong> — but inactive, Auto-DJ is on</span>';
   return `<span class="dj-strip-label">Shuffle: <strong>${S.shuffle ? 'On' : 'Off'}</strong></span>`;
 }
+function _syncShuffleBtn() {
+  document.getElementById('shuffle-btn')?.classList.toggle('active', _room ? _room.shuffle : S.shuffle);
+}
 document.getElementById('shuffle-btn').addEventListener('click', () => {
+  if (_room) { _roomToggleShuffle(); return; }
   S.shuffle = !S.shuffle;
   document.getElementById('shuffle-btn').classList.toggle('active', S.shuffle);
   _showInfoStrip('', _shuffleStripHtml(), 3000, true);
@@ -24115,18 +24155,23 @@ const _svgRepeatOne = `<svg id="repeat-icon" width="22" height="22" viewBox="0 0
 function _syncRepeatIcon() {
   const btn = document.getElementById('repeat-btn');
   if (!btn) return;
-  btn.innerHTML = S.repeat === 'one' ? _svgRepeatOne : _svgRepeatAll;
-  btn.classList.toggle('active', S.repeat !== 'off');
-  btn.title = S.repeat === 'one' ? 'Repeat: One' : S.repeat === 'all' ? 'Repeat: All' : 'Repeat: Off';
+  const mode = _room ? _room.repeat : S.repeat;
+  btn.innerHTML = mode === 'one' ? _svgRepeatOne : _svgRepeatAll;
+  btn.classList.toggle('active', mode !== 'off');
+  btn.title = mode === 'one' ? 'Repeat: One' : mode === 'all' ? 'Repeat: All' : 'Repeat: Off';
+}
+function _repeatStripHtml(mode) {
+  return `<span class="dj-strip-label">Repeat: <strong>${mode === 'one' ? 'One Song' : mode === 'all' ? 'All' : 'Off'}</strong></span>`;
 }
 
 document.getElementById('repeat-btn').addEventListener('click', () => {
+  if (_room) { _roomCycleRepeat(); return; }
   const modes = ['off', 'all', 'one'];
   S.repeat = modes[(modes.indexOf(S.repeat) + 1) % modes.length];
   _syncRepeatIcon();
   localStorage.setItem(_uKey('repeat'), S.repeat);
   _syncPrefs();
-  _showInfoStrip('', `<span class="dj-strip-label">Repeat: <strong>${S.repeat === 'one' ? 'One Song' : S.repeat === 'all' ? 'All' : 'Off'}</strong></span>`, 3000, true);
+  _showInfoStrip('', _repeatStripHtml(S.repeat), 3000, true);
 });
 
 // Queue toggle (player bar button)
@@ -27218,6 +27263,7 @@ document.addEventListener('keydown', e => {
       break;
     case 'KeyS':
       if (!e.ctrlKey && !e.metaKey) {
+        if (_room) { _roomToggleShuffle(); break; }
         S.shuffle = !S.shuffle;
         document.getElementById('shuffle-btn').classList.toggle('active', S.shuffle);
         _showInfoStrip('', _shuffleStripHtml(), 3000, true);
