@@ -245,15 +245,18 @@ export function parseArtworkState(obj) {
 
 export function parseVisualizerState(obj) {
   if (!isObject(obj) || !Array.isArray(obj.types) || obj.types.length > 16 || !isInt(obj.rate_max, 1, 1000)) return null;
-  const types = VISUALIZER_TYPES.filter((t) => obj.types.includes(t));
+  let types = VISUALIZER_TYPES.filter((t) => obj.types.includes(t));
   const out = { types, rate_max: obj.rate_max };
   if (types.includes('spectrum')) {
     const sp = obj.spectrum;
-    if (!isObject(sp) || !isInt(sp.n_disp_bins, 1, 4096) || !SPECTRUM_SCALES.includes(sp.scale)
-      || !isInt(sp.f_min, 0, 192_000) || !isInt(sp.f_max, 1, 192_000)) {
-      throw new ProtocolError('client/state visualizer: spectrum requested without a valid spectrum object');
+    if (!isObject(sp)) throw new ProtocolError('client/state visualizer: spectrum requested without a spectrum object');
+    // spec: types the server cannot stream are silently omitted, so parameters out of our range drop spectrum.
+    if (isInt(sp.n_disp_bins, 1, 4096) && SPECTRUM_SCALES.includes(sp.scale) && isInt(sp.f_min, 0, 192_000) && isInt(sp.f_max, 1, 192_000)) {
+      out.spectrum = { n_disp_bins: sp.n_disp_bins, scale: sp.scale, f_min: sp.f_min, f_max: sp.f_max };
+    } else {
+      types = types.filter((t) => t !== 'spectrum');
+      out.types = types;
     }
-    out.spectrum = { n_disp_bins: sp.n_disp_bins, scale: sp.scale, f_min: sp.f_min, f_max: sp.f_max };
   }
   return out;
 }
@@ -310,9 +313,14 @@ export class SendspinConnection extends EventEmitter {
   #mismatchCheck = Promise.resolve();
   #streams = new Set();
   #playerStateReceived = false;
-  // authorized: a start was sent that no client-stream/start has used yet; discard: audio of the open stream is
-  // dropped (stop sent, role or playback removed) while in-flight messages are still tolerated.
-  #source = { stateReceived: false, authorized: false, open: false, discard: false };
+  // Input stream bookkeeping (roles/source/v1.md). wanted: the last command sent was start. pending: a start was
+  // sent that no client-stream/start or decline has answered yet (kept across stop: in-flight answers are valid).
+  // discard: audio of the open stream is dropped. retired: the open stream was superseded by a stop (or a role /
+  // playback drop) sent while it was open (1), or it may answer a start that a stop superseded (2: the client
+  // either opened it before the stop and will end it, or the stop cleared that start and it answers the newer
+  // one); its client-stream/end then closes it quietly instead of ending the line-in a newer start asked for.
+  // ambiguous: a stop was sent while a start was pending. gen: starts sent.
+  #source = { stateReceived: false, open: false, discard: false, wanted: false, pending: false, retired: 0, ambiguous: false, gen: 0 };
 
   constructor({ ws, identity, name, languages, direction = 'inbound', url = null, remoteAddress = null,
     resolvePsk = null, hasPairingRecord = null, implementedRoles = IMPLEMENTED_ROLES, sourceCodecs = SOURCE_CODECS, logger = winston, timeouts = {} }) {
@@ -686,9 +694,13 @@ export class SendspinConnection extends EventEmitter {
     const src = this.#source;
     const format = parseSourceStreamStart(payload.source);
     if (!src.open) {
-      if (!src.authorized) throw new ProtocolError('client-stream/start without a server start');
-      src.authorized = false;
+      if (!src.pending) throw new ProtocolError('client-stream/start without a server start');
       src.open = true;
+      src.discard = !src.wanted;
+      src.retired = src.ambiguous ? 2 : 0;
+      // If this stream answers the superseded start, the newer one is still pending at the client.
+      src.pending = src.ambiguous && src.wanted;
+      src.ambiguous = false;
     }
     if (!format || !this.sourceCodecs.includes(format.codec)) {
       this.#debug(`source stream format refused: ${cleanText(payload.source?.codec)}`);
@@ -704,9 +716,27 @@ export class SendspinConnection extends EventEmitter {
     if (payload.roles !== undefined && !(Array.isArray(payload.roles) && payload.roles.includes('source'))) return;
     const src = this.#source;
     if (!src.open) {
-      if (!src.authorized) return;
-      src.authorized = false;
+      if (!src.pending) return;
+      src.pending = false;
+      // A decline of the superseded start or of the newer one: ask again, a second decline is final.
+      if (src.ambiguous && src.wanted) {
+        src.ambiguous = false;
+        this.#sendSourceStart();
+        return;
+      }
+      src.ambiguous = false;
+      src.wanted = false;
       this.emit('source-declined');
+      return;
+    }
+    if (src.retired && src.wanted) {
+      // Retired as ambiguous: if this was the newer stream ending, the client holds no start any more; asking again
+      // is a no-op for a client that still holds it.
+      const ask = src.retired === 2;
+      src.open = false;
+      src.discard = true;
+      src.retired = 0;
+      if (ask) this.#sendSourceStart();
       return;
     }
     this.#endSourceStream('ended');
@@ -714,11 +744,34 @@ export class SendspinConnection extends EventEmitter {
 
   #endSourceStream(why) {
     const src = this.#source;
-    if (why === 'unavailable') src.authorized = false;
+    if (why === 'unavailable') {
+      src.pending = false;
+      src.ambiguous = false;
+    }
+    src.wanted = false;
+    src.retired = 0;
     if (!src.open) return;
     src.open = false;
     src.discard = false;
     this.emit('source-end', why);
+  }
+
+  #sendSourceStart() {
+    if (!this.sendJson('server/command', { source: { command: 'start' } })) return false;
+    const src = this.#source;
+    src.wanted = true;
+    src.pending = true;
+    src.gen++;
+    return true;
+  }
+
+  // A stop, or the role / playback going away: the client ends what is open and clears a pending start.
+  #retireSource() {
+    const src = this.#source;
+    src.wanted = false;
+    src.discard = true;
+    if (src.open) src.retired = 1;
+    if (src.pending) src.ambiguous = true;
   }
 
   #onSourceAudio(payload) {
@@ -735,11 +788,10 @@ export class SendspinConnection extends EventEmitter {
     if (command === 'start') {
       if (!this.hasRole('source') || !this.activities.includes('playback')) throw new SendspinError('source start needs the source role and playback');
       if (!src.stateReceived || this.state?.available !== true) throw new SendspinError('source start before the source state');
-      if (src.authorized || (src.open && !src.discard)) return true;
+      return src.wanted || this.#sendSourceStart();
     }
     if (!this.sendJson('server/command', { source: { command } })) return false;
-    src.discard = command === 'stop';
-    if (command === 'start') src.authorized = true;
+    this.#retireSource();
     return true;
   }
 
@@ -828,7 +880,7 @@ export class SendspinConnection extends EventEmitter {
     const hadSource = this.hasRole('source');
     const keepsSource = nextRoles.some((r) => roleFamily(r) === 'source');
     if (!keepsSource || !hadSource) this.#source.stateReceived = false;
-    if (!keepsSource || !acts.includes('playback')) this.#source.discard = true;
+    if (!keepsSource || !acts.includes('playback')) this.#retireSource();
     this.activities = acts;
     this.activeRoles = [...nextRoles];
     if (first) {

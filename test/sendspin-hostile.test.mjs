@@ -246,6 +246,12 @@ test('role-state parsers accept only the spec shapes', () => {
   assert.deepEqual(parseVisualizerState({ types: ['beat', 'evil', 7], rate_max: 30, extra: {} }), { types: ['beat'], rate_max: 30 });
   assert.equal(parseVisualizerState({ types: ['beat'], rate_max: 0 }), null);
   assert.throws(() => parseVisualizerState({ types: ['spectrum'], rate_max: 30 }));
+  assert.throws(() => parseVisualizerState({ types: ['spectrum'], rate_max: 30, spectrum: 'mel' }));
+  // spec: types the server cannot stream are silently omitted; parameters out of range are not a protocol error.
+  for (const spectrum of [{ n_disp_bins: 100_000, scale: 'mel', f_min: 20, f_max: 16000 }, { n_disp_bins: 16, scale: 'mel', f_min: 20, f_max: 500_000 },
+    { n_disp_bins: 16, scale: 'cubic', f_min: 20, f_max: 16000 }, { n_disp_bins: 16, scale: 'mel', f_min: -1, f_max: 16000 }, {}]) {
+    assert.deepEqual(parseVisualizerState({ types: ['spectrum', 'beat'], rate_max: 30, spectrum }), { types: ['beat'], rate_max: 30 });
+  }
   assert.deepEqual(parseVisualizerState({ types: ['spectrum'], rate_max: 30, spectrum: { n_disp_bins: 16, scale: 'mel', f_min: 20, f_max: 16000, z: 1 } }),
     { types: ['spectrum'], rate_max: 30, spectrum: { n_disp_bins: 16, scale: 'mel', f_min: 20, f_max: 16000 } });
   assert.deepEqual(parseSourceState({ signal: 'present', x: 1 }), { signal: 'present' });

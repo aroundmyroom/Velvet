@@ -29,6 +29,12 @@ export const STALL_MS = 250;
 // A source may not run ahead of real time by more than this (bounds decode work per connection).
 export const MAX_AHEAD_US = 1_000_000;
 export const TICK_MS = 10;
+// Shorter chunks are refused: per-chunk work must stay proportional to the audio it carries.
+export const MIN_CHUNK_MS = 1;
+// Bytes queued to the ffmpeg decoder, in seconds of the input's uncompressed size: above this chunks are
+// dropped, and a decoder that stays behind for BACKLOG_END_MS ends the line-in.
+export const BACKLOG_MS = 1500;
+export const BACKLOG_END_MS = 3000;
 
 export class SourceError extends Error {
   constructor(code, message) {
@@ -63,30 +69,75 @@ export function checkSourceFormat(f) {
   return { codec: 'flac', rate, channels, bitDepth: bits, header, maxBlock };
 }
 
-// Samples in a chunk of whole FLAC frames, counted from the frame headers without decoding (a few bytes can
-// declare 65535 samples). -> number | null when the chunk does not start with a frame header.
-export function flacChunkSamples(data, maxBlock, limit) {
+const FLAC_RATES = [0, 88200, 176400, 192000, 8000, 16000, 22050, 24000, 32000, 44100, 48000, 96000];
+const FLAC_BITS = [0, 8, 12, -1, 16, 20, 24, 32];
+
+// A frame header's own rate/channels/bit depth fields agree with STREAMINFO (0 = "see STREAMINFO").
+function flacHeaderFits(data, i, info) {
+  if (!info) return true;
+  const sr = data[i + 2] & 0x0f;
+  const ch = data[i + 3] >> 4;
+  const bits = FLAC_BITS[(data[i + 3] >> 1) & 7];
+  if (sr >= 1 && sr <= 11 && FLAC_RATES[sr] !== info.rate) return false;
+  if ((ch <= 7 ? ch + 1 : 2) !== info.channels) return false;
+  return bits === 0 || bits === info.bitDepth;
+}
+
+// Worst case for FLAC: verbatim subframes (side channel one bit wider) plus header, footer and padding per frame.
+export function flacMaxBytes(samples, frames, channels, bitDepth) {
+  return Math.ceil(samples * (channels * bitDepth + 1) / 8) + frames * (16 + 2 + 1 + 2 * channels);
+}
+
+// Samples in a chunk of whole FLAC frames, counted from the frame headers without decoding. A frame header is
+// one that passes the CRC-8, agrees with STREAMINFO and continues the chunk's frame numbering; anything else is
+// frame data. -> { samples, frames } | null when the chunk does not start with a frame header. Throws
+// SourceError('bad_chunk') for a frame larger than STREAMINFO's maximum block size (a few header bytes could
+// otherwise declare 65535 samples, or hide megabytes as one sample).
+export function flacFrameScan(data, maxBlock, limit, info = null) {
   const first = parseFlacFrameHeader(data, 0);
-  if (!first || first.blockSize > maxBlock) return null;
+  if (!first || !flacHeaderFits(data, 0, info)) return null;
+  const tooBig = (h) => new SourceError('bad_chunk', `flac frame of ${h.blockSize} samples above the stream's maximum ${maxBlock}`);
+  if (first.blockSize > maxBlock) throw tooBig(first);
   let total = first.blockSize;
+  let frames = 1;
+  let prev = first;
   for (let i = first.length; i < data.length - 1 && total <= limit; i++) {
     if (data[i] !== 0xff || (data[i + 1] & 0xfe) !== 0xf8) continue;
     const h = parseFlacFrameHeader(data, i);
-    if (h && h.blockSize <= maxBlock) {
-      total += h.blockSize;
-      i += h.length - 1;
-    }
+    if (!h || h.variable !== prev.variable || !flacHeaderFits(data, i, info)) continue;
+    if (h.number !== (prev.variable ? prev.number + prev.blockSize : prev.number + 1)) continue;
+    if (h.blockSize > maxBlock) throw tooBig(h);
+    total += h.blockSize;
+    frames++;
+    prev = h;
+    i += h.length - 1;
   }
-  return total;
+  return { samples: total, frames };
 }
 
+export function flacChunkSamples(data, maxBlock, limit, info = null) {
+  return flacFrameScan(data, maxBlock, limit, info)?.samples ?? null;
+}
+
+const maxChunkSamples = (fmt) => Math.ceil(fmt.rate * MAX_CHUNK_MS / 1000) + (fmt.codec === 'flac' ? fmt.maxBlock : 0);
+
+// -> samples | null (not a chunk we can count). Throws SourceError('bad_chunk') when the bytes cannot be the
+// audio the chunk claims: more than the uncompressed size of its samples.
 export function chunkSamples(fmt, data) {
   if (fmt.codec === 'pcm') {
     const frameBytes = (fmt.bitDepth / 8) * fmt.channels;
     return data.length && data.length % frameBytes === 0 ? data.length / frameBytes : null;
   }
   if (!data.length) return null;
-  return flacChunkSamples(data, fmt.maxBlock, Math.ceil(fmt.rate * MAX_CHUNK_MS / 1000) + fmt.maxBlock);
+  const limit = maxChunkSamples(fmt);
+  const cap = (samples, frames) => flacMaxBytes(samples, frames, fmt.channels, fmt.bitDepth);
+  if (data.length > cap(limit, Math.ceil(limit / 16))) throw new SourceError('bad_chunk', `flac chunk of ${data.length} bytes is larger than any valid chunk`);
+  const scan = flacFrameScan(data, fmt.maxBlock, limit, fmt);
+  if (!scan || scan.samples > limit) return scan?.samples ?? null;
+  if (data.length > cap(scan.samples, scan.frames)) {
+    throw new SourceError('bad_chunk', `flac chunk of ${data.length} bytes for ${scan.samples} samples in ${scan.frames} frames`);
+  }
+  return scan.samples;
 }
 
 // Little-endian signed PCM -> interleaved stereo float (mono doubled, extra channels dropped).
@@ -275,6 +326,9 @@ export function createFfmpegDecoder({ fmt, outRate, onPcm, onError, ffmpeg = ffm
   });
   if (fmt.header) child.stdin.write(fmt.header);
   return {
+    get backlog() {
+      return closed ? 0 : child.stdin.writableLength;
+    },
     write: (data) => {
       if (!closed) child.stdin.write(data);
     },
@@ -290,7 +344,7 @@ export function createFfmpegDecoder({ fmt, outRate, onPcm, onError, ffmpeg = ffm
 }
 
 function createPcmDecoder({ fmt, onPcm }) {
-  return { write: (data) => onPcm(pcmToStereo(data, fmt.bitDepth, fmt.channels)), close: () => {} };
+  return { backlog: 0, write: (data) => onPcm(pcmToStereo(data, fmt.bitDepth, fmt.channels)), close: () => {} };
 }
 
 // Per source connection: validates and paces incoming chunks, keeps statistics, decodes into the resampler of
@@ -301,7 +355,10 @@ export class SourceSession {
   #ffmpeg;
   #opts;
   #decoder = null;
+  // Monotonic deque of [arrival, delay] over the stale window: its head is the window's best delay.
   #recent = [];
+  #recentHead = 0;
+  #backlogSince = null;
 
   constructor(conn, { now = serverNow, logger = null, ffmpeg, resampler = {} } = {}) {
     this.conn = conn;
@@ -316,7 +373,7 @@ export class SourceSession {
     this.roomId = null;
     this.startPending = false;
     this.#resetTiming();
-    this.stats = { chunks: 0, rejected: 0, stale: 0, ahead: 0, jumps: 0, gaps: 0 };
+    this.stats = { chunks: 0, rejected: 0, stale: 0, ahead: 0, jumps: 0, gaps: 0, backlog: 0 };
   }
 
   #resetTiming() {
@@ -325,6 +382,8 @@ export class SourceSession {
     this.lastArrival = null;
     this.aheadUs = 0;
     this.#recent = [];
+    this.#recentHead = 0;
+    this.#backlogSince = null;
   }
 
   get streaming() {
@@ -375,21 +434,56 @@ export class SourceSession {
     this.#decoder = null;
   }
 
-  // Timestamps anchor (stale backlog) and classify (jumps, gaps); the samples themselves are never cut by them.
-  onAudio(timestampUs, data) {
-    const fmt = this.format;
-    if (!fmt) return false;
-    const n = chunkSamples(fmt, data);
-    const maxSamples = Math.ceil(fmt.rate * MAX_CHUNK_MS / 1000) + (fmt.codec === 'flac' ? fmt.maxBlock : 0);
-    if (n === null || n > maxSamples) {
-      this.stats.rejected++;
+  #bestDelay(now, delay) {
+    const q = this.#recent;
+    while (q.length > this.#recentHead && q[q.length - 1][1] >= delay) q.pop();
+    q.push([now, delay]);
+    while (now - q[this.#recentHead][0] >= STALE_WINDOW_MS * 1000) this.#recentHead++;
+    if (this.#recentHead > 1024) {
+      q.splice(0, this.#recentHead);
+      this.#recentHead = 0;
+    }
+    return q[this.#recentHead][1];
+  }
+
+  // A decoder that cannot keep up must not buffer without bound: drop while behind, give up when it stays behind.
+  #decoderBehind(fmt, now) {
+    const backlog = this.#decoder?.backlog ?? 0;
+    if (backlog <= fmt.rate * fmt.channels * (fmt.bitDepth / 8) * BACKLOG_MS / 1000) {
+      this.#backlogSince = null;
       return false;
     }
+    this.#backlogSince ??= now;
+    return true;
+  }
+
+  // Timestamps anchor (stale backlog) and classify (jumps, gaps); the samples themselves are never cut by them.
+  // -> 'ok' | 'dropped' | 'invalid' (the peer sent audio it cannot have: close it) | 'overloaded' (end the line-in)
+  onAudio(timestampUs, data) {
+    const fmt = this.format;
+    if (!fmt) return 'dropped';
+    let n;
+    try {
+      n = chunkSamples(fmt, data);
+    } catch (err) {
+      if (!(err instanceof SourceError)) throw err;
+      this.stats.rejected++;
+      this.lastReject = err.message;
+      return 'invalid';
+    }
+    if (n === null || n > maxChunkSamples(fmt) || n < fmt.rate * MIN_CHUNK_MS / 1000) {
+      this.stats.rejected++;
+      return 'dropped';
+    }
     const now = this.#now();
+    if (this.#decoderBehind(fmt, now)) {
+      this.stats.backlog++;
+      return now - this.#backlogSince > BACKLOG_END_MS * 1000 ? 'overloaded' : 'dropped';
+    }
     const durUs = n * 1e6 / fmt.rate;
     if (this.aheadUs - now > MAX_AHEAD_US) {
       this.stats.ahead++;
-      return false;
+      return 'dropped';
     }
     this.aheadUs = Math.max(this.aheadUs, now) + durUs / 1.01;
     const ts = Number(timestampUs);
@@ -401,17 +495,15 @@ export class SourceSession {
     this.lastDurUs = durUs;
     this.lastArrival = now;
     const delay = now - ts - durUs;
-    this.#recent = this.#recent.filter(([at]) => now - at < STALE_WINDOW_MS * 1000);
-    this.#recent.push([now, delay]);
-    const best = Math.min(...this.#recent.map(([, d]) => d));
+    const best = this.#bestDelay(now, delay);
     this.stats.chunks++;
     this.stats.delayMs = Math.round(delay / 1000);
     if (delay - best > STALE_MS * 1000) {
       this.stats.stale++;
-      return false;
+      return 'dropped';
     }
     this.#decoder?.write(data);
-    return true;
+    return 'ok';
   }
 
   // The room's audio: a clock-driven generator in the shape GroupStream's decode loop takes. Starts once the
@@ -536,7 +628,18 @@ export class SourceManager extends EventEmitter {
       s.lastError = 'declined';
       this.stop(s.clientId);
     });
-    on('source-audio', (ts, data) => s.onAudio(ts, data));
+    on('source-audio', (ts, data) => {
+      const verdict = s.onAudio(ts, data);
+      if (verdict === 'invalid') {
+        this.#log?.info?.(`[sendspin] ${s.clientId.slice(0, 8)} sent an invalid source chunk; closing: ${cleanText(s.lastReject, 160)}`);
+        s.conn.close(1002, 'invalid source chunk');
+      } else if (verdict === 'overloaded' && s.roomId) {
+        this.#log?.warn?.(`[sendspin] ${s.clientId.slice(0, 8)} line-in stopped: its decoder stayed more than ${BACKLOG_END_MS / 1000} s behind`);
+        this.stop(s.clientId);
+        s.lastError = 'overloaded';
+        this.#changed(s);
+      }
+    });
     this.#changed(s);
   }
 

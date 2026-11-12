@@ -7,7 +7,8 @@ import { SendspinServer } from '../src/sendspin/server.js';
 import { IMPLEMENTED_ROLES, nowUs } from '../src/sendspin/connection.js';
 import { RoomManager } from '../src/sendspin/rooms.js';
 import {
-  SourceManager, SourceError, LiveResampler, checkSourceFormat, flacChunkSamples, pcmToStereo, TARGET_MS, MAX_EXCESS_MS,
+  SourceManager, SourceSession, SourceError, LiveResampler, checkSourceFormat, flacChunkSamples, chunkSamples, flacMaxBytes, pcmToStereo,
+  TARGET_MS, MAX_EXCESS_MS, BACKLOG_MS, BACKLOG_END_MS,
 } from '../src/sendspin/source.js';
 import { FakeMember, FFMPEG, PCM48, until, sleep } from './helpers/sendspin-fake-member.mjs';
 import { SourceClient, sourceHello, sinePcm16, flacFrames } from './helpers/sendspin-source-client.mjs';
@@ -335,4 +336,198 @@ test('a device that is source and player is not fed its own line-in', async (t) 
   await until(() => both.of('stream/start').length === 1);
   await sleep(50);
   assert.equal(fake.of('stream/start').length, 0, 'the source device does not play its own input');
+});
+
+// ── second review: bounded input, line-in hand-over ─────────────────────────
+
+const crc8 = (b) => {
+  let c = 0;
+  for (const x of b) {
+    c ^= x;
+    for (let k = 0; k < 8; k++) c = c & 0x80 ? ((c << 1) ^ 7) & 0xff : (c << 1) & 0xff;
+  }
+  return c;
+};
+// A fixed-blocksize FLAC frame header (48 kHz, stereo, 16 bit): bsCode 6 = 8-bit block size, else a table size.
+function flacHeader(number, { bsCode = 6, blockSize = 1 } = {}) {
+  const h = [0xff, 0xf8, (bsCode << 4) | 10, 0x18, number];
+  if (bsCode === 6) h.push(blockSize - 1);
+  h.push(crc8(h));
+  return Buffer.from(h);
+}
+
+test('flac: a chunk cannot hide megabytes behind a one-sample header or declare oversized frames', async () => {
+  const fmt = { codec: 'flac', rate: 48000, channels: 2, bitDepth: 16, maxBlock: 960 };
+  // The reviewer's chunk: one 1-sample frame, then 1 MiB of junk with stray 4096-sample headers.
+  const junk = Buffer.alloc(1 << 20);
+  flacHeader(0).copy(junk, 0);
+  const unit = Buffer.concat([flacHeader(0, { bsCode: 12 }).subarray(0, 6), Buffer.alloc(10)]);
+  for (let i = 16; i + unit.length <= junk.length; i += unit.length) unit.copy(junk, i);
+  assert.throws(() => chunkSamples(fmt, junk), (e) => e instanceof SourceError && e.code === 'bad_chunk');
+  // A small chunk: one sample's frame followed by far more bytes than one sample can take.
+  assert.throws(() => chunkSamples(fmt, Buffer.concat([flacHeader(0), Buffer.alloc(4000)])), (e) => e.code === 'bad_chunk');
+  // A frame header that continues the numbering but declares more than STREAMINFO's maximum block size.
+  const big = Buffer.concat([flacHeader(0, { blockSize: 200 }), Buffer.alloc(40), flacHeader(1, { bsCode: 12 })]);
+  assert.throws(() => flacChunkSamples(big, 960, 100_000, fmt), (e) => e.code === 'bad_chunk');
+  assert.throws(() => flacChunkSamples(flacHeader(0, { bsCode: 12 }), 960, 100_000, fmt), (e) => e.code === 'bad_chunk');
+  // Real frames still count exactly and pass the byte bound.
+  const { frames } = await flacFrames(FFMPEG, { seconds: 0.2 });
+  const real = Buffer.concat(frames.slice(0, 3).map((f) => f.frame));
+  assert.equal(chunkSamples(fmt, real), 2880);
+  assert.ok(real.length <= flacMaxBytes(2880, 3, 2, 16));
+});
+
+test('an invalid flac chunk closes the source connection', { timeout: 20_000 }, async (t) => {
+  const { server, sources, roomId } = await setup(t);
+  const { header, frames } = await flacFrames(FFMPEG, { seconds: 0.5 });
+  const { c } = await connectSource(t, server);
+  await server.approve(c.clientId);
+  await sources.allow(c.clientId, true);
+  await c.expect('server/activate', (p) => p.active_roles?.includes('source@v1'));
+  c.state(true, 'present');
+  sources.start(roomId, c.clientId);
+  await c.until(() => c.commands().includes('start'));
+  c.streamStart({ codec: 'flac', sample_rate: 48000, channels: 2, bit_depth: 16, codec_header: header.toString('base64') });
+  await until(() => sources.session(c.clientId)?.streaming);
+  c.sendAudio(Number(nowUs()), frames[0].frame);
+  await sleep(30);
+  assert.equal(sources.session(c.clientId).stats.chunks, 1);
+  c.sendAudio(Number(nowUs()), Buffer.concat([flacHeader(1), Buffer.alloc(64 * 1024)]));
+  assert.equal(await c.closed, 1002);
+});
+
+test('a decoder that falls behind: chunks are dropped, then the line-in ends; the backlog stays bounded', async (t) => {
+  const tmp = await fsp.mkdtemp(path.join(os.tmpdir(), 'sendspin-stuck-'));
+  t.after(() => fsp.rm(tmp, { recursive: true, force: true }));
+  const stuck = path.join(tmp, 'stuck-ffmpeg');
+  await fsp.writeFile(stuck, '#!/bin/sh\nexec sleep 30\n', { mode: 0o755 });
+  let now = 1e12;
+  const s = new SourceSession({ clientId: 'stuck-source-0000' }, { now: () => now, logger: quiet, ffmpeg: stuck });
+  s.onStart({ codec: 'pcm', sample_rate: 44100, channels: 2, bit_depth: 16 });
+  s.attach(48000);
+  t.after(() => s.close());
+  const chunk = sinePcm16(6615, { rate: 44100 });
+  const limit = 44100 * 4 * BACKLOG_MS / 1000;
+  const verdicts = [];
+  for (let k = 0; k < 80 && verdicts.at(-1) !== 'overloaded'; k++) {
+    now += 150_000;
+    verdicts.push(s.onAudio(now - 160_000, chunk));
+  }
+  assert.equal(verdicts[0], 'ok');
+  assert.ok(verdicts.includes('dropped'), 'chunks are dropped while the decoder is behind');
+  assert.equal(verdicts.at(-1), 'overloaded', `the session gives up (${verdicts.join(',')})`);
+  const firstDrop = verdicts.indexOf('dropped');
+  assert.ok((verdicts.length - 1 - firstDrop) * 150 >= BACKLOG_END_MS - 150, 'only after staying behind for BACKLOG_END_MS');
+  assert.ok(s.view().backlog > 0);
+  assert.ok(verdicts.filter((v) => v === 'ok').length * chunk.length <= limit + 2 * chunk.length + 65536 * 2, 'what was queued stays near the bound');
+});
+
+test('chunk timing: sub-millisecond chunks are refused; the stale window is linear and still catches backlog', () => {
+  let now = 1e12;
+  const s = new SourceSession({ clientId: 'timing-source-000' }, { now: () => now, logger: quiet });
+  s.onStart(PCM_SRC);
+  assert.equal(s.onAudio(now, sinePcm16(10)), 'dropped');
+  assert.equal(s.stats.rejected, 1);
+  const one = sinePcm16(48);
+  const t0 = process.hrtime.bigint();
+  // 60 s of 1 ms chunks whose delay creeps up (the worst case for a sliding minimum).
+  for (let k = 0; k < 60_000; k++) {
+    now += 1000;
+    assert.equal(s.onAudio(now - 1000 - k / 100, one), 'ok');
+  }
+  const ms = Number(process.hrtime.bigint() - t0) / 1e6;
+  assert.ok(ms < 3000, `60k chunks in ${ms.toFixed(0)} ms`);
+  now += 1000;
+  assert.equal(s.onAudio(now - 1000 - 800_000, one), 'dropped', '800 ms behind the window best is stale');
+  assert.equal(s.stats.stale, 1);
+});
+
+// A source that follows roles/source/v1.md: commands are handled in order, a start opens a stream after
+// openMs (or right away), a stop clears a pending start and ends an open stream. Audio carries the stream
+// number in its timestamp (ts % 10).
+function specSource(c, { format = PCM_SRC, openMs = 0, lagMs = 0 } = {}) {
+  const st = { open: false, pending: false, stream: 0, handled: 0 };
+  const seenAt = [];
+  const open = () => {
+    if (!st.pending) return;
+    st.pending = false;
+    st.open = true;
+    st.stream++;
+    c.streamStart(format);
+  };
+  const timer = setInterval(() => {
+    const cmds = c.commands();
+    while (seenAt.length < cmds.length) seenAt.push(Date.now());
+    for (; st.handled < cmds.length && Date.now() - seenAt[st.handled] >= lagMs; st.handled++) {
+      const cmd = cmds[st.handled];
+      if (cmd === 'start' && !st.open && !st.pending) {
+        st.pending = true;
+        if (openMs) setTimeout(open, openMs);
+        else open();
+      } else if (cmd === 'stop') {
+        st.pending = false;
+        if (st.open) {
+          st.open = false;
+          c.streamEnd();
+        }
+      }
+    }
+    if (st.open) c.sendAudio(Math.floor(Number(nowUs()) / 10) * 10 + st.stream, sinePcm16(240, { amp: 0.5 }));
+  }, 5);
+  return { st, stop: () => clearInterval(timer) };
+}
+
+async function twoRooms(t) {
+  const env = await setup(t);
+  const other = new FakeMember({ name: 'Den speaker', formats: [PCM48], player: { minBufferMs: 200 } });
+  env.rooms.attach(other);
+  const { c } = await connectSource(t, env.server);
+  await env.server.approve(c.clientId);
+  await env.sources.allow(c.clientId, true);
+  await c.expect('server/activate', (p) => p.active_roles?.includes('source@v1'));
+  c.state(true, 'present');
+  return { ...env, other, roomB: env.rooms.roomOf(other.clientId), c };
+}
+
+test('moving a running line-in to another room keeps it live there; old in-flight audio is discarded', { timeout: 20_000 }, async (t) => {
+  const { sources, rooms, roomId, roomB, c, other } = await twoRooms(t);
+  const src = specSource(c, { lagMs: 40 });
+  t.after(src.stop);
+  sources.start(roomId, c.clientId);
+  await until(() => sources.session(c.clientId)?.streaming);
+  await sleep(300);
+  assert.equal(rooms.getRoom(roomId).live?.sourceId, c.clientId);
+  const conn = sources.session(c.clientId).conn;
+  const late = [];
+  let moved = false;
+  conn.on('source-audio', (ts) => {
+    if (moved && Number(ts) % 10 === 1) late.push(ts);
+  });
+  moved = true;
+  sources.start(roomB, c.clientId);
+  await until(() => src.st.stream === 2);
+  await sleep(600);
+  assert.deepEqual(c.commands(), ['start', 'stop', 'start']);
+  assert.equal(rooms.getRoom(roomB).live?.sourceId, c.clientId, 'the line-in plays in the new room');
+  assert.equal(rooms.getRoom(roomId).live, null);
+  assert.equal(sources.session(c.clientId).roomId, roomB);
+  assert.ok(sources.session(c.clientId).streaming);
+  assert.deepEqual(late, [], 'audio of the superseded stream is discarded');
+  await until(() => other.chunks.some((x) => x.frame.readInt16LE(400) !== 0), { timeoutMs: 3000 });
+});
+
+test('quick stop then start, before the client opened the first stream: the line-in stays live', { timeout: 20_000 }, async (t) => {
+  for (const openMs of [0, 60]) {
+    const { sources, rooms, roomId, roomB, c } = await twoRooms(t);
+    const src = specSource(c, { openMs, lagMs: 30 });
+    t.after(src.stop);
+    sources.start(roomId, c.clientId);
+    sources.stop(c.clientId);
+    sources.start(roomB, c.clientId);
+    await sleep(700);
+    assert.equal(rooms.getRoom(roomB).live?.sourceId, c.clientId, `live in B (openMs ${openMs}, commands ${c.commands()})`);
+    assert.ok(sources.session(c.clientId).streaming, `streaming (openMs ${openMs})`);
+    assert.equal(src.st.open, true);
+    src.stop();
+  }
 });
