@@ -5180,7 +5180,7 @@ const roomsView = Vue.component('rooms-view', {
       return ['approved', 'paired', 'mismatch'].includes(d.trust) ? d.trust : 'unknown';
     },
     deviceState(d) {
-      if (d.connection === 'pairing' || d.pairing) return 'pairing';
+      if (d.connection === 'pairing' || (d.pairing && !['paired', 'aborted'].includes(d.pairing.status))) return 'pairing';
       if (d.trust === 'mismatch') return 'mismatch';
       if (d.connection === 'other-server') return 'otherServer';
       if (d.connection === 'in-use-elsewhere') return 'inUse';
