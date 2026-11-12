@@ -20512,6 +20512,7 @@ function _roomsEditOpen() {
   showModal('rooms-edit-modal');
   _roomsEditRender();
   _roomsProbe().then(() => _roomsEditRender());
+  _roomsSonosLoad();
 }
 
 async function _roomsEditCall(method, path, body) {
@@ -20613,6 +20614,7 @@ function _roomsEditRender() {
       }
       card.appendChild(row);
     }
+    _roomsEditSonos(card, r);
     list.appendChild(card);
   }
   const box = document.getElementById('rooms-edit-new-speakers');
@@ -20635,6 +20637,87 @@ function _roomsEditRender() {
     }
   }
   _roomsEditSyncCreate();
+}
+
+// Sonos speakers follow a room (an HTTP stream of the room's timeline, delayed to roughly line up).
+let _roomsSonos = { enabled: false, devices: [], maxDelayMs: 5000 };
+
+async function _roomsSonosLoad() {
+  try {
+    const d = await api('GET', 'api/v1/rooms/sonos');
+    _roomsSonos = { enabled: d.enabled === true, devices: Array.isArray(d.devices) ? d.devices : [], maxDelayMs: d.maxDelayMs || 5000 };
+  } catch (_) {
+    _roomsSonos = { enabled: false, devices: [], maxDelayMs: 5000 };
+  }
+  _roomsEditRender();
+}
+
+function _roomsEditSonos(card, r) {
+  const followers = Array.isArray(r.sonos) ? r.sonos : [];
+  const choices = _roomsSonos.devices.filter(d => d.roomId !== r.id);
+  if (!_roomsSonos.enabled || (!followers.length && !choices.length)) return;
+  const base = '/' + encodeURIComponent(r.id) + '/sonos';
+  const box = document.createElement('div');
+  box.className = 'rooms-edit-sonos';
+  for (const s of followers) {
+    const row = document.createElement('div');
+    row.className = 'rooms-edit-member rooms-edit-sonos-row';
+    const label = document.createElement('span');
+    label.className = 'rooms-edit-member-name';
+    label.textContent = s.name;
+    const badge = document.createElement('span');
+    badge.className = 'rooms-edit-badge';
+    badge.textContent = t('player.rooms.sonos.follows');
+    badge.title = t('player.rooms.sonos.followsHint');
+    const range = document.createElement('input');
+    range.type = 'range';
+    range.min = '0';
+    range.max = String(_roomsSonos.maxDelayMs);
+    range.step = '50';
+    range.value = String(s.delayMs);
+    range.className = 'rooms-edit-delay';
+    range.setAttribute('aria-label', t('player.rooms.sonos.delayLabel', { name: s.name }));
+    const val = document.createElement('span');
+    val.className = 'rooms-edit-delay-val';
+    val.textContent = t('player.rooms.sonos.delayValue', { ms: s.delayMs });
+    range.addEventListener('input', () => { val.textContent = t('player.rooms.sonos.delayValue', { ms: range.value }); });
+    range.addEventListener('change', () => _roomsEditCall('PATCH', base + '/' + encodeURIComponent(s.uuid), { delayMs: Number(range.value) }));
+    const rm = document.createElement('button');
+    rm.type = 'button';
+    rm.className = 'btn-ghost';
+    rm.textContent = t('player.rooms.sonos.remove');
+    rm.addEventListener('click', async () => {
+      if (await _roomsEditCall('DELETE', base + '/' + encodeURIComponent(s.uuid))) _roomsSonosLoad();
+    });
+    row.append(label, badge, range, val);
+    if (s.state === 'error') {
+      const err = document.createElement('span');
+      err.className = 'rooms-edit-sonos-err';
+      err.textContent = t('player.rooms.sonos.error');
+      row.appendChild(err);
+    }
+    row.appendChild(rm);
+    box.appendChild(row);
+  }
+  if (choices.length) {
+    const sel = document.createElement('select');
+    sel.className = 'rooms-edit-move';
+    sel.setAttribute('aria-label', t('player.rooms.sonos.add'));
+    sel.add(new Option(t('player.rooms.sonos.add'), ''));
+    for (const d of choices) {
+      const other = d.roomId && S.rooms.find(o => o.id === d.roomId);
+      sel.add(new Option(other ? t('player.rooms.sonos.inOtherRoom', { name: d.name, room: other.name }) : d.name, d.uuid));
+    }
+    sel.addEventListener('change', async () => {
+      if (sel.value && await _roomsEditCall('POST', base, { uuid: sel.value })) _roomsSonosLoad();
+    });
+    box.appendChild(sel);
+  }
+  const hint = document.createElement('div');
+  hint.className = 'rooms-edit-hint';
+  hint.textContent = t('player.rooms.sonos.followsHint');
+  box.appendChild(hint);
+  card.appendChild(box);
 }
 
 function _roomsEditSyncCreate() {

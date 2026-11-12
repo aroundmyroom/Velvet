@@ -191,7 +191,8 @@ states (`paired`, `aborted`) stay readable for 60 s after they occur.
   "shuffle": false,
   "canSeek": true,
   "playable": true,
-  "lineIn": null
+  "lineIn": null,
+  "sonos": []
 }
 ```
 
@@ -214,6 +215,8 @@ states (`paired`, `aborted`) stay readable for 60 s after they occur.
 | `canSeek` | boolean | |
 | `playable` | boolean | At least one member can play now (online, trusted for playback). |
 | `lineIn` | `{ clientId, name } \| null` | The room plays a source device's input instead of its queue. Then `state` is `playing`, `current` is `{ filepath: null, title: "Line-in — <name>", durationMs: null, … }`, `canSeek` is false and the queue (with `index`/`positionMs`) waits underneath, paused. |
+
+| `sonos` | object[] | Sonos speakers following the room: `{ id: "sonos:<uuid>", uuid, name, delayMs, volume, muted, state, error }`. `state`: `idle` (room not playing), `starting` (Velvet is telling the Sonos to play), `waiting` (told, not listening right now), `streaming` (pulling the stream), `error` (the Sonos did not answer; `error` says why). `volume`/`muted` `null` until read. Use `id` as `clientId` for the per-speaker volume/mute routes. A Sonos counts as `playable`. |
 
 ### QueueEntry
 
@@ -275,6 +278,22 @@ whose approval is revoked or that is unpaired leaves its room.
 | `POST` | `/api/v1/rooms/:id/line-in` | `{ clientId }` | `Room` with `lineIn`. Plays the source's input in the room (the queue pauses underneath). 404 when `clientId` is not in `sources`; 409 `not_connected` / `unavailable` / `not_allowed`. The server declares `playback` on the source and sends `server/command` `source: start` (once its `client/state` with the source object arrived). A source that is also a member of the room is left out as a player while its own input plays (no echo). Live timing: each player's lead is `min_buffer_ms + output_delay_ms` (no extension toward `required_lead_time_ms`), no seek. |
 | `POST` | `/api/v1/rooms/:id/line-in/stop` | — | `Room`. Sends `source: stop`, drops `playback` on the source, the room returns to its paused queue (or `stopped`). Pause/stop on the room or a speaker's controller do the same; `play`/`jump` with a queue replaces the line-in. |
 | `POST` | `/api/v1/rooms/:id/shuffle` | `{ shuffle: boolean }` | `Room`. |
+
+### Sonos followers
+
+A Sonos cannot speak Sendspin; it follows a room through a live MP3 stream of
+the room's timeline, sent `delayMs` ahead (see [rooms.md](../rooms.md#sonos-speakers-in-a-room)).
+All routes need the player permission; adding needs Sonos enabled in Velvet (`config.sonos.enabled !== false`).
+
+| Method | Endpoint | Body | Response |
+|---|---|---|---|
+| `GET` | `/api/v1/rooms/sonos` | — | `{ enabled, defaultDelayMs, maxDelayMs, devices: [{ uuid, name, model, roomId }] }` from Sonos discovery (rescans when older than 5 min). `{ enabled: false, devices: [] }` while Sonos is off. |
+| `POST` | `/api/v1/rooms/:id/sonos` | `{ uuid, delayMs?: 0–5000 }` | `Room`. The Sonos follows this room (moved out of another room, keeping its delay). Starts it at once if the room plays. 404 unknown room or Sonos (not in discovery); 409 `sonos_disabled`; 400 bad `delayMs` or more than 8 Sonos in the room. |
+| `PATCH` | `/api/v1/rooms/:id/sonos/:uuid` | `{ delayMs: 0–5000 }` | `Room`. Takes effect immediately on a running stream. |
+| `DELETE` | `/api/v1/rooms/:id/sonos/:uuid` | — | `Room`. Ends the stream; the Sonos gets `Stop` only if it still plays this room. |
+| `GET` | `/api/v1/rooms/sonos-stream/:token.mp3` | — | **No login** (registered before auth). The stream the Sonos pulls: `audio/mpeg`, endless, paced in real time; ICY titles when asked (`Icy-MetaData: 1`). `token` = 32 random URL-safe chars, valid only while that Sonos is a member with a running session. 404 otherwise; 403 for peers outside private IPv4 / loopback. |
+
+Group `volume`/`mute` include the Sonos speakers (UPnP RenderingControl).
 
 ### ReplayGain
 

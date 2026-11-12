@@ -5,6 +5,9 @@ import path from 'node:path';
 import { GroupStream, serverNow } from './scheduler.js';
 import { RoomVisualizer, canVisualize } from './visualizer.js';
 import { encodeArtworkAnnounce, encodeArtworkParts, encodeArtworkCancel } from './wire.js';
+import {
+  RoomSonos, SONOS_ID_PREFIX, MAX_SONOS_PER_ROOM, MAX_SONOS_DELAY_MS, DEFAULT_SONOS_DELAY_MS, isSonosUuid,
+} from './sonos.js';
 
 export const ROOMS_FILE = 'rooms.json';
 export const IDLE_GRACE_MS = 10_000;
@@ -95,11 +98,13 @@ export class RoomManager extends EventEmitter {
   #clients = new Map();
   #saveTimer = null;
   #writing = Promise.resolve();
+  #sonos;
 
   constructor({
     dir, file = ROOMS_FILE, now = serverNow, ffmpeg, logger = null, artworkFor = null, colorFor = null,
     setPlayback = defaultSetPlayback, idleGraceMs = IDLE_GRACE_MS, initialUnavailableGraceMs = INITIAL_UNAVAILABLE_GRACE_MS,
     random = Math.random, streamOptions = {}, visualizerOptions = {},
+    sonos = null, sonosOptions = {},
   }) {
     super();
     if (!dir) throw new Error('RoomManager needs a dir');
@@ -107,6 +112,7 @@ export class RoomManager extends EventEmitter {
     this.#now = now;
     this.#log = logger;
     this.#opts = { ffmpeg, artworkFor, colorFor, setPlayback, idleGraceMs, initialUnavailableGraceMs, random, streamOptions, visualizerOptions };
+    this.#sonos = { bridge: sonos, ...sonosOptions };
   }
 
   static async open(dir, opts = {}) {
@@ -143,6 +149,11 @@ export class RoomManager extends EventEmitter {
       state: r.state === 'playing' || r.state === 'paused' ? 'paused' : 'stopped',
     });
     room.order = Array.isArray(r.order) && r.order.length === room.queue.length ? r.order : room.queue.map((_, i) => i);
+    for (const x of Array.isArray(r.sonos) ? r.sonos : []) {
+      if (!isSonosUuid(x?.uuid) || this.#sonosRoom(x.uuid)) continue;
+      const delayMs = Number.isInteger(x.delayMs) ? Math.max(0, Math.min(MAX_SONOS_DELAY_MS, x.delayMs)) : DEFAULT_SONOS_DELAY_MS;
+      this.#sonosGroup(room).add({ uuid: x.uuid, name: String(x.name ?? x.uuid), ip: x.ip ?? null, base: x.base ?? null, delayMs });
+    }
   }
 
   async flush() {
@@ -158,6 +169,7 @@ export class RoomManager extends EventEmitter {
     for (const room of this.#rooms.values()) {
       if (room.state === 'playing') this.#halt(room, 'paused');
       clearTimeout(room.idleTimer);
+      room.sonos?.close();
       room.stream?.close();
     }
     await this.flush();
@@ -291,6 +303,7 @@ export class RoomManager extends EventEmitter {
 
   #dropRoom(room) {
     if (room.state === 'playing') this.#halt(room, 'stopped');
+    room.sonos?.close();
     room.stream?.close();
     this.#clearTimers(room);
     clearTimeout(room.idleTimer);
@@ -479,12 +492,22 @@ export class RoomManager extends EventEmitter {
   setVolume(id, value) {
     const room = this.#room(id);
     const players = this.#players(room).filter(({ p }) => p.supportedCommands.includes('volume'));
-    const vols = groupVolumes(players.map(({ p }) => p.volume ?? 0), value);
+    const sonos = (room.sonos?.volumes() ?? []).filter((s) => Number.isInteger(s.volume));
+    const vols = groupVolumes([...players.map(({ p }) => p.volume ?? 0), ...sonos.map((s) => s.volume)], value);
     players.forEach(({ c }, i) => this.#command(c, { command: 'volume', volume: vols[i] }));
-    return Object.fromEntries(players.map(({ c }, i) => [c.id, vols[i]]));
+    sonos.forEach((s, i) => room.sonos.setVolume(s.id.slice(SONOS_ID_PREFIX.length), vols[players.length + i]));
+    if (sonos.length) this.#sonosChanged(room);
+    return Object.fromEntries([...players.map(({ c }) => c.id), ...sonos.map((s) => s.id)].map((k, i) => [k, vols[i]]));
   }
 
   setMemberVolume(id, clientId, value) {
+    if (clientId.startsWith(SONOS_ID_PREFIX)) {
+      const room = this.#room(id);
+      const uuid = this.#sonosIn(room, clientId);
+      room.sonos.setVolume(uuid, Math.max(0, Math.min(100, Math.round(value))));
+      this.#sonosChanged(room);
+      return;
+    }
     const c = this.#memberOf(id, clientId);
     if (!playerOf(c)?.supportedCommands.includes('volume')) throw new RoomError('invalid', 'speaker volume is read-only');
     this.#command(c, { command: 'volume', volume: Math.max(0, Math.min(100, Math.round(value))) });
@@ -495,9 +518,17 @@ export class RoomManager extends EventEmitter {
     for (const { c, p } of this.#players(room)) {
       if (p.supportedCommands.includes('mute')) this.#command(c, { command: 'mute', mute: Boolean(muted) });
     }
+    for (const s of room.sonos?.volumes() ?? []) room.sonos.setMute(s.id.slice(SONOS_ID_PREFIX.length), Boolean(muted));
+    if (room.sonos?.size) this.#sonosChanged(room);
   }
 
   setMemberMute(id, clientId, muted) {
+    if (clientId.startsWith(SONOS_ID_PREFIX)) {
+      const room = this.#room(id);
+      room.sonos.setMute(this.#sonosIn(room, clientId), Boolean(muted));
+      this.#sonosChanged(room);
+      return;
+    }
     const c = this.#memberOf(id, clientId);
     if (!playerOf(c)?.supportedCommands.includes('mute')) throw new RoomError('invalid', 'speaker mute is read-only');
     this.#command(c, { command: 'mute', mute: Boolean(muted) });
@@ -524,6 +555,86 @@ export class RoomManager extends EventEmitter {
       else room.order = room.queue.map((_, i) => i);
     });
     room.queueVersion++;
+    this.#pushController(room);
+    this.#save();
+    this.#changed(room);
+  }
+
+  // Sonos followers (sonos.js): a Sonos is in at most one room; adding it elsewhere moves it.
+  addSonos(id, { uuid, name, ip = null, base = null, delayMs }) {
+    if (!this.#sonos.bridge) throw new RoomError('invalid', 'Sonos is not enabled');
+    const room = this.#room(id);
+    if (!isSonosUuid(uuid)) throw new RoomError('invalid', 'not a Sonos device id');
+    const from = this.#sonosRoom(uuid);
+    const keep = from?.sonos.toJSON().find((s) => s.uuid === uuid);
+    const delay = delayMs ?? keep?.delayMs ?? DEFAULT_SONOS_DELAY_MS;
+    if (!Number.isInteger(delay) || delay < 0 || delay > MAX_SONOS_DELAY_MS) throw new RoomError('invalid', 'delayMs is out of range');
+    if (from !== room && (room.sonos?.size ?? 0) >= MAX_SONOS_PER_ROOM) throw new RoomError('invalid', 'too many Sonos speakers in this room');
+    if (from && from !== room) {
+      from.sonos.remove(uuid);
+      this.#sonosChanged(from);
+    }
+    this.#sonosGroup(room).add({ uuid, name: String(name ?? keep?.name ?? uuid), ip: ip ?? keep?.ip ?? null, base: base ?? keep?.base ?? null, delayMs: delay });
+    this.#sonosChanged(room);
+  }
+
+  removeSonos(id, uuid) {
+    const room = this.#room(id);
+    if (!room.sonos?.remove(uuid)) throw new RoomError('not_found', 'this Sonos is not in the room');
+    this.#sonosChanged(room);
+  }
+
+  setSonosDelay(id, uuid, delayMs) {
+    const room = this.#room(id);
+    if (!Number.isInteger(delayMs) || delayMs < 0 || delayMs > MAX_SONOS_DELAY_MS) throw new RoomError('invalid', 'delayMs is out of range');
+    if (!room.sonos?.setDelay(uuid, delayMs)) throw new RoomError('not_found', 'this Sonos is not in the room');
+    this.#sonosChanged(room);
+  }
+
+  sonosRoomOf(uuid) {
+    return this.#sonosRoom(uuid)?.id ?? null;
+  }
+
+  // The live stream a Sonos asked for, by the session token in its URL: { serve(req, res) } or null.
+  sonosStream(token) {
+    for (const room of this.#rooms.values()) {
+      const f = room.sonos?.sessionFor(token);
+      if (f) return { roomId: room.id, serve: (req, res) => room.sonos.serve(f, req, res) };
+    }
+    return null;
+  }
+
+  #sonosRoom(uuid) {
+    for (const r of this.#rooms.values()) if (r.sonos?.has(uuid)) return r;
+    return null;
+  }
+
+  #sonosIn(room, id) {
+    const uuid = id.slice(SONOS_ID_PREFIX.length);
+    if (!room.sonos?.has(uuid)) throw new RoomError('not_found', 'speaker is not in this room');
+    return uuid;
+  }
+
+  #sonosGroup(room) {
+    if (room.sonos) return room.sonos;
+    const { bridge, ...opts } = this.#sonos;
+    room.sonos = new RoomSonos({
+      bridge, now: this.#now, logger: this.#log, ffmpeg: this.#opts.ffmpeg, ...opts,
+      info: () => this.#sonosInfo(room),
+      onChange: () => this.#sonosChanged(room),
+    });
+    if (room.stream) room.sonos.setStream(room.stream);
+    return room.sonos;
+  }
+
+  #sonosInfo(room) {
+    const item = room.live?.item ?? room.queue[this.#currentIndex(room)] ?? null;
+    const meta = room.state === 'playing' ? item?.meta ?? {} : {};
+    return { roomName: this.#roomName(room), title: meta.title ?? null, artist: meta.artist ?? null, aaFile: meta.aaFile ?? null };
+  }
+
+  #sonosChanged(room) {
+    if (!this.#rooms.has(room.id)) return;
     this.#pushController(room);
     this.#save();
     this.#changed(room);
@@ -742,6 +853,7 @@ export class RoomManager extends EventEmitter {
     s.on('error', (err) => this.#onStreamError(room, err));
     s.on('member-error', (cid, err) => this.emit('member-error', room.id, cid, err));
     room.stream = s;
+    room.sonos?.setStream(s);
     room.vis = new RoomVisualizer(s, { now: this.#now, logger: this.#log, ...this.#opts.visualizerOptions });
     return s;
   }
@@ -1105,15 +1217,18 @@ export class RoomManager extends EventEmitter {
     const players = this.#players(room);
     const vol = players.filter(({ p }) => p.supportedCommands.includes('volume') && Number.isInteger(p.volume));
     const mute = players.filter(({ p }) => p.supportedCommands.includes('mute') && typeof p.muted === 'boolean');
+    const sonos = room.sonos?.volumes() ?? [];
+    const volumes = [...vol.map(({ p }) => p.volume), ...sonos.map((s) => s.volume).filter(Number.isInteger)];
+    const mutes = [...mute.map(({ p }) => p.muted), ...sonos.map((s) => s.muted).filter((m) => typeof m === 'boolean')];
     const commands = room.live ? [...LIVE_COMMANDS] : [...BASE_COMMANDS];
-    if (vol.length) commands.push('volume');
-    if (mute.length) commands.push('mute');
+    if (volumes.length) commands.push('volume');
+    if (mutes.length) commands.push('mute');
     const dur = room.live ? 0 : room.queue[this.#currentIndex(room)]?.meta?.durationMs;
     if (dur > 0) commands.push('seek', 'seek_relative');
     const state = {
       supported_commands: commands,
-      volume: vol.length ? Math.round(vol.reduce((a, { p }) => a + p.volume, 0) / vol.length) : 100,
-      muted: mute.length ? mute.every(({ p }) => p.muted) : false,
+      volume: volumes.length ? Math.round(volumes.reduce((a, v) => a + v, 0) / volumes.length) : 100,
+      muted: mutes.length ? mutes.every(Boolean) : false,
       repeat: room.repeat,
       shuffle: room.shuffle,
     };
@@ -1390,6 +1505,7 @@ export class RoomManager extends EventEmitter {
       queueVersion: room.queueVersion,
       live: room.live ? { sourceId: room.live.sourceId, name: room.live.name } : null,
       members: room.members.map((cid) => this.#memberView(room, this.#clients.get(cid))),
+      sonos: room.sonos?.view() ?? [],
     };
     if (queue) {
       view.queue = room.queue.map((q) => ({ filepath: q.filepath, meta: q.meta ?? {} }));
@@ -1432,6 +1548,7 @@ export class RoomManager extends EventEmitter {
       const pos = playing ? r.stream?.position() : null;
       return {
         id: r.id, name: r.name, solo: r.solo, members: r.members, queue: r.queue, order: r.order,
+        ...(r.sonos?.size ? { sonos: r.sonos.toJSON() } : {}),
         index: pos?.track.index ?? r.index, positionMs: pos?.positionMs ?? r.positionMs,
         repeat: r.repeat, shuffle: r.shuffle, state: r.live ? 'paused' : r.state, lastPlayedAt: r.lastPlayedAt, queueVersion: r.queueVersion,
       };

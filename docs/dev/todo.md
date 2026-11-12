@@ -451,7 +451,6 @@ Phase 1 complete (v6.14.17): `audio_features` table, `essentia-bpm-worker.mjs`, 
 
 ### Velvet Rooms — extensions
 
-- [ ] Sonos as a room member
 - [ ] `_velvet_…` vendor roles (e.g. queue, lyrics) for speakers that want them
 
 ### Chromecast

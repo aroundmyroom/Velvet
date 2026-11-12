@@ -987,3 +987,8 @@ tr:hover td { background: var(--raised); }
 .vr-subtitle{font-weight:600;color:var(--t2);}
 .vr-new-members{display:flex;flex-wrap:wrap;gap:.3rem 1rem;}
 .vr-check{display:inline-flex;align-items:center;font-size:.88rem;cursor:pointer;}
+.vr-sonos{margin-top:.6rem;display:flex;flex-direction:column;gap:.4rem;align-items:flex-start;}
+.vr-sonos-row{display:flex;align-items:center;gap:.5rem;flex-wrap:wrap;}
+.vr-sonos-delay{display:inline-flex;align-items:center;gap:.4rem;font-size:.8rem;color:var(--t2);}
+.vr-sonos-delay input[type="range"]{width:160px;}
+.vr-sonos-add{width:auto;padding:2px 6px;font-size:.8rem;}

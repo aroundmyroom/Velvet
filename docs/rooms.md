@@ -47,7 +47,9 @@ Windows asks whether to allow the app on networks, allow it on private
 networks. On a network Windows treats as *Public*, discovery is usually
 blocked — enter the server address (`velvet-host:8927`) in the app instead.
 
-Sonos speakers do not speak Sendspin. They keep using [Sonos cast](sonos.md).
+Sonos speakers do not speak Sendspin. They can still **follow** a room (see
+[Sonos speakers in a room](#sonos-speakers-in-a-room)), or keep using
+[Sonos cast](sonos.md) on their own.
 
 ---
 
@@ -397,6 +399,50 @@ off for an input with hum on it, which reports a signal all day.
 
 
 ---
+
+## Sonos speakers in a room
+
+A Sonos cannot speak Sendspin and cannot be synced to the sample. It can
+**follow** a room: Velvet streams what the room plays to the Sonos as a live
+MP3 radio stream and tells the Sonos to play it. Add one under *Rooms* in the
+admin page or in the player's room editor (*Add a Sonos…*). The list shows the
+Sonos speakers Velvet found on the network (the same discovery as
+[Sonos cast](sonos.md)); it only appears while Sonos is enabled in Velvet.
+
+**It follows the room, it is not sample-accurate.** A Sonos keeps a few
+seconds of buffer of its own. Velvet sends it the room's audio that many
+milliseconds early — the **delay** slider (0–5000 ms, default 2000 ms). Play
+something with a clear beat, listen to a Sendspin speaker and the Sonos
+together, and move the slider until they line up: the Sonos is late → raise
+the delay; the Sonos is early → lower it. A change takes effect at once (the
+Sonos skips ahead or falls back a moment). Expect it to stay roughly in line,
+not perfectly: the Sonos runs on its own clock.
+
+What to expect:
+
+- **Start.** The Sonos starts when the room starts playing. With a Sonos in
+  the room, every play, seek or skip starts *delay* later on all speakers, so
+  the Sonos hears it from the beginning too; the Sonos itself may still miss
+  the first moment while it connects.
+- **One continuous stream.** Track changes, seek, skip, pause and resume keep
+  the same stream: the Sonos never re-buffers for them. While the room is
+  paused or stopped the Sonos gets silence; after 30 s Velvet stops it.
+- **Taking it back.** If you switch the Sonos to something else in the Sonos
+  app, Velvet leaves it alone; the next *play* in the room takes it back.
+  Removing the Sonos from the room stops it — only if it still plays the room.
+- **Volume and mute** of the room include the Sonos (Sonos volume via its
+  own volume control); the editor sets one Sonos's volume like any speaker.
+- **Line-in** also reaches the Sonos, a *delay* later on every speaker.
+- **Title.** The Sonos shows "*room* · Velvet Rooms" and the current artist
+  and title (internet-radio style metadata).
+- A Sonos is in one room at a time; adding it to another room moves it. It
+  stays in the room across restarts (by its Sonos id; the address is looked up
+  again). A room still needs at least one Sendspin speaker.
+
+The stream URL carries a random token that only works while that Sonos is in
+the room and Velvet has it playing; it never contains a login. Only devices on
+the local network can fetch it. If Velvet runs on HTTPS only, set
+`localHttpPort` (as for Sonos cast) so the Sonos gets a plain-HTTP radio URL.
 
 ## ReplayGain
 

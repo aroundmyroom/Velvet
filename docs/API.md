@@ -905,6 +905,11 @@ small local window for instant boot, then lazy-loads the rest from here.
 | `POST` | `/api/v1/rooms/:id/shuffle` | `{ shuffle }` | Shuffle on/off. |
 | `POST` | `/api/v1/rooms/:id/line-in` | `{ clientId }` | Play a source device's input (line-in) in the room; the queue pauses underneath. |
 | `POST` | `/api/v1/rooms/:id/line-in/stop` | — | Stop the line-in; the room returns to its paused queue. |
+| `GET` | `/api/v1/rooms/sonos` | — | Sonos speakers that can follow a room: `{ enabled, defaultDelayMs, maxDelayMs, devices[] }`. |
+| `POST` | `/api/v1/rooms/:id/sonos` | `{ uuid, delayMs? }` | A Sonos follows the room (live stream, delayed; not sample-accurate). |
+| `PATCH` | `/api/v1/rooms/:id/sonos/:uuid` | `{ delayMs }` | Change its delay (0–5000 ms). |
+| `DELETE` | `/api/v1/rooms/:id/sonos/:uuid` | — | It stops following (and is stopped if it still plays the room). |
+| `GET` | `/api/v1/rooms/sonos-stream/:token.mp3` | — | **No auth** — the live stream a following Sonos pulls; per-session token, LAN peers only. |
 
 ---
 

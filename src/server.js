@@ -310,6 +310,8 @@ export async function serveIt(configFile) {
   // authenticate; the handler only accepts private-LAN peers with a subscription ID
   // Velvet itself issued. Must be registered before the auth middleware.
   sonosApi.setupPublic(velvet);
+  // Public — the live room stream a Sonos following a Velvet Room pulls (per-session token in the path).
+  sendspinApi.setupPublic(velvet);
 
   // Everything below this line requires authentication
   authPasskeyApi.setupPublic(velvet);

@@ -72,7 +72,7 @@ const xmlEsc = s => String(s)
  * Sonos hardware handles plain HTTP fine for streaming.
  * req is the Express request object (used to derive host when no explicit address).
  */
-function buildBaseUrl(req) {
+export function buildBaseUrl(req) {
   if (config.program.localHttpPort) {
     // Prefer plain HTTP on LAN IP — works even when domain uses HTTPS
     const nets = os.networkInterfaces();
@@ -98,7 +98,7 @@ function buildBaseUrl(req) {
  * blocked silently. Art must come from an HTTPS endpoint so iOS can load it.
  * Sonos hardware can also load HTTPS art without issues.
  */
-function buildArtBaseUrl(req) {
+export function buildArtBaseUrl(req) {
   const proto = (config.program.ssl?.cert) ? 'https' : 'http';
   const host  = (config.program.address && config.program.address !== '::' && config.program.address !== '0.0.0.0')
     ? `${config.program.address}:${config.program.port}`
@@ -1144,6 +1144,19 @@ async function _scanNow(seedIp) {
     throw e;
   });
   return _scanInFlight;
+}
+
+// The discovery cache for Velvet Rooms (Sonos followers); listSonosDevices rescans when stale, like GET /sonos/devices.
+export function cachedSonosDevices() {
+  return _cachedRooms;
+}
+
+export async function listSonosDevices() {
+  if (Date.now() - _lastScanTime > SCAN_TTL_MS) {
+    const seedIp = config.program?.sonos?.knownIps?.[0] || config.program?.sonos?.defaultRoom?.ip || null;
+    await _scanNow(seedIp).catch((e) => console.warn('[sonos] scan for Velvet Rooms failed:', e.message || e));
+  }
+  return _cachedRooms;
 }
 
 /**

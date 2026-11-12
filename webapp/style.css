@@ -3617,3 +3617,12 @@ body.vinyl-mode.vinyl-paused .pnow-art img{ animation-play-state:paused; }
   outline: 1px solid color-mix(in srgb, var(--accent, #4a9cf6) 30%, transparent);
   border-radius: 6px;
 }
+
+/* Velvet Rooms: Sonos followers in the room editor */
+.rooms-edit-sonos{display:flex;flex-direction:column;gap:6px;margin-top:6px;}
+.rooms-edit-sonos-row{flex-wrap:wrap;}
+.rooms-edit-badge{font-size:.72rem;padding:1px 7px;border-radius:999px;border:1px solid var(--border, rgba(127,127,127,.4));opacity:.8;}
+.rooms-edit-delay{width:130px;}
+.rooms-edit-delay-val{font-size:.78rem;font-variant-numeric:tabular-nums;opacity:.8;}
+.rooms-edit-sonos-err{font-size:.78rem;color:#e57373;}
+.rooms-edit-hint{font-size:.75rem;opacity:.7;}

@@ -4841,6 +4841,7 @@ const roomsView = Vue.component('rooms-view', {
       newRoomName: '',
       newRoomMembers: [],
       roomNames: {},
+      sonos: { enabled: false, devices: [], maxDelayMs: 5000 },
       statusTimer: null,
       pairTimer: null,
       nowTick: Date.now(),
@@ -5061,6 +5062,24 @@ const roomsView = Vue.component('rooms-view', {
                     </select>
                   </div>
                 </div>
+                <div v-if="sonos.enabled && ((r.sonos && r.sonos.length) || sonosChoices(r).length)" class="vr-sonos">
+                  <div v-for="s in (r.sonos || [])" :key="s.id" class="vr-sonos-row">
+                    <span class="vr-member-name">{{ s.name }}</span>
+                    <span class="vr-pill vr-pill-grey" :title="this.t('admin.rooms.sonos.followsHint')">{{ this.t('admin.rooms.sonos.follows') }}</span>
+                    <label class="vr-sonos-delay">
+                      <span>{{ this.t('admin.rooms.sonos.delay') }}</span>
+                      <input type="range" min="0" :max="sonos.maxDelayMs" step="50" :value="s.delayMs" @input="s.delayMs = Number($event.target.value)" @change="sonosDelay(r, s, $event)" :disabled="busy" :aria-label="this.t('admin.rooms.sonos.delayLabel', { name: s.name })">
+                      <span class="vr-mono">{{ this.t('admin.rooms.sonos.delayValue', { ms: s.delayMs }) }}</span>
+                    </label>
+                    <span v-if="s.state === 'error'" class="vr-warn">{{ this.t('admin.rooms.sonos.error') }}</span>
+                    <button type="button" class="btn-small btn-flat" @click="roomCall('DELETE', '/' + encodeURIComponent(r.id) + '/sonos/' + encodeURIComponent(s.uuid))" :disabled="busy">{{ this.t('admin.rooms.sonos.remove') }}</button>
+                  </div>
+                  <select v-if="sonosChoices(r).length" class="vr-sonos-add" :aria-label="this.t('admin.rooms.sonos.add')" @change="sonosAdd(r, $event)" :disabled="busy">
+                    <option value="">{{ this.t('admin.rooms.sonos.add') }}</option>
+                    <option v-for="d in sonosChoices(r)" :key="d.uuid" :value="d.uuid">{{ d.roomId && roomName(d.roomId) ? this.t('admin.rooms.sonos.inOtherRoom', { name: d.name, room: roomName(d.roomId) }) : d.name }}</option>
+                  </select>
+                  <div class="vr-help">{{ this.t('admin.rooms.sonos.followsHint') }}</div>
+                </div>
               </div>
               <form v-if="devices.length > 1" class="vr-new-room" @submit.prevent="createRoom">
                 <div class="vr-subtitle">{{ this.t('admin.rooms.newRoomTitle') }}</div>
@@ -5080,6 +5099,7 @@ const roomsView = Vue.component('rooms-view', {
     </div>`,
   async mounted() {
     await this.load();
+    this.loadSonos();
     let ticks = 0;
     this.statusTimer = setInterval(() => {
       this.nowTick = Date.now();
@@ -5163,6 +5183,22 @@ const roomsView = Vue.component('rooms-view', {
       return n ? this.devices.filter(x => String(x.name || '').trim().toLowerCase() === n).length : 0;
     },
     otherRooms(r) { return this.rooms.filter(o => o.id !== r.id); },
+    sonosChoices(r) { return this.sonos.devices.filter(d => d.roomId !== r.id); },
+    async loadSonos() {
+      if (!this.enabled || !this.running) return;
+      try {
+        const r = await API.axios({ method: 'GET', url: `${API.url()}/api/v1/rooms/sonos` });
+        this.sonos = { enabled: r.data.enabled === true, devices: r.data.devices || [], maxDelayMs: r.data.maxDelayMs || 5000 };
+      } catch { this.sonos = { enabled: false, devices: [], maxDelayMs: 5000 }; }
+    },
+    async sonosAdd(r, ev) {
+      const uuid = ev.target.value;
+      ev.target.value = '';
+      if (uuid && await this.roomCall('POST', '/' + encodeURIComponent(r.id) + '/sonos', { uuid })) this.loadSonos();
+    },
+    sonosDelay(r, s, ev) {
+      this.roomCall('PATCH', '/' + encodeURIComponent(r.id) + '/sonos/' + encodeURIComponent(s.uuid), { delayMs: Number(ev.target.value) });
+    },
     roomName(id) { return this.rooms.find(r => r.id === id)?.name || ''; },
     hasCodeMethod(d) {
       const m = d.pairMethods || [];

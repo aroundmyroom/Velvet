@@ -375,6 +375,28 @@ export class SourceManager extends EventEmitter {
 //   source@v1 activated only when paired or explicitly allowed (TrustStore.isSourceAllowed / allowSource / setSourcePolicy).
 // rooms.js additions: playLive(id, { sourceId, name, feed(track) }), stopLive(id, sourceId?); 'live-ended'(roomId, sourceId);
 //   view.live = { sourceId, name } | null. GroupStream.play({ live(opts) }) = live epoch: lead without required_lead_time_ms.
+// sonos.js  (Sonos followers: not Sendspin, not sample-synced; one live MP3 radio stream per Sonos session)
+export const SONOS_RATE /*48000*/, DEFAULT_SONOS_DELAY_MS /*2000*/, MAX_SONOS_DELAY_MS /*5000*/, SONOS_IDLE_MS /*30000*/,
+  MAX_SONOS_PER_ROOM /*8*/, SONOS_ID_PREFIX /*'sonos:'*/, STREAM_PATH /*'/api/v1/rooms/sonos-stream/'*/;
+export function createSonosSoap({ port = 1400, allowHost = isPrivateLan, timeoutMs }) -> (ip, 'AVTransport'|'RenderingControl', action, innerXml) -> Promise<xml>;
+export function mp3Encoder({ ffmpeg }), rawEncoder() /* tests: s16le passthrough */, radioDidl({ title, artUrl }), transportUri(url)
+  /* http -> x-rincon-mp3radio:// */, icyBlock(title), streamUrlFor(base, token), artUrlFor(base, aaFile), isSonosUuid(s);
+export class PcmTap { attach(stream) /* epoch|pcm|cut|stop + pcmHistory for a mid-epoch join */; detach(); read(startUs, frames) /* s16le
+  48 kHz stereo heard at startUs on the room timeline; silence outside decoded PCM; linear resample from other master rates */ }
+export class RoomSonos {   // one per room with Sonos entries; RoomManager creates it lazily
+  constructor({ bridge /* { soap, resolve(uuid, ip) -> {ip,name}|null, streamUrl(base, token), artUrl(base, aaFile) } | null = inert */,
+                now, logger, ffmpeg, encoder, idleMs, info() /* { roomName, title, artist, aaFile } */, onChange() });
+  setStream(groupStream) /* 'epoch' = room plays (SOAP SetAVTransportURI + Play on a fresh play only), 'stop' = idle timer -> Stop;
+                            sets stream.tapLeadUs = max delay */; add({ uuid, name, ip, base, delayMs }); remove(uuid); setDelay(uuid, ms)
+                            /* running feeds shift their timeline mapping */; sessionFor(token); serve(f, req, res); setVolume/setMute(uuid, v);
+  volumes(); view(); toJSON(); close({ stop });
+}
+// Feed (per HTTP GET): real-time paced (20 ms tick), frame n carries the room's audio for connectUs + delay + n/48k.
+// scheduler.js additions: tapLeadUs (in sendAheadUs and a #needsMore floor of tapLead + low water), pcmHistory.
+// rooms.js additions: RoomManager option sonos (bridge|null) + sonosOptions; addSonos(id, { uuid, name, ip, base, delayMs })
+//   (moves between rooms), removeSonos(id, uuid), setSonosDelay(id, uuid, ms), sonosRoomOf(uuid), sonosStream(token) -> { roomId,
+//   serve(req, res) } | null; setVolume/mute include Sonos; 'sonos:<uuid>' ids for setMemberVolume/Mute; view.sonos[];
+//   rooms.json rooms[].sonos = [{ uuid, name, ip, base, delayMs }] (kept while the bridge is null).
 ```
 
 ### Member interface (scheduler.js / rooms.js ↔ connection.js)
@@ -800,6 +822,18 @@ second test instance on another port for the owner.
   over 15 simulated min bounded ±15 ms, stall, gating, mic refused, protocol errors, PCM/FLAC end-to-end, auto-switch, echo)
   + REST. Live: aiosendspin `SourceCapture` (FLAC and PCM, 1 kHz file input) → Velvet → room: 0 timeline gaps, lead
   284–307 ms (min_buffer 250), buffer settles ~160 ms.
+- 2026-11-12 — Sonos follows a room (`sonos.js`): a Sonos member is a follower, not a Sendspin member. Velvet serves the room's
+  master timeline (GroupStream tap) as an endless MP3 radio stream (`x-rincon-mp3radio://` over plain HTTP, 320k, 48 kHz,
+  ICY titles) paced in real time `delayMs` ahead (0–5000, default 2000); the room's t0 and decode keep that lead
+  (`tapLeadUs`), so play/seek/skip start a delay later everywhere and the Sonos hears them too. One stream across track
+  changes, seek, skip, pause (silence; Stop after 30 s idle); a delay change moves the mapping on the running stream. Start
+  only on a fresh play (`SetAVTransportURI` + `Play`), polite `Stop` (only when `GetMediaInfo` still names our token). Per-
+  session 192-bit token in the stream path, public route for LAN/loopback peers only, dead once the Sonos leaves. Group
+  volume/mute include the Sonos (RenderingControl). Persisted by UUID + last IP (re-resolved through Sonos discovery).
+  REST `GET /rooms/sonos`, `POST|PATCH|DELETE /rooms/:id/sonos[/:uuid]`; admin + player room editor with delay slider and
+  a "follows the room" badge; 17 keys × 12 locales. Tests: `sendspin-sonos` (11, fake SOAP Sonos), REST
+  `sendspin-sonos-api` (3, spawned server + fake Sonos via `VELVET_TEST_SONOS`, NODE_ENV=test only). Not yet heard on a
+  real Sonos: default delay, `x-rincon-mp3radio` with a chunked endless stream and ICY titles are to be checked by the owner.
 
 ### Second test instance (owner)
 

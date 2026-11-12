@@ -205,6 +205,7 @@ export class RoomsService extends EventEmitter {
   }
 
   playable(view) {
+    if (view.sonos?.length) return true;
     return view.members.some((m) => m.connected && m.available && m.player && this.#server.canPlay(m.clientId));
   }
 
@@ -228,6 +229,9 @@ export class RoomsService extends EventEmitter {
           canMute: m.muteSettable,
         };
       }),
+      sonos: (view.sonos ?? []).map((s) => ({
+        id: s.id, uuid: s.uuid, name: s.name, delayMs: s.delayMs, volume: s.volume, muted: s.muted, state: s.state, error: s.error,
+      })),
       state: idle ? 'idle' : view.state,
       current: view.current && !idle ? {
         filepath: view.current.filepath,

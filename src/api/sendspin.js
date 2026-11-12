@@ -35,6 +35,13 @@
  *   POST   /api/v1/rooms/:id/reorder    — reorder the whole queue
  *   POST   /api/v1/rooms/:id/pause|resume|next|previous|stop
  *   POST   /api/v1/rooms/:id/seek|volume|mute|repeat|shuffle
+ *   GET    /api/v1/rooms/sonos              — Sonos speakers that can follow a room
+ *   POST   /api/v1/rooms/:id/sonos          — a Sonos follows this room
+ *   PATCH  /api/v1/rooms/:id/sonos/:uuid    — its delay
+ *   DELETE /api/v1/rooms/:id/sonos/:uuid    — it stops following
+ *
+ * Public (the Sonos has no login; an unguessable per-session token in the path, LAN peers only):
+ *   GET    /api/v1/rooms/sonos-stream/:token.mp3 — the room's live stream for a following Sonos
  *   POST   /api/v1/rooms/:id/line-in        — play a source device's input in the room
  *   POST   /api/v1/rooms/:id/line-in/stop   — stop the line-in (the queue stays paused)
  */
@@ -51,6 +58,10 @@ import { resolvePathWithinRoot } from '../util/path-security.js';
 import { resolveTrackGain } from './db.js';
 import { RoomsService, RoomError, SourceError, STOP_TIMEOUT_MS } from '../sendspin/service.js';
 import { createArtwork } from '../sendspin/artwork.js';
+import {
+  createSonosSoap, streamUrlFor, artUrlFor, isSonosUuid, isPrivateLan, STREAM_PATH, MAX_SONOS_DELAY_MS, DEFAULT_SONOS_DELAY_MS,
+} from '../sendspin/sonos.js';
+import * as sonosApi from './sonos.js';
 import { PairingInputError, decodePskToken } from '../sendspin/pairing.js';
 
 const MAX_SONGS = 10_000;
@@ -99,6 +110,8 @@ const SCHEMAS = {
   repeat: Joi.object({ repeat: Joi.string().valid('off', 'all', 'one').required() }),
   shuffle: Joi.object({ shuffle: Joi.boolean().required() }),
   empty: Joi.object({}),
+  sonosAdd: Joi.object({ uuid: Joi.string().max(64).required(), delayMs: Joi.number().integer().min(0).max(MAX_SONOS_DELAY_MS) }),
+  sonosPatch: Joi.object({ delayMs: Joi.number().integer().min(0).max(MAX_SONOS_DELAY_MS).required() }),
   source: Joi.object({ clientId, allowed: Joi.boolean().required() }),
   sourceAuto: Joi.object({ clientId, autoSwitch: Joi.boolean().required(), roomId: Joi.string().min(1).max(64) }),
   lineIn: Joi.object({ clientId }),
@@ -197,10 +210,47 @@ function settingsFromConfig() {
   };
 }
 
+// ── Sonos followers ────────────────────────────────────────────────────────
+
+const sonosEnabled = () => config.program.sonos?.enabled !== false;
+let sonosArtBase = null;
+
+// Tests point Velvet at a fake Sonos on loopback; never honoured outside NODE_ENV=test.
+function sonosTestSetup() {
+  if (process.env.NODE_ENV !== 'test' || !process.env.VELVET_TEST_SONOS) return null;
+  return JSON.parse(process.env.VELVET_TEST_SONOS);
+}
+
+function sonosDevicesNow() {
+  return sonosTestSetup()?.devices ?? sonosApi.cachedSonosDevices();
+}
+
+function sonosDevices() {
+  const test = sonosTestSetup();
+  return test ? Promise.resolve(test.devices) : sonosApi.listSonosDevices();
+}
+
+function sonosBridge() {
+  const test = sonosTestSetup();
+  const soap = createSonosSoap(test ? { port: test.port, allowHost: (ip) => ip === '127.0.0.1' } : {});
+  return {
+    soap: (...args) => (sonosEnabled() ? soap(...args) : Promise.reject(new Error('Sonos is disabled in Velvet'))),
+    resolve: (uuid) => sonosDevicesNow().find((d) => d.uuid === uuid) ?? null,
+    streamUrl: streamUrlFor,
+    artUrl: (base, aaFile) => artUrlFor(sonosArtBase ?? base, aaFile),
+  };
+}
+
+function sonosBases(req) {
+  sonosArtBase = sonosApi.buildArtBaseUrl(req);
+  return sonosApi.buildBaseUrl(req);
+}
+
 function svc() {
   if (!service) {
     const art = createArtwork({ artDir: config.program.storage.albumArtDirectory });
-    service = new RoomsService({ dataDir: sendspinDataDir(), logger: winston, ...art, ...serviceOpts });
+    const roomOptions = { sonos: sonosBridge(), ...serviceOpts.roomOptions };
+    service = new RoomsService({ dataDir: sendspinDataDir(), logger: winston, ...art, ...serviceOpts, roomOptions });
   }
   return service;
 }
@@ -411,6 +461,21 @@ function checkMembers(sv, members) {
 }
 
 // ── Routes ─────────────────────────────────────────────────────────────────
+
+const isLoopback = (ip) => ip === '::1' || /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(ip);
+
+// Registered before the auth middleware: a Sonos cannot log in. The token in the path is per Sonos session
+// (192 random bits) and dies when the Sonos leaves the room or its session ends.
+export function setupPublic(velvet) {
+  velvet.get(`${STREAM_PATH}:file`, (req, res) => {
+    const peer = String(req.socket?.remoteAddress || '').replace(/^::ffff:/, '');
+    if (!isPrivateLan(peer) && !isLoopback(peer)) return res.status(403).end();
+    const token = /^([A-Za-z0-9_-]{32})\.mp3$/.exec(req.params.file)?.[1];
+    const stream = token && service?.running ? service.rooms.sonosStream(token) : null;
+    if (!stream) return res.status(404).end();
+    stream.serve(req, res);
+  });
+}
 
 export function setup(velvet) {
   applySettings().catch((err) => winston.warn(`[rooms] start failed: ${err.message}`));
@@ -687,6 +752,39 @@ export function setup(velvet) {
     validate(SCHEMAS.empty, req.body);
     lightView(service, req.params.id);
     service.sources.stopRoom(req.params.id);
+    return service.room(req.params.id);
+  });
+
+  player('get', '/sonos', async () => {
+    if (!sonosEnabled()) return { enabled: false, devices: [] };
+    const devices = (await sonosDevices()).filter((d) => isSonosUuid(d.uuid));
+    return {
+      enabled: true, defaultDelayMs: DEFAULT_SONOS_DELAY_MS, maxDelayMs: MAX_SONOS_DELAY_MS,
+      devices: devices.map((d) => ({ uuid: d.uuid, name: d.name, model: d.model ?? null, roomId: service.rooms.sonosRoomOf(d.uuid) })),
+    };
+  });
+
+  player('post', '/:id/sonos', (req) => {
+    const { uuid, delayMs } = validate(SCHEMAS.sonosAdd, req.body);
+    const { id } = req.params;
+    lightView(service, id);
+    if (!sonosEnabled()) fail(409, 'sonos_disabled', 'Sonos is disabled in Velvet');
+    const d = sonosDevicesNow().find((x) => x.uuid === uuid);
+    if (!d || !isSonosUuid(uuid)) fail(404, 'not_found', 'unknown Sonos speaker');
+    service.rooms.addSonos(id, { uuid, name: d.name, ip: d.ip, base: sonosBases(req), delayMs });
+    return service.room(id);
+  });
+
+  player('patch', '/:id/sonos/:uuid', (req) => {
+    const { delayMs } = validate(SCHEMAS.sonosPatch, req.body);
+    lightView(service, req.params.id);
+    service.rooms.setSonosDelay(req.params.id, req.params.uuid, delayMs);
+    return service.room(req.params.id);
+  });
+
+  player('delete', '/:id/sonos/:uuid', (req) => {
+    lightView(service, req.params.id);
+    service.rooms.removeSonos(req.params.id, req.params.uuid);
     return service.room(req.params.id);
   });
 

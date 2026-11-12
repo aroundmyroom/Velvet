@@ -73,6 +73,9 @@ export class GroupStream extends EventEmitter {
   #epoch = null;
   #timer = null;
   #kickQueued = false;
+  // Followers outside the Sendspin buffer model (Sonos, see sonos.js) hear the timeline this much later: t0 and the
+  // decode stay this far ahead so they get every sample in time.
+  #tapLeadUs = 0;
 
   constructor({
     now = serverNow, ffmpeg, logger = null, masterRate = null, chunkMs = null,
@@ -104,8 +107,21 @@ export class GroupStream extends EventEmitter {
     return this.#epoch?.rate ?? null;
   }
 
+  get tapLeadUs() {
+    return this.#tapLeadUs;
+  }
+
+  set tapLeadUs(us) {
+    this.#tapLeadUs = Math.max(0, Math.round(us) || 0);
+  }
+
+  // Decoded master PCM not yet pruned (from about a second behind the playhead), for a tap that joins mid-timeline.
+  get pcmHistory() {
+    return this.#epoch ? this.#epoch.history.slice() : [];
+  }
+
   get sendAheadUs() {
-    let max = 0;
+    let max = this.#tapLeadUs;
     const live = Boolean(this.#epoch?.live);
     for (const m of this.#members.values()) max = Math.max(max, memberLeadUs(m.member, live));
     return max + this.#opts.safetyUs;
@@ -488,6 +504,7 @@ export class GroupStream extends EventEmitter {
   #needsMore(ep) {
     const playhead = ep.t0 === null ? 0 : this.#now() - ep.t0;
     if (samplesToUs(ep.decodedEnd, ep.rate) - playhead >= this.#opts.readAheadUs) return false;
+    if (samplesToUs(ep.decodedEnd, ep.rate) - playhead < this.#tapLeadUs + this.#opts.lowWaterUs) return true;
     let live = false;
     for (const m of this.#members.values()) {
       if (!m.live || !m.seg) continue;

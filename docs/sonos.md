@@ -6,6 +6,9 @@ This is different from the passive DLNA media-server (which lets Sonos *browse* 
 
 ---
 
+A Sonos can also **follow a Velvet Room** (play along with Sendspin speakers,
+with an adjustable delay): see [Velvet Rooms — Sonos speakers in a room](rooms.md#sonos-speakers-in-a-room).
+
 ## Requirements
 
 - Sonos device reachable on the same LAN as Velvet
