@@ -91,6 +91,7 @@ Written by `_uKey(k)` → resolved to `ms2_<k>_<username>`.
 | `eq` | JSON array (8 floats) | `[0,0,0,0,0,0,0,0]` | 8-band EQ gain values in dB |
 | `eq_on` | `'true'` / `'false'` | `'true'` | EQ enabled state |
 | `spec_style` | integer `0`–`6` | `0` | Active spectrum visualiser mode |
+| `voltviz_style` | string (style id) | first style | Chosen VoltViz style; an id that no longer exists falls back to the first style |
 | `vu_mode` | `'spec'` \| `'needle'` \| `'ppm'` | `'spec'` | VU meter display mode |
 | `ppm_bright` | float `0.0`–`1.0` | `0.38` | PPM canvas brightness |
 | `ref` | float `-20`–`-10` | `-13` | VU reference level in dBFS |

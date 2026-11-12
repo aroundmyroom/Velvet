@@ -147,6 +147,16 @@ Building all of this correctly from scratch (especially the logarithmic binning 
 
 ---
 
+## VoltViz — Modern Visualizer Collection
+
+**What it does:** Adds a fifth visualizer mode with 50+ modern styles (WebGL and, where the browser supports it, WebGPU) by [Sander de Wildt](https://github.com/sanderdw/voltviz), MIT-licensed.
+
+**Why VoltViz?**
+
+Milkdrop covers the classic preset aesthetic and audioMotion covers precise spectrum displays; VoltViz fills the gap with contemporary shader scenes, particle fields and stylised spectrum displays, without writing and maintaining dozens of shaders ourselves. It is vendored as an ES module in `webapp/assets/js/lib/voltviz/` (works offline) and loaded with a dynamic `import()` only the first time the VoltViz mode is chosen, so player start-up is unchanged. It reads the same post-EQ/ReplayGain analyser tap as Milkdrop and audioMotion and never connects to the speakers. See [visualizer.md](visualizer.md).
+
+---
+
 ## SQLite (`node:sqlite`)
 
 **What it does:** Stores all music metadata (tracks, artists, albums, ratings, playlists, user settings, waveform presence flags, scrobble history, etc.).
@@ -224,6 +234,7 @@ The Open Subsonic extension layer (`openSubsonic: true`) allows newer clients to
 | Syncthing | Library sync | Self-hosted, peer-to-peer, encrypted, bundleable as one binary, no cloud required |
 | Butterchurn | Milkdrop visualizer | 20+ years of community presets; WebGL; open-source; no alternative has this library |
 | audioMotion-analyzer | Spectrum visualizer | Logarithmic scaling, octave bands, multiple modes; saves ~500 lines of custom canvas code |
+| VoltViz | Modern visualizer styles | 50+ WebGL/WebGPU styles, MIT; lazy-loaded so it costs nothing until used |
 | SQLite (`node:sqlite`) | Database | Zero-install, built into Node v22, single-file backup, adequate for personal server scale |
 | Web Audio API | Audio engine | Native browser standard; only option for gapless, crossfade, EQ, and ReplayGain simultaneously |
 | Subsonic protocol | Mobile clients | Reuses mature third-party apps; avoids cost of building native apps from scratch |

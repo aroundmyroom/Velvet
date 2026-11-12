@@ -2043,7 +2043,7 @@ const Player = {
           // If this is still the current track, update the BPM/key tracking vars
           // so Auto-DJ anchors and status chips reflect the freshly fetched data.
           if (S.queue[S.idx] === s) {
-            if (s.bpm != null && _currentBpm == null)  { _currentBpm = s.bpm; }
+            if (s.bpm != null && _currentBpm == null)  { _currentBpm = s.bpm; VIZ.bpmChanged(); }
             if (s.musical_key != null && _currentCamelot == null) {
               _currentCamelot    = toCamelot(s.musical_key);
               _currentNeighbours = camelotNeighbours(_currentCamelot);
@@ -6521,7 +6521,7 @@ const VIZ = (() => {
     bctx.restore();
   }
 
-  // Top-level mode: 0 = Milkdrop/butterchurn, 1 = custom spectrum, 2 = AudioMotion
+  // Top-level mode: 0 = Milkdrop/butterchurn, 1 = custom spectrum, 2 = AudioMotion, 3 = Lyrics, 4 = VoltViz
   let vizTopMode = 0;
 
   // Spectrum state
@@ -6696,7 +6696,7 @@ const VIZ = (() => {
 
   function setPresetLabel() {
     const el = document.getElementById('viz-preset-name');
-    if (!el) return;
+    if (!el || vizTopMode !== 0) return;
     const n = presetKeys[presetIndex] || '';
     el.textContent = n.length > 65 ? n.substring(0, 65) + '\u2026' : n;
   }
@@ -7216,6 +7216,151 @@ const VIZ = (() => {
     if (amAnalyzer) amAnalyzer.toggleAnalyzer(false);
   }
 
+  // ── VOLTVIZ RENDERER ──────────────────────────────────────
+  const VV_MODE = 4;
+  const VV_URL  = `/assets/js/lib/voltviz/voltviz.js?v=${VELVET_VERSION}`;
+  let _vvModPromise = null, _vvInst = null, _vvStyles = [], _vvStyleId = null;
+  let _vvGen = 0, _vvFallbackMode = 0, _vvGpuPromise = null;
+
+  // navigator.gpu exists in many browsers that still have no usable adapter (GPU blocklist, HW acceleration off).
+  function _vvHasWebGpu() {
+    if (!_vvGpuPromise) {
+      _vvGpuPromise = navigator.gpu
+        ? navigator.gpu.requestAdapter().then(a => !!a, () => false)
+        : Promise.resolve(false);
+    }
+    return _vvGpuPromise;
+  }
+
+  function _vvLoadModule() {
+    if (!_vvModPromise) {
+      _vvModPromise = import(VV_URL).catch(e => { _vvModPromise = null; throw e; });
+    }
+    return _vvModPromise;
+  }
+
+  function _vvSongBpm() {
+    const b = Number(S.queue[S.idx]?.bpm);
+    return Number.isFinite(b) && b > 0 ? b : null;
+  }
+
+  function _vvReadStored() {
+    try { return localStorage.getItem(_uKey('voltviz_style')); } catch { return null; }
+  }
+
+  function _vvStore(id) {
+    try { localStorage.setItem(_uKey('voltviz_style'), id); } catch { /* storage unavailable */ }
+  }
+
+  function _vvStatus(text) {
+    const el = document.getElementById('vv-status');
+    if (!el) return;
+    el.textContent = text || '';
+    el.classList.toggle('hidden', !text);
+  }
+
+  function _vvLabel() {
+    const el = document.getElementById('viz-preset-name');
+    const st = _vvStyles.find(v => v.id === _vvStyleId);
+    if (el) el.textContent = st ? st.name : 'VoltViz';
+    const sel = document.getElementById('viz-vv-select');
+    if (sel && st) sel.value = st.id;
+  }
+
+  function _vvFillPicker() {
+    const sel = document.getElementById('viz-vv-select');
+    if (!sel || sel.options.length) return;
+    const groups = new Map();
+    for (const v of _vvStyles) {
+      const g = v.group || 'VoltViz';
+      if (!groups.has(g)) {
+        const og = document.createElement('optgroup');
+        og.label = g;
+        groups.set(g, og);
+        sel.appendChild(og);
+      }
+      groups.get(g).appendChild(new Option(v.name, v.id));
+    }
+  }
+
+  async function startVoltViz(container) {
+    const gen = ++_vvGen;
+    if (!audioCtx || !analyserNode) {
+      toast(t('player.toast.playFirstForAudio'));
+      _vvLabel();
+      return;
+    }
+    _vvStatus(t('player.ctrl.vizLoading'));
+    const presetName = document.getElementById('viz-preset-name');
+    if (presetName) presetName.textContent = t('player.ctrl.vizLoading');
+    try {
+      const [mod, webgpu] = await Promise.all([_vvLoadModule(), _vvHasWebGpu()]);
+      if (gen !== _vvGen) return;
+      _vvStyles = mod.listVisualizers().filter(v => !v.webgpu || webgpu);
+      if (!_vvStyles.length) throw new Error('no VoltViz visualizers available');
+      _vvFillPicker();
+      const stored = _vvReadStored();
+      _vvStyleId = _vvStyles.some(v => v.id === stored) ? stored : _vvStyles[0].id;
+      const opts = { container, audioContext: audioCtx, input: analyserNode, bpm: _vvSongBpm() };
+      let inst;
+      try {
+        inst = await mod.createVoltViz({ ...opts, visualizer: _vvStyleId });
+      } catch (e) {
+        // A stored style can fail on its own (e.g. a shader this GPU rejects); retry the default before giving up.
+        if (_vvStyleId === _vvStyles[0].id || gen !== _vvGen) throw e;
+        console.warn('[Velvet] VoltViz style failed, using default:', _vvStyleId, e);
+        _vvStyleId = _vvStyles[0].id;
+        inst = await mod.createVoltViz({ ...opts, visualizer: _vvStyleId });
+      }
+      if (gen !== _vvGen) { inst.destroy(); return; }
+      _vvInst = inst;
+      _vvStatus('');
+      _vvLabel();
+      document.getElementById('viz-vv-select')?.classList.remove('hidden');
+    } catch (e) {
+      if (gen !== _vvGen) return;
+      console.warn('[Velvet] VoltViz failed:', e);
+      _vvStatus('');
+      toast(t('player.toast.voltvizFailed'));
+      vizTopMode = _vvFallbackMode === VV_MODE ? 0 : _vvFallbackMode;
+      applyMode();
+    }
+  }
+
+  function stopVoltViz() {
+    _vvGen++;
+    _vvStatus('');
+    if (_vvInst) {
+      try { _vvInst.destroy(); } catch (e) { console.warn('[Velvet] VoltViz destroy failed:', e); }
+      _vvInst = null;
+    }
+  }
+
+  async function _vvSetStyle(id) {
+    if (!_vvInst || !_vvStyles.some(v => v.id === id)) return;
+    const prevId = _vvStyleId;
+    _vvStyleId = id;
+    _vvLabel();
+    const inst = _vvInst;
+    try {
+      await inst.setVisualizer(id);
+      if (_vvInst === inst) _vvStore(id);
+    } catch (e) {
+      console.warn('[Velvet] VoltViz style failed:', id, e);
+      if (_vvInst !== inst) return;
+      toast(t('player.toast.voltvizStyleFailed'));
+      if (_vvStyleId !== id) return;
+      _vvStyleId = prevId;
+      _vvLabel();
+    }
+  }
+
+  function _vvStep(dir) {
+    if (!_vvStyles.length) return;
+    const i = Math.max(0, _vvStyles.findIndex(v => v.id === _vvStyleId));
+    _vvSetStyle(_vvStyles[(i + dir + _vvStyles.length) % _vvStyles.length].id);
+  }
+
   // ── Lyric helpers ────────────────────────────────────────────
   async function fetchAndRenderLyrics() {
     const s = S.queue[S.idx];
@@ -7605,8 +7750,10 @@ const VIZ = (() => {
     const prevBtn    = document.getElementById('viz-prev-btn');
     const nextBtn    = document.getElementById('viz-next-btn');
     const presetName = document.getElementById('viz-preset-name');
+    const vvCont     = document.getElementById('vv-container');
+    const vvSelect   = document.getElementById('viz-vv-select');
 
-    const MODE_NAMES = ['Milkdrop', 'Spectrum', 'AudioMotion', 'Lyrics'];
+    const MODE_NAMES = ['Milkdrop', 'Spectrum', 'AudioMotion', 'Lyrics', 'VoltViz'];
     const nextMode   = (vizTopMode + 1) % MODE_NAMES.length;
     if (label)   label.textContent          = MODE_NAMES[vizTopMode];
     if (modeBtn) modeBtn.dataset.tip        = t('player.ctrl.vizSwitchTo', { mode: MODE_NAMES[nextMode] });
@@ -7615,12 +7762,15 @@ const VIZ = (() => {
     stopSpectrum();
     stopAudioMotion();
     stopLyricRaf();
+    stopVoltViz();
     if (frameId) { cancelAnimationFrame(frameId); frameId = null; }
 
     // Hide all surfaces
     bcCanvas.classList.add('hidden');
     spCanvas.classList.add('hidden');
     if (amCont) amCont.classList.add('hidden');
+    if (vvCont) vvCont.classList.add('hidden');
+    if (vvSelect) vvSelect.classList.add('hidden');
     const lyricMode = document.getElementById('viz-lyric-mode');
     if (lyricMode) lyricMode.classList.add('hidden');
 
@@ -7648,6 +7798,14 @@ const VIZ = (() => {
       if (nextBtn)    nextBtn.style.visibility = 'hidden';
       if (presetName) presetName.style.visibility = '';
       if (amCont) startAudioMotion(amCont);
+
+    } else if (vizTopMode === VV_MODE) {
+      if (vvCont) vvCont.classList.remove('hidden');
+      if (vvSelect && vvSelect.options.length) vvSelect.classList.remove('hidden');
+      if (prevBtn)    prevBtn.style.visibility = '';
+      if (nextBtn)    nextBtn.style.visibility = '';
+      if (presetName) presetName.style.visibility = '';
+      if (vvCont) startVoltViz(vvCont);
 
     } else {
       // ── Lyric mode ────────────────────────────────────
@@ -7723,23 +7881,36 @@ const VIZ = (() => {
       _brandActive = false;
       stopAudioMotion();
       stopLyricRaf();
+      stopVoltViz();
       lyricLines = []; lyricActiveIdx = -1;
     },
     next()  {
+      if (vizTopMode === VV_MODE) { _vvStep(1); return; }
       if (vizTopMode !== 0) return;
       presetHistory.push(presetIndex);
       presetIndex = Math.floor(Math.random() * presetKeys.length);
       loadPreset(2.7);
     },
     prev()  {
+      if (vizTopMode === VV_MODE) { _vvStep(-1); return; }
       if (vizTopMode !== 0) return;
       if (presetHistory.length) presetIndex = presetHistory.pop();
       else presetIndex = ((presetIndex - 1) + presetKeys.length) % presetKeys.length;
       loadPreset(2.7);
     },
     toggleMode() {
-      vizTopMode = (vizTopMode + 1) % 4;
+      _vvFallbackMode = vizTopMode;
+      vizTopMode = (vizTopMode + 1) % 5;
       applyMode();
+    },
+    selectVoltVizStyle(id) {
+      if (vizTopMode === VV_MODE) _vvSetStyle(id);
+    },
+    resize() {
+      if (_vvInst) _vvInst.resize();
+    },
+    bpmChanged() {
+      if (_vvInst) _vvInst.setBpm(_vvSongBpm());
     },
     openLyrics() {
       vizTopMode = 3;
@@ -7754,6 +7925,7 @@ const VIZ = (() => {
       if (!overlayHidden) {
         if (vizTopMode === 3) fetchAndRenderLyrics();
       }
+      if (_vvInst) _vvInst.setBpm(_vvSongBpm());
     },
     initAudio()   { ensureAudio(); },
     // Returns a Promise that resolves once the AudioContext is in 'running' state.
@@ -26844,6 +27016,7 @@ document.getElementById('viz-close-btn').addEventListener('click', () => VIZ.clo
 document.getElementById('viz-prev-btn').addEventListener('click', () => VIZ.prev());
 document.getElementById('viz-next-btn').addEventListener('click', () => VIZ.next());
 document.getElementById('viz-mode-btn').addEventListener('click', () => VIZ.toggleMode());
+document.getElementById('viz-vv-select').addEventListener('change', e => { VIZ.selectVoltVizStyle(e.target.value); e.target.blur(); });
 document.getElementById('eq-btn').addEventListener('click', () => EQ.toggle());
 
 // ── Playing Now view — update on song change ──────────────────────────────────
@@ -26892,6 +27065,7 @@ window.addEventListener('resize', () => {
   const canvas = document.getElementById('viz-canvas');
   canvas.width  = canvas.clientWidth;
   canvas.height = canvas.clientHeight;
+  VIZ.resize();
 });
 document.getElementById('np-rate-clear').addEventListener('click', async () => {
   const s = S.queue[S.idx];

@@ -1,3 +1,18 @@
+## Unreleased
+
+### Added
+
+- **VoltViz visualizer.** The full-screen visualizer gets a fifth mode,
+  VoltViz, with more than 50 modern styles: shader scenes, particle fields,
+  oscilloscopes, spectrum displays and more. Pick a style with the previous/next
+  buttons or the style list in the visualizer bar; your choice is remembered.
+  Styles that need WebGPU only appear in browsers that support it. For
+  analysed tracks the song's BPM is handed to VoltViz on every track change.
+  VoltViz loads only the first time you select it, so opening
+  the player is as fast as before; if your browser or GPU cannot run it, you
+  get a message and the visualizer returns to the previous mode. Credits:
+  VoltViz by Sander de Wildt (MIT). (`docs/visualizer.md`.)
+
 ## v0.9.2 (2026-11-12)
 
 Equalizer per room and a Home Assistant integration

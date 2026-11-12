@@ -190,7 +190,7 @@ scan runs in the background; Auto-DJ works from the first song. Full guides:
 - Queue persistence across page loads and devices (localStorage + server backup)
 - Keyboard shortcuts for all transport actions — [full list →](docs/keyboard-shortcuts.md)
 - Command palette (Ctrl/K) — fuzzy launch any view or action without lifting your hands
-- Milkdrop visualizer (sound-reactive, full-screen) — [credits →](#credits)
+- Full-screen visualizer: Milkdrop, Spectrum, AudioMotion, Lyrics and VoltViz (50+ modern styles) — [guide →](docs/visualizer.md) · [credits →](#credits)
 
 ### Auto-DJ
 
@@ -445,6 +445,8 @@ yours are how Velvet gets better.
 ## Credits
 
 **Milkdrop visualizer** — The full-screen music visualizer in Velvet is powered by [**Butterchurn**](https://github.com/jberg/butterchurn) by Jordan Berg, a faithful WebGL port of [**MilkDrop**](https://www.geisswerks.com/milkdrop/) — the legendary Winamp visualization plugin originally created by **Ryan Geiss**. Thousands of community presets from the MilkDrop preset ecosystem are compatible. Huge thanks to both for keeping this piece of music history alive in the browser.
+
+**VoltViz** — 50+ visualizers by Sander de Wildt (MIT), https://github.com/sanderdw/voltviz
 
 **Apps2Samsung** — The **Velvet TV** Samsung Tizen app is featured in [**Apps2Samsung**](https://github.com/Apps2Samsung/Apps2Samsung), a community project that makes it easy to side-load custom `.wgt` apps onto Samsung Smart TVs. Big thanks to the Apps2Samsung team for adopting Velvet TV and making installation effortless for TV users.
 
