@@ -141,6 +141,57 @@ export function openTrack({ file, startMs, format /*{codec,sample_rate,channels,
   `sendspin-cpp-cli`, an ESPHome device and `sendspin-js` in a browser
   (the last two need the owner's hardware/browser).
 
+### Licensing and naming (from sendspin-audio.com/licensing, spec LICENSE/TRADEMARKS/SCOPE)
+
+- **Spec:** Community Specification License 1.0 — royalty-free copyright and
+  patent licence for implementations. The patent grant only reaches
+  licensees that *accept* it: for a source distribution, by including the
+  licence text in the root of the source tree (CSL 2.1.3.1). Action: add
+  `COMMUNITY-SPEC-LICENSE-1.0.md` (verbatim copy of `spec/LICENSE.md`) to the
+  repo root before release. The alternative, a PR to the spec's
+  `NOTICES.md`, is an outward action for the owner to decide.
+  Implementations need no attribution (CSL 1.2).
+- **Reference code** (aiosendspin, sendspin-js, sendspin-cpp,
+  sendspin-server-cpp, python-cli) is Apache-2.0, which is compatible with
+  Velvet's GPL-3.0. We implement from the spec; where code is ported from a
+  reference implementation, keep its copyright/Apache notice in
+  `NOTICE`/the file header. Generated test vectors are data, not ported code.
+- **Name and logo** are trademarks of the Open Home Foundation. Allowed
+  without permission: stating in plain text that Velvet "implements the
+  Sendspin protocol" / "works with Sendspin speakers", naming the protocol in
+  docs and code, the mDNS identifiers, and descriptive names like
+  "Velvet Rooms — for Sendspin speakers". Not allowed: the Sendspin logo,
+  "Sendspin" as our feature's own name, "certified" / "built-in" claims
+  (the certification programme is not open yet). UI strings and docs follow
+  this.
+- **Opus** is outside the spec's patent scope and carries third-party
+  patents for products that are sold. Velvet is free software and Opus stays
+  optional; PCM and FLAC are mandatory anyway.
+- **Out of scope of the spec** (ours to design): queue, content sourcing,
+  beat/loudness/spectrum analysis, colour extraction, all UI.
+- **Vendor roles:** custom features can be prototyped as `_velvet_…` roles
+  (e.g. queue or lyrics) — phase 4 idea, never needed for compatibility.
+
+### Test strategy (from the guide's testing chapter)
+
+- Peers: `sendspin daemon` (python-cli, available here), `sendspin-cpp-cli`
+  (reference player; build or installer, to add), aiosendspin's client
+  scripted from Python for loops (connect, pair, regroup, disconnect),
+  `sendspin-js` in a browser and an ESPHome device (owner).
+- Multi-server: run `sendspin serve` (python-cli) as a second server on the
+  LAN to exercise `another_server` hand-over and "pairing is never
+  interrupted".
+- Conformance: write a Velvet server adapter (`conformance/adapters/README.md`)
+  and run `conformance run --from velvet --to aiosendspin` / `sendspin-cpp`.
+- Sync: `sync-test` needs a USB sound card recording two players — owner
+  hardware; we log offsets ourselves where possible.
+- Pairing drills (phase 3): factory reset while paired (credential mismatch,
+  no playback, offer re-pair), six-server eviction, network loss mid-pairing,
+  five wrong static codes, server restore from backup keeps pairings, two
+  servers fighting.
+- Server keeps: identity key pair + pairing records (backed up together) +
+  approvals.
+
 ## Phases
 
 | # | Content | Done when |
