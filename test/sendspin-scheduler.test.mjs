@@ -38,14 +38,14 @@ function assertContiguous(chunks, format) {
 }
 
 test('format negotiation: preference first, then priority order, only producible formats', () => {
-  const opus = { codec: 'opus', sample_rate: 48000, channels: 2 };
-  const m = new FakeMember({ formats: [opus, { ...PCM48, bit_depth: 32 }, FLAC44, PCM48] });
+  const opus96 = { codec: 'opus', sample_rate: 96000, channels: 2 };
+  const m = new FakeMember({ formats: [opus96, { ...PCM48, bit_depth: 32 }, FLAC44, PCM48] });
   assert.deepEqual(negotiateFormat(m), FLAC44);
   m.state.player.format = PCM48;
   assert.deepEqual(negotiateFormat(m), PCM48);
-  m.state.player.format = opus;
+  m.state.player.format = opus96;
   assert.deepEqual(negotiateFormat(m), FLAC44);
-  assert.equal(negotiateFormat(new FakeMember({ formats: [opus] })), null);
+  assert.equal(negotiateFormat(new FakeMember({ formats: [opus96] })), null);
   assert.ok(producible({ codec: 'flac', sample_rate: 96000, channels: 1, bit_depth: 24 }));
   assert.ok(!producible({ codec: 'pcm', sample_rate: 48000, channels: 6, bit_depth: 16 }));
 });

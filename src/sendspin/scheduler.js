@@ -1,5 +1,5 @@
 import { EventEmitter } from 'node:events';
-import { createEncoder, decodeQueue, samplesToUs, MASTER_BYTES_PER_SAMPLE } from './audio.js';
+import { createEncoder, decodeQueue, samplesToUs, MASTER_BYTES_PER_SAMPLE, OPUS_SAMPLE_RATES } from './audio.js';
 import { AUDIO_HEADER_LEN } from './wire.js';
 
 export const MIN_LEAD_FLOOR_MS = 50;
@@ -22,6 +22,7 @@ export function serverNow() {
 }
 
 export function producible(f) {
+  if (f.codec === 'opus') return (f.channels === 1 || f.channels === 2) && OPUS_SAMPLE_RATES.includes(f.sample_rate);
   return (f.codec === 'pcm' || f.codec === 'flac') && (f.bit_depth === 16 || f.bit_depth === 24)
     && (f.channels === 1 || f.channels === 2) && Number.isInteger(f.sample_rate)
     && f.sample_rate >= 8000 && f.sample_rate <= 192_000;
@@ -29,10 +30,13 @@ export function producible(f) {
 
 export function sameFormat(a, b) {
   return Boolean(a && b) && a.codec === b.codec && a.sample_rate === b.sample_rate
-    && a.channels === b.channels && a.bit_depth === b.bit_depth;
+    && a.channels === b.channels && (a.codec === 'opus' || a.bit_depth === b.bit_depth);
 }
 
-const pickFormat = (f) => ({ codec: f.codec, sample_rate: f.sample_rate, channels: f.channels, bit_depth: f.bit_depth });
+// bit_depth is ignored for opus but stream/start still carries one; 16 as aiosendspin sends.
+const pickFormat = (f) => ({
+  codec: f.codec, sample_rate: f.sample_rate, channels: f.channels, bit_depth: f.codec === 'opus' ? 16 : f.bit_depth,
+});
 
 export function negotiateFormat(member) {
   const formats = member.info?.player?.supportedFormats ?? [];

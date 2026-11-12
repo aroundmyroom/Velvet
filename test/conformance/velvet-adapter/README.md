@@ -31,7 +31,8 @@ client are derived from `--server-id`/`--client-id` exactly as the harness's
 aiosendspin adapters derive theirs, so pre-paired clients take the `lt` path.
 Clients with their own identity connect with the Sentinel PSK; the adapter
 approves every client for unpaired access (the same policy as the aiosendspin
-server adapter's pairing store). Opus is not offered (`supports_opus=False`).
+server adapter's pairing store). Opus is offered (`supports_opus=True`):
+raw packets from `audio.js`'s Ogg demuxer.
 
 ## Running it
 
@@ -49,7 +50,7 @@ Prerequisites: a checkout of the harness with its Python environment
    `conformance/src/conformance/implementations.py`: client unsupported
    (placeholder), server `adapter_kind="node"`,
    `entrypoint="adapters/velvet/server.mjs"`, server- and client-initiated,
-   `supports_flac=True`, `supports_opus=False`, role families
+   `supports_flac=True`, `supports_opus=True`, role families
    player/metadata/controller/artwork.
 
 2. Run (from the harness root, its venv active):

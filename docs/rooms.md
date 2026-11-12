@@ -289,8 +289,12 @@ What a speaker offers depends on the device. Velvet supports:
 - **Volume:** a speaker that reports volume but cannot be set from outside is
   shown read-only.
 
-Audio goes out as FLAC or PCM, in the format the speaker prefers, up to
-24-bit. Tracks join without gaps.
+Audio goes out as FLAC, PCM (up to 24-bit) or Opus, in the format the speaker
+prefers. Opus is sent only to a speaker that lists it, ahead of FLAC or PCM;
+it is lossy (about 128 kbit/s stereo, 64 kbit/s mono) and suits speakers on a
+weak Wi-Fi link. Opus is covered by third-party patents for products that are
+sold; Velvet is free software and Opus stays optional, since every speaker
+also takes FLAC and PCM. Tracks join without gaps.
 
 ---
 
@@ -307,9 +311,6 @@ is capped, so a room never clips. See [replaygain-info.md](replaygain-info.md).
 
 ## Current limits
 
-- **No Opus yet.** Speakers get FLAC or PCM. A speaker that accepts only Opus
-  cannot join a room (the protocol requires FLAC and PCM, so this should be
-  rare).
 - **No visualizer yet.** Speakers with a light ring or display visualizer get
   nothing to show.
 - **Reordering or removing songs in the browser queue is not sent to the

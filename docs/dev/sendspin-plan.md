@@ -119,10 +119,12 @@ export function encodeVisLoudness(ts, v), encodeVisBeat(ts, downbeat), encodeVis
 export class Reassembler { constructor({ maxBytes = 64 MiB }); push(plaintext) /* -> { type, payload } | null; throws WireError -> close */; inFlight }
 // audio.js  (decode once to a "master" PCM = s32le interleaved at the group's master rate/channels,
 //            then one encoder per distinct player format; every function takes ffmpeg? = ffmpegBin())
-// format = { codec: 'pcm'|'flac', sample_rate, channels, bit_depth: 16|24 }   (opus: not yet, see phase 4)
+// format = { codec: 'pcm'|'flac', sample_rate, channels, bit_depth: 16|24 }
+//        | { codec: 'opus', sample_rate: 8000|12000|16000|24000|48000, channels: 1|2 }  (bit_depth ignored; stream/start sends 16)
 // chunk  = { frame: Buffer, samples, startUs, durationUs }   startUs = baseUs + exact µs of the chunk's first
 //          sample on the encoder's own sample counter; consecutive chunks are contiguous (no drift, no gaps)
-export const MASTER_BYTES_PER_SAMPLE /*4*/, MIN_CHUNK_MS /*15*/, MAX_CHUNK_MS /*150*/, DEFAULT_CHUNK_MS /*{pcm:25,flac:50}*/;
+export const MASTER_BYTES_PER_SAMPLE /*4*/, MIN_CHUNK_MS /*15*/, MAX_CHUNK_MS /*150*/, DEFAULT_CHUNK_MS /*{pcm:25,flac:50,opus:20}*/,
+             OPUS_SAMPLE_RATES, OPUS_FRAME_MS /*[20,40,60]: largest <= chunkMs*/;
 export function samplesToUs(samples, sampleRate);       // exact integer floor, safe for days of audio
 export class Timeline { constructor(sampleRate, baseUs = 0); usAt(sample); nowUs; sample; advance(n) /* -> { startUs, durationUs } */ }
 export function createDecoder({ file, startMs = 0, sampleRate, channels, signal, ffmpeg });
@@ -140,6 +142,17 @@ export function openTrack({ file, startMs, format, chunkMs, baseUs, signal, ffmp
 export class FlacFramer { push(buf) /* -> [{ frame, samples }] */; end(); }   // splits an ffmpeg `-f flac` stream
 export function parseFlacFrameHeader(buf, pos);          // -> { length, blockSize, number, variable } | null | undefined
 export function flacCodecHeader({ sampleRate, channels, bitDepth, blockSize }); // -> Buffer 'fLaC' + STREAMINFO (last-block flag)
+export function oggCrc(buf);                             // RFC 3533 CRC-32 (poly 0x04c11db7, init 0, unreflected)
+export class OggPacketReader { push(buf) /* -> [Buffer packet] */; end(); }  // one logical stream; packets across pages,
+//     any byte split; throws on capture pattern/CRC/sequence/continuation/serial/BOS errors, packets > 64 KiB, truncation
+export function opusPacketSamples(packet);               // 48 kHz samples from the TOC byte (RFC 6716 §3.1) | null
+export function parseOpusHead(packet);                   // -> { channels, preSkip, inputRate } | null
+export class OpusDemuxer { head; push(buf) /* -> [{ packet, samples (48 kHz) }] */; end(); }  // drops OpusHead + OpusTags
+//  opus encoder: ffmpeg libopus (64k/channel VBR, -application audio, -frame_duration 20) -> -f ogg (-page_duration 20 ms)
+//  -> OpusDemuxer -> one raw packet per chunk, codecHeader null. chunk.samples at the format rate. As aiosendspin: the
+//  player gets no OpusHead and plays the pre-skip, so the timeline starts at baseUs - preSkip (first chunk startUs < baseUs)
+//  and input sample n plays at baseUs + n exactly; a splice's first packet overlaps the kept tail by pre-skip, which
+//  players trim as overlap.
 // pairing.js  (Node crypto only; CPace = CPACE-X25519-SHA512, draft-21, byte-exact with cpace-py)
 export const METHODS /*{PAIRING_PSK,DYNAMIC,STATIC}*/, FORMATS /*{DIGITS,QR_CODE}*/, ABORT_REASONS, ROUND_LIMIT /*20*/,
              PAIRING_MESSAGE_TYPES /*Set of client/pair-* + pair/abort*/, TIMEOUTS /*{firstMessageMs 60s, gestureMs 360s, attemptMs 180s}*/,
@@ -701,6 +714,13 @@ second test instance on another port for the owner.
   stale untrusted solo rooms pruned), untrusted clients have their own cap (16) and known devices an LRU cap (256, trusted
   never evicted); mDNS rejects mapped/compatible IPv6, link-local and off-subnet addresses and off-link QU queries; unpair
   idles + closes the lt session, unpair/revoke during a re-handshake are deferred; import restarts Rooms in `finally`.
+- 2026-11-12 — Opus: ffmpeg libopus → Ogg → own `OggPacketReader` (RFC 3533 CRC, packets across pages) + `OpusDemuxer`
+  (drops OpusHead/OpusTags, TOC durations) → one raw packet per 20 ms chunk; timeline moved back by the OpusHead pre-skip
+  as aiosendspin does, so decoded audio lands sample-exact (tone onset at 500.02 ms of 500 ms via ffmpeg and aiosendspin's
+  `create_decoder`). Negotiation takes opus (8/12/16/24/48 kHz, 1–2 ch) only when listed, client order/preference
+  respected, `bit_depth` ignored. ~1 % of one core per stereo stream (FLAC ~0.25 %). `test/sendspin-opus.test.mjs` (8).
+  Conformance `server-initiated-opus`: sendspin-cpp passed (8 kHz mono, 251 packets); aiosendspin and sendspin-js client
+  adapters do not offer Opus (harness fail-fast).
 
 ### Second test instance (owner)
 

@@ -21,7 +21,7 @@ const ALL_ROLES = ['player@v1', 'controller@v1', 'metadata@v1', 'artwork@v1', 'c
 const PLAYER_SCENARIOS = new Set([
   'client-initiated-pcm', 'server-initiated-pcm', 'server-initiated-pcm-24bit', 'server-initiated-flac',
   'client-initiated-state-format-pcm', 'client-initiated-state-format-flac',
-  'server-initiated-audio-chunk-framing', 'server-initiated-protocol-baseline-v1',
+  'server-initiated-audio-chunk-framing', 'server-initiated-protocol-baseline-v1', 'server-initiated-opus',
 ]);
 const FORMAT_PREFERENCE_SCENARIOS = new Set(['client-initiated-state-format-pcm', 'client-initiated-state-format-flac']);
 const METADATA_SCENARIOS = new Set(['client-initiated-metadata', 'server-initiated-metadata']);

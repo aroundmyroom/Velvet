@@ -451,7 +451,6 @@ Phase 1 complete (v6.14.17): `audio_features` table, `essentia-bpm-worker.mjs`, 
 
 ### Velvet Rooms — extensions
 
-- [ ] Opus output (needs Ogg page parsing or a raw-packet path in `src/sendspin/audio.js`)
 - [ ] Visualizer role: beat/loudness from the BPM analysis
 - [ ] Source role (line-in from a speaker into a room)
 - [ ] Sonos as a room member

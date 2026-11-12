@@ -5,7 +5,9 @@ import { ffmpegBin, ffprobeBin } from '../util/ffmpeg-bootstrap.js';
 export const MASTER_BYTES_PER_SAMPLE = 4;
 export const MIN_CHUNK_MS = 15;
 export const MAX_CHUNK_MS = 150;
-export const DEFAULT_CHUNK_MS = { pcm: 25, flac: 50 };
+export const DEFAULT_CHUNK_MS = { pcm: 25, flac: 50, opus: 20 };
+export const OPUS_SAMPLE_RATES = Object.freeze([8000, 12000, 16000, 24000, 48000]);
+export const OPUS_FRAME_MS = Object.freeze([20, 40, 60]);
 
 const STDERR_TAIL = 2048;
 const PROBE_TIMEOUT_MS = 5000;
@@ -386,6 +388,155 @@ export class FlacFramer {
   }
 }
 
+const OGG_CRC = new Uint32Array(256);
+for (let i = 0; i < 256; i++) {
+  let c = i << 24;
+  for (let b = 0; b < 8; b++) c = (c & 0x80000000) ? ((c << 1) ^ 0x04c11db7) : (c << 1);
+  OGG_CRC[i] = c >>> 0;
+}
+
+export function oggCrc(buf) {
+  let crc = 0;
+  for (let i = 0; i < buf.length; i++) crc = ((crc << 8) ^ OGG_CRC[((crc >>> 24) ^ buf[i]) & 0xff]) >>> 0;
+  return crc;
+}
+
+const OGG_HEADER = 27;
+const MAX_OGG_PACKET = 65536;
+
+// One logical stream (what ffmpeg's ogg muxer writes for one audio stream); packets may span pages.
+export class OggPacketReader {
+  #buf = Buffer.alloc(0);
+  #partial = [];
+  #partialBytes = 0;
+  #serial = null;
+  #seq = -1;
+  #eos = false;
+
+  push(data) {
+    this.#buf = this.#buf.length ? Buffer.concat([this.#buf, data]) : data;
+    const packets = [];
+    for (;;) {
+      const b = this.#buf;
+      if (b.length < OGG_HEADER) return packets;
+      if (b.toString('latin1', 0, 4) !== 'OggS' || b[4] !== 0) throw new Error('Ogg capture pattern lost');
+      const nseg = b[26];
+      if (b.length < OGG_HEADER + nseg) return packets;
+      let bodyLen = 0;
+      for (let i = 0; i < nseg; i++) bodyLen += b[OGG_HEADER + i];
+      const pageLen = OGG_HEADER + nseg + bodyLen;
+      if (b.length < pageLen) return packets;
+      const page = b.subarray(0, pageLen);
+      this.#buf = b.subarray(pageLen);
+      this.#page(page, nseg, packets);
+    }
+  }
+
+  #check(page) {
+    const want = page.readUInt32LE(22);
+    const copy = Buffer.from(page);
+    copy.writeUInt32LE(0, 22);
+    if (oggCrc(copy) !== want) throw new Error('Ogg page CRC mismatch');
+    const type = page[5];
+    const serial = page.readUInt32LE(14);
+    const seq = page.readUInt32LE(18);
+    if (this.#eos) throw new Error('Ogg page after end of stream');
+    if (this.#serial === null) {
+      if (!(type & 2)) throw new Error('Ogg stream does not begin with a BOS page');
+      this.#serial = serial;
+    } else if (serial !== this.#serial || (type & 2)) {
+      throw new Error('Ogg stream is not a single logical stream');
+    }
+    if (seq !== this.#seq + 1) throw new Error('Ogg page sequence gap');
+    this.#seq = seq;
+    if (((type & 1) === 1) !== (this.#partial.length > 0)) throw new Error('Ogg continuation flag mismatch');
+  }
+
+  #page(page, nseg, packets) {
+    this.#check(page);
+    const type = page[5];
+    let pos = OGG_HEADER + nseg;
+    for (let i = 0; i < nseg; i++) {
+      const lace = page[OGG_HEADER + i];
+      if (lace) {
+        this.#partial.push(page.subarray(pos, pos + lace));
+        this.#partialBytes += lace;
+        if (this.#partialBytes > MAX_OGG_PACKET) throw new Error('Ogg packet too large');
+      }
+      pos += lace;
+      if (lace < 255) {
+        packets.push(this.#partial.length === 1 ? this.#partial[0] : Buffer.concat(this.#partial));
+        this.#partial = [];
+        this.#partialBytes = 0;
+      }
+    }
+    if (type & 4) this.#eos = true;
+  }
+
+  end() {
+    if (this.#buf.length || this.#partial.length) throw new Error('Ogg stream ended inside a page or packet');
+  }
+}
+
+const OPUS_CONFIG_48K = [480, 960, 1920, 2880, 480, 960, 1920, 2880, 480, 960, 1920, 2880, 480, 960, 480, 960,
+  120, 240, 480, 960, 120, 240, 480, 960, 120, 240, 480, 960, 120, 240, 480, 960];
+
+// Samples at 48 kHz from the TOC byte (RFC 6716 §3.1); null for a malformed packet.
+export function opusPacketSamples(packet) {
+  if (!packet.length) return null;
+  const toc = packet[0];
+  const per = OPUS_CONFIG_48K[toc >> 3];
+  const code = toc & 3;
+  let frames = code === 0 ? 1 : 2;
+  if (code === 3) {
+    if (packet.length < 2) return null;
+    frames = packet[1] & 0x3f;
+    if (!frames) return null;
+  }
+  const n = per * frames;
+  return n > 5760 ? null : n;
+}
+
+export function parseOpusHead(packet) {
+  if (packet.length < 19 || packet.toString('latin1', 0, 8) !== 'OpusHead' || (packet[8] >> 4) !== 0) return null;
+  return { channels: packet[9], preSkip: packet.readUInt16LE(10), inputRate: packet.readUInt32LE(12) };
+}
+
+// Ogg Opus -> raw packets: OpusHead, OpusTags, then one { packet, samples48k } per audio packet.
+export class OpusDemuxer {
+  #ogg = new OggPacketReader();
+  #index = 0;
+  head = null;
+
+  push(data) {
+    return this.#take(this.#ogg.push(data));
+  }
+
+  end() {
+    this.#ogg.end();
+    if (this.#index < 2) throw new Error('Opus stream ended before its headers');
+    return [];
+  }
+
+  #take(packets) {
+    const out = [];
+    for (const p of packets) {
+      const i = this.#index++;
+      if (i === 0) {
+        this.head = parseOpusHead(p);
+        if (!this.head) throw new Error('OpusHead missing');
+      } else if (i === 1) {
+        if (p.length < 8 || p.toString('latin1', 0, 8) !== 'OpusTags') throw new Error('OpusTags missing');
+      } else {
+        const samples = opusPacketSamples(p);
+        if (samples === null) throw new Error('malformed Opus packet');
+        out.push({ packet: p, samples });
+      }
+    }
+    return out;
+  }
+}
+
 export function flacCodecHeader({ sampleRate, channels, bitDepth, blockSize }) {
   const si = Buffer.alloc(34);
   si.writeUInt16BE(blockSize, 0);
@@ -394,12 +545,22 @@ export function flacCodecHeader({ sampleRate, channels, bitDepth, blockSize }) {
   return Buffer.concat([Buffer.from('fLaC', 'latin1'), Buffer.from([0x80, 0, 0, 34]), si]);
 }
 
+function opusFrameMs(chunkMs) {
+  return OPUS_FRAME_MS.findLast((ms) => ms <= (chunkMs ?? DEFAULT_CHUNK_MS.opus)) ?? OPUS_FRAME_MS[0];
+}
+
 function chunkSamplesFor(format, chunkMs) {
+  if (format.codec === 'opus') return format.sample_rate * opusFrameMs(chunkMs) / 1000;
   const ms = Math.min(MAX_CHUNK_MS, Math.max(MIN_CHUNK_MS, chunkMs ?? DEFAULT_CHUNK_MS[format.codec]));
   return Math.floor(format.sample_rate * ms / 1000);
 }
 
 function validateFormat(format) {
+  if (format.codec === 'opus') {
+    if (!OPUS_SAMPLE_RATES.includes(format.sample_rate)) throw new Error(`Unsupported Opus sample rate ${format.sample_rate}`);
+    if (format.channels !== 1 && format.channels !== 2) throw new Error(`Unsupported Opus channel count ${format.channels}`);
+    return;
+  }
   if (format.codec !== 'pcm' && format.codec !== 'flac') throw new Error(`Unsupported codec ${format.codec}`);
   if (format.bit_depth !== 16 && format.bit_depth !== 24) throw new Error(`Unsupported bit depth ${format.bit_depth}`);
 }
@@ -417,6 +578,10 @@ class Encoder {
 
   get endUs() {
     return this.#timeline.nowUs;
+  }
+
+  shiftTimeline(us) {
+    this.#timeline.baseUs += us;
   }
 
   get samples() {
@@ -501,6 +666,27 @@ class FfmpegEncoder extends Encoder {
       const framer = new FlacFramer();
       onData = (d) => { for (const f of framer.push(d)) this.emit(f.frame, f.samples); };
       onEnd = () => { for (const f of framer.end()) this.emit(f.frame, f.samples); };
+    } else if (format.codec === 'opus') {
+      out.push(
+        '-c:a', 'libopus', '-b:a', `${64 * format.channels}k`, '-vbr', 'on', '-application', 'audio',
+        '-frame_duration', String(chunkSamples * 1000 / format.sample_rate), '-f', 'ogg', '-page_duration', '20000',
+      );
+      const demux = new OpusDemuxer();
+      const scale = format.sample_rate / 48000;
+      // As aiosendspin: no OpusHead reaches the player, so its decoder outputs the encoder's pre-skip too.
+      // Moving the timeline back by pre-skip puts input sample n at baseUs + n exactly.
+      let shifted = false;
+      const emitAll = (packets) => {
+        for (const p of packets) {
+          if (!shifted) {
+            this.shiftTimeline(-samplesToUs(demux.head.preSkip, 48000));
+            shifted = true;
+          }
+          this.emit(p.packet, p.samples * scale);
+        }
+      };
+      onData = (d) => emitAll(demux.push(d));
+      onEnd = () => emitAll(demux.end());
     } else {
       out.push('-f', format.bit_depth === 16 ? 's16le' : 's24le');
       const chunker = new PcmChunker(format.bit_depth / 8 * format.channels, chunkSamples);

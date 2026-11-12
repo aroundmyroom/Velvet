@@ -298,5 +298,6 @@ test('ffmpeg errors are surfaced', async () => {
   const format = { codec: 'flac', sample_rate: 44100, channels: 2, bit_depth: 16 };
   const enc = openTrack({ file: path.join(dir, 'missing.flac'), format, ffmpeg: FFMPEG });
   await assert.rejects(collect(enc), /ffmpeg decode failed/);
-  assert.throws(() => createEncoder({ format: { ...format, codec: 'opus' }, inputRate: 44100, inputChannels: 2 }), /Unsupported codec/);
+  assert.throws(() => createEncoder({ format: { ...format, codec: 'vorbis' }, inputRate: 44100, inputChannels: 2 }), /Unsupported codec/);
+  assert.throws(() => createEncoder({ format: { ...format, codec: 'opus' }, inputRate: 44100, inputChannels: 2 }), /Opus sample rate/);
 });
