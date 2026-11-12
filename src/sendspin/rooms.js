@@ -1,0 +1,1158 @@
+import crypto from 'node:crypto';
+import { EventEmitter } from 'node:events';
+import fsp from 'node:fs/promises';
+import path from 'node:path';
+import { GroupStream, serverNow } from './scheduler.js';
+import { encodeArtworkAnnounce, encodeArtworkParts, encodeArtworkCancel } from './wire.js';
+
+export const ROOMS_FILE = 'rooms.json';
+export const IDLE_GRACE_MS = 10_000;
+// The reference daemon reports available:false before its clock is synced, then true.
+export const INITIAL_UNAVAILABLE_GRACE_MS = 5_000;
+export const SCHEDULE_AHEAD_MS = 20_000;
+export const PREVIOUS_RESTART_MS = 3_000;
+export const ARTWORK_PART_GAP_MS = 2;
+export const MAX_ROOM_NAME_BYTES = 64;
+export const REPEAT_MODES = Object.freeze(['off', 'one', 'all']);
+
+const BASE_COMMANDS = Object.freeze([
+  'play', 'pause', 'stop', 'next', 'previous', 'repeat_off', 'repeat_one', 'repeat_all', 'shuffle', 'unshuffle', 'switch',
+]);
+const TEXT_FIELDS = ['title', 'artist', 'album_artist', 'album'];
+
+export class RoomError extends Error {
+  constructor(code, message) {
+    super(message);
+    this.code = code;
+  }
+}
+
+const newRoomId = () => crypto.randomBytes(32).toString('base64url');
+
+function truncateUtf8(s, max) {
+  const buf = Buffer.from(String(s), 'utf8');
+  if (buf.length <= max) return String(s);
+  let end = max;
+  while (end > 0 && (buf[end] & 0xc0) === 0x80) end--;
+  return buf.subarray(0, end).toString('utf8');
+}
+
+export function groupVolumes(volumes, target) {
+  const level = Math.max(0, Math.min(100, target));
+  const vols = volumes.map(Number);
+  if (!vols.length) return [];
+  let delta = level - vols.reduce((a, b) => a + b, 0) / vols.length;
+  let active = vols.map((_, i) => i);
+  while (active.length) {
+    let lost = 0;
+    const next = [];
+    for (const i of active) {
+      const proposed = vols[i] + delta;
+      const clamped = Math.max(0, Math.min(100, proposed));
+      lost += proposed - clamped;
+      if (clamped === proposed) next.push(i);
+      vols[i] = clamped;
+    }
+    if (next.length === active.length) break;
+    if (next.length) delta = lost / next.length;
+    active = next;
+  }
+  return vols.map((v) => Math.round(v));
+}
+
+function defaultSetPlayback(member, on) {
+  const has = member.activities.includes('playback');
+  if (has === on) return true;
+  return member.activate({ activities: on ? [...member.activities, 'playback'] : member.activities.filter((a) => a !== 'playback') });
+}
+
+function playerOf(c) {
+  const m = c.member;
+  return m && m.isOpen !== false && m.hasRole('player') && m.state?.player ? m.state.player : null;
+}
+
+function artworkChannels(member) {
+  const raw = member.state?.roles?.artwork?.channels;
+  if (!Array.isArray(raw)) return null;
+  const channels = raw.slice(0, 4).map((ch) => (ch && ch.source !== 'none' && ['album', 'artist'].includes(ch.source)
+    ? { source: ch.source, format: ch.format, width: ch.width, height: ch.height }
+    : { source: 'none' }));
+  while (channels.length > 1 && channels.at(-1).source === 'none') channels.pop();
+  return channels;
+}
+
+const rolesKey = (member) => (member.activeRoles ?? []).join(',');
+const channelKey = (ch) => JSON.stringify(ch ?? { source: 'none' });
+
+export class RoomManager extends EventEmitter {
+  #file;
+  #now;
+  #log;
+  #opts;
+  #rooms = new Map();
+  #clients = new Map();
+  #saveTimer = null;
+  #writing = Promise.resolve();
+
+  constructor({
+    dir, file = ROOMS_FILE, now = serverNow, ffmpeg, logger = null, artworkFor = null, colorFor = null,
+    setPlayback = defaultSetPlayback, idleGraceMs = IDLE_GRACE_MS, initialUnavailableGraceMs = INITIAL_UNAVAILABLE_GRACE_MS,
+    random = Math.random, streamOptions = {},
+  }) {
+    super();
+    if (!dir) throw new Error('RoomManager needs a dir');
+    this.#file = path.join(dir, file);
+    this.#now = now;
+    this.#log = logger;
+    this.#opts = { ffmpeg, artworkFor, colorFor, setPlayback, idleGraceMs, initialUnavailableGraceMs, random, streamOptions };
+  }
+
+  static async open(dir, opts = {}) {
+    const rm = new RoomManager({ dir, ...opts });
+    await rm.load();
+    return rm;
+  }
+
+  async load() {
+    let data;
+    try {
+      data = JSON.parse(await fsp.readFile(this.#file, 'utf8'));
+    } catch (err) {
+      if (err.code === 'ENOENT') return;
+      throw err;
+    }
+    for (const r of data.rooms ?? []) this.#restoreRoom(r);
+    for (const [id, c] of Object.entries(data.clients ?? {})) {
+      const client = this.#client(id, c.name);
+      client.roomId = this.#rooms.has(c.roomId) ? c.roomId : null;
+      client.previousRoomId = c.previousRoomId ?? null;
+      client.parked = Boolean(c.parked);
+    }
+    for (const room of this.#rooms.values()) room.members = room.members.filter((id) => this.#clients.get(id)?.roomId === room.id);
+    for (const c of this.#clients.values()) if (!c.roomId) this.#moveTo(c, this.#soloRoomFor(c));
+  }
+
+  #restoreRoom(r) {
+    const room = this.#newRoom({ id: r.id, name: r.name ?? null, solo: r.solo ?? null });
+    Object.assign(room, {
+      members: [...(r.members ?? [])], queue: r.queue ?? [], index: r.index ?? 0, positionMs: r.positionMs ?? 0,
+      repeat: REPEAT_MODES.includes(r.repeat) ? r.repeat : 'off', shuffle: Boolean(r.shuffle),
+      lastPlayedAt: r.lastPlayedAt ?? null,
+      state: r.state === 'playing' || r.state === 'paused' ? 'paused' : 'stopped',
+    });
+    room.order = Array.isArray(r.order) && r.order.length === room.queue.length ? r.order : room.queue.map((_, i) => i);
+  }
+
+  async flush() {
+    if (this.#saveTimer) {
+      clearTimeout(this.#saveTimer);
+      this.#saveTimer = null;
+      this.#write();
+    }
+    await this.#writing;
+  }
+
+  async close() {
+    for (const room of this.#rooms.values()) {
+      if (room.state === 'playing') this.#halt(room, 'paused');
+      clearTimeout(room.idleTimer);
+      room.stream?.close();
+    }
+    await this.flush();
+  }
+
+  attach(member) {
+    const c = this.#client(member.clientId, member.info?.name);
+    if (c.member && c.member !== member) this.detach(member.clientId);
+    if (member.info?.name) c.name = member.info.name;
+    if (!c.roomId) this.#moveTo(c, this.#soloRoomFor(c));
+    c.member = member;
+    c.art = { started: null, inFlight: null, queue: [], scheduled: new Set() };
+    c.sent = { group: null, controller: null, metadata: false };
+    c.rolesKey = rolesKey(member);
+    const room = this.#rooms.get(c.roomId);
+    const on = (ev, fn) => {
+      member.on(ev, fn);
+      c.listeners.push([ev, fn]);
+    };
+    on('state', (next, prev) => this.#onState(c, next, prev));
+    on('command', (cmd) => this.#onCommand(c, cmd));
+    on('leave', () => this.#park(c, 'leave'));
+    on('activated', () => this.#onActivated(c));
+    on('close', () => {
+      if (c.member === member) this.detach(member.clientId);
+    });
+    this.#sendGroup(c, true);
+    this.#sendAllState(c, room);
+    if (member.state) this.#onState(c, member.state, null);
+    this.#save();
+    this.#changed(room);
+    return room.id;
+  }
+
+  detach(clientId) {
+    const c = this.#clients.get(clientId);
+    if (!c?.member) return;
+    clearTimeout(c.parkTimer);
+    for (const [ev, fn] of c.listeners) c.member.off(ev, fn);
+    c.listeners = [];
+    const room = this.#rooms.get(c.roomId);
+    room?.stream?.removeMember(clientId, { end: false });
+    if (c.art?.inFlight) clearTimeout(c.art.inFlight.timer);
+    c.member = null;
+    c.art = null;
+    c.sent = null;
+    if (room) {
+      this.#pushController(room);
+      this.#changed(room);
+    }
+  }
+
+  listRooms() {
+    return [...this.#rooms.values()]
+      .filter((r) => r.members.length || r.name !== null)
+      .map((r) => this.#view(r, { queue: false }));
+  }
+
+  getRoom(id) {
+    return this.#view(this.#room(id), { queue: true });
+  }
+
+  roomOf(clientId) {
+    return this.#clients.get(clientId)?.roomId ?? null;
+  }
+
+  createRoom(name, clientIds = []) {
+    const room = this.#newRoom({ name: this.#checkName(name) });
+    this.setMembers(room.id, clientIds);
+    this.#save();
+    this.#changed(room);
+    return room.id;
+  }
+
+  renameRoom(id, name) {
+    const room = this.#room(id);
+    room.name = this.#checkName(name);
+    for (const cid of room.members) this.#sendGroup(this.#clients.get(cid));
+    this.#save();
+    this.#changed(room);
+  }
+
+  setMembers(id, clientIds) {
+    const room = this.#room(id);
+    const wanted = [...new Set(clientIds)];
+    for (const cid of room.members.filter((x) => !wanted.includes(x))) {
+      const c = this.#clients.get(cid);
+      this.#moveTo(c, this.#soloRoomFor(c, room));
+    }
+    for (const cid of wanted) {
+      const c = this.#client(cid);
+      c.parked = false;
+      c.previousRoomId = null;
+      this.#moveTo(c, room);
+    }
+    this.#save();
+    this.#changed(room);
+  }
+
+  deleteRoom(id) {
+    const room = this.#room(id);
+    if (room.solo && room.members.length === 1 && room.members[0] === room.solo) {
+      throw new RoomError('invalid', 'a speaker\'s own room cannot be deleted');
+    }
+    this.#halt(room, 'stopped');
+    for (const cid of [...room.members]) {
+      const c = this.#clients.get(cid);
+      this.#moveTo(c, this.#soloRoomFor(c, room));
+    }
+    room.stream?.close();
+    clearTimeout(room.idleTimer);
+    this.#rooms.delete(id);
+    for (const c of this.#clients.values()) if (c.previousRoomId === id) c.previousRoomId = null;
+    this.#save();
+    this.emit('change', id);
+  }
+
+  play(id, { items, index = 0, positionMs = 0 } = {}) {
+    const room = this.#room(id);
+    if (items) {
+      room.queue = items.slice();
+      room.order = room.queue.map((_, i) => i);
+      room.index = Math.max(0, Math.min(index, room.queue.length - 1));
+      room.positionMs = Math.max(0, positionMs);
+      if (room.shuffle) this.#shuffleOrder(room);
+    } else if (room.state === 'playing') {
+      return this.getRoom(id);
+    }
+    if (!room.queue.length) throw new RoomError('empty', 'nothing to play');
+    this.#start(room, room.index, room.positionMs);
+    return this.getRoom(id);
+  }
+
+  add(id, items) {
+    const room = this.#room(id);
+    const base = room.queue.length;
+    room.queue.push(...items);
+    const added = items.map((_, i) => base + i);
+    if (room.shuffle) {
+      const rest = room.order.slice(room.order.indexOf(this.#currentIndex(room)) + 1).concat(added);
+      this.#shuffleArray(rest);
+      room.order = room.order.slice(0, room.order.length - rest.length + added.length).concat(rest);
+    } else {
+      room.order.push(...added);
+    }
+    this.#save();
+    this.#changed(room);
+    return room.queue.length;
+  }
+
+  pause(id) {
+    const room = this.#room(id);
+    if (room.state !== 'playing') return;
+    this.#halt(room, 'paused');
+  }
+
+  resume(id) {
+    const room = this.#room(id);
+    if (room.state === 'playing') return;
+    if (!room.queue.length) throw new RoomError('empty', 'nothing to play');
+    this.#start(room, room.index, room.positionMs);
+  }
+
+  stop(id) {
+    const room = this.#room(id);
+    if (room.state === 'stopped' && !room.stream?.playing) return;
+    this.#halt(room, 'stopped');
+  }
+
+  next(id) {
+    const room = this.#room(id);
+    const n = this.#step(room, this.#currentIndex(room), 1);
+    if (n === null) return this.stop(id);
+    return this.#jump(room, n, 0);
+  }
+
+  previous(id) {
+    const room = this.#room(id);
+    const cur = this.#currentIndex(room);
+    if (this.#currentPosition(room) >= PREVIOUS_RESTART_MS) return this.#jump(room, cur, 0);
+    return this.#jump(room, this.#step(room, cur, -1) ?? cur, 0);
+  }
+
+  seek(id, positionMs) {
+    const room = this.#room(id);
+    const dur = room.queue[this.#currentIndex(room)]?.meta?.durationMs;
+    const target = Math.max(0, Math.min(Math.round(positionMs), dur > 0 ? dur : Infinity));
+    return this.#jump(room, this.#currentIndex(room), target);
+  }
+
+  seekRelative(id, offsetMs) {
+    const room = this.#room(id);
+    return this.seek(id, this.#currentPosition(room) + offsetMs);
+  }
+
+  setVolume(id, value) {
+    const room = this.#room(id);
+    const players = this.#players(room).filter(({ p }) => p.supportedCommands.includes('volume'));
+    const vols = groupVolumes(players.map(({ p }) => p.volume ?? 0), value);
+    players.forEach(({ c }, i) => this.#command(c, { command: 'volume', volume: vols[i] }));
+    return Object.fromEntries(players.map(({ c }, i) => [c.id, vols[i]]));
+  }
+
+  setMemberVolume(id, clientId, value) {
+    const c = this.#memberOf(id, clientId);
+    if (!playerOf(c)?.supportedCommands.includes('volume')) throw new RoomError('invalid', 'speaker volume is read-only');
+    this.#command(c, { command: 'volume', volume: Math.max(0, Math.min(100, Math.round(value))) });
+  }
+
+  mute(id, muted) {
+    const room = this.#room(id);
+    for (const { c, p } of this.#players(room)) {
+      if (p.supportedCommands.includes('mute')) this.#command(c, { command: 'mute', mute: Boolean(muted) });
+    }
+  }
+
+  setMemberMute(id, clientId, muted) {
+    const c = this.#memberOf(id, clientId);
+    if (!playerOf(c)?.supportedCommands.includes('mute')) throw new RoomError('invalid', 'speaker mute is read-only');
+    this.#command(c, { command: 'mute', mute: Boolean(muted) });
+  }
+
+  setRepeat(id, mode) {
+    if (!REPEAT_MODES.includes(mode)) throw new RoomError('invalid', 'repeat must be off, one or all');
+    const room = this.#room(id);
+    room.repeat = mode;
+    this.#pushController(room);
+    this.#save();
+    this.#changed(room);
+  }
+
+  setShuffle(id, on) {
+    const room = this.#room(id);
+    if (room.shuffle === Boolean(on)) return;
+    room.shuffle = Boolean(on);
+    if (room.shuffle) this.#shuffleOrder(room);
+    else room.order = room.queue.map((_, i) => i);
+    this.#pushController(room);
+    this.#save();
+    this.#changed(room);
+  }
+
+  #client(id, name = null) {
+    let c = this.#clients.get(id);
+    if (!c) {
+      c = {
+        id, name: name ?? id.slice(0, 8), member: null, roomId: null, previousRoomId: null, parked: false,
+        listeners: [], art: null, sent: null,
+      };
+      this.#clients.set(id, c);
+    }
+    return c;
+  }
+
+  #newRoom({ id = newRoomId(), name = null, solo = null }) {
+    const room = {
+      id, name, solo, members: [], queue: [], order: [], index: 0, positionMs: 0, state: 'stopped',
+      repeat: 'off', shuffle: false, lastPlayedAt: null, stream: null, timers: [], idleTimer: null,
+      current: null, scheduled: null, token: 0,
+    };
+    this.#rooms.set(room.id, room);
+    return room;
+  }
+
+  #room(id) {
+    const room = this.#rooms.get(id);
+    if (!room) throw new RoomError('not_found', 'no such room');
+    return room;
+  }
+
+  #memberOf(id, clientId) {
+    const room = this.#room(id);
+    if (!room.members.includes(clientId)) throw new RoomError('not_found', 'speaker is not in this room');
+    return this.#clients.get(clientId);
+  }
+
+  #checkName(name) {
+    const s = String(name ?? '').trim();
+    if (!s || Buffer.byteLength(s, 'utf8') > MAX_ROOM_NAME_BYTES) throw new RoomError('invalid', 'room name must be 1-64 bytes');
+    return s;
+  }
+
+  #roomName(room) {
+    if (room.name !== null) return room.name;
+    return this.#clients.get(room.solo)?.name ?? 'Speaker';
+  }
+
+  #soloRoomFor(c, except = null) {
+    for (const r of this.#rooms.values()) {
+      if (r !== except && r.solo === c.id && r.name === null && r.members.every((x) => x === c.id)) return r;
+    }
+    for (const r of this.#rooms.values()) if (r.solo === c.id && r.name === null) r.solo = null;
+    return this.#newRoom({ solo: c.id });
+  }
+
+  #moveTo(c, target) {
+    const from = c.roomId ? this.#rooms.get(c.roomId) : null;
+    if (from === target) return;
+    if (from) {
+      from.members = from.members.filter((x) => x !== c.id);
+      from.stream?.removeMember(c.id);
+      if (from.solo && from.name === null && from.members.length && !from.members.includes(from.solo)) {
+        from.name = this.#roomName(from);
+      }
+      if (!from.members.length && from.state === 'playing') this.#halt(from, 'paused');
+      this.#pushController(from);
+      this.#changed(from);
+    }
+    target.members.push(c.id);
+    c.roomId = target.id;
+    if (!c.member) return;
+    this.#cancelScheduledArtwork(c);
+    this.#sendGroup(c);
+    this.#sendAllState(c, target);
+    if (target.state === 'playing') this.#join(target, c);
+    else this.#idleLater(target);
+    this.#pushController(target);
+    this.#changed(target);
+  }
+
+  #park(c, why) {
+    const room = this.#rooms.get(c.roomId);
+    if (!room) return;
+    const solo = room.solo === c.id && room.members.length === 1 && room.name === null;
+    if (solo) {
+      if (room.state === 'playing') this.#halt(room, 'stopped');
+      else if (room.state === 'paused') {
+        room.state = 'stopped';
+        this.#sendGroup(c);
+      }
+    } else {
+      c.previousRoomId = room.id;
+      c.parked = true;
+      this.#moveTo(c, this.#soloRoomFor(c, room));
+    }
+    if (why === 'unavailable' && c.member) {
+      this.#endArtwork(c);
+      const streams = c.member.activeStreams;
+      if (streams?.length) this.#safe(c, () => c.member.streamEnd());
+    }
+    this.#setPlayback(c, false);
+    this.#save();
+  }
+
+  #switch(c) {
+    const current = this.#rooms.get(c.roomId);
+    const inOwnSolo = current.solo === c.id && current.members.length === 1;
+    if (c.parked && inOwnSolo && this.#rooms.has(c.previousRoomId)) {
+      const target = this.#rooms.get(c.previousRoomId);
+      c.parked = false;
+      c.previousRoomId = null;
+      this.#moveTo(c, target);
+      this.#save();
+      return;
+    }
+    const playing = [...this.#rooms.values()].filter((r) => r.state === 'playing');
+    const others = (r) => r.members.filter((x) => x !== c.id).length;
+    const multi = playing.filter((r) => others(r) >= 2);
+    const single = playing.filter((r) => others(r) === 1);
+    const cycle = [...multi, ...single];
+    if (c.member?.hasRole('player')) cycle.push(inOwnSolo ? current : this.#soloRoomFor(c, current));
+    if (!cycle.length) return;
+    const at = cycle.indexOf(current);
+    const target = cycle[(at + 1) % cycle.length];
+    c.parked = false;
+    c.previousRoomId = null;
+    this.#moveTo(c, target);
+    this.#save();
+  }
+
+  #parkLater(c) {
+    const member = c.member;
+    c.parkTimer = setTimeout(() => {
+      if (c.member === member && member.state && !member.state.available) this.#park(c, 'unavailable');
+    }, this.#opts.initialUnavailableGraceMs);
+    c.parkTimer.unref?.();
+  }
+
+  #onActivated(c) {
+    const key = rolesKey(c.member);
+    if (key === c.rolesKey) return;
+    c.rolesKey = key;
+    const room = this.#rooms.get(c.roomId);
+    if (c.art?.inFlight) clearTimeout(c.art.inFlight.timer);
+    c.art = { started: null, inFlight: null, queue: [], scheduled: new Set() };
+    c.sent = { group: c.sent.group, controller: null, metadata: false };
+    this.#sendAllState(c, room);
+  }
+
+  #onState(c, next, prev) {
+    const room = this.#rooms.get(c.roomId);
+    clearTimeout(c.parkTimer);
+    if (!next.available) {
+      if (!prev) this.#parkLater(c);
+      else if (prev.available !== false) this.#park(c, 'unavailable');
+      this.#pushController(room);
+      this.#changed(room);
+      return;
+    }
+    if (room.state === 'playing') {
+      if (room.stream?.has(c.id)) room.stream.memberChanged(c.id);
+      else this.#join(room, c);
+    }
+    const before = prev ? JSON.stringify(prev.roles?.artwork ?? null) : null;
+    if (before !== JSON.stringify(next.roles?.artwork ?? null) || prev?.available === false) this.#syncArtwork(c, room);
+    this.#pushController(room);
+    this.#changed(room);
+  }
+
+  #onCommand(c, { controller: cmd }) {
+    const room = this.#rooms.get(c.roomId);
+    if (!room || !cmd) return;
+    const ctl = this.#controllerState(room);
+    if (!ctl.supported_commands.includes(cmd.command)) return;
+    try {
+      this.#runCommand(c, room, ctl, cmd);
+    } catch (err) {
+      if (!(err instanceof RoomError)) throw err;
+    }
+  }
+
+  #runCommand(c, room, ctl, cmd) {
+    const isInt = Number.isInteger;
+    switch (cmd.command) {
+      case 'play': return this.play(room.id);
+      case 'pause': return this.pause(room.id);
+      case 'stop': return this.stop(room.id);
+      case 'next': return this.next(room.id);
+      case 'previous': return this.previous(room.id);
+      case 'volume': return isInt(cmd.volume) && cmd.volume >= 0 && cmd.volume <= 100 ? this.setVolume(room.id, cmd.volume) : undefined;
+      case 'mute': return typeof cmd.mute === 'boolean' ? this.mute(room.id, cmd.mute) : undefined;
+      case 'repeat_off': return this.setRepeat(room.id, 'off');
+      case 'repeat_one': return this.setRepeat(room.id, 'one');
+      case 'repeat_all': return this.setRepeat(room.id, 'all');
+      case 'shuffle': return this.setShuffle(room.id, true);
+      case 'unshuffle': return this.setShuffle(room.id, false);
+      case 'switch': return this.#switch(c);
+      case 'seek':
+        return isInt(cmd.position_ms) && cmd.position_ms >= 0 && cmd.position_ms <= ctl.seek_max_ms
+          ? this.seek(room.id, cmd.position_ms) : undefined;
+      case 'seek_relative': return isInt(cmd.offset_ms) ? this.seekRelative(room.id, cmd.offset_ms) : undefined;
+      default: return undefined;
+    }
+  }
+
+  #stream(room) {
+    if (room.stream) return room.stream;
+    const s = new GroupStream({ ffmpeg: this.#opts.ffmpeg, now: this.#now, logger: this.#log, ...this.#opts.streamOptions });
+    s.on('track', (t) => this.#onTrack(room, t));
+    s.on('ended', () => this.#onEnded(room));
+    s.on('error', (err) => this.#onStreamError(room, err));
+    s.on('member-error', (cid, err) => this.emit('member-error', room.id, cid, err));
+    room.stream = s;
+    return s;
+  }
+
+  #eligible(c) {
+    const m = c.member;
+    return Boolean(m && m.isOpen !== false && m.state?.available && m.hasRole('player') && m.playerStateReceived);
+  }
+
+  #setPlayback(c, on) {
+    if (!c.member || c.member.isOpen === false) return false;
+    return this.#safe(c, () => this.#opts.setPlayback(c.member, on)) === true;
+  }
+
+  #join(room, c) {
+    if (!this.#eligible(c) || room.stream?.has(c.id)) return;
+    if (!this.#setPlayback(c, true)) return;
+    if (!this.#stream(room).addMember(c.member)) this.#setPlayback(c, false);
+  }
+
+  #start(room, index, positionMs) {
+    this.#clearTimers(room);
+    clearTimeout(room.idleTimer);
+    room.token++;
+    room.state = 'playing';
+    room.index = index;
+    room.positionMs = positionMs;
+    room.lastPlayedAt = Date.now();
+    room.current = null;
+    const stream = this.#stream(room);
+    for (const cid of room.members) this.#join(room, this.#clients.get(cid));
+    stream.play(this.#tracksFrom(room, index, positionMs));
+    for (const cid of room.members) this.#sendGroup(this.#clients.get(cid));
+    this.#save();
+    this.#changed(room);
+  }
+
+  #jump(room, index, positionMs) {
+    if (room.state === 'playing') return this.#start(room, index, positionMs);
+    this.#cancelScheduled(room);
+    room.index = index;
+    room.positionMs = positionMs;
+    room.current = null;
+    room.token++;
+    this.#pushTrackState(room, this.#now());
+    this.#pushController(room);
+    this.#save();
+    this.#changed(room);
+    return undefined;
+  }
+
+  #halt(room, state) {
+    const pos = room.stream?.stop() ?? null;
+    if (pos && room.state === 'playing') {
+      room.index = pos.track.index;
+      room.positionMs = pos.positionMs;
+    }
+    this.#cancelScheduled(room);
+    room.state = state;
+    if (state === 'stopped') room.positionMs = 0;
+    room.current = null;
+    for (const cid of room.members) this.#sendGroup(this.#clients.get(cid));
+    this.#pushTrackState(room, this.#now());
+    this.#pushController(room);
+    this.#idleLater(room);
+    this.#save();
+    this.#changed(room);
+  }
+
+  #idleLater(room) {
+    clearTimeout(room.idleTimer);
+    room.idleTimer = setTimeout(() => {
+      room.idleTimer = null;
+      if (room.state === 'playing') return;
+      for (const cid of room.members) this.#setPlayback(this.#clients.get(cid), false);
+    }, this.#opts.idleGraceMs);
+    room.idleTimer.unref?.();
+  }
+
+  #onEnded(room) {
+    room.stream.stop();
+    room.index = room.order[0] ?? 0;
+    this.#halt(room, 'stopped');
+    this.emit('ended', room.id);
+  }
+
+  #onStreamError(room, err) {
+    this.#log?.warn?.(`[sendspin] room "${this.#roomName(room)}" stopped: ${err.message}`);
+    this.#halt(room, 'stopped');
+    this.emit('error', Object.assign(err, { roomId: room.id }));
+  }
+
+  *#tracksFrom(room, index, positionMs) {
+    let i = index;
+    let startMs = positionMs;
+    while (i !== null && i < room.queue.length) {
+      const item = room.queue[i];
+      yield { file: item.file, startMs, gainDb: item.gainDb ?? 0, index: i, item };
+      startMs = 0;
+      i = room.repeat === 'one' ? i : this.#step(room, i, 1);
+    }
+  }
+
+  #step(room, index, dir) {
+    const pos = room.order.indexOf(index);
+    const n = pos + dir;
+    if (n >= 0 && n < room.order.length) return room.order[n];
+    if (room.repeat === 'all' && room.order.length) return dir > 0 ? room.order[0] : room.order.at(-1);
+    return null;
+  }
+
+  #shuffleArray(a) {
+    for (let i = a.length - 1; i > 0; i--) {
+      const j = Math.floor(this.#opts.random() * (i + 1));
+      [a[i], a[j]] = [a[j], a[i]];
+    }
+    return a;
+  }
+
+  #shuffleOrder(room) {
+    const cur = this.#currentIndex(room);
+    const rest = this.#shuffleArray(room.queue.map((_, i) => i).filter((i) => i !== cur));
+    room.order = room.queue.length ? [cur, ...rest] : [];
+  }
+
+  #currentIndex(room) {
+    return room.current?.index ?? room.stream?.position()?.track.index ?? room.index;
+  }
+
+  #currentPosition(room) {
+    if (room.state !== 'playing') return room.positionMs;
+    return room.stream?.position()?.positionMs ?? room.positionMs;
+  }
+
+  #onTrack(room, { track, timestampUs, first }) {
+    const token = room.token;
+    const entry = { index: track.index, item: track.item, startMs: track.startMs ?? 0, timestampUs };
+    if (first) {
+      room.lastScheduledUs = timestampUs;
+      this.#becomeCurrent(room, entry);
+      return;
+    }
+    const sendAt = Math.max(this.#now(), timestampUs - SCHEDULE_AHEAD_MS * 1000, (room.lastScheduledUs ?? 0) + 1000);
+    room.lastScheduledUs = timestampUs;
+    this.#later(room, sendAt, () => {
+      if (room.token !== token) return;
+      room.scheduled = entry;
+      this.#pushTrackState(room, timestampUs, entry);
+    });
+    this.#later(room, timestampUs, () => {
+      if (room.token !== token) return;
+      room.scheduled = null;
+      this.#becomeCurrent(room, entry, { announce: false });
+    });
+  }
+
+  #becomeCurrent(room, entry, { announce = true } = {}) {
+    room.current = entry;
+    room.index = entry.index;
+    room.positionMs = entry.startMs;
+    if (announce) this.#pushTrackState(room, entry.timestampUs, entry);
+    this.#pushController(room);
+    this.#save();
+    this.#changed(room);
+  }
+
+  #later(room, atUs, fn) {
+    const t = setTimeout(() => {
+      room.timers = room.timers.filter((x) => x !== t);
+      fn();
+    }, Math.max(0, Math.ceil((atUs - this.#now()) / 1000)));
+    t.unref?.();
+    room.timers.push(t);
+  }
+
+  #clearTimers(room) {
+    for (const t of room.timers) clearTimeout(t);
+    room.timers = [];
+    room.lastScheduledUs = 0;
+  }
+
+  #cancelScheduled(room) {
+    this.#clearTimers(room);
+    if (!room.scheduled) return;
+    room.scheduled = null;
+    for (const cid of room.members) this.#cancelScheduledArtwork(this.#clients.get(cid));
+  }
+
+  #players(room) {
+    const out = [];
+    for (const cid of room.members) {
+      const c = this.#clients.get(cid);
+      const p = playerOf(c);
+      if (p && c.member.state.available) out.push({ c, p });
+    }
+    return out;
+  }
+
+  #controllerState(room) {
+    const players = this.#players(room);
+    const vol = players.filter(({ p }) => p.supportedCommands.includes('volume') && Number.isInteger(p.volume));
+    const mute = players.filter(({ p }) => p.supportedCommands.includes('mute') && typeof p.muted === 'boolean');
+    const commands = [...BASE_COMMANDS];
+    if (vol.length) commands.push('volume');
+    if (mute.length) commands.push('mute');
+    const dur = room.queue[this.#currentIndex(room)]?.meta?.durationMs;
+    if (dur > 0) commands.push('seek', 'seek_relative');
+    const state = {
+      supported_commands: commands,
+      volume: vol.length ? Math.round(vol.reduce((a, { p }) => a + p.volume, 0) / vol.length) : 100,
+      muted: mute.length ? mute.every(({ p }) => p.muted) : false,
+      repeat: room.repeat,
+      shuffle: room.shuffle,
+    };
+    if (dur > 0) state.seek_max_ms = Math.round(dur);
+    return state;
+  }
+
+  #metadataState(room, timestampUs, entry, playing) {
+    const md = { timestamp: Math.round(timestampUs) };
+    const item = entry?.item;
+    if (!item) return md;
+    const meta = item.meta ?? {};
+    for (const k of TEXT_FIELDS) if (typeof meta[k] === 'string' && meta[k]) md[k] = truncateUtf8(meta[k], 255);
+    if (Number.isInteger(meta.year)) md.year = meta.year;
+    if (Number.isInteger(meta.track) && meta.track >= 1) md.track = meta.track;
+    if (typeof meta.artworkUrl === 'string' && Buffer.byteLength(meta.artworkUrl) <= 2048) md.artwork_url = meta.artworkUrl;
+    md.progress = {
+      track_progress: Math.max(0, Math.round(entry.positionMs ?? entry.startMs ?? 0)),
+      track_duration: meta.durationMs > 0 ? Math.round(meta.durationMs) : 0,
+      playback_speed: playing ? 1000 : 0,
+    };
+    return md;
+  }
+
+  #nowEntry(room) {
+    const playing = room.state === 'playing';
+    if (playing && room.current) {
+      return { entry: { ...room.current, positionMs: this.#currentPosition(room) }, playing, at: this.#now() };
+    }
+    const index = room.current?.index ?? room.index;
+    const item = room.queue[index];
+    if (!item) return { entry: null, playing: false, at: this.#now() };
+    return { entry: { index, item, positionMs: room.positionMs }, playing: false, at: this.#now() };
+  }
+
+  #pushTrackState(room, timestampUs, entry = null) {
+    for (const cid of room.members) {
+      const c = this.#clients.get(cid);
+      if (!c.member || c.member.isOpen === false) continue;
+      if (entry) this.#sendTrackState(c, room, entry, timestampUs);
+      else this.#sendCurrentTrackState(c, room);
+    }
+  }
+
+  #sendCurrentTrackState(c, room) {
+    const { entry, playing, at } = this.#nowEntry(room);
+    if (c.member.hasRole('metadata')) {
+      this.#safe(c, () => c.member.serverState({ metadata: this.#metadataState(room, at, entry, playing) }));
+      c.sent.metadata = true;
+    }
+    this.#sendColor(c, room, entry?.item ?? null, at);
+    this.#sendArtwork(c, room, entry?.item ?? null, at);
+  }
+
+  #sendTrackState(c, room, entry, timestampUs) {
+    const now = this.#now();
+    if (timestampUs > now && !c.sent.metadata) this.#sendCurrentTrackState(c, room);
+    if (c.member.hasRole('metadata')) {
+      const md = this.#metadataState(room, timestampUs, { ...entry, positionMs: entry.startMs }, true);
+      this.#safe(c, () => c.member.serverState({ metadata: md }));
+      c.sent.metadata = true;
+    }
+    this.#sendColor(c, room, entry.item, timestampUs);
+    this.#sendArtwork(c, room, entry.item, timestampUs);
+  }
+
+  #sendAllState(c, room) {
+    if (!c.member || c.member.isOpen === false) return;
+    if (c.member.hasRole('controller')) {
+      const ctl = this.#controllerState(room);
+      c.sent.controller = JSON.stringify(ctl);
+      this.#safe(c, () => c.member.serverState({ controller: ctl }));
+    }
+    this.#sendCurrentTrackState(c, room);
+    if (room.scheduled) this.#sendTrackState(c, room, room.scheduled, room.scheduled.timestampUs);
+  }
+
+  #pushController(room) {
+    const ctl = this.#controllerState(room);
+    const json = JSON.stringify(ctl);
+    for (const cid of room.members) {
+      const c = this.#clients.get(cid);
+      if (!c.member || c.member.isOpen === false || !c.member.hasRole('controller') || c.sent.controller === json) continue;
+      c.sent.controller = json;
+      this.#safe(c, () => c.member.serverState({ controller: ctl }));
+    }
+  }
+
+  #sendGroup(c, force = false) {
+    if (!c?.member || c.member.isOpen === false) return;
+    const room = this.#rooms.get(c.roomId);
+    const g = { playbackState: room.state === 'playing' ? 'playing' : 'stopped', groupId: room.id, groupName: this.#roomName(room) };
+    const json = JSON.stringify(g);
+    if (!force && c.sent.group === json) return;
+    c.sent.group = json;
+    this.#safe(c, () => c.member.groupUpdate(g));
+  }
+
+  #sendColor(c, room, item, timestampUs) {
+    if (!c.member.hasRole('color')) return;
+    const token = room.token;
+    const send = (colors) => {
+      if (!c.member || room.token !== token || c.roomId !== room.id) return;
+      this.#safe(c, () => c.member.serverState({ color: { timestamp: Math.round(timestampUs), ...(colors ?? {}) } }));
+    };
+    if (!item || !this.#opts.colorFor) return send(null);
+    Promise.resolve(this.#opts.colorFor(item)).then(send, (err) => {
+      this.#log?.debug?.(`[sendspin] colour extraction failed: ${err.message}`);
+      send(null);
+    });
+    return undefined;
+  }
+
+  #syncArtwork(c, room) {
+    const m = c.member;
+    if (!m || !m.hasRole('artwork') || !m.state?.available) return;
+    const channels = artworkChannels(m);
+    if (!channels) return;
+    const prev = c.art.started;
+    if (prev && JSON.stringify(prev) === JSON.stringify(channels)) return;
+    const changed = channels.map((ch, i) => !prev || channelKey(prev[i]) !== channelKey(ch));
+    if (c.art.inFlight && changed[c.art.inFlight.channel] !== false) this.#cancelTransfer(c);
+    c.art.queue = c.art.queue.filter((t) => !changed[t.channel]);
+    if (prev) {
+      prev.forEach((ch, i) => {
+        if (ch.source !== 'none' && (channels[i]?.source ?? 'none') === 'none') {
+          this.#safe(c, () => m.sendBinary(encodeArtworkAnnounce(i, this.#now(), 0)));
+        }
+      });
+    }
+    if (!channels.some((ch) => ch.source !== 'none')) {
+      if (prev) this.#safe(c, () => m.streamEnd(['artwork']));
+      c.art.started = null;
+      return;
+    }
+    if (this.#safe(c, () => m.streamStart({ artwork: { channels } })) !== true) return;
+    c.art.started = channels;
+    const { entry, at } = this.#nowEntry(room);
+    channels.forEach((ch, i) => {
+      if (changed[i] && ch.source !== 'none') this.#queueImage(c, room, i, entry?.item ?? null, at);
+    });
+    if (room.scheduled) {
+      channels.forEach((ch, i) => {
+        if (changed[i] && ch.source !== 'none') this.#queueImage(c, room, i, room.scheduled.item, room.scheduled.timestampUs);
+      });
+    }
+  }
+
+  #sendArtwork(c, room, item, timestampUs) {
+    if (!c.art?.started) {
+      this.#syncArtwork(c, room);
+      return;
+    }
+    c.art.started.forEach((ch, i) => {
+      if (ch.source !== 'none') this.#queueImage(c, room, i, item, timestampUs);
+    });
+  }
+
+  #endArtwork(c) {
+    if (!c.art?.started) return;
+    if (c.art.inFlight) this.#cancelTransfer(c);
+    c.art.queue = [];
+    c.art.started = null;
+    if (c.member.activeStreams?.includes('artwork')) this.#safe(c, () => c.member.streamEnd(['artwork']));
+  }
+
+  #cancelScheduledArtwork(c) {
+    if (!c?.art?.started) return;
+    const now = this.#now();
+    c.art.queue = c.art.queue.filter((t) => t.timestampUs <= now);
+    if (c.art.inFlight && c.art.inFlight.timestampUs > now) this.#cancelTransfer(c);
+    for (const ch of c.art.scheduled) this.#safe(c, () => c.member.sendBinary(encodeArtworkCancel(ch)));
+    c.art.scheduled.clear();
+  }
+
+  #queueImage(c, room, channel, item, timestampUs) {
+    const spec = c.art.started[channel];
+    const token = room.token;
+    const art = c.art;
+    const enqueue = (image) => {
+      if (c.art !== art || !art.started || channelKey(art.started[channel]) !== channelKey(spec) || room.token !== token) return;
+      const t = { channel, timestampUs: Math.round(timestampUs), image: image ?? Buffer.alloc(0) };
+      const present = t.timestampUs <= this.#now();
+      art.queue = art.queue.filter((q) => q.channel !== channel || (!present && q.timestampUs <= this.#now()));
+      if (art.inFlight?.channel === channel && present) this.#cancelTransfer(c);
+      art.queue.push(t);
+      this.#pumpArtwork(c);
+    };
+    if (!item || !this.#opts.artworkFor) return enqueue(null);
+    Promise.resolve(this.#opts.artworkFor(item, spec)).then(enqueue, (err) => {
+      this.#log?.debug?.(`[sendspin] artwork failed: ${err.message}`);
+      enqueue(null);
+    });
+    return undefined;
+  }
+
+  #cancelTransfer(c) {
+    const f = c.art.inFlight;
+    clearTimeout(f.timer);
+    c.art.inFlight = null;
+    this.#safe(c, () => c.member.sendBinary(encodeArtworkCancel(f.channel)));
+  }
+
+  #pumpArtwork(c) {
+    const art = c.art;
+    if (!art || art.inFlight || !art.queue.length || !c.member) return;
+    const t = art.queue.shift();
+    if (this.#safe(c, () => c.member.sendBinary(encodeArtworkAnnounce(t.channel, t.timestampUs, t.image.length))) !== true) return;
+    if (t.timestampUs > this.#now()) art.scheduled.add(t.channel);
+    else art.scheduled.delete(t.channel);
+    if (!t.image.length) {
+      this.#pumpArtwork(c);
+      return;
+    }
+    const parts = encodeArtworkParts(t.channel, t.image);
+    const flight = { channel: t.channel, timestampUs: t.timestampUs, timer: null };
+    art.inFlight = flight;
+    const step = (i) => {
+      if (art.inFlight !== flight || c.art !== art) return;
+      if (this.#safe(c, () => c.member.sendBinary(parts[i])) !== true) {
+        art.inFlight = null;
+        return;
+      }
+      if (i + 1 < parts.length) {
+        flight.timer = setTimeout(() => step(i + 1), ARTWORK_PART_GAP_MS);
+        return;
+      }
+      art.inFlight = null;
+      this.#pumpArtwork(c);
+    };
+    flight.timer = setTimeout(() => step(0), ARTWORK_PART_GAP_MS);
+  }
+
+  #command(c, player) {
+    this.#safe(c, () => c.member.serverCommand({ player }));
+  }
+
+  #safe(c, fn) {
+    try {
+      return fn();
+    } catch (err) {
+      this.#log?.debug?.(`[sendspin] ${c.id.slice(0, 8)}: ${err.message}`);
+      return undefined;
+    }
+  }
+
+  #changed(room) {
+    if (room) this.emit('change', room.id);
+  }
+
+  #view(room, { queue }) {
+    const playing = room.state === 'playing';
+    const pos = playing ? room.stream?.position() : null;
+    const index = pos?.track.index ?? room.current?.index ?? room.index;
+    const ctl = this.#controllerState(room);
+    const item = room.queue[index] ?? null;
+    const view = {
+      id: room.id,
+      name: this.#roomName(room),
+      named: room.name !== null,
+      state: room.state,
+      repeat: room.repeat,
+      shuffle: room.shuffle,
+      index,
+      positionMs: pos?.positionMs ?? room.positionMs,
+      durationMs: item?.meta?.durationMs ?? 0,
+      current: item ? { filepath: item.filepath, meta: item.meta ?? {} } : null,
+      queueLength: room.queue.length,
+      volume: ctl.volume,
+      muted: ctl.muted,
+      supportedCommands: ctl.supported_commands,
+      lastPlayedAt: room.lastPlayedAt,
+      members: room.members.map((cid) => this.#memberView(room, this.#clients.get(cid))),
+    };
+    if (queue) {
+      view.queue = room.queue.map((q) => ({ filepath: q.filepath, meta: q.meta ?? {} }));
+      view.order = room.order.slice();
+    }
+    return view;
+  }
+
+  #memberView(room, c) {
+    const m = c.member;
+    const p = m ? playerOf(c) : null;
+    return {
+      clientId: c.id,
+      name: c.name,
+      connected: Boolean(m && m.isOpen !== false),
+      available: Boolean(m?.state?.available),
+      player: Boolean(m?.hasRole('player')),
+      volume: p?.volume ?? null,
+      muted: p?.muted ?? null,
+      volumeSettable: Boolean(p?.supportedCommands.includes('volume')),
+      muteSettable: Boolean(p?.supportedCommands.includes('mute')),
+      format: room.stream?.formatOf(c.id) ?? null,
+      streaming: Boolean(room.stream?.has(c.id)),
+      parked: c.parked,
+    };
+  }
+
+  #save() {
+    if (this.#saveTimer) return;
+    this.#saveTimer = setTimeout(() => {
+      this.#saveTimer = null;
+      this.#write();
+    }, 250);
+    this.#saveTimer.unref?.();
+  }
+
+  #snapshot() {
+    const rooms = [...this.#rooms.values()].map((r) => {
+      const playing = r.state === 'playing';
+      const pos = playing ? r.stream?.position() : null;
+      return {
+        id: r.id, name: r.name, solo: r.solo, members: r.members, queue: r.queue, order: r.order,
+        index: pos?.track.index ?? r.index, positionMs: pos?.positionMs ?? r.positionMs,
+        repeat: r.repeat, shuffle: r.shuffle, state: r.state, lastPlayedAt: r.lastPlayedAt,
+      };
+    });
+    const clients = Object.fromEntries([...this.#clients.values()].map((c) => [c.id, {
+      name: c.name, roomId: c.roomId, previousRoomId: c.previousRoomId, parked: c.parked,
+    }]));
+    return { version: 1, rooms, clients };
+  }
+
+  #write() {
+    const body = JSON.stringify(this.#snapshot(), null, 2);
+    const tmp = `${this.#file}.${process.pid}.tmp`;
+    this.#writing = this.#writing.then(async () => {
+      await fsp.mkdir(path.dirname(this.#file), { recursive: true });
+      await fsp.writeFile(tmp, body, { mode: 0o600 });
+      await fsp.rename(tmp, this.#file);
+    }).catch((err) => {
+      this.#log?.warn?.(`[sendspin] could not save rooms: ${err.message}`);
+    });
+  }
+}

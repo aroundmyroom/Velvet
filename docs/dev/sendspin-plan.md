@@ -235,7 +235,77 @@ export class SendspinDiscovery {     // EventEmitter
   async start(); advertise({ instance, port, path, name, service = SERVER_SERVICE }); query(); handlePacket(buf, rinfo); async stop();
   instances; events: 'found'(svc, prevUrl) /* svc = { instance, fqdn, name, url, path, port } */ | 'lost'(svc);
 }
+// scheduler.js  (server clock = serverNow(): Number µs = process.hrtime.bigint() / 1000n; BigInt only at sendAudioChunk)
+export function serverNow();
+export function producible(format);      // pcm|flac, 16|24 bit, 1|2 ch, 8–192 kHz
+export function negotiateFormat(member); // state.player.format if producible and listed, else the first producible
+                                         //   supported_formats entry, else null (member cannot join)
+export function memberLeadUs(member);    // (max(min_buffer, min(required_lead, 10 s), 50 ms) + output_delay) * 1000
+export class GroupStream extends EventEmitter {
+  constructor({ now = serverNow, ffmpeg, logger, masterRate?, chunkMs?, readAheadMs = 15000, lowWaterMs = 2000,
+                safetyMs = 50, joinMarginMs = 150 });
+  addMember(member);           // -> false when no producible format; while playing = late joiner (stream/start, future only)
+  removeMember(clientId, { end = true });  // stream/end player for that member only
+  memberChanged(clientId);     // call on every client/state: new format -> in-place stream/start, contiguous timeline
+  play(tracks);                // (async) iterable of { file, startMs?, gainDb?, ...own fields }, pulled one track ahead;
+                               //   while playing it is a seek/jump: stream/clear + new timeline
+  stop();                      // stream/end player for all; -> position() taken just before
+  close();
+  position();                  // { track, positionMs, atUs, audibleAtUs } | null
+  playing; t0; masterRate; sendAheadUs; has(id); formatOf(id); stats();
+  // events: 'track' { track, timestampUs /*audible*/, first }, 'ended', 'error' (err; already stopped),
+  //         'member-error' (clientId, err; that member dropped, the others play on)
+}
+// rooms.js
+export class RoomError;               // .code: 'not_found' | 'invalid' | 'empty'  (REST: 404 / 400 / 409)
+export function groupVolumes(volumes, target); // spec delta/clamp/redistribute loop -> rounded per-player volumes
+export class RoomManager extends EventEmitter {
+  static async open(dir, { ffmpeg, logger, now, setPlayback(member, on) /* -> true when activated */,
+                           artworkFor(item, channelSpec) /* -> Buffer|null sized+encoded for the channel; may be async */,
+                           colorFor(item) /* -> { primary?, accent?, background_dark?, ... } | null; may be async */,
+                           idleGraceMs = 10000, initialUnavailableGraceMs = 5000, random, streamOptions });
+                           // <dir>/rooms.json (0600, atomic, debounced 250 ms)
+  attach(member) /* -> roomId */; detach(clientId); roomOf(clientId); listRooms(); getRoom(id);
+  createRoom(name, clientIds) /* -> id */; renameRoom(id, name); setMembers(id, clientIds); deleteRoom(id);
+  play(id, { items?, index = 0, positionMs = 0 }) /* no items = resume / last played */; add(id, items);
+  pause(id); resume(id); stop(id); next(id); previous(id) /* restart when >= 3 s in */; seek(id, ms); seekRelative(id, ms);
+  setVolume(id, v) /* -> { clientId: volume } */; setMemberVolume(id, clientId, v); mute(id, bool);
+  setMemberMute(id, clientId, bool); setRepeat(id, 'off'|'one'|'all'); setShuffle(id, bool); flush(); close();
+  // events: 'change' (roomId), 'ended' (roomId), 'error' (err with .roomId), 'member-error' (roomId, clientId, err)
+}
+// item = { filepath, file /*absolute, already resolved*/, meta: { title, artist, album_artist, album, year, track,
+//          durationMs, artworkUrl? }, gainDb? }   (resolving paths, metadata and gain is the REST layer's job)
+// getRoom(id) -> { id, name, named, state, repeat, shuffle, index, positionMs, durationMs, current: { filepath, meta },
+//   queueLength, queue: [{ filepath, meta }], order, volume, muted, supportedCommands, lastPlayedAt,
+//   members: [{ clientId, name, connected, available, player, volume, muted, volumeSettable, muteSettable, format,
+//               streaming, parked }] }   listRooms() = the same without queue/order; solo rooms only while occupied
 ```
+
+### Member interface (scheduler.js / rooms.js ↔ connection.js)
+
+`SendspinConnection` satisfies it as-is (no adapter); the tests use a fake with
+the same shape (`test/helpers/sendspin-fake-member.mjs`). What the core reads/calls:
+
+- Read: `clientId`, `info.name`, `info.player = { supportedFormats, bufferCapacity }`,
+  `state = { available, player: { volume, muted, outputDelayMs, minBufferMs,
+  requiredLeadTimeMs, supportedCommands, format }, roles: { artwork } }`,
+  `activities`, `activeRoles`, `activeStreams`, `isOpen`, `playerStateReceived`,
+  `hasRole(family)`.
+- Call: `activate({ activities })` only through the injected `setPlayback` (wire
+  `(m, on) => server.setPlayback(m.clientId, on)`), `streamStart({ player } | { artwork })`,
+  `streamClear({ roles })`, `streamEnd(roles)`, `sendAudioChunk(tsBigInt, frame)`,
+  `sendBinary(buf)` (artwork), `serverState(obj)`, `serverCommand({ player })`,
+  `groupUpdate({ playbackState, groupId, groupName })`. A throw drops only that member.
+- Listen: `state(next, prev)`, `command({ controller })`, `leave`, `activated`
+  (a change of `activeRoles`, e.g. approval, re-sends all role state), `close` (detach).
+
+Wiring (orchestrator): `rooms.attach(conn)` on the server's `client` event (also for
+unapproved clients: they get their room, roles follow on approval);
+`rooms.detach(id)` on `client-removed`. The room manager owns `group_id` /
+`group_name`: once it is wired, `server.js` should drop its own solo
+`group/update` at hello (today the client sees two group ids in a row).
+An initial `available: false` gets `initialUnavailableGraceMs` before the speaker
+is parked, because the reference daemon reports unavailable until its clock syncs.
 
 ### Pairing integration contract (connection.js / server.js)
 
@@ -527,6 +597,16 @@ second test instance on another port for the owner.
   one slot per digit, pairing-token field, rooms editor) and player Rooms output: hands the
   queue over, pauses local audio, bar + queue act as remote (1 s state poll), "Playing in …"
   with take-back. 141 i18n keys, 12 locales. Built against the contract, no backend yet.
+- 2026-11-12 — `scheduler.js` (GroupStream: one master decode, per-member encoders, spec buffer
+  accounting, late join from a master PCM history, seek/pause/format switch, track events) and
+  `rooms.js` (RoomManager: rooms + persisted queue/position, group volume/mute, switch, parking,
+  controller/metadata/artwork/colour, idle activity drop); `createDecoder` got `gainDb`
+  (ReplayGain in the master decode). 28 fake-member tests. E2E
+  (`test/manual/sendspin-room-e2e.mjs`) with two `sendspin daemon`s on the null sink: both
+  negotiate FLAC 48k/24, no late/underrun logs, track change without stream events (gapless),
+  seek = `stream/clear` + restart with 0.2 s buffered, `stream/end` at the queue end. A scratch
+  aiosendspin-client run (pcm 48k + flac 44.1k) counted 0 late chunks, 0 gaps across the
+  boundary, ~295 ms minimum lead, metadata current → scheduled in order.
 
 ### Reference daemon notes (sendspin CLI + aiosendspin client, Nov 2026)
 

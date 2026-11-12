@@ -197,6 +197,21 @@ test('seek starts at startMs sample-exactly', async () => {
   assert.equal(md5(got), md5(ref));
 });
 
+test('gainDb scales the master decode', async () => {
+  const peak = async (gainDb) => {
+    const bufs = [];
+    for await (const pcm of createDecoder({ file: F.c48, gainDb, sampleRate: 48000, channels: 2, ffmpeg: FFMPEG })) bufs.push(pcm);
+    const all = Buffer.concat(bufs);
+    let max = 0;
+    for (let i = 0; i < all.length; i += 4) max = Math.max(max, Math.abs(all.readInt32LE(i)));
+    return { max, samples: all.length / 8 };
+  };
+  const ref = await peak(0);
+  const quiet = await peak(-6.02);
+  assert.equal(quiet.samples, ref.samples);
+  assert.ok(Math.abs(quiet.max / ref.max - 0.5) < 0.01, `ratio ${quiet.max / ref.max}`);
+});
+
 test('resampling: decoder and encoder rate conversion keep the sample count', async () => {
   const master = [];
   for await (const pcm of createDecoder({ file: F.a44, sampleRate: 48000, channels: 2, ffmpeg: FFMPEG })) master.push(pcm);

@@ -86,11 +86,14 @@ function inputUrl(file) {
   return 'file:' + path.resolve(file);
 }
 
-export function createDecoder({ file, startMs = 0, sampleRate, channels, signal, ffmpeg = ffmpegBin() }) {
+export function createDecoder({ file, startMs = 0, gainDb = 0, sampleRate, channels, signal, ffmpeg = ffmpegBin() }) {
   const args = ['-hide_banner', '-nostdin', '-loglevel', 'error', '-protocol_whitelist', 'file'];
   if (startMs > 0) args.push('-ss', (startMs / 1000).toFixed(3));
   args.push(
     '-i', inputUrl(file), '-map', '0:a:0', '-vn', '-sn', '-dn',
+  );
+  if (gainDb) args.push('-af', `volume=${Number(gainDb).toFixed(2)}dB`);
+  args.push(
     '-f', 's32le', '-c:a', 'pcm_s32le', '-ar', String(sampleRate), '-ac', String(channels), 'pipe:1',
   );
   const child = spawn(ffmpeg, args, { stdio: ['ignore', 'pipe', 'pipe'], signal });
@@ -133,7 +136,9 @@ export async function* decodeQueue(tracks, { sampleRate, channels, signal, ffmpe
   let sample = 0;
   const frameBytes = MASTER_BYTES_PER_SAMPLE * channels;
   for await (const track of tracks) {
-    const decoder = createDecoder({ file: track.file, startMs: track.startMs, sampleRate, channels, signal, ffmpeg });
+    const decoder = createDecoder({
+      file: track.file, startMs: track.startMs, gainDb: track.gainDb, sampleRate, channels, signal, ffmpeg,
+    });
     let first = true;
     for await (const pcm of decoder) {
       yield { track, pcm, sample, trackStart: first };
