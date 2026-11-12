@@ -21,6 +21,10 @@ trademark rules forbid "Sendspin" as our own product name).
   `/home/velvet-work/sendspin-ref/aiosendspin/aiosendspin/` — `noise/`,
   `server/`, `client/`.
 - Clock filter: `/home/velvet-work/sendspin-ref/time-filter/`.
+- Implementation guide (non-normative, read before UI or server-policy work):
+  `/home/velvet-work/sendspin-ref/website/src/build/guide/` — `server/index.md`
+  (server step by step), `server/ux.md` (device states and flows),
+  `pairing-and-encryption.md`, `testing.md`, `concepts.md`.
 - Conformance harness: `/home/velvet-work/sendspin-ref/conformance/`
   (`adapters/README.md` describes the server-adapter contract).
 - Test tools: venv `/home/velvet-work/sendspin-venv` (Python 3.13) with
@@ -83,6 +87,59 @@ export class Reassembler { push(buf) /* -> { type, payload } | null */ }
 export function openTrack({ file, startMs, format /*{codec,sample_rate,channels,bit_depth}*/ });
 //  -> async iterator of { frame: Buffer, durationUs, samples } + codecHeader (FLAC)
 ```
+
+### Rules from the implementation guide (binding for this branch)
+
+- **Discovery:** browse `_sendspin._tcp` and connect to every client found
+  (server-initiated is the default), and advertise `_sendspin-server._tcp`
+  on 8927 with TXT `path` for client-initiated devices and test tools.
+- **Identity:** the server key pair is generated once; it is part of Velvet's
+  backup/restore set (`src/api/backup.js`). A new key means every device must
+  pair again.
+- **Hello:** `server/hello` carries the operator's languages (Velvet's UI
+  language). Count roles/versions a client offers that we do not implement.
+- **Activities:** `playback` only while we play on that client, `pairing` only
+  during an attempt, otherwise empty. Drop `playback` as soon as the music
+  stops, so another server can use the device.
+- **Streams:** encode per client. The whole queue is one continuous stream per
+  client; a track change never ends the stream. Seek or jump = `stream/clear`,
+  never `stream/end`. A client that changes its `format` preference mid-stream
+  gets a new `stream/start` when the format changes.
+- **Timing:** first chunk after start/clear at least `min_buffer_ms +
+  output_delay_ms` ahead, extended toward `required_lead_time_ms` for library
+  tracks. Group send-ahead = max over members, recomputed on join/leave/timing
+  update; debounce client timing updates. Fill toward `buffer_capacity`.
+- **Metadata/artwork/colour:** send current state on activation; send the
+  current image on every channel when an artwork stream starts; next-track
+  state goes out with a future timestamp, ≤ 20 s ahead (when the next track
+  enters the stream). Pace artwork parts between audio chunks.
+- **Controller:** `play` with nothing queued resumes what the group last
+  played, and that history survives a restart. Group volume per the spec's
+  delta-and-redistribute algorithm; a player that reports volume without the
+  `volume` command is shown read-only.
+- **Availability:** `available: false` or `client/leave` → remember the
+  previous group, park the client in a stopped solo group, end its streams,
+  send `group/update`. Never pull it back automatically.
+- **Reconnect:** reconnect on `restart` and after a silent drop; never on
+  `another_server`, `user_request`, `shutdown`, `unpaired`,
+  `pairing_required`; retry later on `concurrent_attempt`; exponential
+  back-off on repeated handshake failures.
+- **UX states (admin device list):** unknown (approve / pair), approved
+  (pair as upgrade, revoke), paired (unpair), pairing in progress (code entry
+  one slot per digit `123-456` / `1234-5678`, waiting, wrong code, device
+  message shown verbatim as plain text, own timeout, cancel → `pair/abort
+  user_cancelled`), credential mismatch (warning + re-pair, never silent
+  fallback), playing from another server, in use elsewhere (unavailable,
+  parked), offline. Name + manufacturer/model from `device_info`; a new device
+  with a familiar name must look different from the known one.
+- **Never interrupt playback** for rename, regroup or volume — a regroup is a
+  `group/update` + new stream, not a reconnect.
+- **Pairing PSK / tokens:** API or advanced settings only, never in the
+  code-entry screen; decode tokens leniently (trim, uppercase, optional `SP:`,
+  read `9` as `2`) and check the token's client key against the connection.
+- **Before shipping:** conformance suite passes; tested against
+  `sendspin-cpp-cli`, an ESPHome device and `sendspin-js` in a browser
+  (the last two need the owner's hardware/browser).
 
 ## Phases
 
