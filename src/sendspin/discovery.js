@@ -567,7 +567,7 @@ export class SendspinDiscovery extends EventEmitter {
     }
     if (packet.response) {
       if (rinfo.port !== undefined && rinfo.port !== MDNS_PORT) return;
-      this.#onResponse(packet.records);
+      this.#onResponse(packet.records, rinfo.address);
     } else if (this.#advert) this.#onQuery(packet, rinfo);
   }
 
@@ -619,11 +619,12 @@ export class SendspinDiscovery extends EventEmitter {
     touched.add(ikey);
   }
 
-  #onServiceRecord(rec, now, touched) {
+  #onServiceRecord(rec, now, touched, source) {
     const key = nameKey(rec.name);
     const inst = this.#instances.get(key);
     const value = rec.type === TYPE.SRV ? { ...rec.data } : { map: parseTxt(rec.data) };
     value.expires = now + rec.ttl * 1000;
+    if (rec.type === TYPE.SRV) value.source = source;
     inst[rec.type === TYPE.SRV ? 'srv' : 'txt'] = rec.ttl === 0 ? null : value;
     touched.add(key);
   }
@@ -644,13 +645,13 @@ export class SendspinDiscovery extends EventEmitter {
     }
   }
 
-  #onResponse(records) {
+  #onResponse(records, source) {
     const now = Date.now();
     const touched = new Set();
     const typeKey = this.#browseType ? nameKey(this.#browseType) : null;
     for (const rec of records) {
       if (rec.type === TYPE.PTR && typeKey && nameKey(rec.name) === typeKey && typeof rec.data === 'string') this.#onPtr(rec, now, touched);
-      else if ((rec.type === TYPE.SRV || rec.type === TYPE.TXT) && this.#instances.has(nameKey(rec.name))) this.#onServiceRecord(rec, now, touched);
+      else if ((rec.type === TYPE.SRV || rec.type === TYPE.TXT) && this.#instances.has(nameKey(rec.name))) this.#onServiceRecord(rec, now, touched, source);
       else if (rec.type === TYPE.A || rec.type === TYPE.AAAA) this.#onAddress(rec, now, touched);
     }
     for (const ikey of touched) this.#evaluate(ikey);
@@ -668,10 +669,17 @@ export class SendspinDiscovery extends EventEmitter {
     return addrs.find((a) => net.isIP(a) === 4) ?? addrs[0] ?? null;
   }
 
+  // Wi-Fi access points often drop multicast toward the client, so the host's A record never arrives; the sender of the SRV record is then the host.
+  #sourceFallback(srv) {
+    if (this.#hosts.has(nameKey(srv.target)) || !srv.source || String(srv.source).includes('%')) return null;
+    const a = normalizeAddress(srv.source);
+    return isUsableAddress(a, { allowLoopback: this.#allowLoopback }) && this.#onLink(a) ? a : null;
+  }
+
   #urlFor(inst) {
     if (!inst.srv || !inst.txt) return null;
     const path = inst.txt.map.get('path');
-    const address = this.#pickAddress(inst.srv.target);
+    const address = this.#pickAddress(inst.srv.target) ?? this.#sourceFallback(inst.srv);
     if (!address || path === undefined) return null;
     return buildUrl(address, inst.srv.port, path, { allowLoopback: this.#allowLoopback });
   }
@@ -690,7 +698,7 @@ export class SendspinDiscovery extends EventEmitter {
     inst.url = url;
     if (url && url !== prev) this.emit('found', this.#describe(inst), prev);
     if (!url && prev) this.emit('lost', { ...this.#describe(inst), url: prev });
-    if (!url) this.#resolveMissing(inst);
+    if (!url || !this.#pickAddress(inst.srv.target)) this.#resolveMissing(inst);
   }
 
   #resolveMissing(inst) {

@@ -342,3 +342,26 @@ test('IPv6: local address helpers skip link-local and internal addresses', () =>
   }
   assert.ok(Array.isArray(ipv6Interfaces()));
 });
+
+test('a service whose host address never arrives is dialed at the sender of its SRV record, only when on-link', async () => {
+  const d = browser();
+  await d.start();
+  const found = [];
+  d.on('found', (s) => found.push(s.url));
+  const noAddr = (instance) => encodePacket({
+    response: true,
+    answers: [{ name: CLIENT_SERVICE, type: TYPE.PTR, ttl: 120, data: `${instance}.${CLIENT_SERVICE}` }],
+    additionals: [
+      { name: `${instance}.${CLIENT_SERVICE}`, type: TYPE.SRV, ttl: 120, flush: true, data: { port: 8928, target: `${instance}.sendspin.local` } },
+      { name: `${instance}.${CLIENT_SERVICE}`, type: TYPE.TXT, ttl: 120, flush: true, data: ['path=/sendspin'] },
+    ],
+  });
+  d.handlePacket(noAddr('far'), { address: '10.9.8.7', port: 5353 });
+  d.handlePacket(noAddr('lo'), { address: '127.0.0.1', port: 5353 });
+  assert.deepEqual(found, []);
+  d.handlePacket(noAddr('wifi'), { address: '192.168.1.77', port: 5353 });
+  assert.deepEqual(found, ['ws://192.168.1.77:8928/sendspin']);
+  d.handlePacket(encodePacket({ response: true, answers: [{ name: 'wifi.sendspin.local', type: TYPE.A, ttl: 120, flush: true, data: '192.168.1.78' }] }), RINFO);
+  assert.equal(found.at(-1), 'ws://192.168.1.78:8928/sendspin', 'a real address record wins');
+  await d.stop();
+});
