@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process';
 import path from 'node:path';
-import { ffmpegBin } from '../util/ffmpeg-bootstrap.js';
+import { ffmpegBin, ffprobeBin } from '../util/ffmpeg-bootstrap.js';
 
 export const MASTER_BYTES_PER_SAMPLE = 4;
 export const MIN_CHUNK_MS = 15;
@@ -8,6 +8,7 @@ export const MAX_CHUNK_MS = 150;
 export const DEFAULT_CHUNK_MS = { pcm: 25, flac: 50 };
 
 const STDERR_TAIL = 2048;
+const PROBE_TIMEOUT_MS = 5000;
 
 export function samplesToUs(samples, sampleRate) {
   return Math.floor(samples / sampleRate) * 1_000_000
@@ -86,13 +87,53 @@ function inputUrl(file) {
   return 'file:' + path.resolve(file);
 }
 
-export function createDecoder({ file, startMs = 0, gainDb = 0, sampleRate, channels, signal, ffmpeg = ffmpegBin() }) {
+function ffprobeFor(ffmpeg) {
+  if (!ffmpeg) return ffprobeBin();
+  const base = path.basename(ffmpeg);
+  const i = base.lastIndexOf('ffmpeg');
+  if (i < 0) return ffprobeBin();
+  const probe = base.slice(0, i) + 'ffprobe' + base.slice(i + 6);
+  return ffmpeg.includes(path.sep) ? path.join(path.dirname(ffmpeg), probe) : probe;
+}
+
+// Channel count of the first audio stream, or null when it cannot be told
+// (the decode itself then reports the real error).
+export function probeChannels(file, { ffmpeg, ffprobe = ffprobeFor(ffmpeg), signal } = {}) {
+  return new Promise((resolve) => {
+    const child = spawn(ffprobe, [
+      '-v', 'error', '-protocol_whitelist', 'file', '-select_streams', 'a:0',
+      '-show_entries', 'stream=channels', '-of', 'csv=p=0', inputUrl(file),
+    ], { stdio: ['ignore', 'pipe', 'ignore'], signal, timeout: PROBE_TIMEOUT_MS, killSignal: 'SIGKILL' });
+    let out = '';
+    child.stdout.on('data', (c) => { if (out.length < 64) out += c; });
+    child.on('error', () => resolve(null));
+    child.on('close', (code) => {
+      const n = Number.parseInt(out, 10);
+      resolve(code === 0 && n > 0 ? n : null);
+    });
+  });
+}
+
+// ffmpeg's -ac upmixes mono to stereo at -3 dB per side; a mono source must reach
+// both sides unchanged. Stereo to mono is the plain average; anything else gets
+// ffmpeg's standard downmix via -ac.
+function channelFilter(inputChannels, channels) {
+  if (inputChannels === 1 && channels === 2) return 'pan=stereo|c0=c0|c1=c0';
+  if (inputChannels === 2 && channels === 1) return 'pan=mono|c0=0.5*c0+0.5*c1';
+  return null;
+}
+
+export function createDecoder({
+  file, startMs = 0, gainDb = 0, sampleRate, channels, inputChannels = null, signal, ffmpeg = ffmpegBin(),
+}) {
   const args = ['-hide_banner', '-nostdin', '-loglevel', 'error', '-protocol_whitelist', 'file'];
   if (startMs > 0) args.push('-ss', (startMs / 1000).toFixed(3));
   args.push(
     '-i', inputUrl(file), '-map', '0:a:0', '-vn', '-sn', '-dn',
   );
-  if (gainDb) args.push('-af', `volume=${Number(gainDb).toFixed(2)}dB`);
+  const filters = [channelFilter(inputChannels, channels), gainDb ? `volume=${Number(gainDb).toFixed(2)}dB` : null]
+    .filter(Boolean);
+  if (filters.length) args.push('-af', filters.join(','));
   args.push(
     '-f', 's32le', '-c:a', 'pcm_s32le', '-ar', String(sampleRate), '-ac', String(channels), 'pipe:1',
   );
@@ -132,12 +173,22 @@ export function createDecoder({ file, startMs = 0, gainDb = 0, sampleRate, chann
   };
 }
 
+export async function openDecoder(opts) {
+  const inputChannels = opts.inputChannels ?? await probeChannels(opts.file, { ffmpeg: opts.ffmpeg, signal: opts.signal });
+  return createDecoder({ ...opts, inputChannels });
+}
+
+async function* decodeFile(opts) {
+  yield* await openDecoder(opts);
+}
+
 export async function* decodeQueue(tracks, { sampleRate, channels, signal, ffmpeg }) {
   let sample = 0;
   const frameBytes = MASTER_BYTES_PER_SAMPLE * channels;
   for await (const track of tracks) {
-    const decoder = createDecoder({
-      file: track.file, startMs: track.startMs, gainDb: track.gainDb, sampleRate, channels, signal, ffmpeg,
+    const decoder = await openDecoder({
+      file: track.file, startMs: track.startMs, gainDb: track.gainDb, inputChannels: track.channels,
+      sampleRate, channels, signal, ffmpeg,
     });
     let first = true;
     for await (const pcm of decoder) {
@@ -436,6 +487,8 @@ class FfmpegEncoder extends Encoder {
   constructor({ format, chunkSamples, baseUs, inputRate, inputChannels, signal, ffmpeg }) {
     super(format, chunkSamples, baseUs);
     const out = ['-ar', String(format.sample_rate), '-ac', String(format.channels)];
+    const filter = channelFilter(inputChannels, format.channels);
+    if (filter) out.unshift('-af', filter);
     let onData;
     let onEnd;
     if (format.codec === 'flac') {
@@ -555,9 +608,6 @@ export function openTrack({ file, startMs = 0, format, chunkMs, baseUs = 0, sign
   const encoder = createEncoder({
     format, inputRate: format.sample_rate, inputChannels: format.channels, chunkMs, baseUs, signal, ffmpeg,
   });
-  const decoder = createDecoder({
-    file, startMs, sampleRate: format.sample_rate, channels: format.channels, signal, ffmpeg,
-  });
-  pump(decoder, [encoder]);
+  pump(decodeFile({ file, startMs, sampleRate: format.sample_rate, channels: format.channels, signal, ffmpeg }), [encoder]);
   return encoder;
 }

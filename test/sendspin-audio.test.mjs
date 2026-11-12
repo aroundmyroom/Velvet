@@ -9,7 +9,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import {
-  samplesToUs, Timeline, createDecoder, createEncoder, decodeQueue, pump, openTrack,
+  samplesToUs, Timeline, createDecoder, createEncoder, decodeQueue, pump, openTrack, probeChannels,
   FlacFramer, parseFlacFrameHeader, flacCodecHeader, MAX_CHUNK_MS, MIN_CHUNK_MS,
 } from '../src/sendspin/audio.js';
 
@@ -60,11 +60,13 @@ before(async () => {
   F.c48 = path.join(dir, 'c48.wav');
   F.n24 = path.join(dir, 'n24.wav');
   F.long = path.join(dir, 'long.flac');
+  F.mono = path.join(dir, 'mono.wav');
   await ff(['-f', 'lavfi', '-i', 'sine=f=440:r=44100:d=3', '-ac', '2', '-c:a', 'pcm_s16le', F.a44]);
   await ff(['-f', 'lavfi', '-i', 'sine=f=660:r=44100:d=1.37', '-ac', '2', '-c:a', 'pcm_s16le', F.b44]);
   await ff(['-f', 'lavfi', '-i', 'sine=f=1000:r=48000:d=2', '-ac', '2', '-c:a', 'pcm_s16le', F.c48]);
   await ff(['-f', 'lavfi', '-i', 'anoisesrc=r=48000:a=0.3:d=2', '-ac', '2', '-c:a', 'pcm_s24le', F.n24]);
   await ff(['-f', 'lavfi', '-i', 'sine=f=220:r=44100:d=120', '-ac', '2', F.long]);
+  await ff(['-f', 'lavfi', '-i', 'anoisesrc=r=44100:a=0.9:d=1.5', '-ac', '1', '-c:a', 'pcm_s16le', F.mono]);
 });
 
 after(() => fsp.rm(dir, { recursive: true, force: true }));
@@ -195,6 +197,34 @@ test('seek starts at startMs sample-exactly', async () => {
   const ref = (await decodeRaw(F.a44, 's16le', 44100, 2)).subarray(44100 * 4);
   assert.equal(got.length, ref.length);
   assert.equal(md5(got), md5(ref));
+});
+
+test('mono source reaches a stereo master at unity gain, bit-exact on both sides', async () => {
+  assert.equal(await probeChannels(F.mono, { ffmpeg: FFMPEG }), 1);
+  assert.equal(await probeChannels(F.a44, { ffmpeg: FFMPEG }), 2);
+  assert.equal(await probeChannels(path.join(dir, 'missing.wav'), { ffmpeg: FFMPEG }), null);
+  const src = await decodeRaw(F.mono, 's16le', 44100, 1);
+  const master = [];
+  for await (const item of decodeQueue([{ file: F.mono }], { sampleRate: 44100, channels: 2, ffmpeg: FFMPEG })) master.push(item.pcm);
+  const formats = [
+    { codec: 'pcm', sample_rate: 44100, channels: 1, bit_depth: 16 },
+    { codec: 'pcm', sample_rate: 44100, channels: 2, bit_depth: 16 },
+  ];
+  const encs = formats.map((format) => createEncoder({ format, inputRate: 44100, inputChannels: 2, ffmpeg: FFMPEG }));
+  const pumping = pump(master, encs);
+  const [mono, stereo] = (await Promise.all(encs.map(collect))).map((chunks) => Buffer.concat(chunks.map((c) => c.frame)));
+  await pumping;
+  assert.equal(md5(mono), md5(src), 'mono out == source');
+  const left = Buffer.alloc(stereo.length / 2);
+  const right = Buffer.alloc(stereo.length / 2);
+  for (let i = 0, o = 0; i < stereo.length; i += 4, o += 2) {
+    stereo.copy(left, o, i, i + 2);
+    stereo.copy(right, o, i + 2, i + 4);
+  }
+  assert.equal(md5(left), md5(src), 'left == source');
+  assert.equal(md5(right), md5(src), 'right == source');
+  const direct = await collect(openTrack({ file: F.mono, format: formats[1], ffmpeg: FFMPEG }));
+  assert.equal(md5(Buffer.concat(direct.map((c) => c.frame))), md5(stereo), 'openTrack upmixes the same way');
 });
 
 test('gainDb scales the master decode', async () => {

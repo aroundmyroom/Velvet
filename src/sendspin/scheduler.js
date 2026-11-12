@@ -12,6 +12,8 @@ export const READ_AHEAD_MS = 15_000;
 export const HISTORY_KEEP_MS = 1_000;
 // A tail change keeps this much beyond the send-ahead: room for one whole chunk (<= 150 ms) before the cut.
 export const SPLICE_MARGIN_MS = 200;
+// How often a member held back only by bytes still queued in its socket is re-checked.
+export const SOCKET_POLL_MS = 10;
 export const MASTER_CHANNELS = 2;
 export const DEFAULT_MASTER_RATE = 48_000;
 
@@ -464,10 +466,14 @@ export class GroupStream extends EventEmitter {
   #needsMore(ep) {
     const playhead = ep.t0 === null ? 0 : this.#now() - ep.t0;
     if (samplesToUs(ep.decodedEnd, ep.rate) - playhead >= this.#opts.readAheadUs) return false;
+    let live = false;
     for (const m of this.#members.values()) {
-      if (m.live && m.seg && samplesToUs(m.nextSample, ep.rate) - m.sentEndUs < this.#opts.lowWaterUs) return true;
+      if (!m.live || !m.seg) continue;
+      live = true;
+      if (samplesToUs(m.nextSample, ep.rate) - m.sentEndUs < this.#opts.lowWaterUs) return true;
     }
-    return false;
+    // Without an audio feed (metadata/artwork-only rooms) the read-ahead alone paces the decode in real time.
+    return !live;
   }
 
   #fail(err) {
@@ -497,13 +503,10 @@ export class GroupStream extends EventEmitter {
   }
 
   #ready(ep) {
-    let any = false;
     for (const m of this.#members.values()) {
-      if (!m.seg) continue;
-      if (!m.seg.pending.length && !m.seg.done) return false;
-      any = true;
+      if (m.seg && !m.seg.pending.length && !m.seg.done) return false;
     }
-    return any || ep.decodeDone;
+    return ep.boundaries.length > 0 || ep.decodeDone;
   }
 
   #pace() {
@@ -563,6 +566,9 @@ export class GroupStream extends EventEmitter {
         continue;
       }
       if (m.bytes + size > cap) return m.inflight[0].endUs - od;
+      // A chunk past its completion time still counts while its bytes sit unsent in the socket. The socket is FIFO,
+      // so any such bytes are queued ahead of every in-flight chunk: max() bounds the true count from above.
+      if ((m.member.bufferedAmount ?? 0) + size > cap) return now + SOCKET_POLL_MS * 1000;
       if (this.#call(m, () => m.member.sendAudioChunk(BigInt(ts), c.frame)) === undefined) return Infinity;
       seg.pending.shift();
       m.inflight.push({ ts, endUs: ts + c.durationUs, size });

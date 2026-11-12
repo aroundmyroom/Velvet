@@ -250,3 +250,41 @@ test('decoder errors stop the stream cleanly', async () => {
   assert.ok(!s.playing);
   assert.equal(m.calls.at(-1).type, 'stream/end');
 });
+
+test('no audio feed (metadata-only room): the timeline still runs in real time and ends', async () => {
+  const s = stream();
+  assert.equal(s.addMember(new FakeMember({ roles: ['metadata', 'controller'] })), false);
+  const tracks = [];
+  s.on('track', (t) => tracks.push({ ...t, at: Date.now() }));
+  const ended = new Promise((r) => s.once('ended', () => r(Date.now())));
+  const started = Date.now();
+  s.play([{ file: F.a, id: 'a' }, { file: F.b, id: 'b' }]);
+  await until(() => tracks.length >= 1);
+  assert.ok(s.t0 !== null);
+  assert.equal(tracks[0].track.id, 'a');
+  assert.equal(tracks[0].timestampUs, s.t0);
+  await sleep(250);
+  const mid = s.position();
+  assert.equal(mid.track.id, 'a');
+  assert.ok(mid.positionMs >= 100 && mid.positionMs < 600, `position ${mid.positionMs}`);
+  const endedAt = await ended;
+  assert.deepEqual(tracks.map((t) => t.track.id), ['a', 'b']);
+  assert.equal(tracks[1].timestampUs, s.t0 + 600_000);
+  assert.ok(endedAt - started >= 950, `ended after ${endedAt - started} ms, not in real time`);
+  s.stop();
+});
+
+test('bytes still queued in the socket count toward buffer_capacity', async () => {
+  const capacity = 20_000;
+  const s = stream();
+  const m = play(new FakeMember({ formats: [PCM48], capacity, player: { minBufferMs: 400 } }));
+  m.bufferedAmount = capacity;
+  s.addMember(m);
+  s.play([{ file: F.a }]);
+  await sleep(150);
+  assert.equal(m.chunks.length, 0, 'held back while the socket is full');
+  m.bufferedAmount = 0;
+  await until(() => m.chunks.length > 0);
+  assert.equal(s.stats()[0].dropped, 0);
+  s.stop();
+});

@@ -658,3 +658,21 @@ test('service stop is bounded: a playing room, a speaker that never answers and 
   speaker.close();
   idle.destroy();
 });
+
+test('a room whose only member shows metadata still advances, sends metadata and ends', async () => {
+  const rm = await manager();
+  const d = new FakeMember({ name: 'Display', roles: ['metadata', 'controller', 'artwork'] });
+  rm.attach(d);
+  const id = rm.listRooms()[0].id;
+  const ended = new Promise((r) => rm.once('ended', r));
+  rm.play(id, { items: queue() });
+  await until(() => metadataOf(d).some((x) => x.title === 'A'));
+  await sleep(300);
+  assert.ok(rm.getRoom(id).positionMs > 0, 'position advances');
+  await ended;
+  const md = metadataOf(d).filter((x) => x.title);
+  assert.deepEqual(md.map((x) => x.title).slice(0, 2), ['A', 'B']);
+  assert.equal(md[1].timestamp - md[0].timestamp, 600_000);
+  assert.equal(rm.getRoom(id).state, 'stopped');
+  await rm.close();
+});

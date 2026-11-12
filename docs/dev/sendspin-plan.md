@@ -689,6 +689,13 @@ second test instance on another port for the owner.
   handler's fallback timer); now `closeAllConnections()`, 1.5 s close grace + terminate, and `RoomsService` stop bounded at
   3 s with `server.destroy()`. Tests: rooms 23 (+6), REST 13 (+2), sendspin unit 188, `npm test` 699.
 
+- 2026-11-12 — Conformance fixes landed: mono sources reach the stereo master via `pan=stereo|c0=c0|c1=c0` (input channels
+  probed with ffprobe, or `track.channels`; stereo→mono encoders average), bit-exact on both sides; `GroupStream` anchors and
+  paces a room with no audio feed in real time (track events, metadata, position, `ended`); a chunk also counts toward
+  `buffer_capacity` while the socket's `bufferedAmount` holds it (max of both, 10 ms re-check). yt-dlp `--update` skipped
+  under `NODE_ENV=test` (leaked ~43 MB `_MEI*` per boot). Matrix velvet → aiosendspin 14/14, sendspin-cpp 12/14 (client
+  cannot send `format`), sendspin-js 4/14 (peer limits).
+
 ### Second test instance (owner)
 
 Config, DB and Rooms state live outside git in `/home/velvet-work/sendspin-e2e/` (`conf/default.json`
