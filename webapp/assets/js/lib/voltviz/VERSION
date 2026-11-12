@@ -1,0 +1,7 @@
+0.35.1+bff5e16
+https://github.com/sanderdw/voltviz/tree/bff5e16c20b22bb631aa348254e63c74b01236f9
+
+included: 51
+dropped: mossball (shaders are CC BY-NC 4.0 (non-commercial), incompatible with Velvet's GPLv3)
+dropped: flame (shader is CC BY-NC-SA 3.0 (non-commercial), incompatible with Velvet's GPLv3)
+dropped: yourlogo (draws nothing until the user uploads an SVG logo)
