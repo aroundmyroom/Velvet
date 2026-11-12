@@ -59,7 +59,7 @@ import { resolveTrackGain } from './db.js';
 import { RoomsService, RoomError, SourceError, STOP_TIMEOUT_MS } from '../sendspin/service.js';
 import { createArtwork } from '../sendspin/artwork.js';
 import {
-  createSonosSoap, streamUrlFor, artUrlFor, isSonosUuid, isPrivateLan, STREAM_PATH, MAX_SONOS_DELAY_MS, DEFAULT_SONOS_DELAY_MS,
+  createSonosSoap, streamUrlFor, artUrlFor, isSonosUuid, sonosStreamPeerAllowed, STREAM_PATH, MAX_SONOS_DELAY_MS, DEFAULT_SONOS_DELAY_MS,
 } from '../sendspin/sonos.js';
 import * as sonosApi from './sonos.js';
 import { PairingInputError, decodePskToken } from '../sendspin/pairing.js';
@@ -238,6 +238,7 @@ function sonosBridge() {
     resolve: (uuid) => sonosDevicesNow().find((d) => d.uuid === uuid) ?? null,
     streamUrl: streamUrlFor,
     artUrl: (base, aaFile) => artUrlFor(sonosArtBase ?? base, aaFile),
+    enabled: sonosEnabled,
   };
 }
 
@@ -462,14 +463,13 @@ function checkMembers(sv, members) {
 
 // ── Routes ─────────────────────────────────────────────────────────────────
 
-const isLoopback = (ip) => ip === '::1' || /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(ip);
 
 // Registered before the auth middleware: a Sonos cannot log in. The token in the path is per Sonos session
 // (192 random bits) and dies when the Sonos leaves the room or its session ends.
 export function setupPublic(velvet) {
   velvet.get(`${STREAM_PATH}:file`, (req, res) => {
-    const peer = String(req.socket?.remoteAddress || '').replace(/^::ffff:/, '');
-    if (!isPrivateLan(peer) && !isLoopback(peer)) return res.status(403).end();
+    // Loopback is every local process and any reverse proxy on this host: only the test suite's fake Sonos.
+    if (!sonosStreamPeerAllowed(req.socket?.remoteAddress, { loopback: process.env.NODE_ENV === 'test' })) return res.status(403).end();
     const token = /^([A-Za-z0-9_-]{32})\.mp3$/.exec(req.params.file)?.[1];
     const stream = token && service?.running ? service.rooms.sonosStream(token) : null;
     if (!stream) return res.status(404).end();
@@ -672,11 +672,13 @@ export function setup(velvet) {
   player('post', '/:id/add', async (req) => {
     const body = validate(SCHEMAS.add, req.body);
     const { id } = req.params;
-    const before = lightView(service, id);
+    lightView(service, id);
     const { items, skipped } = await resolveSongs(body.songs, req.user, body);
     if (!items.length) fail(400, 'invalid_body', 'no playable song in songs', { skipped });
-    checkVersion(lightView(service, id), body.queueVersion);
-    if (before.queueLength === 0) {
+    const before = lightView(service, id);
+    checkVersion(before, body.queueVersion);
+    // Adding to an empty queue starts it, except under a line-in: that keeps playing, the queue waits.
+    if (before.queueLength === 0 && !before.live) {
       checkPlayable(service, id);
       service.rooms.play(id, { items });
     } else {

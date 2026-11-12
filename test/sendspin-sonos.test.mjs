@@ -10,8 +10,9 @@ import { RoomManager, RoomError } from '../src/sendspin/rooms.js';
 import { serverNow } from '../src/sendspin/scheduler.js';
 import {
   PcmTap, RoomSonos, createSonosSoap, rawEncoder, radioDidl, transportUri, icyBlock, streamUrlFor, artUrlFor,
-  SONOS_RATE, STREAM_PATH, DEFAULT_SONOS_DELAY_MS,
+  SONOS_RATE, STREAM_PATH, DEFAULT_SONOS_DELAY_MS, sonosStreamPeerAllowed,
 } from '../src/sendspin/sonos.js';
+import { RoomsService } from '../src/sendspin/service.js';
 import { FakeMember, FFMPEG, PCM48, tone, until, sleep } from './helpers/sendspin-fake-member.mjs';
 
 const UUID = 'RINCON_000E58AABBCC01400';
@@ -271,7 +272,8 @@ test('a Sonos follows a room: SOAP start on play, token stream, continuous acros
   rm.attach(a);
   const id = rm.roomOf(a.clientId);
   rm.addSonos(id, { uuid: UUID, name: 'Kitchen Sonos', ip: '127.0.0.1', base, delayMs: 400 });
-  await until(() => sonos.actions().includes('GetMute'));
+  // The volume lands once both GetVolume and GetMute have answered, not when GetMute is sent.
+  await until(() => rm.getRoom(id).sonos[0]?.volume !== null);
   assert.ok(!sonos.actions().includes('SetAVTransportURI'), 'nothing plays on the Sonos while the room is stopped');
   let view = rm.getRoom(id);
   assert.equal(view.sonos.length, 1);
@@ -427,4 +429,50 @@ test('the real stream is MP3 (ffmpeg libmp3lame) with ICY titles when the Sonos 
   const len = got.body[16_000] * 16;
   assert.match(got.body.toString('utf8', 16_001, 16_001 + len), /^StreamTitle='Tester - Long tone';/);
   await rm.close();
+});
+
+test('Sonos switched off: followers stay persisted but dormant (no lead, no tap, not playable) and wake when it is on', async () => {
+  sonos.calls = [];
+  let enabled = false;
+  const rm = await manager({ sonos: { ...bridge(), enabled: () => enabled } });
+  const a = new FakeMember({ name: 'A', formats: [PCM48] });
+  rm.attach(a);
+  const id = rm.roomOf(a.clientId);
+  rm.addSonos(id, { uuid: UUID, name: 'K', ip: '127.0.0.1', base, delayMs: 2000 });
+  let view = rm.getRoom(id);
+  assert.equal(view.sonos.length, 1, 'kept in the room');
+  assert.equal(view.sonos[0].dormant, true);
+  const playable = (v) => RoomsService.prototype.playable.call({}, { ...v, members: [] });
+  assert.equal(playable(view), false, 'a dormant Sonos does not make the room playable');
+  let startedAt = serverNow();
+  rm.play(id, { items: [item(F.long, 'L', 6000)] });
+  await until(() => a.chunks.length > 0);
+  assert.ok(a.chunks[0].ts - startedAt < 1_000_000, `no Sonos lead while off (${a.chunks[0].ts - startedAt} µs)`);
+  await sleep(150);
+  assert.ok(!sonos.actions().includes('SetAVTransportURI'), 'no SOAP while off');
+  rm.stop(id);
+
+  enabled = true;
+  a.chunks.length = 0;
+  startedAt = serverNow();
+  rm.play(id, { items: [item(F.long, 'L', 6000)] });
+  await until(() => sonos.actions().includes('Play'));
+  await until(() => a.chunks.length > 0);
+  assert.ok(a.chunks[0].ts - startedAt >= 2_000_000, 'the lead is back once Sonos is on');
+  view = rm.getRoom(id);
+  assert.equal(view.sonos[0].dormant, false);
+  assert.equal(playable(view), true);
+  rm.stop(id);
+  await rm.close();
+});
+
+test('the public Sonos stream accepts private LAN peers; loopback only when asked (tests)', () => {
+  assert.equal(sonosStreamPeerAllowed('192.168.1.20'), true);
+  assert.equal(sonosStreamPeerAllowed('::ffff:10.0.0.7'), true);
+  assert.equal(sonosStreamPeerAllowed('127.0.0.1'), false, 'a local process or reverse proxy is not a Sonos');
+  assert.equal(sonosStreamPeerAllowed('::1'), false);
+  assert.equal(sonosStreamPeerAllowed('::ffff:127.0.0.1'), false);
+  assert.equal(sonosStreamPeerAllowed('8.8.8.8'), false);
+  assert.equal(sonosStreamPeerAllowed(undefined), false);
+  assert.equal(sonosStreamPeerAllowed('127.0.0.1', { loopback: true }), true);
 });

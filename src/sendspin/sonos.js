@@ -38,6 +38,11 @@ export const xmlEsc = (s) => String(s ?? '').replaceAll(XML_BAD, '').replaceAll(
   .replaceAll('"', '&quot;');
 
 export const isPrivateLan = (ip) => /^(10\.|172\.(1[6-9]|2\d|3[01])\.|192\.168\.)\d{1,3}\.\d{1,3}(\.\d{1,3})?$/.test(String(ip));
+const isLoopback = (ip) => ip === '::1' || /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(ip);
+export function sonosStreamPeerAllowed(remoteAddress, { loopback = false } = {}) {
+  const peer = String(remoteAddress || '').replace(/^::ffff:/, '');
+  return isPrivateLan(peer) || (loopback && isLoopback(peer));
+}
 export const isSonosUuid = (s) => typeof s === 'string' && /^RINCON_[0-9A-Fa-f]{12,20}$/.test(s);
 
 export function createSonosSoap({ port = 1400, allowHost = isPrivateLan, timeoutMs = 6000 } = {}) {
@@ -324,7 +329,8 @@ class Feed {
 export const sonosId = (uuid) => SONOS_ID_PREFIX + uuid;
 
 // The Sonos followers of one room. bridge: { soap(ip, service, action, inner), resolve(uuid, ip) -> {ip,name}|null,
-// streamUrl(base, token), artUrl(base, aaFile) }; null keeps the entries (persisted) without driving any speaker.
+// streamUrl(base, token), artUrl(base, aaFile), enabled() }; null, or enabled() false (Sonos switched off in
+// Velvet), keeps the entries (persisted) dormant: no speaker driven, no tap, no lead, not playable.
 export class RoomSonos {
   #bridge;
   #now;
@@ -335,6 +341,7 @@ export class RoomSonos {
   #tap;
   #stream = null;
   #playing = false;
+  #dormant = false;
   #followers = new Map();
   #onEpoch = () => this.#roomPlaying();
   #onStop = () => this.#roomHalted();
@@ -351,6 +358,10 @@ export class RoomSonos {
 
   get size() {
     return this.#followers.size;
+  }
+
+  get active() {
+    return Boolean(this.#bridge) && this.#bridge.enabled?.() !== false;
   }
 
   get maxDelayMs() {
@@ -383,7 +394,7 @@ export class RoomSonos {
       if (delayMs !== f.delayMs) this.setDelay(uuid, delayMs);
     }
     this.#sync();
-    if (this.#bridge) {
+    if (this.active) {
       this.#refresh(f);
       if (this.#playing && !f.session) this.#start(f);
     }
@@ -412,13 +423,15 @@ export class RoomSonos {
   #roomPlaying() {
     const was = this.#playing;
     this.#playing = true;
+    // Every play/seek/skip re-reads whether Sonos is enabled: switching it on or off takes effect there.
+    this.#sync();
     for (const f of this.#followers.values()) {
       if (f.session) {
         clearTimeout(f.session.idleTimer);
         f.session.idleTimer = null;
       }
       // Seek, skip and jump keep the stream; a fresh play takes the Sonos back if it was switched away meanwhile.
-      if (this.#bridge && !was && (!f.session || (!f.session.feeds.size && f.state !== 'starting'))) this.#start(f);
+      if (this.active && !was && (!f.session || (!f.session.feeds.size && f.state !== 'starting'))) this.#start(f);
     }
   }
 
@@ -489,22 +502,23 @@ export class RoomSonos {
 
   setVolume(uuid, volume) {
     const f = this.#followers.get(uuid);
-    if (!f || !this.#bridge) return;
+    if (!f || !this.active) return;
     f.volume = volume;
     this.#soap(f, RC, 'SetVolume', `<Channel>Master</Channel><DesiredVolume>${volume}</DesiredVolume>`);
   }
 
   setMute(uuid, muted) {
     const f = this.#followers.get(uuid);
-    if (!f || !this.#bridge) return;
+    if (!f || !this.active) return;
     f.muted = muted;
     this.#soap(f, RC, 'SetMute', `<Channel>Master</Channel><DesiredMute>${muted ? 1 : 0}</DesiredMute>`);
   }
 
   view() {
+    const dormant = !this.active;
     return [...this.#followers.values()].map((f) => ({
       id: sonosId(f.uuid), uuid: f.uuid, name: f.name, ip: f.ip, delayMs: f.delayMs, volume: f.volume, muted: f.muted,
-      state: f.state, error: f.error,
+      state: f.state, error: f.error, dormant,
     }));
   }
 
@@ -513,9 +527,15 @@ export class RoomSonos {
   }
 
   #sync() {
-    if (this.#stream) this.#stream.tapLeadUs = this.#followers.size ? this.maxDelayMs * 1000 : 0;
-    if (this.#stream && this.#followers.size && this.#bridge) this.#tap.attach(this.#stream);
+    const active = this.active;
+    const on = active && this.#followers.size > 0;
+    if (this.#stream) this.#stream.tapLeadUs = on ? this.maxDelayMs * 1000 : 0;
+    if (this.#stream && on) this.#tap.attach(this.#stream);
     else this.#tap.detach();
+    const woke = active && this.#dormant;
+    this.#dormant = !active;
+    if (!active) for (const f of this.#followers.values()) this.#end(f, { stop: false });
+    else if (woke && this.#playing) for (const f of this.#followers.values()) if (!f.session) this.#start(f);
   }
 
   #title() {
@@ -582,7 +602,7 @@ export class RoomSonos {
     f.state = 'idle';
     clearTimeout(s.idleTimer);
     for (const feed of [...s.feeds]) feed.close();
-    if (stop && this.#bridge) {
+    if (stop && this.active) {
       this.#soap(f, AVT, 'GetMediaInfo').then((info) => {
         if (info?.includes(s.token)) this.#soap(f, AVT, 'Stop');
       });

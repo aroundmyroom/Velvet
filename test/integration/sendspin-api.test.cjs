@@ -469,6 +469,30 @@ describe('Velvet Rooms REST', async () => {
     assert.equal(auto.body.device.source.autoSwitch, true);
     assert.equal(auto.body.device.source.autoRoomId, room.id, 'auto-switch uses the room the line-in last played in');
 
+    // Queue edits under a line-in only edit the queue: adding to an empty queue, removing the paused entry and
+    // adding again keep the line-in playing.
+    const liveNow = async () => (await call('caster', 'GET', `/api/v1/rooms/${room.id}/state`)).body;
+    const lineIn = { clientId: src.clientId, name: 'Turntable' };
+    const emptied = await liveNow();
+    if (emptied.queueLength) {
+      await call('caster', 'POST', `/api/v1/rooms/${room.id}/remove`, { indexes: [...Array(emptied.queueLength).keys()] });
+    }
+    for (let round = 0; round < 2; round++) {
+      const added = await call('caster', 'POST', `/api/v1/rooms/${room.id}/add`, { songs: ['lib/Tones/b.flac'] });
+      assert.equal(added.status, 200, JSON.stringify(added.body));
+      assert.equal(added.body.queueLength, 1);
+      const st = await liveNow();
+      assert.deepEqual(st.lineIn, lineIn, 'add on an empty queue does not end the line-in');
+      assert.equal(st.state, 'playing');
+      assert.equal(st.current.title, 'Line-in — Turntable');
+      if (round) break;
+      const cleared = await call('caster', 'POST', `/api/v1/rooms/${room.id}/remove`, { indexes: [0] });
+      assert.equal(cleared.status, 200, JSON.stringify(cleared.body));
+      assert.equal(cleared.body.queueLength, 0);
+      assert.deepEqual(cleared.body.lineIn, lineIn, 'removing the paused entry does not end the line-in');
+    }
+    assert.ok(!src.commands().includes('stop'));
+
     const off = await call('caster', 'POST', `/api/v1/rooms/${room.id}/line-in/stop`);
     assert.equal(off.status, 200);
     assert.equal(off.body.lineIn, null);

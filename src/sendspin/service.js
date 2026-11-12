@@ -205,7 +205,7 @@ export class RoomsService extends EventEmitter {
   }
 
   playable(view) {
-    if (view.sonos?.length) return true;
+    if (view.sonos?.some((s) => !s.dormant)) return true;
     return view.members.some((m) => m.connected && m.available && m.player && this.#server.canPlay(m.clientId));
   }
 

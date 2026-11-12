@@ -973,7 +973,9 @@ export class RoomManager extends EventEmitter {
   #rearrange(room, nextQueue) {
     const cur = room.queue[this.#currentIndex(room)] ?? null;
     const keep = new Set(nextQueue);
-    if (cur && !keep.has(cur)) {
+    if (cur && !keep.has(cur) && room.live) {
+      this.#dropUnderLive(room, cur, keep, nextQueue);
+    } else if (cur && !keep.has(cur)) {
       this.#dropCurrent(room, cur, keep, nextQueue);
     } else {
       let restart = null;
@@ -1006,6 +1008,14 @@ export class RoomManager extends EventEmitter {
     room.positionMs = 0;
     room.current = null;
     this.#pushTrackState(room, this.#now());
+  }
+
+  // A line-in plays over the queue: removing the paused entry under it only moves the queue's place.
+  #dropUnderLive(room, cur, keep, nextQueue) {
+    const next = this.#survivorAfter(room, cur, keep);
+    this.#applyQueue(room, nextQueue);
+    room.index = next ? room.queue.indexOf(next) : (room.order[0] ?? 0);
+    room.positionMs = 0;
   }
 
   #survivorAfter(room, item, keep) {

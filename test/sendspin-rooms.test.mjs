@@ -778,3 +778,53 @@ test('removing the current entry plays the next one; removing the last one stops
   assert.equal(last(a, 'stream/end').payload.roles[0], 'player');
   await rm.close();
 });
+
+// A clock-driven silent feed in GroupStream's live shape (what SourceSession.feed yields).
+const silentFeed = (track) => async function* ({ sampleRate, signal }) {
+  let s = 0;
+  while (!signal.aborted) {
+    await sleep(20);
+    const n = sampleRate / 50;
+    yield { track, pcm: Buffer.alloc(n * 8), sample: s, trackStart: s === 0 };
+    s += n;
+  }
+};
+
+test('queue edits under a line-in only edit the queue: remove, move, reorder and add never end it', async () => {
+  const rm = await manager();
+  const m = new FakeMember({ name: 'K' });
+  rm.attach(m);
+  const id = rm.roomOf(m.clientId);
+  rm.play(id, { items: [item(F.long, 'L', 4000), item(F.a, 'A', 600), item(F.b, 'B', 500)] });
+  await sleep(200);
+  const ended = [];
+  rm.on('live-ended', (roomId, sourceId) => ended.push(sourceId));
+  rm.playLive(id, { sourceId: 'src', name: 'Turntable', feed: silentFeed });
+  const live = () => rm.getRoom(id).live?.name ?? null;
+  let r = rm.getRoom(id);
+  assert.equal(r.state, 'playing');
+  assert.equal(r.index, 0);
+  rm.remove(id, [0]);
+  r = rm.getRoom(id);
+  assert.equal(live(), 'Turntable', 'removing the paused entry under the line-in keeps it');
+  assert.equal(r.state, 'playing');
+  assert.equal(r.current.meta.title, 'Line-in — Turntable');
+  assert.deepEqual(r.queue.map((q) => q.meta.title), ['A', 'B']);
+  rm.move(id, 0, 1);
+  rm.reorder(id, [1, 0]);
+  rm.remove(id, [0, 1]);
+  assert.equal(live(), 'Turntable');
+  assert.equal(rm.getRoom(id).queueLength, 0);
+  rm.add(id, [item(F.a, 'A', 600)]);
+  await sleep(100);
+  r = rm.getRoom(id);
+  assert.equal(live(), 'Turntable', 'adding to the emptied queue keeps the line-in');
+  assert.equal(r.state, 'playing');
+  assert.equal(r.queueLength, 1);
+  assert.deepEqual(ended, []);
+  rm.stopLive(id, 'src');
+  r = rm.getRoom(id);
+  assert.equal(r.state, 'paused', 'the queue waits underneath');
+  assert.equal(r.current.meta.title, 'A');
+  await rm.close();
+});

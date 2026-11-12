@@ -20226,7 +20226,7 @@ function _roomQueueEdited() {
 // Auto-DJ for a room: the browser picks exactly as it does locally and appends when the room plays its last
 // entry. queueVersion makes a second open tab (or a stale view) fail with queue_changed instead of adding twice.
 function _roomDjTopUp(st) {
-  if (!S.autoDJ || !_room || S._djPrefetching || _roomDjVersion === st.queueVersion) return;
+  if (!S.autoDJ || !_room || S._djPrefetching || st.lineIn || _roomDjVersion === st.queueVersion) return;
   if (!(st.state === 'playing' || st.state === 'buffering') || st.repeat === 'one' || st.upcoming !== 0 || !st.current) return;
   if (!_isMusicSong(S.queue[S.idx] || st.current)) return;
   const id = _room.id;
