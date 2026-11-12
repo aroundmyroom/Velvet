@@ -36,6 +36,8 @@
  *   POST   /api/v1/rooms/:id/reorder    — reorder the whole queue
  *   POST   /api/v1/rooms/:id/pause|resume|next|previous|stop
  *   POST   /api/v1/rooms/:id/seek|volume|mute|repeat|shuffle
+ *   GET    /api/v1/rooms/:id/eq         — the room's 8-band EQ
+ *   PUT    /api/v1/rooms/:id/eq         — set it (applies within about a second while playing)
  *   GET    /api/v1/rooms/sonos              — Sonos speakers that can follow a room
  *   POST   /api/v1/rooms/:id/sonos          — a Sonos follows this room
  *   PATCH  /api/v1/rooms/:id/sonos/:uuid    — its delay
@@ -65,6 +67,7 @@ import {
 } from '../sendspin/sonos.js';
 import * as sonosApi from './sonos.js';
 import { PairingInputError, decodePskToken } from '../sendspin/pairing.js';
+import { EQ_BANDS, EQ_MIN_DB, EQ_MAX_DB, MAX_PRESET_LENGTH } from '../sendspin/eq.js';
 
 const MAX_SONGS = 10_000;
 const MAX_FILEPATH = 4096;
@@ -143,6 +146,11 @@ const SCHEMAS = {
   sourceAuto: Joi.object({ clientId, autoSwitch: Joi.boolean().required(), roomId: Joi.string().min(1).max(64) }),
   lineIn: Joi.object({ clientId }),
   addAddress: Joi.object({ address: Joi.string().trim().min(1).max(300).required() }),
+  eq: Joi.object({
+    enabled: Joi.boolean().required(),
+    gains: Joi.array().items(Joi.number().min(EQ_MIN_DB).max(EQ_MAX_DB).required()).length(EQ_BANDS.length).required(),
+    preset: Joi.string().trim().max(MAX_PRESET_LENGTH).pattern(config.CONTROL_CHARS, { invert: true }).allow(null, ''),
+  }),
 };
 SCHEMAS.play = Joi.object({
   songs: SCHEMAS.songs, index: Joi.number().integer().min(0).default(0), positionMs: Joi.number().integer().min(0).default(0),
@@ -847,6 +855,15 @@ export function setup(velvet) {
     const { muted, clientId: id } = validate(SCHEMAS.mute, req.body);
     if (id) service.rooms.setMemberMute(req.params.id, id, muted);
     else service.rooms.mute(req.params.id, muted);
+    return service.room(req.params.id);
+  });
+
+  player('get', '/:id/eq', (req) => service.rooms.getRoom(req.params.id).eq);
+
+  player('put', '/:id/eq', (req) => {
+    const body = validate(SCHEMAS.eq, req.body);
+    lightView(service, req.params.id);
+    service.rooms.setEq(req.params.id, body);
     return service.room(req.params.id);
   });
 

@@ -904,6 +904,8 @@ small local window for instant boot, then lazy-loads the rest from here.
 | `POST` | `/api/v1/rooms/:id/stop` | — | Stop; response carries `stoppedAt: { index, positionMs }`. |
 | `POST` | `/api/v1/rooms/:id/repeat` | `{ repeat }` | `'off' \| 'all' \| 'one'`. |
 | `POST` | `/api/v1/rooms/:id/shuffle` | `{ shuffle }` | Shuffle on/off. |
+| `GET` | `/api/v1/rooms/:id/eq` | — | The room's 8-band EQ `{ enabled, gains[8], preset }` (also in the room state as `eq`). |
+| `PUT` | `/api/v1/rooms/:id/eq` | `{ enabled, gains[8], preset? }` | Set the room EQ (gains −12…12 dB, same bands as the web player). Takes effect within about a second while playing, without stopping the song. |
 | `POST` | `/api/v1/rooms/:id/line-in` | `{ clientId }` | Play a source device's input (line-in) in the room; the queue pauses underneath. |
 | `POST` | `/api/v1/rooms/:id/line-in/stop` | — | Stop the line-in; the room returns to its paused queue. |
 | `GET` | `/api/v1/rooms/sonos` | — | Sonos speakers that can follow a room: `{ enabled, defaultDelayMs, maxDelayMs, devices[] }`. |

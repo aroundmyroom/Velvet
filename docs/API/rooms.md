@@ -193,7 +193,8 @@ states (`paired`, `aborted`) stay readable for 60 s after they occur.
   "canSeek": true,
   "playable": true,
   "lineIn": null,
-  "sonos": []
+  "sonos": [],
+  "eq": { "enabled": true, "gains": [0, 0, 0, 0, 0, 0, 0, 0], "preset": null }
 }
 ```
 
@@ -218,6 +219,7 @@ states (`paired`, `aborted`) stay readable for 60 s after they occur.
 | `lineIn` | `{ clientId, name } \| null` | The room plays a source device's input instead of its queue. Then `state` is `playing`, `current` is `{ filepath: null, title: "Line-in — <name>", durationMs: null, … }`, `canSeek` is false and the queue (with `index`/`positionMs`) waits underneath, paused. |
 
 | `sonos` | object[] | Sonos speakers following the room: `{ id: "sonos:<uuid>", uuid, name, delayMs, volume, muted, state, error }`. `state`: `idle` (room not playing), `starting` (Velvet is telling the Sonos to play), `waiting` (told, not listening right now), `streaming` (pulling the stream), `error` (the Sonos did not answer; `error` says why). `volume`/`muted` `null` until read. Use `id` as `clientId` for the per-speaker volume/mute routes. A Sonos counts as `playable` while Sonos is enabled in Velvet; while it is off the entries stay but are dormant (not driven, no added delay, not `playable`). |
+| `eq` | `RoomEq` | The room's equalizer (see [Room EQ](#room-eq)). Default `{ enabled: true, gains: [0×8], preset: null }`. |
 
 ### QueueEntry
 
@@ -280,6 +282,7 @@ whose approval is revoked or that is unpaired leaves its room.
 | `POST` | `/api/v1/rooms/:id/line-in` | `{ clientId }` | `Room` with `lineIn`. Plays the source's input in the room (the queue pauses underneath). 404 when `clientId` is not in `sources`; 409 `not_connected` / `unavailable` / `not_allowed`. The server declares `playback` on the source and sends `server/command` `source: start` (once its `client/state` with the source object arrived). A source that is also a member of the room is left out as a player while its own input plays (no echo). Live timing: each player's lead is `min_buffer_ms + output_delay_ms` (no extension toward `required_lead_time_ms`), no seek. |
 | `POST` | `/api/v1/rooms/:id/line-in/stop` | — | `Room`. Sends `source: stop`, drops `playback` on the source, the room returns to its paused queue (or `stopped`). Pause/stop on the room or a speaker's controller do the same; `play`/`jump` with a queue replaces the line-in. |
 | `POST` | `/api/v1/rooms/:id/shuffle` | `{ shuffle: boolean }` | `Room`. |
+| `GET` / `PUT` | `/api/v1/rooms/:id/eq` | `RoomEq` | See [Room EQ](#room-eq). |
 
 ### Sonos followers
 
@@ -296,6 +299,41 @@ All routes need the player permission; adding needs Sonos enabled in Velvet (`co
 | `GET` | `/api/v1/rooms/sonos-stream/:token.mp3` | — | **No login** (registered before auth). The stream the Sonos pulls: `audio/mpeg`, endless, paced in real time; ICY titles when asked (`Icy-MetaData: 1`). `token` = 32 random URL-safe chars, valid only while that Sonos is a member with a running session. 404 otherwise; 403 for peers outside private IPv4 (loopback included: only the test suite, `NODE_ENV=test`, may fetch from loopback). |
 
 Group `volume`/`mute` include the Sonos speakers (UPnP RenderingControl).
+
+### Room EQ
+
+One 8-band EQ per room (not per speaker), the same bands as the web player's EQ
+panel. Stored in `rooms.json` (only when not the default) and applied in the
+server's decode, so every speaker in the room and every Sonos following it hears
+it, whichever browser set it. A line-in is not equalised.
+
+`RoomEq`: `{ "enabled": boolean, "gains": number[8], "preset": string|null }`
+
+| Band | 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 |
+|---|---|---|---|---|---|---|---|---|
+| Frequency | 60 Hz | 100 Hz | 200 Hz | 500 Hz | 1 kHz | 3 kHz | 10 kHz | 14 kHz |
+| Filter | low shelf | peaking Q 1.8 | peaking Q 1.4 | peaking Q 1.8 | peaking Q 1.4 | peaking Q 1.4 | peaking Q 1.4 | high shelf |
+
+| Method | Endpoint | Body | Response |
+|---|---|---|---|
+| `GET` | `/api/v1/rooms/:id/eq` | — | `RoomEq`. 404 unknown room. |
+| `PUT` | `/api/v1/rooms/:id/eq` | `{ enabled: boolean, gains: number[8] (−12…12 dB), preset?: string (≤ 32 chars) \| null }` | `Room` (with the new `eq`). Gains are rounded to 0.1 dB. `preset` is a label for the UI (the browser's preset name), never interpreted. 400 `invalid_body` on a missing field, a wrong count or a gain out of range; 404 unknown room. |
+
+- **Filters.** Web Audio biquads (Audio EQ Cookbook) mapped to ffmpeg's
+  cookbook filters: `lowshelf`/`highshelf` at slope 1, `equalizer` with the
+  band's Q. Disabled, or all gains 0, adds no filter at all.
+- **Never clips.** The decode is lowered by the peak of the whole EQ curve
+  (neighbouring boosts add up, so this can exceed the largest band), on top of
+  the ReplayGain gain below; a look-ahead limiter at −0.1 dBFS after the bands
+  catches filter overshoot on full-scale material and leaves everything else
+  bit-exact. A boosting EQ therefore plays quieter overall, like a preamp.
+- **Live change.** While the room plays, a `PUT` takes effect within about a
+  second without stopping the song: the room re-decodes from the earliest point
+  its speakers can still take back, withdraws audio already sent past it with
+  `stream/clear` + `from_timestamp` (no chunk after it starts earlier than
+  `from_timestamp`), and plays on at the same position — the same mechanism as
+  a queue edit. With a Sonos following, the change lands after the Sonos delay.
+  Paused/stopped rooms just store it for the next play.
 
 ### ReplayGain
 
@@ -331,6 +369,10 @@ always capped so the stored peak stays ≤ 0 dBFS (no peak known → never above
   shuffle buttons send `repeat`/`shuffle` and show the room's `repeat`/`shuffle`
   from the polled state; the browser's own values come back on leaving the
   room. Take back: `stop` → `stoppedAt` → play locally from that index/position.
+- **EQ.** While a room is active the player's EQ panel shows and edits the
+  room's `eq` (debounced `PUT …/eq`, about 300 ms); the polled state keeps two
+  browsers on the same room in sync. The browser's own EQ is left untouched and
+  applies again after *Play in this browser*.
 - Remotes treat `queueVersion` changes they did not cause as "someone else
   changed the queue" and refetch `GET …/queue`.
 - **Queue edits.** While a room is active the browser queue mirrors the room

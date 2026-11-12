@@ -400,6 +400,59 @@ describe('Velvet Rooms REST', async () => {
     await speaker.until(() => inboxCount('stream/end') > ends);
   });
 
+  it('room EQ: state, validation, permissions, live change without restart, rooms.json', async () => {
+    const id = (await call('caster', 'GET', '/api/v1/rooms')).body.rooms[0].id;
+    const flat = await call('caster', 'GET', `/api/v1/rooms/${id}/eq`);
+    assert.equal(flat.status, 200);
+    assert.deepEqual(flat.body, { enabled: true, gains: [0, 0, 0, 0, 0, 0, 0, 0], preset: null });
+    assert.deepEqual((await call('caster', 'GET', `/api/v1/rooms/${id}/state`)).body.eq, flat.body);
+
+    const played = await call('caster', 'POST', `/api/v1/rooms/${id}/play`, { songs: ['lib/Tones/a.flac'] });
+    assert.equal(played.status, 200);
+    const audio = speaker.audio;
+    await speaker.until(() => speaker.audio > audio + 50);
+    const starts = inboxCount('stream/start');
+    const cuts = inboxCount('stream/clear', p => p.from_timestamp !== undefined);
+    const plainClears = inboxCount('stream/clear', p => p.from_timestamp === undefined);
+    const before = (await call('caster', 'GET', `/api/v1/rooms/${id}/state`)).body.positionMs;
+
+    const gains = [6, 5, 2, -3, -1, 1, 2, 3];
+    const set = await call('caster', 'PUT', `/api/v1/rooms/${id}/eq`, { enabled: true, gains, preset: 'House' });
+    assert.equal(set.status, 200, JSON.stringify(set.body));
+    assert.deepEqual(set.body.eq, { enabled: true, gains, preset: 'House' });
+    assert.equal(set.body.state, 'playing');
+    assert.ok(set.body.positionMs >= before, 'the song plays on');
+    await speaker.until(() => inboxCount('stream/clear', p => p.from_timestamp !== undefined) > cuts);
+    assert.equal(inboxCount('stream/start'), starts, 'no restart');
+    assert.equal(inboxCount('stream/clear', p => p.from_timestamp === undefined), plainClears);
+    assert.deepEqual((await call('caster', 'GET', '/api/v1/rooms')).body.rooms.find(r => r.id === id).eq.gains, gains);
+    await waitFile(f => f.rooms.find(r => r.id === id)?.eq?.preset === 'House');
+
+    for (const body of [
+      {}, { enabled: true }, { enabled: true, gains: gains.slice(0, 7) }, { enabled: true, gains: [...gains, 0] },
+      { enabled: true, gains: [13, 0, 0, 0, 0, 0, 0, 0] }, { enabled: true, gains: ['x', 0, 0, 0, 0, 0, 0, 0] },
+      { enabled: 'yes', gains }, { enabled: true, gains, preset: 'x'.repeat(33) }, { enabled: true, gains, extra: 1 },
+    ]) {
+      const r = await call('caster', 'PUT', `/api/v1/rooms/${id}/eq`, body);
+      assert.equal(r.status, 400, JSON.stringify(body));
+      assert.equal(r.body.code, 'invalid_body');
+    }
+    assert.equal((await call('plain', 'PUT', `/api/v1/rooms/${id}/eq`, { enabled: false, gains })).status, 403);
+    assert.equal((await call('plain', 'GET', `/api/v1/rooms/${id}/eq`)).status, 403);
+    assert.equal((await call('caster', 'PUT', '/api/v1/rooms/r_none/eq', { enabled: false, gains })).status, 404);
+    assert.equal((await call('caster', 'GET', '/api/v1/rooms/r_none/eq')).status, 404);
+
+    const off = await call('admin', 'PUT', `/api/v1/rooms/${id}/eq`, { enabled: false, gains });
+    assert.equal(off.status, 200);
+    assert.deepEqual(off.body.eq, { enabled: false, gains, preset: null });
+    const reset = await call('caster', 'PUT', `/api/v1/rooms/${id}/eq`, { enabled: true, gains: [0, 0, 0, 0, 0, 0, 0, 0] });
+    assert.deepEqual(reset.body.eq, flat.body);
+    await waitFile(f => Boolean(f.rooms.find(r => r.id === id)) && f.rooms.find(r => r.id === id).eq === undefined);
+    const ends = inboxCount('stream/end');
+    await call('caster', 'POST', `/api/v1/rooms/${id}/stop`);
+    await speaker.until(() => inboxCount('stream/end') > ends);
+  });
+
   it('manages rooms', async () => {
     const solo = (await call('caster', 'GET', '/api/v1/rooms')).body.rooms[0];
     assert.equal((await call('caster', 'DELETE', `/api/v1/rooms/${solo.id}`)).body.code, 'solo_room');
