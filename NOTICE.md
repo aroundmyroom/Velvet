@@ -20,3 +20,34 @@ The test vectors in `test/fixtures/sendspin/` (`noise-vectors.json`,
 `pairing-vectors.json`) were generated with aiosendspin
 (github.com/Sendspin/aiosendspin, Apache License 2.0) using the scripts
 `gen_vectors.py` and `gen_pairing_vectors.py` in the same folder.
+
+## VoltViz (visualizer)
+
+The VoltViz visualizers in `webapp/assets/js/lib/voltviz/` are built from
+VoltViz by Sander de Wildt (github.com/sanderdw/voltviz, MIT License,
+Copyright (c) 2026 VoltViz Contributors). The exact upstream version and
+commit are recorded in `webapp/assets/js/lib/voltviz/VERSION`; the bundle is
+produced by `scripts/build-voltviz.cjs`, which adapts the audio engine to
+Velvet's player graph and leaves out the neural beat model (onnxruntime-web).
+
+Shipped next to the bundle:
+
+- `LICENSE`: the VoltViz MIT license.
+- `THIRD_PARTY_NOTICES.md`: upstream's notices for adapted code and data.
+- `THIRD_PARTY_LICENSES.txt`: the license texts of the npm packages bundled
+  into it (three, d3-geo, d3-array, react, react-dom and lucide-react, all MIT
+  or ISC).
+
+Of the material listed in upstream's notices, Velvet ships:
+
+- Halftone Pulse: shape library ported from "Dither / ASCII Effect Pro" by
+  sabosugi (codepen.io/sabosugi/pen/bNegbmy, MIT).
+- Dutch Grid visualizers: municipality boundaries 2023 of Statistics
+  Netherlands (CBS) and Kadaster via PDOK, CC BY 4.0. Source: © CBS, Kadaster.
+
+The Moss Ball (CC BY-NC 4.0 shaders by ledhieu) and Flame (CC BY-NC-SA 3.0
+shader by kuvkar) visualizers are not included: their non-commercial licenses
+are incompatible with the GPL. The *Beat This!* model is not included either.
+
+Names used for visualizers (Winamp, Windows 95, Disney, Defqon.1, Razor 1911
+and others) are trademarks of their respective owners, used descriptively.
