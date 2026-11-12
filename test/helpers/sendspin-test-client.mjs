@@ -40,8 +40,8 @@ export class TestClient {
     this.ws = null;
   }
 
-  async dial(url) {
-    this.ws = new WebSocket(url);
+  async dial(url, options = {}) {
+    this.ws = new WebSocket(url, options);
     await new Promise((resolve, reject) => {
       this.ws.once('open', resolve);
       this.ws.once('error', reject);

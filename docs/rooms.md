@@ -100,7 +100,9 @@ Who may play to rooms: admins, and users with the **Cast** permission
 - **UDP 5353** (mDNS) on the Velvet host, for discovery both ways: Velvet
   advertises itself as `_sendspin-server._tcp` and looks for speakers that
   advertise `_sendspin._tcp`. Velvet then connects to the speakers it finds.
-- Discovery uses IPv4 only for now.
+- Discovery works over IPv4 and IPv6. Speakers that offer only IPv6 are
+  reached on their global or ULA address (not link-local). For speakers to
+  reach Velvet over IPv6, set the Rooms bind address to `::`.
 - **Docker:** mDNS does not reach a container on the default bridge network.
   Use `network_mode: host` for discovery. Without host networking, publish
   port 8927 and point the speakers at the server by address — see
@@ -332,7 +334,6 @@ is capped, so a room never clips. See [replaygain-info.md](replaygain-info.md).
   off the laptop) and the room plays to the end of its queue and stops.
 - **Browser-only audio settings do not apply:** the equaliser and crossfade
   stay in the browser.
-- Discovery is IPv4 only.
 
 ---
 

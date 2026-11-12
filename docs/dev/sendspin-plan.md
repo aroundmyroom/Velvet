@@ -232,7 +232,10 @@ export function reconnectDecision(closeInfo) /* -> 'now' | 'later' | 'never' | '
 export class SendspinServer {          // EventEmitter
   constructor({ dataDir, name, languages, host = '0.0.0.0', port = 8927, path = '/sendspin', roles = ['player@v1'] /*roles we
                 activate when allowed*/, logger, maxClients = 64, maxPending = 32, reconnect: { minMs, maxMs, concurrentMs, stableMs },
-                timeouts, discovery = false | SendspinDiscovery, allowLoopback = false, cooldown? /*{initialMs, maxMs}, tests*/ });
+                timeouts, discovery = false | SendspinDiscovery, allowLoopback = false, cooldown? /*{initialMs, maxMs}, tests*/,
+                maxUntrusted = 16, maxPendingPerAddress = 4 /*pre-hello, checked at the HTTP upgrade (503); not applied to
+                addresses of paired/approved devices*/, maxUntrustedPerAddress = 4, initTimeoutMs = 5000 /*no client/init → close*/ });
+  // host '::' (or any IPv6 bind) also advertises AAAA records for the host's global/ULA addresses
   async start(); async stop();        // stop: stream/end, close 1001 all (1.5 s grace, then terminate), goodbye mDNS,
                                       //   closeAllConnections (half-open sockets), flush the store
   destroy();                          // sync last resort: terminate every socket, no waiting
@@ -262,13 +265,18 @@ export class SendspinServer {          // EventEmitter
           are consumed, not re-emitted */ | 'pairing'(id, PairStatus) | 'paired'(id, { method }) | 'unpaired'(id) |
           'discovered'(svc) | 'discovery-lost'(svc);
 }
-// discovery.js  (own mDNS on node:dgram, no dependency; IPv4 multicast; bounded parser)
-export const CLIENT_SERVICE, SERVER_SERVICE, TYPE, MDNS_ADDRESS, MDNS_PORT;
+// discovery.js  (own mDNS on node:dgram, no dependency; IPv4 + optional IPv6 multicast (ff02::fb per interface,
+//   udp6 failure or no IPv6 → IPv4 only); bounded parser)
+export const CLIENT_SERVICE, SERVER_SERVICE, TYPE, MDNS_ADDRESS, MDNS_ADDRESS6, MDNS_PORT;
+export function localAddresses(), localAddresses6() /* global/ULA only, no link-local */, ipv6Interfaces();
 export function encodePacket({ response, questions, answers, additionals }), decodePacket(buf), parseTxt(strings) /* Map */;
 export function isValidPath(p) /* RFC 3986 path-absolute, <= 256 */, isUsableAddress(addr, { allowLoopback }), buildUrl(addr, port, path);
 export class SendspinDiscovery {     // EventEmitter
-  constructor({ browse = CLIENT_SERVICE | null, transport? /*tests*/, logger, allowLoopback = false, addresses? });
-  async start(); advertise({ instance, port, path, name, service = SERVER_SERVICE }); query(); handlePacket(buf, rinfo); async stop();
+  constructor({ browse = CLIENT_SERVICE | null, transport? /*tests*/, logger, allowLoopback = false, addresses?, subnets?,
+                addresses6?, interfaces6? });
+  async start(); advertise({ instance, port, path, name, service = SERVER_SERVICE, ipv6 = false /*AAAA records*/ });
+  query(); handlePacket(buf, rinfo); async stop();
+  // dials IPv4 when offered, else an on-link global/ULA IPv6 as ws://[addr]:port/path; link-local IPv6 never dialed
   instances; events: 'found'(svc, prevUrl) /* svc = { instance, fqdn, name, url, path, port } */ | 'lost'(svc);
 }
 // scheduler.js  (server clock = serverNow(): Number µs = process.hrtime.bigint() / 1000n; BigInt only at sendAudioChunk)
@@ -725,6 +733,12 @@ second test instance on another port for the owner.
   refetch on conflict) for remove, drag, disc move, clear, shuffle queue, flow/undo, recording delete, jukebox remove; Auto-DJ
   tops up from the polled state (`upcoming === 0`, once per `queueVersion`, versioned `add`); *Edit rooms* modal from the
   output picker (rename, move, split up, create). 17 player keys × 12 locales. Tests: rooms +2, REST +1.
+- 2026-11-12 — Network: per-address admission caps (4 pre-hello sockets per peer address, refused with 503 at the HTTP
+  upgrade, so one LAN host can no longer use up `maxPending`; 4 untrusted clients per address; 5 s to send `client/init`;
+  addresses of paired/approved devices exempt) and IPv6 mDNS (udp6 on `ff02::fb` per interface, AAAA advertised when bound to
+  `::`, AAAA answers dialed when no IPv4 is offered, cache-flush per record type, link-local QU sources answered on the
+  group; IPv4-only fallback). This host has IPv6 disabled: IPv6 verified with crafted packets only, IPv4 path live.
+  Tests: `sendspin-admission.test.mjs` (6), discovery +5.
 - 2026-11-12 — Opus: ffmpeg libopus → Ogg → own `OggPacketReader` (RFC 3533 CRC, packets across pages) + `OpusDemuxer`
   (drops OpusHead/OpusTags, TOC durations) → one raw packet per 20 ms chunk; timeline moved back by the OpusHead pre-skip
   as aiosendspin does, so decoded audio lands sample-exact (tone onset at 500.02 ms of 500 ms via ffmpeg and aiosendspin's

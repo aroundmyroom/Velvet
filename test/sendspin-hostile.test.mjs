@@ -257,7 +257,9 @@ test('role-state parsers accept only the spec shapes', () => {
 
 test('untrusted flood: no rooms, no lockout of an approved speaker, known devices capped', async (t) => {
   const done = processGuard(t);
-  const service = await makeService(t, await tmpDir('sendspin-hostile-flood-'), { maxClients: 4, maxKnown: 40 });
+  const service = await makeService(t, await tmpDir('sendspin-hostile-flood-'), {
+    maxClients: 4, maxKnown: 40, maxPendingPerAddress: 32, maxUntrustedPerAddress: 32,
+  });
   const { server } = service;
   const approvedKey = generateStaticKeyPair();
   await server.approve(encodeKeyId(approvedKey.publicKey));

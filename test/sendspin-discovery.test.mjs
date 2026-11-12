@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   SendspinDiscovery, encodePacket, decodePacket, parseTxt, isValidPath, isUsableAddress, buildUrl, TYPE,
-  CLIENT_SERVICE, SERVER_SERVICE, MdnsError, normalizeAddress, onLocalSubnet,
+  CLIENT_SERVICE, SERVER_SERVICE, MdnsError, normalizeAddress, onLocalSubnet, localAddresses6, ipv6Interfaces,
 } from '../src/sendspin/discovery.js';
 
 const quiet = { debug() {}, info() {}, warn() {}, error() {} };
@@ -247,4 +247,98 @@ test('advertiser ignores unicast-response (QU) queries from off-subnet sources',
   d.handlePacket(encodePacket({ questions: [{ name: SERVER_SERVICE, type: TYPE.PTR }] }), { address: '203.0.113.9', port: 5353 });
   assert.equal(sent.at(-1).address, undefined, 'multicast queries are still answered on the group');
   await d.stop();
+});
+
+const V6_SUBNETS = () => [...SUBNETS(), { address: 'fd00:1::1', netmask: 'ffff:ffff:ffff:ffff::' }];
+
+function hostResponse(instance, records) {
+  const fqdn = `${instance}.${CLIENT_SERVICE}`;
+  return encodePacket({
+    response: true,
+    answers: [{ name: CLIENT_SERVICE, type: TYPE.PTR, ttl: 120, data: fqdn }],
+    additionals: [
+      { name: fqdn, type: TYPE.SRV, ttl: 120, flush: true, data: { port: 8928, target: `${instance}.local` } },
+      { name: fqdn, type: TYPE.TXT, ttl: 120, flush: true, data: ['path=/sendspin'] },
+      ...records.map(([type, data]) => ({ name: `${instance}.local`, type, ttl: 120, flush: true, data })),
+    ],
+  });
+}
+
+test('IPv6: AAAA-only hosts are dialed on an on-link global/ULA address; IPv4 is preferred when both exist', async () => {
+  const d = browser({ subnets: V6_SUBNETS });
+  await d.start();
+  const found = [];
+  d.on('found', (s) => found.push(s.url));
+  d.handlePacket(hostResponse('v6', [[TYPE.AAAA, 'fd00:1::42']]), RINFO);
+  d.handlePacket(hostResponse('dual', [[TYPE.AAAA, 'fd00:1::43'], [TYPE.A, '192.168.1.43']]), RINFO);
+  d.handlePacket(hostResponse('offlink', [[TYPE.AAAA, 'fd00:2::1']]), RINFO);
+  d.handlePacket(hostResponse('ll', [[TYPE.AAAA, 'fe80::1']]), RINFO);
+  d.handlePacket(hostResponse('global', [[TYPE.AAAA, '2001:db8::1']]), RINFO);
+  assert.deepEqual(found, ['ws://[fd00:1::42]:8928/sendspin', 'ws://192.168.1.43:8928/sendspin']);
+  await d.stop();
+});
+
+test('IPv6: an AAAA cache-flush does not drop the A record of the same host', async () => {
+  const d = browser({ subnets: V6_SUBNETS });
+  await d.start();
+  const events = [];
+  d.on('found', (s) => events.push(['found', s.url]));
+  d.on('lost', (s) => events.push(['lost', s.url]));
+  d.handlePacket(hostResponse('h', [[TYPE.A, '192.168.1.50']]), RINFO);
+  const realNow = Date.now;
+  Date.now = () => realNow() + 5000;
+  try {
+    d.handlePacket(encodePacket({ response: true, answers: [{ name: 'h.local', type: TYPE.AAAA, ttl: 120, flush: true, data: 'fd00:1::50' }] }), RINFO);
+  } finally {
+    Date.now = realNow;
+  }
+  assert.deepEqual(events, [['found', 'ws://192.168.1.50:8928/sendspin']]);
+  await d.stop();
+});
+
+test('IPv6: missing address records are asked for as A and AAAA', async () => {
+  const d = browser();
+  await d.start();
+  d.handlePacket(hostResponse('noaddr', []), RINFO);
+  const q = decodePacket(d.sent.at(-1));
+  assert.deepEqual(q.questions.map((x) => [x.name, x.type]), [['noaddr.local', TYPE.A], ['noaddr.local', TYPE.AAAA]]);
+  await d.stop();
+});
+
+test('IPv6: the advertiser adds AAAA records only when asked to, and answers AAAA host queries', async () => {
+  const sent = [];
+  const d = new SendspinDiscovery({
+    logger: quiet, browse: null, subnets: V6_SUBNETS, addresses: () => [LAN], addresses6: () => ['fd00:1::1'],
+    transport: { send: (b, address, port) => sent.push({ pkt: decodePacket(b), address, port }), close() {} },
+  });
+  await d.start();
+  d.advertise({ instance: 'v4only', port: 8927, path: '/sendspin', name: 'Velvet' });
+  assert.ok(sent.at(-1).pkt.records.every((r) => r.type !== TYPE.AAAA), 'no AAAA without ipv6');
+  d.advertise({ instance: 'dual', port: 8927, path: '/sendspin', name: 'Velvet', ipv6: true });
+  const ann = sent.at(-1).pkt.records;
+  assert.deepEqual(ann.filter((r) => r.type === TYPE.AAAA).map((r) => r.data), ['fd00:1::1']);
+  assert.deepEqual(ann.filter((r) => r.type === TYPE.A).map((r) => r.data), [LAN]);
+  const host = ann.find((r) => r.type === TYPE.SRV).data.target;
+  sent.length = 0;
+  d.handlePacket(encodePacket({ questions: [{ name: host, type: TYPE.AAAA }] }), { address: 'fd00:1::9', port: 5353 });
+  const r = sent.at(-1).pkt;
+  assert.deepEqual(r.records.map((x) => x.type), [TYPE.AAAA, TYPE.A], 'AAAA answered, A as additional');
+  sent.length = 0;
+  const qu = encodePacket({ questions: [{ name: SERVER_SERVICE, type: TYPE.PTR, unicast: true }] });
+  d.handlePacket(qu, { address: 'fe80::9%eth0', port: 40000 });
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].address, undefined, 'link-local QU source answered on the group');
+  d.handlePacket(qu, { address: 'fd00:1::9', port: 40000 });
+  assert.equal(sent.at(-1).address, 'fd00:1::9', 'on-link global source answered directly');
+  d.handlePacket(qu, { address: 'fd00:2::9', port: 40000 });
+  assert.equal(sent.length, 2, 'off-link IPv6 QU source ignored');
+  await d.stop();
+});
+
+test('IPv6: local address helpers skip link-local and internal addresses', () => {
+  for (const a of localAddresses6()) {
+    assert.equal(isUsableAddress(a), true, a);
+    assert.equal(a.startsWith('fe80'), false, a);
+  }
+  assert.ok(Array.isArray(ipv6Interfaces()));
 });

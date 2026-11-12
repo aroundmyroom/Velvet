@@ -7,6 +7,8 @@ import winston from 'winston';
 
 // eslint-disable-next-line sonarjs/no-hardcoded-ip -- the mDNS group is fixed by RFC 6762
 export const MDNS_ADDRESS = '224.0.0.251';
+// eslint-disable-next-line sonarjs/no-hardcoded-ip -- the mDNS group is fixed by RFC 6762
+export const MDNS_ADDRESS6 = 'ff02::fb';
 export const MDNS_PORT = 5353;
 export const CLIENT_SERVICE = '_sendspin._tcp.local';
 export const SERVER_SERVICE = '_sendspin-server._tcp.local';
@@ -359,9 +361,27 @@ export function localAddresses() {
   return out;
 }
 
-function flushStale(host, keep, now) {
+// Link-local addresses are left out: a ws:// URL for one would need the peer's zone id, which we cannot know.
+export function localAddresses6() {
+  const out = [];
+  for (const list of Object.values(os.networkInterfaces())) {
+    for (const a of list ?? []) {
+      if (!a.internal && a.family === 'IPv6' && isUsableAddress(a.address) && net.isIP(normalizeAddress(a.address)) === 6) out.push(a.address);
+    }
+  }
+  return out;
+}
+
+export function ipv6Interfaces() {
+  return Object.entries(os.networkInterfaces())
+    .filter(([, list]) => (list ?? []).some((a) => !a.internal && a.family === 'IPv6'))
+    .map(([name]) => name);
+}
+
+// Cache-flush covers one record set: an AAAA announcement must not drop the host's A records (RFC 6762 §10.2).
+function flushStale(host, keep, type, now) {
   for (const [addr, v] of host) {
-    if (addr !== keep && now - v.seen > 1000) host.delete(addr);
+    if (addr !== keep && v.type === type && now - v.seen > 1000) host.delete(addr);
   }
 }
 
@@ -384,9 +404,12 @@ export class SendspinDiscovery extends EventEmitter {
   #addresses;
   #subnets;
   #lastQuery = new Map();
+  #addresses6;
+  #interfaces6;
 
   constructor({
     browse = CLIENT_SERVICE, transport = null, logger = winston, allowLoopback = false, addresses = localAddresses, subnets = localSubnets,
+    addresses6 = localAddresses6, interfaces6 = ipv6Interfaces,
   } = {}) {
     super();
     this.#browseType = browse;
@@ -395,6 +418,8 @@ export class SendspinDiscovery extends EventEmitter {
     this.#allowLoopback = allowLoopback;
     this.#addresses = addresses;
     this.#subnets = subnets;
+    this.#addresses6 = addresses6;
+    this.#interfaces6 = interfaces6;
   }
 
   // RFC 6762 §11: only talk to (and dial) peers on a link we are attached to.
@@ -414,8 +439,8 @@ export class SendspinDiscovery extends EventEmitter {
     if (this.#browseType) this.#scheduleQuery(0);
   }
 
-  async #openSocket() {
-    const socket = dgram.createSocket({ type: 'udp4', reuseAddr: true });
+  #bindSocket(type, address) {
+    const socket = dgram.createSocket({ type, reuseAddr: true, ...(type === 'udp6' ? { ipv6Only: true } : {}) });
     socket.on('message', (msg, rinfo) => {
       try {
         this.handlePacket(msg, rinfo);
@@ -423,41 +448,83 @@ export class SendspinDiscovery extends EventEmitter {
         this.#log.warn(`[sendspin] mDNS packet handling failed: ${err?.message}`);
       }
     });
-    socket.on('error', (err) => this.#log.warn(`[sendspin] mDNS socket error: ${err.message}`));
-    await new Promise((resolve, reject) => {
+    return new Promise((resolve, reject) => {
       socket.once('error', reject);
-      socket.bind(MDNS_PORT, () => {
+      socket.bind(MDNS_PORT, address, () => {
         socket.off('error', reject);
-        resolve();
+        socket.on('error', (err) => this.#log.warn(`[sendspin] mDNS ${type} socket error: ${err.message}`));
+        socket.setMulticastTTL(255);
+        socket.setMulticastLoopback(true);
+        resolve(socket);
       });
     });
-    socket.setMulticastTTL(255);
-    socket.setMulticastLoopback(true);
+  }
+
+  async #openSocket() {
+    const v4 = await this.#bindSocket('udp4');
     let joined = 0;
     for (const addr of this.#addresses()) {
       try {
-        socket.addMembership(MDNS_ADDRESS, addr);
+        v4.addMembership(MDNS_ADDRESS, addr);
         joined++;
       } catch (err) {
         this.#log.debug(`[sendspin] mDNS join on ${addr} failed: ${err.message}`);
       }
     }
-    if (!joined) socket.addMembership(MDNS_ADDRESS);
-    this.#socket = socket;
+    if (!joined) v4.addMembership(MDNS_ADDRESS);
+    const v6 = await this.#openSocket6();
+    this.#socket = v4;
     return {
-      send: (buf, address = MDNS_ADDRESS, port = MDNS_PORT) => socket.send(buf, port, address),
-      close: () => socket.close(),
+      send: (buf, address, port = MDNS_PORT) => {
+        if (address) {
+          const sock = net.isIP(address.split('%')[0]) === 6 ? v6?.socket : v4;
+          sock?.send(buf, port, address);
+          return;
+        }
+        v4.send(buf, MDNS_PORT, MDNS_ADDRESS);
+        for (const ifname of v6?.ifaces ?? []) v6.socket.send(buf, MDNS_PORT, `${MDNS_ADDRESS6}%${ifname}`);
+      },
+      close: () => {
+        v4.close();
+        v6?.socket.close();
+      },
     };
   }
 
-  advertise({ instance, port, path, name, service = SERVER_SERVICE }) {
+  // IPv6 is optional: a host or container without it keeps working on IPv4 alone.
+  async #openSocket6() {
+    const names = this.#interfaces6();
+    if (!names.length) return null;
+    let socket;
+    try {
+      socket = await this.#bindSocket('udp6', '::');
+    } catch (err) {
+      this.#log.info(`[sendspin] IPv6 mDNS unavailable (${err.message}); using IPv4 only`);
+      return null;
+    }
+    const ifaces = names.filter((name) => {
+      try {
+        socket.addMembership(MDNS_ADDRESS6, `::%${name}`);
+        return true;
+      } catch (err) {
+        this.#log.debug(`[sendspin] IPv6 mDNS join on ${name} failed: ${err.message}`);
+        return false;
+      }
+    });
+    if (ifaces.length) return { socket, ifaces };
+    socket.close();
+    this.#log.info('[sendspin] IPv6 mDNS could not join on any interface; using IPv4 only');
+    return null;
+  }
+
+  advertise({ instance, port, path, name, service = SERVER_SERVICE, ipv6 = false }) {
     if (!isValidPath(path)) throw new MdnsError('advertised path must be an absolute path');
     const label = String(instance).slice(0, 63);
     const fqdn = `${escapeLabel(label)}.${service}`;
     const host = `${hostLabel(label)}.local`;
     const txt = [`path=${path}`];
     if (name) txt.push(`name=${Buffer.from(String(name), 'utf8').subarray(0, 200).toString('utf8')}`);
-    this.#advert = { service, fqdn, host, port, txt };
+    this.#advert = { service, fqdn, host, port, txt, ipv6 };
     this.#announce(TTL_SHARED);
     setTimeout(() => this.#advert && this.#announce(TTL_SHARED), 1000).unref?.();
   }
@@ -470,7 +537,10 @@ export class SendspinDiscovery extends EventEmitter {
       meta: { name: SERVICES_META, type: TYPE.PTR, ttl: ttlShared, data: a.service },
       srv: { name: a.fqdn, type: TYPE.SRV, ttl: hostTtl, flush: true, data: { port: a.port, target: a.host } },
       txt: { name: a.fqdn, type: TYPE.TXT, ttl: ttlShared, flush: true, data: a.txt },
-      addrs: this.#addresses().map((ip) => ({ name: a.host, type: TYPE.A, ttl: hostTtl, flush: true, data: ip })),
+      addrs: [
+        ...this.#addresses().map((ip) => ({ name: a.host, type: TYPE.A, ttl: hostTtl, flush: true, data: ip })),
+        ...(a.ipv6 ? this.#addresses6() : []).map((ip) => ({ name: a.host, type: TYPE.AAAA, ttl: hostTtl, flush: true, data: ip })),
+      ],
     };
   }
 
@@ -508,7 +578,10 @@ export class SendspinDiscovery extends EventEmitter {
     if (key === nameKey(a.service) && is(TYPE.PTR)) return [[r.ptr], [r.srv, r.txt, ...r.addrs]];
     if (key === nameKey(SERVICES_META) && is(TYPE.PTR)) return [[r.meta], []];
     if (key === nameKey(a.fqdn)) return [[...(is(TYPE.SRV) ? [r.srv] : []), ...(is(TYPE.TXT) ? [r.txt] : [])], r.addrs];
-    if (key === nameKey(a.host) && is(TYPE.A)) return [r.addrs, []];
+    if (key === nameKey(a.host) && is(TYPE.A, TYPE.AAAA)) {
+      const asked = r.addrs.filter((x) => is(x.type));
+      return asked.length ? [asked, r.addrs.filter((x) => !asked.includes(x))] : null;
+    }
     return null;
   }
 
@@ -525,9 +598,11 @@ export class SendspinDiscovery extends EventEmitter {
       unicast ||= q.unicast;
     }
     if (!answers.size) return;
-    if (unicast && rinfo.address && !this.#onLink(rinfo.address)) return;
+    // A zone id only appears on IPv6 link-local sources, which are on-link by definition; answer those on the group (RFC 6762 §5.4 allows it).
+    const direct = unicast && rinfo.address && !String(rinfo.address).includes('%');
+    if (direct && !this.#onLink(rinfo.address)) return;
     const out = encodePacket({ response: true, answers: [...answers], additionals: [...additionals].filter((x) => !answers.has(x)) });
-    if (unicast && rinfo.address) this.#send(out, rinfo.address, rinfo.port);
+    if (direct) this.#send(out, rinfo.address, rinfo.port);
     else this.#send(out);
   }
 
@@ -561,9 +636,9 @@ export class SendspinDiscovery extends EventEmitter {
       host = new Map();
       this.#hosts.set(key, host);
     }
-    if (rec.flush) flushStale(host, rec.data, now);
+    if (rec.flush) flushStale(host, rec.data, rec.type, now);
     if (rec.ttl === 0) host.delete(rec.data);
-    else host.set(rec.data, { expires: now + rec.ttl * 1000, seen: now });
+    else host.set(rec.data, { expires: now + rec.ttl * 1000, seen: now, type: rec.type });
     for (const [ikey, inst] of this.#instances) {
       if (inst.srv && nameKey(inst.srv.target) === key) touched.add(ikey);
     }
@@ -626,7 +701,7 @@ export class SendspinDiscovery extends EventEmitter {
     const questions = [];
     if (!inst.srv) questions.push({ name: inst.fqdn, type: TYPE.SRV });
     if (!inst.txt) questions.push({ name: inst.fqdn, type: TYPE.TXT });
-    if (inst.srv && !this.#pickAddress(inst.srv.target)) questions.push({ name: inst.srv.target, type: TYPE.A });
+    if (inst.srv && !this.#pickAddress(inst.srv.target)) questions.push({ name: inst.srv.target, type: TYPE.A }, { name: inst.srv.target, type: TYPE.AAAA });
     if (questions.length) this.#send(encodePacket({ questions }));
   }
 

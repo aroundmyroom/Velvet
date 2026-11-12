@@ -2,13 +2,14 @@ import crypto from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import fsp from 'node:fs/promises';
 import http from 'node:http';
+import net from 'node:net';
 import path from 'node:path';
 import winston from 'winston';
 import { WebSocket, WebSocketServer } from 'ws';
 import { loadOrCreateServerKey, isKeyId, PSK_CATEGORY, SENTINEL_PSK } from './keys.js';
 import { TrustStore } from './trust-store.js';
 import { SendspinConnection, MAX_WS_PAYLOAD, cleanText } from './connection.js';
-import { SendspinDiscovery, isValidPath } from './discovery.js';
+import { SendspinDiscovery, isValidPath, normalizeAddress } from './discovery.js';
 import {
   METHODS, FORMATS, PAIRING_MESSAGE_TYPES, DYNAMIC_DIGITS, STATIC_DIGITS, PairingProtocolError, PairingInputError, Cooldown,
   createPairingAttempt, decodePskToken, assertTokenForClient, parseSupportedPairMethods, chooseCodeMethod, pairingActivation,
@@ -23,6 +24,9 @@ export const PAIRING_STATUS_TTL_MS = 60_000;
 export const MAX_KNOWN_DEVICES = 256;
 export const MAX_UNTRUSTED_CLIENTS = 16;
 export const CLOSE_GRACE_MS = 1_500;
+export const MAX_PENDING_PER_ADDRESS = 4;
+export const MAX_UNTRUSTED_PER_ADDRESS = 4;
+export const INIT_TIMEOUT_MS = 5_000;
 const OTHER_SERVER_GOODBYES = new Set(['another_server', 'concurrent_attempt']);
 const STATUS_BY_EVENT = Object.freeze({
   started: 'waiting', code_queued: 'waiting', code_sent: 'waiting', confirmed: 'waiting', persist: 'waiting',
@@ -85,6 +89,23 @@ function connAddress(conn) {
   return conn.remoteAddress?.replace(/^::ffff:/, '') ?? null;
 }
 
+function urlHost(url) {
+  try {
+    return normalizeAddress(new URL(url).hostname.replace(/^\[|\]$/g, ''));
+  } catch {
+    return null;
+  }
+}
+
+function peerAddress(conn) {
+  return conn.url ? urlHost(conn.url) : normalizeAddress(conn.remoteAddress);
+}
+
+function rejectUpgrade(socket) {
+  socket.once('finish', () => socket.destroy());
+  socket.end('HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\nContent-Length: 0\r\n\r\n');
+}
+
 export class SendspinServer extends EventEmitter {
   #opts;
   #log;
@@ -102,11 +123,14 @@ export class SendspinServer extends EventEmitter {
   #known = new Map();
   #knownWrite = Promise.resolve();
   #knownTimer = null;
+  #pendingByAddress = new Map();
+  #slots = new WeakMap();
 
   constructor({
     dataDir, name = 'Velvet', languages = ['en'], host = '0.0.0.0', port = DEFAULT_PORT, path: wsPath = DEFAULT_PATH,
     roles = ['player@v1'], logger = winston, maxClients = 64, maxUntrusted = MAX_UNTRUSTED_CLIENTS, maxPending = 32, maxKnown = MAX_KNOWN_DEVICES,
     reconnect = {}, timeouts = {}, discovery = false, allowLoopback = false, cooldown = {},
+    maxPendingPerAddress = MAX_PENDING_PER_ADDRESS, maxUntrustedPerAddress = MAX_UNTRUSTED_PER_ADDRESS, initTimeoutMs = INIT_TIMEOUT_MS,
   }) {
     super();
     if (!dataDir) throw new Error('SendspinServer needs a dataDir');
@@ -114,6 +138,7 @@ export class SendspinServer extends EventEmitter {
     this.#opts = {
       dataDir, name, languages, host, port, path: wsPath, roles, maxClients, maxUntrusted, maxPending, maxKnown,
       reconnect: { ...DEFAULT_RECONNECT, ...reconnect }, timeouts, discovery, allowLoopback, cooldown,
+      maxPendingPerAddress, maxUntrustedPerAddress, initTimeoutMs,
     };
     this.#log = logger;
   }
@@ -146,8 +171,9 @@ export class SendspinServer extends EventEmitter {
     this.#http = http.createServer((req, res) => {
       res.writeHead(404).end();
     });
-    this.#wss = new WebSocketServer({ server: this.#http, path: this.#opts.path, maxPayload: MAX_WS_PAYLOAD, perMessageDeflate: false });
+    this.#wss = new WebSocketServer({ noServer: true, path: this.#opts.path, maxPayload: MAX_WS_PAYLOAD, perMessageDeflate: false });
     this.#wss.on('connection', (ws, req) => this.#onInbound(ws, req));
+    this.#http.on('upgrade', (req, socket, head) => this.#onUpgrade(req, socket, head));
     this.#wss.on('error', (err) => this.#log.warn(`[sendspin] listener error: ${err.message}`));
     await new Promise((resolve, reject) => {
       this.#http.once('error', reject);
@@ -179,7 +205,7 @@ export class SendspinServer extends EventEmitter {
     }));
     try {
       await d.start();
-      d.advertise({ instance: this.serverId, port: this.port, path: this.#opts.path, name: this.#opts.name });
+      d.advertise({ instance: this.serverId, port: this.port, path: this.#opts.path, name: this.#opts.name, ipv6: net.isIP(this.#opts.host) === 6 });
     } catch (err) {
       this.#log.warn(`[sendspin] mDNS unavailable: ${err.message}`);
     }
@@ -197,14 +223,64 @@ export class SendspinServer extends EventEmitter {
     };
   }
 
+  // Pre-hello slots are taken before the WebSocket handshake, per peer address, so one host opening idle
+  // sockets cannot use up maxPending; addresses of paired/approved devices are never capped.
+  #onUpgrade(req, socket, head) {
+    this.#guard('upgrade', () => {
+      const address = normalizeAddress(req.socket.remoteAddress) ?? String(req.socket.remoteAddress);
+      const held = this.#pendingByAddress.get(address) ?? 0;
+      if (this.#stopping || this.#pending.size >= this.#opts.maxPending
+        || (held >= this.#opts.maxPendingPerAddress && !this.#trustedAddress(address))) {
+        this.#log.debug(`[sendspin] refusing a connection from ${cleanText(address, 64)} (${held} pending)`);
+        rejectUpgrade(socket);
+        return;
+      }
+      this.#pendingByAddress.set(address, held + 1);
+      let holding = true;
+      const release = () => {
+        if (!holding) return;
+        holding = false;
+        const left = (this.#pendingByAddress.get(address) ?? 1) - 1;
+        if (left > 0) this.#pendingByAddress.set(address, left);
+        else this.#pendingByAddress.delete(address);
+      };
+      socket.once('close', release);
+      this.#slots.set(socket, release);
+      this.#wss.handleUpgrade(req, socket, head, (ws) => this.#wss.emit('connection', ws, req));
+    }, () => socket.destroy())();
+  }
+
+  #trustedAddress(address) {
+    for (const k of this.#known.values()) {
+      const host = normalizeAddress(k.address) ?? (k.url ? urlHost(k.url) : null);
+      if (host === address && this.isTrusted(k.clientId)) return true;
+    }
+    return false;
+  }
+
   #onInbound(ws, req) {
     this.#guard('inbound connection', () => {
-      if (this.#stopping || this.#pending.size >= this.#opts.maxPending) {
+      const release = this.#slots.get(req.socket);
+      this.#slots.delete(req.socket);
+      if (this.#stopping) {
         ws.terminate();
         return;
       }
-      this.#attach(ws, { direction: 'inbound', remoteAddress: req.socket.remoteAddress });
+      const conn = this.#attach(ws, { direction: 'inbound', remoteAddress: req.socket.remoteAddress });
+      const timer = setTimeout(() => {
+        if (conn.phase === 'init') conn.terminate();
+      }, this.#opts.initTimeoutMs);
+      timer.unref?.();
+      this.#slots.set(conn, () => {
+        clearTimeout(timer);
+        release?.();
+      });
     }, () => ws.terminate())();
+  }
+
+  #releaseSlot(conn) {
+    this.#slots.get(conn)?.();
+    this.#slots.delete(conn);
   }
 
   #attach(ws, { direction, url = null, remoteAddress = null }) {
@@ -241,15 +317,22 @@ export class SendspinServer extends EventEmitter {
 
   #full(conn) {
     const admitted = this.#admitted(conn);
-    const peers = [...this.#clients.values()].filter((c) => this.#admitted(c) === admitted).length;
-    if (peers < (admitted ? this.#opts.maxClients : this.#opts.maxUntrusted)) return false;
-    if (admitted) this.#log.warn(`[sendspin] client limit reached; refusing ${conn.clientId.slice(0, 8)}`);
-    else this.#log.debug(`[sendspin] untrusted client limit reached; refusing ${conn.clientId.slice(0, 8)}`);
+    const peers = [...this.#clients.values()].filter((c) => this.#admitted(c) === admitted);
+    if (admitted) {
+      if (peers.length < this.#opts.maxClients) return false;
+      this.#log.warn(`[sendspin] client limit reached; refusing ${conn.clientId.slice(0, 8)}`);
+      return true;
+    }
+    const address = peerAddress(conn);
+    const fromAddress = peers.filter((c) => peerAddress(c) === address).length;
+    if (peers.length < this.#opts.maxUntrusted && fromAddress < this.#opts.maxUntrustedPerAddress) return false;
+    this.#log.debug(`[sendspin] untrusted client limit reached; refusing ${conn.clientId.slice(0, 8)}`);
     return true;
   }
 
   #onHello(conn, info) {
     this.#pending.delete(conn);
+    this.#releaseSlot(conn);
     const id = conn.clientId;
     const existing = this.#clients.get(id);
     if (!existing && this.#full(conn)) {
@@ -327,6 +410,7 @@ export class SendspinServer extends EventEmitter {
 
   #onClose(conn, info) {
     this.#pending.delete(conn);
+    this.#releaseSlot(conn);
     this.#pairingClosed(conn);
     if (this.#clients.get(conn.clientId) === conn) {
       this.#clients.delete(conn.clientId);
