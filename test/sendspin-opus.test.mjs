@@ -6,11 +6,11 @@ import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import {
-  createEncoder, samplesToUs, oggCrc, OggPacketReader, OpusDemuxer, opusPacketSamples, parseOpusHead,
+  createEncoder, samplesToUs, oggCrc, OggPacketReader, OpusDemuxer, opusPacketSamples, parseOpusHead, opusPreRoll,
   MIN_CHUNK_MS, MAX_CHUNK_MS,
 } from '../src/sendspin/audio.js';
 import { GroupStream, negotiateFormat, producible, sameFormat } from '../src/sendspin/scheduler.js';
-import { FakeMember, FFMPEG, PCM48, FLAC44, tone } from './helpers/sendspin-fake-member.mjs';
+import { FakeMember, FFMPEG, PCM48, FLAC44, tone, until } from './helpers/sendspin-fake-member.mjs';
 
 const execFileP = promisify(execFile);
 const OPUS48 = { codec: 'opus', sample_rate: 48000, channels: 2 };
@@ -36,8 +36,8 @@ function masterTone({ rate, seconds, freq, silenceSeconds = 0, amp = 0.5 }) {
   return pcm;
 }
 
-async function encode(pcm, { format = OPUS48, inputRate, inputChannels = 2, split = 4096, chunkMs } = {}) {
-  const enc = createEncoder({ format, inputRate, inputChannels, chunkMs, ffmpeg: FFMPEG });
+async function encode(pcm, { format = OPUS48, inputRate, inputChannels = 2, split = 4096, chunkMs, preRoll = null } = {}) {
+  const enc = createEncoder({ format, inputRate, inputChannels, chunkMs, preRoll, ffmpeg: FFMPEG });
   const chunks = [];
   const reading = (async () => { for await (const c of enc) chunks.push(c); })();
   for (let p = 0; p < pcm.length; p += split * 8) await enc.write(pcm.subarray(p, p + split * 8));
@@ -284,4 +284,57 @@ test('group stream: opus member gets stream/start without codec_header and a gap
   assert.equal(tracks[1].timestampUs, tracks[0].timestampUs + samplesToUs(28800, 48000));
   assert.equal(s.stats()[0].dropped, 0);
   s.stop();
+});
+
+test('opus preRoll: the first packet starts at baseUs, never before, and the audio stays aligned', async () => {
+  for (const rate of [48000, 44100]) {
+    const preRoll = opusPreRoll(rate);
+    const pcm = masterTone({ rate, seconds: 1, freq: 1000, silenceSeconds: preRoll / rate + 0.1 });
+    const chunks = await encode(pcm, { inputRate: rate, preRoll });
+    assert.equal(chunks[0].startUs, 0, `${rate}: first packet at the cut`);
+    for (let i = 1; i < chunks.length; i++) assert.equal(chunks[i].startUs, chunks[i - 1].startUs + chunks[i - 1].durationUs);
+    const raw = await decodeOgg(wrapOgg(chunks, { channels: 2, preSkip: 0 }), 2);
+    const onsetUs = samplesToUs(raw.findIndex((v) => Math.abs(v) > 0.05), 48000);
+    assert.ok(Math.abs(onsetUs - 100_000) <= 1000, `${rate}: onset at ${onsetUs} µs`);
+  }
+  const short = await encode(masterTone({ rate: 48000, seconds: 0.5, freq: 440 }), { inputRate: 48000, preRoll: 0 });
+  assert.equal(short[0].startUs, 13_500, 'without earlier audio the first whole packet after the cut, never before');
+});
+
+test('group stream: an opus splice starts exactly at from_timestamp; a format change to opus at the old end', async () => {
+  const mid = await tone(path.join(dir, 'mid.wav'), { freq: 330, rate: 48000, seconds: 1.5 });
+  const a = await tone(path.join(dir, 'a.wav'), { freq: 440, rate: 48000, seconds: 0.6 });
+  const b = await tone(path.join(dir, 'b.wav'), { freq: 660, rate: 48000, seconds: 0.4 });
+  const s = new GroupStream({ ffmpeg: FFMPEG });
+  const m = new FakeMember({ formats: [OPUS48] });
+  m.activate({ activities: ['playback'] });
+  s.addMember(m);
+  s.play([{ file: mid }, { file: a }]);
+  await until(() => m.chunks.length && m.chunks.at(-1).ts > m.chunks[0].ts + 1_600_000);
+  const mark = m.calls.length;
+  assert.ok(s.replaceUpcoming(() => [{ file: b }]));
+  const clear = m.calls.slice(mark).find((c) => c.type === 'stream/clear');
+  assert.ok(clear, 'audio past the cut is withdrawn');
+  const from = clear.payload.fromTimestamp;
+  assert.ok(m.chunks.some((c) => c.ts === from && c.at < clear.at), 'from_timestamp is a sent chunk');
+  await until(() => m.calls.slice(mark).some((c) => c.type === 'chunk'));
+  const next = m.calls.slice(mark).find((c) => c.type === 'chunk');
+  assert.equal(next.ts, from, 'first packet after the clear starts at from_timestamp');
+  s.stop();
+
+  const f = new GroupStream({ ffmpeg: FFMPEG });
+  const p = new FakeMember({ formats: [PCM48, OPUS48], capacity: 60_000 });
+  p.activate({ activities: ['playback'] });
+  f.addMember(p);
+  f.play([{ file: mid }]);
+  await until(() => p.chunks.length > 10);
+  p.state.player.format = OPUS48;
+  const sent = p.chunks.length;
+  const last = p.chunks[sent - 1];
+  const endPcm = last.ts + last.frame.length / 4 * 1_000_000 / 48000;
+  f.memberChanged(p.clientId);
+  await until(() => p.chunks.length > sent);
+  assert.equal(p.of('stream/start').at(-1).payload.player.codec, 'opus');
+  assert.equal(p.chunks[sent].ts, endPcm, 'opus starts where pcm ended, not pre-skip earlier');
+  f.stop();
 });

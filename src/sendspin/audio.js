@@ -644,12 +644,46 @@ class PcmRepackEncoder extends Encoder {
   }
 }
 
+// libopus pre-skip at 48 kHz for -application audio (2.5 ms lookahead + 4 ms delay compensation).
+export const OPUS_PRE_SKIP = 312;
+
+// Input samples to feed ahead of a splice so the packet grid lands on it: preRoll + pre-skip = one frame.
+export function opusPreRoll(inputRate, chunkMs) {
+  const frameUs = opusFrameMs(chunkMs) * 1000;
+  return Math.floor((frameUs - samplesToUs(OPUS_PRE_SKIP, 48000)) * inputRate / 1_000_000);
+}
+
+// No OpusHead reaches the player, so its decoder plays the encoder's pre-skip too.
+// preRoll === null (fresh stream, as aiosendspin): the timeline starts pre-skip early, so input sample n plays at
+// baseUs + n exactly. preRoll = n (a cut: stream/clear from_timestamp or a format change): the first n input samples
+// are earlier audio that only primes the encoder; packets starting before baseUs are dropped, the first kept packet
+// is stamped where its audio belongs (at baseUs when preRoll came from opusPreRoll; within one input sample snapped).
+function opusEmitter(enc, demux, { rate, inputRate, preRoll }) {
+  const scale = rate / 48000;
+  const leadUs = preRoll === null ? 0 : samplesToUs(preRoll, inputRate);
+  let ready = false;
+  let before = 0;
+  return (packets) => {
+    for (const p of packets) {
+      const samples = p.samples * scale;
+      if (!ready) {
+        const at = samplesToUs(before, rate) - samplesToUs(demux.head.preSkip, 48000) - leadUs;
+        before += samples;
+        if (preRoll !== null && at < 0) continue;
+        enc.shiftTimeline(preRoll !== null && at * inputRate <= 1_000_000 ? 0 : at);
+        ready = true;
+      }
+      enc.emit(p.packet, samples);
+    }
+  };
+}
+
 class FfmpegEncoder extends Encoder {
   #child;
   #closed = false;
   #exit;
 
-  constructor({ format, chunkSamples, baseUs, inputRate, inputChannels, signal, ffmpeg }) {
+  constructor({ format, chunkSamples, baseUs, inputRate, inputChannels, preRoll, signal, ffmpeg }) {
     super(format, chunkSamples, baseUs);
     const out = ['-ar', String(format.sample_rate), '-ac', String(format.channels)];
     const filter = channelFilter(inputChannels, format.channels);
@@ -672,19 +706,7 @@ class FfmpegEncoder extends Encoder {
         '-frame_duration', String(chunkSamples * 1000 / format.sample_rate), '-f', 'ogg', '-page_duration', '20000',
       );
       const demux = new OpusDemuxer();
-      const scale = format.sample_rate / 48000;
-      // As aiosendspin: no OpusHead reaches the player, so its decoder outputs the encoder's pre-skip too.
-      // Moving the timeline back by pre-skip puts input sample n at baseUs + n exactly.
-      let shifted = false;
-      const emitAll = (packets) => {
-        for (const p of packets) {
-          if (!shifted) {
-            this.shiftTimeline(-samplesToUs(demux.head.preSkip, 48000));
-            shifted = true;
-          }
-          this.emit(p.packet, p.samples * scale);
-        }
-      };
+      const emitAll = opusEmitter(this, demux, { rate: format.sample_rate, inputRate, preRoll });
       onData = (d) => emitAll(demux.push(d));
       onEnd = () => emitAll(demux.end());
     } else {
@@ -762,7 +784,9 @@ class FfmpegEncoder extends Encoder {
   }
 }
 
-export function createEncoder({ format, inputRate, inputChannels, chunkMs, baseUs = 0, signal, ffmpeg }) {
+export function createEncoder({
+  format, inputRate, inputChannels, chunkMs, baseUs = 0, preRoll = null, signal, ffmpeg,
+}) {
   validateFormat(format);
   const chunkSamples = chunkSamplesFor(format, chunkMs);
   if (format.codec === 'pcm' && inputRate === format.sample_rate && inputChannels === format.channels) {
@@ -774,7 +798,7 @@ export function createEncoder({ format, inputRate, inputChannels, chunkMs, baseU
     return enc;
   }
   return new FfmpegEncoder({
-    format, chunkSamples, baseUs, inputRate, inputChannels, signal, ffmpeg: ffmpeg ?? ffmpegBin(),
+    format, chunkSamples, baseUs, inputRate, inputChannels, preRoll, signal, ffmpeg: ffmpeg ?? ffmpegBin(),
   });
 }
 

@@ -1,5 +1,7 @@
 import { EventEmitter } from 'node:events';
-import { createEncoder, decodeQueue, samplesToUs, MASTER_BYTES_PER_SAMPLE, OPUS_SAMPLE_RATES } from './audio.js';
+import {
+  createEncoder, decodeQueue, samplesToUs, MASTER_BYTES_PER_SAMPLE, OPUS_SAMPLE_RATES, opusPreRoll,
+} from './audio.js';
 import { AUDIO_HEADER_LEN } from './wire.js';
 
 export const MIN_LEAD_FLOOR_MS = 50;
@@ -283,13 +285,17 @@ export class GroupStream extends EventEmitter {
 
   #openFeed(m, startSample, offsetUs, kind) {
     const ep = this.#epoch;
+    // Opus after a cut must not start before it: prime the encoder with the audio just before (see opusEmitter).
+    const preRoll = m.format.codec === 'opus' && (kind === 'splice' || kind === 'format')
+      ? Math.min(opusPreRoll(ep.rate, this.#opts.chunkMs ?? undefined), Math.max(0, startSample - (ep.history[0]?.sample ?? 0)))
+      : null;
     const encoder = createEncoder({
-      format: m.format, inputRate: ep.rate, inputChannels: MASTER_CHANNELS, baseUs: 0,
+      format: m.format, inputRate: ep.rate, inputChannels: MASTER_CHANNELS, baseUs: 0, preRoll,
       signal: ep.ac.signal, ffmpeg: this.#ffmpeg, ...(this.#opts.chunkMs ? { chunkMs: this.#opts.chunkMs } : {}),
     });
     const seg = { encoder, offsetUs, pending: [], done: false };
     m.seg = seg;
-    m.nextSample = startSample;
+    m.nextSample = startSample - (preRoll ?? 0);
     m.sentEndUs = offsetUs;
     m.live = false;
     const player = streamFormat(m.format, encoder);

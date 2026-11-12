@@ -151,8 +151,10 @@ export class OpusDemuxer { head; push(buf) /* -> [{ packet, samples (48 kHz) }] 
 //  opus encoder: ffmpeg libopus (64k/channel VBR, -application audio, -frame_duration 20) -> -f ogg (-page_duration 20 ms)
 //  -> OpusDemuxer -> one raw packet per chunk, codecHeader null. chunk.samples at the format rate. As aiosendspin: the
 //  player gets no OpusHead and plays the pre-skip, so the timeline starts at baseUs - preSkip (first chunk startUs < baseUs)
-//  and input sample n plays at baseUs + n exactly; a splice's first packet overlaps the kept tail by pre-skip, which
-//  players trim as overlap.
+//  and input sample n plays at baseUs + n exactly. createEncoder({ preRoll }) for a cut (splice after stream/clear
+//  from_timestamp, format change): the scheduler feeds opusPreRoll(rate) samples of the audio before the cut first
+//  (preRoll + pre-skip = one frame), the packet before the cut is dropped, the first kept one starts at the cut exactly
+//  (never earlier, spec MUST); the encoder is warm, so only the player's decoder hand-over (2.5 ms CELT overlap) remains.
 // pairing.js  (Node crypto only; CPace = CPACE-X25519-SHA512, draft-21, byte-exact with cpace-py)
 export const METHODS /*{PAIRING_PSK,DYNAMIC,STATIC}*/, FORMATS /*{DIGITS,QR_CODE}*/, ABORT_REASONS, ROUND_LIMIT /*20*/,
              PAIRING_MESSAGE_TYPES /*Set of client/pair-* + pair/abort*/, TIMEOUTS /*{firstMessageMs 60s, gestureMs 360s, attemptMs 180s}*/,
