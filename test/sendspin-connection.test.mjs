@@ -604,3 +604,50 @@ test('client/hello and player state parsing', () => {
   assert.throws(() => parsePlayerState({ ...PLAYER_STATE, volume: undefined }, info.player), 'volume required with the volume command');
   assert.equal(parsePlayerState({ ...PLAYER_STATE, format: { codec: 'pcm', sample_rate: 8000, channels: 1, bit_depth: 8 } }, info.player).format, null);
 });
+
+/* eslint-disable sonarjs/no-hardcoded-ip, sonarjs/no-clear-text-protocols -- LAN addresses are the test data; Sendspin mandates ws:// */
+test('a speaker added by address is dialed, remembered across restarts and dropped on forget', async (t) => {
+  const subnets = () => [{ address: '192.168.1.10', netmask: '255.255.255.0' }];
+  const dataDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'sendspin-test-'));
+  const opts = { dataDir, host: LOCAL, port: 0, logger: quiet, allowLoopback: true, subnets, reconnect: { minMs: 50, maxMs: 200 } };
+  const server = new SendspinServer(opts);
+  const again = new SendspinServer(opts);
+  t.after(async () => {
+    await server.stop();
+    await again.stop();
+    await fsp.rm(dataDir, { recursive: true, force: true });
+  });
+  await server.start();
+  assert.equal(server.dialAddress('8.8.8.8'), null, 'off-LAN refused');
+  assert.equal(server.dialAddress('10.9.8.7'), null, 'other subnet refused');
+  assert.equal(server.dialAddress('192.168.1.5', 8928, 'nope'), null, 'bad path refused');
+  assert.equal(server.dialAddress('192.168.1.5'), 'ws://192.168.1.5:8928/sendspin');
+  server.disconnectFrom('ws://192.168.1.5:8928/sendspin');
+
+  const wss = new WebSocketServer({ host: LOCAL, port: 0, path: '/sendspin' });
+  await new Promise((r) => wss.once('listening', r));
+  t.after(() => new Promise((r) => {
+    for (const ws of wss.clients) ws.terminate();
+    wss.close(r);
+  }));
+  const keyPair = generateStaticKeyPair();
+  const clients = [];
+  wss.on('connection', (ws) => clients.push(new FakeClient(ws, { keyPair })));
+  const url = server.dialAddress(LOCAL, wss.address().port);
+  assert.equal(url, `ws://${LOCAL}:${wss.address().port}/sendspin`);
+  await waitFor({ on: (e, f) => wss.on(e, f), off: (e, f) => wss.off(e, f) }, 'connection');
+  await clients[0].connect();
+  const id = clients[0].clientId;
+  assert.equal(server.device(id).manual, true);
+  await server.stop();
+
+  const redialed = waitFor({ on: (e, f) => wss.on(e, f), off: (e, f) => wss.off(e, f) }, 'connection');
+  await again.start();
+  await redialed;
+  await clients.at(-1).connect();
+  assert.equal(again.device(id).manual, true);
+  const count = clients.length;
+  await again.forget(id);
+  await new Promise((r) => setTimeout(r, 2500));
+  assert.equal(clients.length, count, 'no redial after forget');
+});

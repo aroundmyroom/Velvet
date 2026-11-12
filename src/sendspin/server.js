@@ -9,7 +9,9 @@ import { WebSocket, WebSocketServer } from 'ws';
 import { loadOrCreateServerKey, isKeyId, PSK_CATEGORY, SENTINEL_PSK } from './keys.js';
 import { TrustStore } from './trust-store.js';
 import { SendspinConnection, MAX_WS_PAYLOAD, cleanText } from './connection.js';
-import { SendspinDiscovery, isValidPath, normalizeAddress } from './discovery.js';
+import {
+  SendspinDiscovery, isValidPath, normalizeAddress, isLoopbackAddress, onLocalSubnet, localSubnets, buildUrl,
+} from './discovery.js';
 import {
   METHODS, FORMATS, PAIRING_MESSAGE_TYPES, DYNAMIC_DIGITS, STATIC_DIGITS, PairingProtocolError, PairingInputError, Cooldown,
   createPairingAttempt, decodePskToken, assertTokenForClient, parseSupportedPairMethods, chooseCodeMethod, pairingActivation,
@@ -17,6 +19,7 @@ import {
 
 export const DEFAULT_PORT = 8927;
 export const DEFAULT_PATH = '/sendspin';
+export const DEFAULT_CLIENT_PORT = 8928;
 
 const DEFAULT_RECONNECT = Object.freeze({ minMs: 1000, maxMs: 300_000, concurrentMs: 60_000, stableMs: 60_000 });
 export const KNOWN_DEVICES_FILE = 'known-devices.json';
@@ -71,7 +74,7 @@ function parseKnown(d) {
     clientId: d.clientId, name: str(d.name, 64),
     deviceInfo: publicDeviceInfo({ product_name: str(d.deviceInfo?.productName), manufacturer: str(d.deviceInfo?.manufacturer), software_version: str(d.deviceInfo?.softwareVersion) }),
     pairMethods: Array.isArray(d.pairMethods) ? d.pairMethods.filter((m) => Object.values(METHODS).includes(m)) : [],
-    unpairedAccess: d.unpairedAccess === true, address: str(d.address), url: str(d.url, 512),
+    unpairedAccess: d.unpairedAccess === true, address: str(d.address), url: str(d.url, 512), manual: d.manual === true && typeof d.url === 'string',
     lastSeen: Number.isSafeInteger(d.lastSeen) ? d.lastSeen : null, lastGoodbye: str(d.lastGoodbye, 64),
   };
 }
@@ -131,7 +134,7 @@ export class SendspinServer extends EventEmitter {
   constructor({
     dataDir, name = 'Velvet', languages = ['en'], host = '0.0.0.0', port = DEFAULT_PORT, path: wsPath = DEFAULT_PATH,
     roles = ['player@v1'], logger = winston, maxClients = 64, maxUntrusted = MAX_UNTRUSTED_CLIENTS, maxPending = 32, maxKnown = MAX_KNOWN_DEVICES,
-    reconnect = {}, timeouts = {}, discovery = false, allowLoopback = false, cooldown = {},
+    reconnect = {}, timeouts = {}, discovery = false, allowLoopback = false, cooldown = {}, subnets = localSubnets,
     maxPendingPerAddress = MAX_PENDING_PER_ADDRESS, maxUntrustedPerAddress = MAX_UNTRUSTED_PER_ADDRESS, initTimeoutMs = INIT_TIMEOUT_MS,
   }) {
     super();
@@ -139,7 +142,7 @@ export class SendspinServer extends EventEmitter {
     if (!isValidPath(wsPath)) throw new Error('path must be an absolute path');
     this.#opts = {
       dataDir, name, languages, host, port, path: wsPath, roles, maxClients, maxUntrusted, maxPending, maxKnown,
-      reconnect: { ...DEFAULT_RECONNECT, ...reconnect }, timeouts, discovery, allowLoopback, cooldown,
+      reconnect: { ...DEFAULT_RECONNECT, ...reconnect }, timeouts, discovery, allowLoopback, cooldown, subnets,
       maxPendingPerAddress, maxUntrustedPerAddress, initTimeoutMs,
     };
     this.#log = logger;
@@ -186,7 +189,25 @@ export class SendspinServer extends EventEmitter {
     });
     this.#http.on('error', (err) => this.#log.warn(`[sendspin] listener error: ${err.message}`));
     this.#log.info(`[sendspin] listening on ws://${this.#opts.host}:${this.port}${this.#opts.path} as ${this.serverId.slice(0, 8)}`);
+    for (const k of this.#known.values()) if (k.manual) this.#dialSafe(k.url);
     if (this.#opts.discovery) await this.#startDiscovery();
+  }
+
+  #dialSafe(url) {
+    try {
+      this.connectTo(url, { source: 'address' });
+    } catch (err) {
+      this.#log.warn(`[sendspin] not dialing ${cleanText(url)}: ${err.message}`);
+    }
+  }
+
+  // For speakers whose mDNS never reaches Velvet (Wi-Fi often drops multicast). LAN addresses only: an admin form must not dial arbitrary hosts.
+  dialAddress(address, port = DEFAULT_CLIENT_PORT, wsPath = DEFAULT_PATH) {
+    const a = normalizeAddress(address);
+    const lan = a && (isLoopbackAddress(a) ? this.#opts.allowLoopback : onLocalSubnet(a, this.#opts.subnets()));
+    const url = lan ? buildUrl(a, port, wsPath, { allowLoopback: this.#opts.allowLoopback }) : null;
+    if (url) this.connectTo(url, { source: 'address' });
+    return url;
   }
 
   async #startDiscovery() {
@@ -942,6 +963,8 @@ export class SendspinServer extends EventEmitter {
     await this.#store.unstagePairingPsk(clientId);
     this.#pairings.delete(clientId);
     this.#cooldowns.delete(clientId);
+    const known = this.#known.get(clientId);
+    if (known?.manual) this.disconnectFrom(known.url);
     this.#known.delete(clientId);
     this.#scheduleKnownSave();
     this.#trustChanged(clientId);
@@ -976,6 +999,7 @@ export class SendspinServer extends EventEmitter {
       roles: live ? [...live.activeRoles] : [],
       address: live ? connAddress(live) : (known.address ?? null),
       url: live?.url ?? known.url ?? null,
+      manual: known.manual === true,
       lastSeen: live ? Date.now() : (known.lastSeen ?? null),
       pairing,
     };
@@ -988,6 +1012,7 @@ export class SendspinServer extends EventEmitter {
       clientId: conn.clientId, name: conn.info.name, deviceInfo: publicDeviceInfo(conn.info.deviceInfo),
       pairMethods: Object.keys(parseSupportedPairMethods(conn.info.supportedPairMethods).methods), unpairedAccess: conn.info.unpairedAccess,
       address: connAddress(conn), url: conn.url ?? prev?.url ?? null, lastSeen: Date.now(), lastGoodbye: null,
+      manual: Boolean(conn.url) && (this.#dials.get(conn.url)?.source === 'address' || (prev?.manual === true && prev.url === conn.url)),
     });
     this.#capKnown();
     this.#scheduleKnownSave();

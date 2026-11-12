@@ -32,6 +32,7 @@ The player uses `GET /api/v1/rooms` as its capability check: any non-2xx means
 | 403 | `forbidden` | Missing permission. |
 | 404 | `rooms_disabled` | Player route while the feature is off. |
 | 404 | `not_found` | Unknown `clientId` or room `id`. |
+| 400 | `bad_address` | `devices/add`: not an IP address on Velvet's own network, or a bad port or path. |
 | 409 | `not_connected` | Action needs a live connection (pair-code start, connect to a device that is not discoverable). |
 | 409 | `pairing_in_progress` | A pairing attempt already runs for this device. |
 | 409 | `no_pairing` | `pair-code/submit` or `cancel` without an attempt. |
@@ -233,6 +234,7 @@ states (`paired`, `aborted`) stay readable for 60 s after they occur.
 | `POST` | `/api/v1/admin/sendspin/devices/rename` | `{ clientId, name }` | `{ ok: true, device }` — never interrupts playback. |
 | `POST` | `/api/v1/admin/sendspin/devices/forget` | `{ clientId }` | `{ ok: true }` — unpairs (sends `server/unpair` if connected), revokes, removes from its room, forgets name. |
 | `POST` | `/api/v1/admin/sendspin/devices/connect` | `{ clientId }` | `{ ok: true, device }` — dial now (also takes a device back from another server). 409 `not_connected` if no address is known. |
+| `POST` | `/api/v1/admin/sendspin/devices/add` | `{ address }` | `{ ok: true, url }` — dial a speaker that mDNS does not find. `address` is an IP literal on one of Velvet's own subnets: `10.1.1.5`, `10.1.1.5:8928`, `[fd00::5]:8928`, `fd00::5` or `ws://10.1.1.5:8928/sendspin` (port defaults to 8928, path to `/sendspin`; no host names, no credentials, no query). 400 `bad_address` otherwise. The speaker appears in `devices` once it answers; after its first connection the address is kept (device field `manual: true`) and dialed on every start until the device is forgotten. Rate-limited like the pairing routes. |
 | `POST` | `/api/v1/admin/sendspin/devices/unpair` | `{ clientId }` | `{ ok: true, device }` — `server/unpair` + delete record. |
 | `POST` | `/api/v1/admin/sendspin/devices/pair-token` | `{ pairingToken, clientId? }` | `{ ok: true, result: 'pairing' \| 'staged', clientId, device: Device \| null }`. Token decoded leniently (trim, uppercase, optional `SP:`, `9`→`2`). If `clientId` is given and the token's client key differs → 422 `wrong_client`. Connected → `pairing` (attempt runs, poll `pair-code/status`); not connected → `staged` (used on the device's next connection, 24 h). Token/PSK never logged or echoed. The field is `pairingToken`, not `token`: Velvet's auth reads a body `token` as the session JWT. |
 | `POST` | `/api/v1/admin/sendspin/devices/pair-code/start` | `{ clientId }` | `PairStatus` (usually `waiting`). Picks the code method with `chooseCodeMethod` (dynamic preferred; digits only). 409 `pairing_in_progress` / `not_connected`. |

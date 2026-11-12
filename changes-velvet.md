@@ -14,7 +14,11 @@ Velvet Rooms: multi-room playback on Sendspin speakers
 - **Discovery both ways.** Velvet advertises itself as `_sendspin-server._tcp`
   and finds speakers that advertise `_sendspin._tcp` over mDNS (IPv4 and IPv6;
   own codec, no new dependency), and connects to them; speakers and apps can
-  also connect to Velvet on TCP 8927 (`ws://host:8927/sendspin`).
+  also connect to Velvet on TCP 8927 (`ws://host:8927/sendspin`). Speakers
+  on Wi-Fi, where access points often drop multicast, can be added by IP
+  address in the admin page (remembered until forgotten), and a speaker whose
+  address record never arrives is dialed at the address its announcement
+  came from.
 - **Encryption, allow and pair.** Every connection is encrypted (Noise
   KKpsk2), paired or not. A new speaker plays nothing until the admin
   **allows** it (encrypted, not authenticated) or **pairs** it (encrypted and

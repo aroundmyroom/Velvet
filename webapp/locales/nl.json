@@ -3618,5 +3618,12 @@
   "player.rooms.edit.newRoom": "Nieuwe kamer",
   "player.rooms.edit.newRoomPlaceholder": "bijv. Beneden",
   "player.rooms.edit.create": "Kamer maken",
-  "player.rooms.edit.failed": "Kon de kamers niet wijzigen: {{error}}"
+  "player.rooms.edit.failed": "Kon de kamers niet wijzigen: {{error}}",
+  "admin.rooms.addrTitle": "Speaker toevoegen op adres (geavanceerd)",
+  "admin.rooms.addrDesc": "Voor een speaker die niet vanzelf verschijnt — wifi-accesspoints laten de zoekberichten vaak vallen. Vul het IP-adres op dit netwerk in, eventueel met :poort (standaard 8928). Velvet blijft hem bellen, ook na een herstart, tot je de speaker vergeet.",
+  "admin.rooms.addrLabel": "IP-adres",
+  "admin.rooms.addrPlaceholder": "192.168.1.40 of 192.168.1.40:8928",
+  "admin.rooms.btnAddAddress": "Verbinden",
+  "admin.rooms.addrDialing": "Verbinden met {{url}} — de speaker verschijnt onder Speakers zodra hij antwoordt.",
+  "admin.rooms.err.bad_address": "Vul een IP-adres op dit netwerk in, eventueel met :poort."
 }

@@ -3618,5 +3618,12 @@
   "player.rooms.edit.newRoom": "New room",
   "player.rooms.edit.newRoomPlaceholder": "e.g. Downstairs",
   "player.rooms.edit.create": "Create room",
-  "player.rooms.edit.failed": "Could not change the rooms: {{error}}"
+  "player.rooms.edit.failed": "Could not change the rooms: {{error}}",
+  "admin.rooms.addrTitle": "Add a speaker by address (advanced)",
+  "admin.rooms.addrDesc": "For a speaker that does not show up by itself — Wi-Fi access points often drop the discovery messages. Enter its IP address on this network, optionally with :port (default 8928). Velvet keeps dialing it, also after a restart, until you forget the speaker.",
+  "admin.rooms.addrLabel": "IP address",
+  "admin.rooms.addrPlaceholder": "192.168.1.40 or 192.168.1.40:8928",
+  "admin.rooms.btnAddAddress": "Connect",
+  "admin.rooms.addrDialing": "Connecting to {{url}} — the speaker appears under Speakers once it answers.",
+  "admin.rooms.err.bad_address": "Enter an IP address on this network, optionally with :port."
 }

@@ -11,6 +11,7 @@
  *   POST /api/v1/admin/sendspin/devices/rename            — operator name
  *   POST /api/v1/admin/sendspin/devices/forget            — unpair, revoke, forget
  *   POST /api/v1/admin/sendspin/devices/connect           — dial the device now
+ *   POST /api/v1/admin/sendspin/devices/add               — dial a speaker by LAN address (no mDNS)
  *   POST /api/v1/admin/sendspin/devices/unpair            — server/unpair + delete the record
  *   POST /api/v1/admin/sendspin/devices/pair-token        — pair with a Pairing PSK token
  *   POST /api/v1/admin/sendspin/devices/pair-code/start   — start code pairing
@@ -48,6 +49,7 @@
 
 import fsp from 'node:fs/promises';
 import path from 'node:path';
+import net from 'node:net';
 import Joi from 'joi';
 import winston from 'winston';
 import * as config from '../state/config.js';
@@ -87,6 +89,31 @@ class ApiError extends Error {
 
 const fail = (status, code, message, extra) => { throw new ApiError(status, code, message, extra); };
 
+// "10.1.1.5", "10.1.1.5:8928", "[fd00::5]:8928", "fd00::5" or "ws://10.1.1.5:8928/sendspin"; IP literals only, so no DNS lookup decides where Velvet dials.
+export function parseSpeakerAddress(input) {
+  let text = String(input).trim();
+  let path;
+  if (/^ws:\/\//i.test(text)) {
+    let u;
+    try {
+      u = new URL(text);
+    } catch {
+      return null;
+    }
+    if (u.username || u.password || u.search || u.hash) return null;
+    text = u.host;
+    path = u.pathname;
+  }
+  let host = text;
+  let port;
+  const v6 = text.match(/^\[([^\]]+)\](?::(\d{1,5}))?$/);
+  const v4 = text.match(/^([\d.]+)(?::(\d{1,5}))?$/);
+  if (v6) [, host, port] = v6;
+  else if (v4) [, host, port] = v4;
+  if (!net.isIP(host)) return null;
+  return { host, port: port === undefined ? undefined : Number(port), path };
+}
+
 const name63 = Joi.string().trim().min(1).max(63).pattern(config.CONTROL_CHARS, { invert: true });
 const clientId = Joi.string().min(1).max(128).required();
 const SCHEMAS = {
@@ -115,6 +142,7 @@ const SCHEMAS = {
   source: Joi.object({ clientId, allowed: Joi.boolean().required() }),
   sourceAuto: Joi.object({ clientId, autoSwitch: Joi.boolean().required(), roomId: Joi.string().min(1).max(64) }),
   lineIn: Joi.object({ clientId }),
+  addAddress: Joi.object({ address: Joi.string().trim().min(1).max(300).required() }),
 };
 SCHEMAS.play = Joi.object({
   songs: SCHEMAS.songs, index: Joi.number().integer().min(0).default(0), positionMs: Joi.number().integer().min(0).default(0),
@@ -546,6 +574,15 @@ export function setup(velvet) {
       fail(409, 'not_connected', 'the device address is not usable');
     }
     return { ok: true, device: sv.device(id) };
+  }));
+
+  admin('post', '/devices/add', rateLimit('mutate'), route((req) => {
+    const { address } = validate(SCHEMAS.addAddress, req.body);
+    const sv = requireRunning();
+    const target = parseSpeakerAddress(address);
+    const url = target && sv.server.dialAddress(target.host, target.port, target.path);
+    if (!url) fail(400, 'bad_address', 'give an IP address on this network, optionally with :port');
+    return { ok: true, url };
   }));
 
   admin('post', '/devices/unpair', route(async (req) => {

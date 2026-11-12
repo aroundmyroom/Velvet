@@ -540,6 +540,25 @@ describe('Velvet Rooms REST', async () => {
     assert.deepEqual((await call('caster', 'GET', '/api/v1/rooms')).body.rooms, [], 'a revoked speaker leaves the room list');
   });
 
+  /* eslint-disable sonarjs/no-hardcoded-ip, sonarjs/no-clear-text-protocols -- LAN addresses are the test data; Sendspin mandates ws:// */
+  it('adds a speaker by LAN address only', async () => {
+    const add = (who, address) => call(who, 'POST', '/api/v1/admin/sendspin/devices/add', { address });
+    assert.equal((await add('caster', '10.0.0.5')).status, 403);
+    for (const bad of ['example.com', '8.8.8.8', '127.0.0.1:8928', 'ws://user:pw@10.0.0.5/sendspin', '10.0.0.5:99999', '', 'http://10.0.0.5/']) {
+      const r = await add('admin', bad);
+      assert.equal(r.status, 400, bad);
+    }
+    const lan = Object.values(os.networkInterfaces()).flat().find(a => a && !a.internal && a.family === 'IPv4');
+    if (!lan) return;
+    const port = await freePort();
+    const r = await add('admin', `${lan.address}:${port}`);
+    assert.equal(r.status, 200);
+    assert.equal(r.body.url, `ws://${lan.address}:${port}/sendspin`);
+    const full = await add('admin', `ws://${lan.address}:${port}/other`);
+    assert.equal(full.body.url, `ws://${lan.address}:${port}/other`);
+  });
+
+  /* eslint-enable sonarjs/no-hardcoded-ip, sonarjs/no-clear-text-protocols */
   it('forgets a device together with its solo room', async () => {
     const id = speaker.clientId;
     await waitFile(f => f.rooms.some(r => r.solo === id && r.name === null));

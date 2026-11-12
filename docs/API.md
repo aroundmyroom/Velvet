@@ -873,6 +873,7 @@ small local window for instant boot, then lazy-loads the rest from here.
 | `POST` | `/api/v1/admin/sendspin/devices/rename` | `{ clientId, name }` | **Admin.** Rename a device (playback continues). |
 | `POST` | `/api/v1/admin/sendspin/devices/forget` | `{ clientId }` | **Admin.** Unpair, revoke and remove a device. |
 | `POST` | `/api/v1/admin/sendspin/devices/connect` | `{ clientId }` | **Admin.** Connect now (also takes a device back from another server). |
+| `POST` | `/api/v1/admin/sendspin/devices/add` | `{ address }` | **Admin.** Dial a speaker by LAN IP address (`ip`, `ip:port`, `[v6]:port` or `ws://ip:port/path`), for speakers mDNS does not find. Remembered across restarts until forgotten. |
 | `POST` | `/api/v1/admin/sendspin/devices/unpair` | `{ clientId }` | **Admin.** `server/unpair` + delete the pairing record. |
 | `POST` | `/api/v1/admin/sendspin/devices/pair-token` | `{ pairingToken, clientId? }` | **Admin.** Pair with a pairing token (lenient decoding); `result: 'pairing' \| 'staged'`. |
 | `POST` | `/api/v1/admin/sendspin/devices/pair-code/start` | `{ clientId }` | **Admin.** Start code pairing; returns `PairStatus`. |

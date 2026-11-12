@@ -105,6 +105,9 @@ Who may play to rooms: admins, and users with the **Cast** permission
 - Discovery works over IPv4 and IPv6. Speakers that offer only IPv6 are
   reached on their global or ULA address (not link-local). For speakers to
   reach Velvet over IPv6, set the Rooms bind address to `::`.
+- **Wi-Fi:** many access points drop multicast toward Wi-Fi clients, so a
+  speaker on Wi-Fi may never show up. Add it by address instead — see
+  [Adding a speaker by address](#adding-a-speaker-by-address).
 - **Docker:** mDNS does not reach a container on the default bridge network.
   Use `network_mode: host` for discovery. Without host networking, publish
   port 8927 and point the speakers at the server by address — see
@@ -200,6 +203,20 @@ keeps the token and the speaker pairs the next time it connects (within 24
 hours). A token for a different speaker than the one you picked is refused
 before anything is sent. Treat a token like a password: anyone who has it can
 pair as that speaker.
+
+### Adding a speaker by address
+
+A speaker that never appears under **Speakers** — typically on Wi-Fi, where
+access points often drop the multicast discovery messages — can be added by
+hand. Open **Add a speaker by address (advanced)** under the speaker list,
+enter its IP address (for example `192.168.1.40`, or `192.168.1.40:8928` if it
+does not use the default port 8928) and click **Connect**. Once it answers it
+shows up as *New*; allow or pair it as usual.
+
+Only addresses on Velvet's own network are accepted. Velvet remembers the
+address after the first connection and dials it again after a restart; give
+the speaker a fixed IP address (a DHCP reservation) so it keeps working.
+**Forget** removes the address too.
 
 ### "Not recognised" after a reset
 
@@ -481,6 +498,10 @@ is capped, so a room never clips. See [replaygain-info.md](replaygain-info.md).
 **No speakers found.**
 - Is the speaker on and on the same network (same VLAN) as Velvet?
 - Firewall on the Velvet host: allow TCP 8927 and UDP 5353.
+- On Wi-Fi: add the speaker by address (see
+  [Adding a speaker by address](#adding-a-speaker-by-address)). Velvet also
+  uses the sender's address when a speaker's announcement arrives but its
+  address record does not.
 - Docker: use `network_mode: host`, or connect the speakers by address
   (`ws://velvet-host:8927/sendspin`, or `velvet-host:8927` in apps that ask
   for host and port).

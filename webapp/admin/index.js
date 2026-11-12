@@ -4808,7 +4808,7 @@ const sonosView = Vue.component('sonos-view', {
 });
 
 // ── Velvet Rooms Admin View ─────────────────────────────────────────────────
-const VR_ERR_CODES = ['invalid_body', 'forbidden', 'not_found', 'not_connected', 'pairing_in_progress', 'no_pairing', 'not_playable', 'solo_room', 'malformed_token', 'unsupported_token_version', 'wrong_client', 'invalid_code', 'cooldown', 'not_running', 'pairing_required', 'not_approved', 'not_allowed', 'unavailable'];
+const VR_ERR_CODES = ['invalid_body', 'forbidden', 'not_found', 'not_connected', 'pairing_in_progress', 'no_pairing', 'not_playable', 'solo_room', 'malformed_token', 'unsupported_token_version', 'wrong_client', 'invalid_code', 'cooldown', 'not_running', 'pairing_required', 'not_approved', 'not_allowed', 'unavailable', 'bad_address'];
 const VR_PAIR_TIMEOUT_MS = 360000;
 const roomsView = Vue.component('rooms-view', {
   data() {
@@ -4838,6 +4838,11 @@ const roomsView = Vue.component('rooms-view', {
       tokenMsg: '',
       tokenOk: null,
       tokenOpen: false,
+      addrValue: '',
+      addrBusy: false,
+      addrMsg: '',
+      addrOk: null,
+      addrOpen: false,
       newRoomName: '',
       newRoomMembers: [],
       roomNames: {},
@@ -5037,6 +5042,19 @@ const roomsView = Vue.component('rooms-view', {
                   <button type="submit" class="btn-small" :disabled="tokenBusy || !tokenValue.trim()">{{ this.t('admin.rooms.btnPairToken') }}</button>
                 </form>
                 <div v-if="tokenMsg" class="vr-help" :style="{ color: tokenOk ? 'var(--green)' : 'var(--red)' }" role="status">{{ tokenMsg }}</div>
+              </details>
+
+              <details class="vr-advanced" :open="addrOpen" @toggle="addrOpen = $event.target.open">
+                <summary>{{ this.t('admin.rooms.addrTitle') }}</summary>
+                <p class="vr-help">{{ this.t('admin.rooms.addrDesc') }}</p>
+                <form class="vr-token-form" @submit.prevent="submitAddress">
+                  <label class="vr-field">
+                    <span>{{ this.t('admin.rooms.addrLabel') }}</span>
+                    <input type="text" v-model="addrValue" maxlength="300" autocomplete="off" spellcheck="false" inputmode="url" :placeholder="this.t('admin.rooms.addrPlaceholder')">
+                  </label>
+                  <button type="submit" class="btn-small" :disabled="addrBusy || !addrValue.trim()">{{ this.t('admin.rooms.btnAddAddress') }}</button>
+                </form>
+                <div v-if="addrMsg" class="vr-help" :style="{ color: addrOk ? 'var(--green)' : 'var(--red)' }" role="status">{{ addrMsg }}</div>
               </details>
             </div>
           </div>
@@ -5414,6 +5432,21 @@ const roomsView = Vue.component('rooms-view', {
         this.tokenOk = false;
         this.tokenMsg = this.errMsg(e);
       } finally { this.tokenBusy = false; }
+    },
+    async submitAddress() {
+      const address = this.addrValue.trim();
+      if (!address) return;
+      this.addrBusy = true; this.addrMsg = ''; this.addrOk = null;
+      try {
+        const r = await API.axios({ method: 'POST', url: `${API.url()}/api/v1/admin/sendspin/devices/add`, data: { address } });
+        this.addrValue = '';
+        this.addrOk = true;
+        this.addrMsg = this.t('admin.rooms.addrDialing', { url: r.data.url });
+        setTimeout(() => this.load(), 2000);
+      } catch (e) {
+        this.addrOk = false;
+        this.addrMsg = this.errMsg(e);
+      } finally { this.addrBusy = false; }
     },
     async roomCall(method, path, data) {
       this.busy = true; this.error = null;
