@@ -192,10 +192,6 @@ for (const suite of SUITES) {
     assert.equal(client.msg1.pskCategory, 'sn');
     assert.deepEqual(sh.payload, { name: 'Velvet Test', languages: ['nl', 'en'] });
     assert.deepEqual(client.activate.payload, { activities: [], active_roles: [] });
-    const gu = await client.expect('group/update');
-    assert.equal(gu.payload.playback_state, 'stopped');
-    assert.equal(gu.payload.group_id.length, 43);
-    assert.equal(gu.payload.group_name, 'Test Speaker');
     const conn = server.getClient(client.clientId);
     assert.equal(conn.suite, suite);
     assert.deepEqual(conn.negotiatedRoles, ['player@v1', 'controller@v1']);

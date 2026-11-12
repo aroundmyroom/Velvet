@@ -1,17 +1,31 @@
 import crypto from 'node:crypto';
 import { EventEmitter } from 'node:events';
+import fsp from 'node:fs/promises';
 import http from 'node:http';
+import path from 'node:path';
 import winston from 'winston';
 import { WebSocket, WebSocketServer } from 'ws';
-import { loadOrCreateServerKey, isKeyId, PSK_CATEGORY } from './keys.js';
+import { loadOrCreateServerKey, isKeyId, PSK_CATEGORY, SENTINEL_PSK } from './keys.js';
 import { TrustStore } from './trust-store.js';
 import { SendspinConnection, MAX_WS_PAYLOAD, cleanText } from './connection.js';
 import { SendspinDiscovery, isValidPath } from './discovery.js';
+import {
+  METHODS, FORMATS, PAIRING_MESSAGE_TYPES, DYNAMIC_DIGITS, STATIC_DIGITS, PairingProtocolError, PairingInputError, Cooldown,
+  createPairingAttempt, decodePskToken, assertTokenForClient, parseSupportedPairMethods, chooseCodeMethod, pairingActivation,
+} from './pairing.js';
 
 export const DEFAULT_PORT = 8927;
 export const DEFAULT_PATH = '/sendspin';
 
 const DEFAULT_RECONNECT = Object.freeze({ minMs: 1000, maxMs: 300_000, concurrentMs: 60_000, stableMs: 60_000 });
+export const KNOWN_DEVICES_FILE = 'known-devices.json';
+export const PAIRING_STATUS_TTL_MS = 60_000;
+const MAX_KNOWN_DEVICES = 256;
+const OTHER_SERVER_GOODBYES = new Set(['another_server', 'concurrent_attempt']);
+const STATUS_BY_EVENT = Object.freeze({
+  started: 'waiting', code_queued: 'waiting', code_sent: 'waiting', confirmed: 'waiting', persist: 'waiting',
+  pending: 'pending', need_code: 'need_code', wrong_code: 'wrong_code', paired: 'paired', aborted: 'aborted',
+});
 
 export function reconnectDecision(closeInfo) {
   const reason = closeInfo.goodbye;
@@ -34,8 +48,39 @@ function parseWsUrl(url) {
   return u.href;
 }
 
-function groupId() {
-  return crypto.randomBytes(32).toString('base64url');
+function statusPatch(ev) {
+  const patch = { status: STATUS_BY_EVENT[ev.kind] };
+  if (ev.round !== undefined) patch.round = ev.round;
+  if (ev.kind === 'pending') patch.message = ev.message;
+  if (ev.kind === 'wrong_code') patch.retryAfterMs = ev.retryAfterMs;
+  if (ev.kind === 'need_code' || ev.kind === 'code_sent') patch.retryAfterMs = 0;
+  if (ev.kind === 'aborted') patch.reason = ev.reason;
+  return patch;
+}
+
+const str = (v, max = 256) => (typeof v === 'string' ? v.slice(0, max) : null);
+
+function parseKnown(d) {
+  return {
+    clientId: d.clientId, name: str(d.name, 64),
+    deviceInfo: publicDeviceInfo({ product_name: str(d.deviceInfo?.productName), manufacturer: str(d.deviceInfo?.manufacturer), software_version: str(d.deviceInfo?.softwareVersion) }),
+    pairMethods: Array.isArray(d.pairMethods) ? d.pairMethods.filter((m) => Object.values(METHODS).includes(m)) : [],
+    unpairedAccess: d.unpairedAccess === true, address: str(d.address), url: str(d.url, 512),
+    lastSeen: Number.isSafeInteger(d.lastSeen) ? d.lastSeen : null, lastGoodbye: str(d.lastGoodbye, 64),
+  };
+}
+
+function toActivate({ activities, active_roles: roles, pairing }) {
+  return { activities, roles, pairing };
+}
+
+function publicDeviceInfo(di = {}) {
+  return { productName: di.product_name ?? null, manufacturer: di.manufacturer ?? null, softwareVersion: di.software_version ?? null };
+}
+
+function connAddress(conn) {
+  if (conn.url) return new URL(conn.url).host;
+  return conn.remoteAddress?.replace(/^::ffff:/, '') ?? null;
 }
 
 export class SendspinServer extends EventEmitter {
@@ -48,21 +93,25 @@ export class SendspinServer extends EventEmitter {
   #pending = new Set();
   #dials = new Map();
   #store = null;
-  #soloGroups = new Map();
   #discovery = null;
   #stopping = false;
+  #pairings = new Map();
+  #cooldowns = new Map();
+  #known = new Map();
+  #knownWrite = Promise.resolve();
+  #knownTimer = null;
 
   constructor({
     dataDir, name = 'Velvet', languages = ['en'], host = '0.0.0.0', port = DEFAULT_PORT, path: wsPath = DEFAULT_PATH,
     roles = ['player@v1'], logger = winston, maxClients = 64, maxPending = 32, reconnect = {}, timeouts = {},
-    discovery = false, allowLoopback = false,
+    discovery = false, allowLoopback = false, cooldown = {},
   }) {
     super();
     if (!dataDir) throw new Error('SendspinServer needs a dataDir');
     if (!isValidPath(wsPath)) throw new Error('path must be an absolute path');
     this.#opts = {
       dataDir, name, languages, host, port, path: wsPath, roles, maxClients, maxPending,
-      reconnect: { ...DEFAULT_RECONNECT, ...reconnect }, timeouts, discovery, allowLoopback,
+      reconnect: { ...DEFAULT_RECONNECT, ...reconnect }, timeouts, discovery, allowLoopback, cooldown,
     };
     this.#log = logger;
   }
@@ -91,6 +140,7 @@ export class SendspinServer extends EventEmitter {
     this.#stopping = false;
     this.#identity = await loadOrCreateServerKey(this.#opts.dataDir);
     this.#store = await TrustStore.open(this.#opts.dataDir);
+    await this.#loadKnown();
     this.#http = http.createServer((req, res) => {
       res.writeHead(404).end();
     });
@@ -147,12 +197,21 @@ export class SendspinServer extends EventEmitter {
     });
     this.#pending.add(conn);
     conn.on('hello', (info) => this.#onHello(conn, info));
-    conn.on('state', (state, prev) => this.emit('state', conn, state, prev));
+    conn.on('state', (state, prev) => {
+      if (state.available) conn.left = false;
+      this.emit('state', conn, state, prev);
+    });
     conn.on('time', (t) => this.emit('time', conn, t));
     conn.on('command', (cmd) => this.emit('command', conn, cmd));
-    conn.on('leave', () => this.emit('leave', conn));
+    conn.on('leave', () => {
+      conn.left = true;
+      this.emit('leave', conn);
+    });
     conn.on('goodbye', (reason) => this.emit('goodbye', conn, reason));
-    conn.on('message', (type, payload) => this.emit('message', conn, type, payload));
+    conn.on('message', (type, payload) => {
+      if (PAIRING_MESSAGE_TYPES.has(type)) this.#onPairingMessage(conn, type, payload);
+      else this.emit('message', conn, type, payload);
+    });
     conn.on('close', (info) => this.#onClose(conn, info));
     return conn;
   }
@@ -173,17 +232,23 @@ export class SendspinServer extends EventEmitter {
     }
     this.#clients.set(id, conn);
     const roles = this.#allowedRoles(conn);
-    conn.activate({ activities: [], roles });
-    let gid = this.#soloGroups.get(id);
-    if (!gid) {
-      gid = groupId();
-      this.#soloGroups.set(id, gid);
-    }
-    conn.groupUpdate({ playbackState: 'stopped', groupId: gid, groupName: info.name });
-    this.#log.info(`[sendspin] client "${cleanText(info.name, 64)}" (${id.slice(0, 8)}) connected ${conn.direction}; roles [${roles.join(', ')}]${this.isApproved(id) ? '' : ' (not approved)'}`);
+    const staged = this.#store.stagedPairingPsk(id);
+    const stagedMatch = staged && conn.pskCategory === PSK_CATEGORY.PAIRING && conn.pskId === staged.pskId && this.#offers(conn, METHODS.PAIRING_PSK);
+    if (stagedMatch) this.#activatePairing(conn, this.#newEntry(conn, METHODS.PAIRING_PSK, null, { staged: true }), { pairingPsk: staged.psk, activeRoles: roles });
+    else conn.activate({ activities: [], roles });
+    this.#log.info(`[sendspin] client "${cleanText(info.name, 64)}" (${id.slice(0, 8)}) connected ${conn.direction}; roles [${roles.join(', ')}] (${this.#store.trustState(id)})`);
     this.#syncMismatch(conn);
+    this.#remember(conn);
     this.emit('client', conn, info);
     if (conn.credentialMismatch) this.emit('credential-mismatch', conn);
+    if (!staged || stagedMatch) return;
+    if (conn.offeredCategory === PSK_CATEGORY.PAIRING) {
+      this.#log.warn(`[sendspin] ${id.slice(0, 8)} did not accept the staged pairing token; dropping it`);
+      this.#store.unstagePairingPsk(id).catch((err) => this.#log.warn(`[sendspin] trust store update failed: ${err.message}`));
+      this.#setStatus(id, { status: 'aborted', method: METHODS.PAIRING_PSK, format: null, reason: 'token_rejected' });
+    } else if (this.#offers(conn, METHODS.PAIRING_PSK)) {
+      this.#pairLive(conn, { pairingPsk: staged.psk, pskId: staged.pskId }, { staged: true });
+    }
   }
 
   #syncMismatch(conn) {
@@ -217,8 +282,10 @@ export class SendspinServer extends EventEmitter {
 
   #onClose(conn, info) {
     this.#pending.delete(conn);
+    this.#pairingClosed(conn);
     if (this.#clients.get(conn.clientId) === conn) {
       this.#clients.delete(conn.clientId);
+      this.#forgetLive(conn, info);
       this.emit('client-removed', conn, info);
     }
     if (conn.url) this.#afterDialClose(conn, info);
@@ -328,6 +395,7 @@ export class SendspinServer extends EventEmitter {
 
   async stop() {
     this.#stopping = true;
+    this.#clearTimers();
     for (const dial of this.#dials.values()) {
       clearTimeout(dial.timer);
       dial.wanted = false;
@@ -360,5 +428,380 @@ export class SendspinServer extends EventEmitter {
       this.#http = null;
     }
     await this.#store?.flush();
+    await this.#saveKnown();
+  }
+
+  #clearTimers() {
+    for (const entry of this.#pairings.values()) clearTimeout(entry.timer);
+    clearTimeout(this.#knownTimer);
+    this.#knownTimer = null;
+  }
+
+  // ---- pairing ----
+
+  #offers(conn, method) {
+    return Object.hasOwn(parseSupportedPairMethods(conn.info?.supportedPairMethods).methods, method);
+  }
+
+  #cooldown(clientId) {
+    let c = this.#cooldowns.get(clientId);
+    if (!c) {
+      c = new Cooldown(this.#opts.cooldown);
+      this.#cooldowns.set(clientId, c);
+    }
+    return c;
+  }
+
+  #liveEntry(clientId) {
+    const e = this.#pairings.get(clientId);
+    return e && !e.finished && this.#clients.get(clientId) === e.conn ? e : null;
+  }
+
+  #newEntry(conn, method, format, extra = {}) {
+    const prev = this.#pairings.get(conn.clientId);
+    if (prev) clearTimeout(prev.timer);
+    const entry = {
+      conn, method, format, attempt: null, timer: null, finished: false, finishedAt: null, cancelRequested: false,
+      fromLongTerm: conn.pskCategory === PSK_CATEGORY.LONG_TERM, playback: conn.activities.includes('playback'),
+      status: { status: 'waiting', method, format, round: 0, message: null, reason: null, retryAfterMs: 0 },
+      ...extra,
+    };
+    this.#pairings.set(conn.clientId, entry);
+    this.#emitStatus(conn.clientId);
+    return entry;
+  }
+
+  #keepsPlayback(conn, category) {
+    if (!conn.activities.includes('playback')) return false;
+    if (category === PSK_CATEGORY.LONG_TERM) return true;
+    return Boolean(conn.info.unpairedAccess) && !(category === PSK_CATEGORY.SENTINEL && this.#store.isPaired(conn.clientId));
+  }
+
+  #pairingActivationFor(conn, entry, category) {
+    const playback = this.#keepsPlayback(conn, category);
+    return pairingActivation({ method: entry.method, format: entry.format, playback, activeRoles: playback ? conn.activeRoles : [] });
+  }
+
+  #createAttempt(conn, entry, pairingPsk = null) {
+    entry.attempt = createPairingAttempt({
+      method: entry.method, format: entry.format, suite: conn.suite, handshakeHash: conn.handshakeHash,
+      pairingIndex: conn.nextPairingIndex(), clientId: conn.clientId, pairingPsk, cooldown: this.#cooldown(conn.clientId),
+    });
+    entry.status.deadline = entry.attempt.deadline;
+    this.#armPairingTimer(entry);
+  }
+
+  #activatePairing(conn, entry, { pairingPsk = null, activeRoles } = {}) {
+    this.#createAttempt(conn, entry, pairingPsk);
+    const act = activeRoles === undefined
+      ? this.#pairingActivationFor(conn, entry, conn.pskCategory)
+      : entry.attempt.activation({ activeRoles });
+    conn.activate(toActivate(act));
+    this.#log.info(`[sendspin] ${conn.clientId.slice(0, 8)} pairing started (${[entry.method, entry.format].filter(Boolean).join('/')})`);
+  }
+
+  #rehandshakeIntoPairing(conn, entry, { psk, category, pairingPsk = null }) {
+    entry.rehandshaking = true;
+    const activation = toActivate(this.#pairingActivationFor(conn, entry, category));
+    conn.rehandshake({ psk, category, activation, beforeActivate: () => this.#createAttempt(conn, entry, pairingPsk) })
+      .then(() => {
+        entry.rehandshaking = false;
+        this.#log.info(`[sendspin] ${conn.clientId.slice(0, 8)} pairing started after re-handshake (${entry.method})`);
+        if (entry.cancelRequested) this.#runStep(entry, entry.attempt.cancel());
+      })
+      .catch((err) => this.#log.debug(`[sendspin] pairing re-handshake failed: ${err.message}`));
+  }
+
+  #pairLive(conn, token, { staged = false } = {}) {
+    const entry = this.#newEntry(conn, METHODS.PAIRING_PSK, null, { staged });
+    if (conn.pskCategory === PSK_CATEGORY.PAIRING && conn.pskId === token.pskId) {
+      this.#activatePairing(conn, entry, { pairingPsk: token.pairingPsk });
+    } else {
+      this.#rehandshakeIntoPairing(conn, entry, { psk: token.pairingPsk, category: PSK_CATEGORY.PAIRING, pairingPsk: token.pairingPsk });
+    }
+    return entry;
+  }
+
+  #requireIdle(conn) {
+    if (this.#liveEntry(conn.clientId)) {
+      throw new PairingInputError('pairing_in_progress', 'a pairing attempt already runs for this device');
+    }
+    if (conn.rehandshaking) throw new PairingInputError('pairing_in_progress', 'a re-handshake is running on this connection');
+  }
+
+  async pairWithToken(tokenText, clientId = null) {
+    const token = decodePskToken(tokenText);
+    if (clientId) assertTokenForClient(token, clientId);
+    const conn = this.#clients.get(token.clientId);
+    if (!conn?.isActivated || !conn.isOpen) {
+      await this.#store.stagePairingPsk(token.clientId, token.pairingPsk);
+      this.#log.info(`[sendspin] pairing token staged for ${token.clientId.slice(0, 8)} (used on its next connection)`);
+      return { result: 'staged', clientId: token.clientId, status: null };
+    }
+    assertTokenForClient(token, conn.clientId);
+    if (!this.#offers(conn, METHODS.PAIRING_PSK)) throw new PairingInputError('method_not_supported', 'the device does not offer pairing_psk');
+    this.#requireIdle(conn);
+    this.#pairLive(conn, token);
+    return { result: 'pairing', clientId: conn.clientId, status: this.getPairingStatus(conn.clientId) };
+  }
+
+  startCodePairing(clientId, { format = FORMATS.DIGITS } = {}) {
+    const conn = this.#clients.get(clientId);
+    if (!conn?.isActivated || !conn.isOpen) throw new PairingInputError('not_connected', 'the device is not connected');
+    this.#requireIdle(conn);
+    const choice = chooseCodeMethod(parseSupportedPairMethods(conn.info.supportedPairMethods).methods, { canScanQr: format === FORMATS.QR_CODE });
+    if (!choice) throw new PairingInputError('method_not_supported', 'the device offers no pairing code method');
+    const entry = this.#newEntry(conn, choice.method, choice.format ?? null);
+    if (conn.pskCategory === PSK_CATEGORY.SENTINEL) this.#activatePairing(conn, entry);
+    else this.#rehandshakeIntoPairing(conn, entry, { psk: SENTINEL_PSK, category: PSK_CATEGORY.SENTINEL });
+    return this.getPairingStatus(clientId);
+  }
+
+  submitPairingCode(clientId, code) {
+    const entry = this.#liveEntry(clientId);
+    if (!entry?.attempt) throw new PairingInputError('no_pairing', 'no pairing attempt for this device');
+    this.#runStep(entry, entry.attempt.submitCode(code));
+    return this.getPairingStatus(clientId);
+  }
+
+  cancelPairing(clientId) {
+    const entry = this.#pairings.get(clientId);
+    if (!entry) throw new PairingInputError('no_pairing', 'no pairing attempt for this device');
+    if (!entry.finished) {
+      if (entry.rehandshaking) entry.cancelRequested = true;
+      else this.#runStep(entry, entry.attempt.cancel());
+    }
+    return this.getPairingStatus(clientId);
+  }
+
+  getPairingStatus(clientId) {
+    const entry = this.#pairings.get(clientId);
+    if (!entry) return null;
+    if (entry.finished && Date.now() - entry.finishedAt > PAIRING_STATUS_TTL_MS) return null;
+    const s = entry.status;
+    let digits = s.format === FORMATS.DIGITS ? DYNAMIC_DIGITS : null;
+    if (s.method === METHODS.STATIC) digits = STATIC_DIGITS;
+    const retryAfterMs = entry.finished ? 0 : Math.max(s.retryAfterMs ?? 0, this.#cooldowns.get(clientId)?.remainingMs() ?? 0);
+    return {
+      status: s.status, method: s.method, format: s.format ?? null, digits, round: s.round ?? 0, retryAfterMs,
+      message: s.message ?? null, reason: s.reason ?? null, deadline: entry.finished ? null : (entry.attempt?.deadline ?? null),
+    };
+  }
+
+  #setStatus(clientId, patch) {
+    let entry = this.#pairings.get(clientId);
+    if (!entry) {
+      entry = { conn: null, method: patch.method, format: patch.format, attempt: null, timer: null, finished: true, finishedAt: Date.now(), status: {} };
+      this.#pairings.set(clientId, entry);
+    }
+    Object.assign(entry.status, patch);
+    if (['paired', 'aborted'].includes(entry.status.status) && !entry.finished) {
+      entry.finished = true;
+      entry.finishedAt = Date.now();
+      clearTimeout(entry.timer);
+    }
+    this.#emitStatus(clientId);
+  }
+
+  #emitStatus(clientId) {
+    this.emit('pairing', clientId, this.getPairingStatus(clientId));
+  }
+
+  #armPairingTimer(entry) {
+    clearTimeout(entry.timer);
+    entry.timer = null;
+    const deadline = entry.attempt?.deadline;
+    if (!entry.attempt?.active || deadline == null) return;
+    entry.timer = setTimeout(() => this.#runStep(entry, entry.attempt.expire()), Math.max(0, deadline - Date.now()));
+    entry.timer.unref?.();
+  }
+
+  #onPairingMessage(conn, type, payload) {
+    const entry = this.#pairings.get(conn.clientId);
+    if (!entry?.attempt || entry.conn !== conn) return;
+    let step;
+    try {
+      step = entry.attempt.onMessage(type, payload);
+    } catch (err) {
+      if (!(err instanceof PairingProtocolError)) throw err;
+      this.#log.info(`[sendspin] ${conn.clientId.slice(0, 8)} pairing protocol error; closing (${cleanText(err.message, 120)})`);
+      this.#setStatus(conn.clientId, { status: 'aborted', reason: 'protocol_error' });
+      conn.close(1002);
+      return;
+    }
+    this.#runStep(entry, step);
+  }
+
+  #runStep(entry, step) {
+    if (!step) return;
+    const { conn } = entry;
+    for (const m of step.send) conn.sendJson(m.type, m.payload);
+    const ev = step.event;
+    if (ev && ev.kind !== 'ignored') {
+      if (ev.kind === 'persist') this.#persist(entry, ev.record);
+      else if (ev.kind === 'aborted') this.#leavePairing(entry, ev);
+      this.#setStatus(conn.clientId, statusPatch(ev));
+    }
+    this.#armPairingTimer(entry);
+  }
+
+  #persist(entry, record) {
+    const { conn } = entry;
+    this.#store.storePairing({ clientId: record.clientId, psk: record.psk, method: record.method, name: conn.info?.name })
+      .then(() => {
+        if (!conn.isOpen) return;
+        const step = entry.attempt.persisted();
+        for (const m of step.send) conn.sendJson(m.type, m.payload);
+        if (entry.staged) this.#store.unstagePairingPsk(conn.clientId).catch(() => {});
+        this.#setStatus(conn.clientId, { status: 'paired' });
+        this.#log.info(`[sendspin] ${conn.clientId.slice(0, 8)} paired (${record.method})`);
+        this.emit('paired', conn.clientId, { method: record.method });
+        const playback = entry.playback && conn.activities.includes('playback');
+        const roles = conn.negotiatedRoles.filter((r) => this.#opts.roles.includes(r));
+        return conn.rehandshake({ psk: record.psk, category: PSK_CATEGORY.LONG_TERM, activation: { activities: playback ? ['playback'] : [], roles } })
+          .then(() => this.#remember(conn));
+      })
+      .catch((err) => {
+        this.#log.warn(`[sendspin] ${conn.clientId.slice(0, 8)} pairing not completed: ${err.message}`);
+        if (!entry.finished) this.#setStatus(conn.clientId, { status: 'aborted', reason: 'storage_failed' });
+        conn.close(1011);
+      });
+  }
+
+  #leavePairing(entry, ev) {
+    const { conn } = entry;
+    if (ev.by === 'client' && ev.reason === 'concurrent_attempt') return;
+    if (!conn.isOpen || conn.rehandshaking) return;
+    const activities = conn.activities.filter((a) => a !== 'pairing');
+    if (entry.fromLongTerm && this.#store.isPaired(conn.clientId)) {
+      const record = this.#store.record(conn.clientId);
+      const roles = conn.negotiatedRoles.filter((r) => this.#opts.roles.includes(r));
+      conn.rehandshake({ psk: record.psk, category: PSK_CATEGORY.LONG_TERM, activation: { activities, roles } })
+        .catch((err) => this.#log.debug(`[sendspin] return to the long-term PSK failed: ${err.message}`));
+      return;
+    }
+    conn.activate({ activities, roles: this.#allowedRoles(conn) });
+  }
+
+  #pairingClosed(conn) {
+    const entry = this.#pairings.get(conn.clientId);
+    if (!entry || entry.conn !== conn || entry.finished) return;
+    if (entry.staged && entry.rehandshaking) {
+      this.#store.unstagePairingPsk(conn.clientId).catch(() => {});
+      this.#setStatus(conn.clientId, { status: 'aborted', reason: 'token_rejected' });
+    } else {
+      this.#setStatus(conn.clientId, { status: 'aborted', reason: 'disconnected' });
+    }
+  }
+
+  async unpair(clientId) {
+    const conn = this.#clients.get(clientId);
+    if (conn?.isActivated && conn.isPaired && !conn.rehandshaking) conn.sendJson('server/unpair', {});
+    const removed = await this.#store.unpair(clientId);
+    if (conn && !conn.isPaired) conn.credentialMismatch = false;
+    if (removed) {
+      this.#log.info(`[sendspin] ${clientId.slice(0, 8)} unpaired`);
+      this.emit('unpaired', clientId);
+    }
+    return removed;
+  }
+
+  async forget(clientId) {
+    const entry = this.#liveEntry(clientId);
+    if (entry && !entry.finished) this.cancelPairing(clientId);
+    await this.unpair(clientId);
+    await this.#store.revokeApproval(clientId);
+    await this.#store.unstagePairingPsk(clientId);
+    this.#pairings.delete(clientId);
+    this.#cooldowns.delete(clientId);
+    this.#known.delete(clientId);
+    this.#scheduleKnownSave();
+  }
+
+  // ---- device listing ----
+
+  devices() {
+    const ids = new Set([...this.#known.keys(), ...this.#clients.keys(), ...this.#store.listRecords().map((r) => r.clientId),
+      ...this.#store.listApprovals().map((a) => a.clientId)]);
+    return [...ids].map((id) => this.device(id));
+  }
+
+  device(clientId) {
+    const conn = this.#clients.get(clientId);
+    const live = conn?.isActivated ? conn : null;
+    const known = this.#known.get(clientId) ?? {};
+    const pairing = this.getPairingStatus(clientId);
+    const stored = this.#store.record(clientId)?.name ?? this.#store.approval(clientId)?.name ?? null;
+    let connection;
+    if (pairing && !this.#pairings.get(clientId).finished) connection = 'pairing';
+    else if (live) connection = live.left || live.state?.available === false ? 'in-use-elsewhere' : 'online';
+    else connection = OTHER_SERVER_GOODBYES.has(known.lastGoodbye) ? 'other-server' : 'offline';
+    return {
+      clientId,
+      name: stored ?? live?.info.name ?? known.name ?? null,
+      deviceInfo: live ? publicDeviceInfo(live.info.deviceInfo) : (known.deviceInfo ?? publicDeviceInfo()),
+      trust: this.#store.trustState(clientId),
+      connection,
+      unpairedAccess: live ? live.info.unpairedAccess : (known.unpairedAccess ?? false),
+      pairMethods: live ? Object.keys(parseSupportedPairMethods(live.info.supportedPairMethods).methods) : (known.pairMethods ?? []),
+      roles: live ? [...live.activeRoles] : [],
+      address: live ? connAddress(live) : (known.address ?? null),
+      url: live?.url ?? known.url ?? null,
+      lastSeen: live ? Date.now() : (known.lastSeen ?? null),
+      pairing,
+    };
+  }
+
+  #remember(conn) {
+    const prev = this.#known.get(conn.clientId);
+    this.#known.set(conn.clientId, {
+      clientId: conn.clientId, name: conn.info.name, deviceInfo: publicDeviceInfo(conn.info.deviceInfo),
+      pairMethods: Object.keys(parseSupportedPairMethods(conn.info.supportedPairMethods).methods), unpairedAccess: conn.info.unpairedAccess,
+      address: connAddress(conn), url: conn.url ?? prev?.url ?? null, lastSeen: Date.now(), lastGoodbye: null,
+    });
+    this.#scheduleKnownSave();
+  }
+
+  #forgetLive(conn, info) {
+    const k = this.#known.get(conn.clientId);
+    if (!k) return;
+    k.lastSeen = Date.now();
+    k.lastGoodbye = info.goodbye ?? null;
+    this.#scheduleKnownSave();
+  }
+
+  async #loadKnown() {
+    this.#known.clear();
+    let data;
+    try {
+      data = JSON.parse(await fsp.readFile(path.join(this.#opts.dataDir, KNOWN_DEVICES_FILE), 'utf8'));
+    } catch (err) {
+      if (err.code !== 'ENOENT') this.#log.warn(`[sendspin] ignoring ${KNOWN_DEVICES_FILE}: ${err.message}`);
+      return;
+    }
+    for (const d of Array.isArray(data.devices) ? data.devices : []) {
+      if (isKeyId(d?.clientId)) this.#known.set(d.clientId, parseKnown(d));
+    }
+  }
+
+  #scheduleKnownSave() {
+    if (this.#knownTimer || this.#stopping) return;
+    this.#knownTimer = setTimeout(() => {
+      this.#knownTimer = null;
+      this.#saveKnown().catch((err) => this.#log.warn(`[sendspin] saving ${KNOWN_DEVICES_FILE} failed: ${err.message}`));
+    }, 500);
+    this.#knownTimer.unref?.();
+  }
+
+  #saveKnown() {
+    const devices = [...this.#known.values()].sort((a, b) => (b.lastSeen ?? 0) - (a.lastSeen ?? 0)).slice(0, MAX_KNOWN_DEVICES);
+    const file = path.join(this.#opts.dataDir, KNOWN_DEVICES_FILE);
+    const body = JSON.stringify({ version: 1, devices }, null, 2) + '\n';
+    this.#knownWrite = this.#knownWrite.catch(() => {}).then(async () => {
+      const tmp = `${file}.${crypto.randomBytes(6).toString('hex')}.tmp`;
+      await fsp.writeFile(tmp, body, { mode: 0o600 });
+      await fsp.rename(tmp, file);
+    });
+    return this.#knownWrite;
   }
 }

@@ -205,8 +205,10 @@ export class SendspinConnection {
           // server_transmitted is stamped immediately before encryption; guards: available, playback, player state, format listed
   sendAudioChunk(timestampUs, frame) /* -> bytes counted for buffer accounting (13 + frame); send_ahead stamped right before
           encryption, saturating; all fragments encrypted+sent synchronously (one fragmented message in flight) */;
-  rehandshake({ psk, category, activation }) /* -> Promise; msg1/msg2 as encrypted noise/handshake, old-key app messages dropped,
-          keys swapped after msg2, then activate(activation) is the first message under the new keys */;
+  rehandshake({ psk, category, activation, beforeActivate? }) /* -> Promise; activation validated against the new category and
+          required stream/end sent BEFORE msg1; msg1/msg2 as encrypted noise/handshake, old-key app messages dropped, keys swapped
+          after msg2, pairingIndex reset, beforeActivate() (creates the attempt on the new h), then activate(activation) */;
+  pskId, offeredCategory /*msg1 category before a Sentinel fallback*/, pairingIndex, nextPairingIndex(), rehandshaking;
   close(code?, reason?);
 }
 // server.js
@@ -215,15 +217,32 @@ export function reconnectDecision(closeInfo) /* -> 'now' | 'later' | 'never' | '
 export class SendspinServer {          // EventEmitter
   constructor({ dataDir, name, languages, host = '0.0.0.0', port = 8927, path = '/sendspin', roles = ['player@v1'] /*roles we
                 activate when allowed*/, logger, maxClients = 64, maxPending = 32, reconnect: { minMs, maxMs, concurrentMs, stableMs },
-                timeouts, discovery = false | SendspinDiscovery, allowLoopback = false });
+                timeouts, discovery = false | SendspinDiscovery, allowLoopback = false, cooldown? /*{initialMs, maxMs}, tests*/ });
   async start(); async stop();        // stop: stream/end, close 1001 all, goodbye mDNS, flush the store
   serverId, port, name, clients /*Map copy*/, getClient(id), trustStore;
   connectTo(wsUrl, { source }) /* ws:// + path-absolute only; redial per reconnectDecision with exponential back-off */;
   disconnectFrom(wsUrl);
   isApproved(id), approvals, async approve(id, name?) /* TrustStore.approve, activates roles live */, async revoke(id);
   canPlay(id), setPlayback(id, on) /* adds/drops 'playback' (stream/end first) */;
-  events: 'client'(conn, info) after the initial activate + solo group/update | 'client-removed'(conn, closeInfo) |
-          'credential-mismatch'(conn) | 'state'|'time'|'command'|'leave'|'goodbye'|'message'(conn, ...) |
+  // pairing (errors are PairingInputError, .code: malformed_token | unsupported_token_version | wrong_client |
+  //   method_not_supported | pairing_in_progress | not_connected | no_pairing | invalid_code | cooldown (.retryAfterMs) | not_ready)
+  async pairWithToken(token, clientId?) /* -> { result: 'pairing'|'staged', clientId, status } — live: re-handshake to 'pr'
+          unless already keyed by that PSK; offline: TrustStore.stagePairingPsk, used at the next handshake */;
+  startCodePairing(id, { format = 'digits' | 'qr_code' }) /* -> PairStatus; re-handshakes lt/pr -> Sentinel first */;
+  submitPairingCode(id, code) /* -> PairStatus */; cancelPairing(id) /* pair/abort user_cancelled + leave; idempotent */;
+  getPairingStatus(id) /* -> PairStatus | null (terminal states readable 60 s) */;
+  // PairStatus = { status: 'waiting'|'pending'|'need_code'|'wrong_code'|'paired'|'aborted', method, format, digits /*6|8|null*/,
+  //   round, retryAfterMs, message /*device text, plain*/, reason /*pair/abort reason | timeout | disconnected |
+  //   token_rejected | protocol_error | storage_failed*/, deadline /*ms epoch|null*/ }   (field names = docs/API/rooms.md)
+  async unpair(id) /* server/unpair if lt-connected, then store.unpair */; async forget(id) /* + revoke, unstage, drop cache */;
+  devices() /* -> Device[] */; device(id) /* -> Device */;
+  // Device = { clientId, name, deviceInfo: {productName, manufacturer, softwareVersion}, trust /*TrustStore.trustState*/,
+  //   connection: 'online'|'offline'|'other-server'|'in-use-elsewhere'|'pairing', unpairedAccess, pairMethods, roles,
+  //   address, url /*dial URL if any*/, lastSeen, pairing /*PairStatus|null*/ }  — known-but-offline devices persist in
+  //   <dataDir>/known-devices.json (name, deviceInfo, pairMethods, unpairedAccess, address, url, lastSeen, lastGoodbye)
+  events: 'client'(conn, info) after the initial activate | 'client-removed'(conn, closeInfo) |
+          'credential-mismatch'(conn) | 'state'|'time'|'command'|'leave'|'goodbye'|'message'(conn, ...) /* pairing messages
+          are consumed, not re-emitted */ | 'pairing'(id, PairStatus) | 'paired'(id, { method }) | 'unpaired'(id) |
           'discovered'(svc) | 'discovery-lost'(svc);
 }
 // discovery.js  (own mDNS on node:dgram, no dependency; IPv4 multicast; bounded parser)
@@ -302,8 +321,7 @@ the same shape (`test/helpers/sendspin-fake-member.mjs`). What the core reads/ca
 Wiring (orchestrator): `rooms.attach(conn)` on the server's `client` event (also for
 unapproved clients: they get their room, roles follow on approval);
 `rooms.detach(id)` on `client-removed`. The room manager owns `group_id` /
-`group_name`: once it is wired, `server.js` should drop its own solo
-`group/update` at hello (today the client sees two group ids in a row).
+`group_name`; `server.js` no longer sends its own solo `group/update` at hello.
 An initial `available: false` gets `initialUnavailableGraceMs` before the speaker
 is parked, because the reference daemon reports unavailable until its clock syncs.
 
@@ -608,6 +626,13 @@ second test instance on another port for the owner.
   aiosendspin-client run (pcm 48k + flac 44.1k) counted 0 late chunks, 0 gaps across the
   boundary, ~295 ms minimum lead, metadata current → scheduled in order.
 
+- 2026-11-12 — pairing wired into `server.js`/`connection.js`: token (live re-handshake to `pr` or staged), dynamic/static
+  codes (Sentinel re-handshake from `lt`/`pr`, abort returns to `lt`), per-client cooldown, deadline timer, protocol error ->
+  silent close, persist-before-ack, `lt` re-handshake keeps a running stream; `unpair`/`forget`, `devices()` with a
+  `known-devices.json` cache; solo `group/update` at hello removed (rooms own it). 13 tests
+  (`sendspin-pairing-integration`, client helper `test/helpers/sendspin-test-client.mjs`). E2E against `sendspin daemon`:
+  dynamic code (read from its log), live token and staged token all pair, a daemon restart reconnects under `lt`.
+
 ### Reference daemon notes (sendspin CLI + aiosendspin client, Nov 2026)
 
 - Needs PortAudio; this host has none installed. Spike recipe: `apt-get download
@@ -630,3 +655,7 @@ second test instance on another port for the owner.
   `min_buffer_ms` 250, `required_lead_time_ms` 250, `buffer_capacity` 32 000 000, volume
   25, commands volume/mute/set_output_delay. Starts output after 8 chunks (0.2 s).
 - Its listener does not reject an `Origin` header (spec MUST); our dialer never sends one.
+- Pairing: offers `pairing_psk` and `dynamic_pairing_code` (digits, `display`); static is superseded by dynamic. The
+  dynamic code is only logged (`Pairing required: enter pairing code 314-213 on the server.`). It has no pairing PSK
+  by default (`pairing_psk: null` in `<settings-dir>/pairing-store-daemon.json`) and no way to show a token; for the
+  token flow seed `pairing_psk: { psk_id, psk }` in that file before start and build the token from it + the client id.

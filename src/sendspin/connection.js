@@ -3,7 +3,7 @@ import winston from 'winston';
 import {
   NoiseInitiator, NoiseError, SUITES, encodeMsg1Payload, parseMsg2Payload, packHandshake, unpackHandshake,
 } from './noise.js';
-import { SENTINEL_PSK, PSK_CATEGORY, pskId, decodeKeyId, isKeyId } from './keys.js';
+import { SENTINEL_PSK, SENTINEL_PSK_ID, PSK_CATEGORY, pskId, decodeKeyId, isKeyId } from './keys.js';
 import { MSG, WireError, Reassembler, fragment, frame, decodeJson, encodeAudioChunk, SEND_AHEAD_MAX } from './wire.js';
 
 export const PROTOCOL_VERSION = 1;
@@ -250,6 +250,9 @@ export class SendspinConnection extends EventEmitter {
     this.clientId = null;
     this.suite = null;
     this.pskCategory = null;
+    this.offeredCategory = null;
+    this.pskId = null;
+    this.pairingIndex = 0;
     this.credentialMismatch = false;
     this.handshakeHash = null;
     this.info = null;
@@ -302,6 +305,14 @@ export class SendspinConnection extends EventEmitter {
     if (this.credentialMismatch) return false;
     if (this.pskCategory === PSK_CATEGORY.LONG_TERM) return true;
     return Boolean(this.info?.unpairedAccess);
+  }
+
+  get rehandshaking() {
+    return Boolean(this.#rehandshake && !this.#rehandshake.done);
+  }
+
+  nextPairingIndex() {
+    return ++this.pairingIndex;
   }
 
   hasRole(family) {
@@ -404,6 +415,8 @@ export class SendspinConnection extends EventEmitter {
       psk: resolved.psk,
     });
     this.pskCategory = resolved.category;
+    this.offeredCategory = resolved.category;
+    this.pskId = pskId(resolved.psk);
     const msg1 = this.#initiator.writeMessage1(encodeMsg1Payload(pskId(resolved.psk), resolved.category));
     this.#phase = 'msg2';
     this.#ws.send(serverInit, { binary: false });
@@ -431,8 +444,10 @@ export class SendspinConnection extends EventEmitter {
     this.#initiator = null;
     this.#clientInitRaw = null;
     this.#phase = 'hello';
+    this.pairingIndex = 0;
     if (mismatch) {
       this.pskCategory = PSK_CATEGORY.SENTINEL;
+      this.pskId = SENTINEL_PSK_ID;
       this.#mismatchCheck = Promise.resolve(this.#hasPairingRecord(this.clientId)).then((has) => {
         this.credentialMismatch = Boolean(has);
         if (has) this.#log.warn(`[sendspin] ${this.#tag()} could not use its pairing record (credential mismatch); re-pair it`);
@@ -574,31 +589,31 @@ export class SendspinConnection extends EventEmitter {
     return true;
   }
 
-  #allowedSet(acts, withPlayback = false) {
+  #allowedSet(acts, withPlayback, category, mismatch) {
     const set = withPlayback ? new Set([...acts, 'playback']) : new Set(acts);
-    if (this.pskCategory === PSK_CATEGORY.LONG_TERM) return !set.has('pairing');
-    return !set.has('playback') || this.playbackAllowed;
+    if (category === PSK_CATEGORY.LONG_TERM) return !set.has('pairing');
+    return !set.has('playback') || (!mismatch && Boolean(this.info?.unpairedAccess));
   }
 
-  #checkPairing(acts, pairing) {
+  #checkPairing(acts, pairing, category) {
     if (!acts.includes('pairing')) {
       if (pairing) throw new SendspinError('pairing object without the pairing activity');
       return;
     }
     if (!isObject(pairing) || !PAIR_METHODS.includes(pairing.method)) throw new SendspinError('pairing activity needs a pairing method');
     if (!Object.hasOwn(this.info.supportedPairMethods, pairing.method)) throw new SendspinError('client does not offer this pairing method');
-    if ((pairing.method === 'pairing_psk') !== (this.pskCategory === PSK_CATEGORY.PAIRING)) throw new SendspinError('pairing_psk iff the pairing PSK matched');
+    if ((pairing.method === 'pairing_psk') !== (category === PSK_CATEGORY.PAIRING)) throw new SendspinError('pairing_psk iff the pairing PSK matched');
     if ((pairing.method === 'dynamic_pairing_code') !== PAIR_FORMATS.includes(pairing.format)) throw new SendspinError('format belongs to dynamic_pairing_code only');
   }
 
-  #checkActivation(activities, nextRoles, pairing) {
+  #checkActivation(activities, nextRoles, pairing, category = this.pskCategory, mismatch = this.credentialMismatch) {
     if (!this.info) throw new SendspinError('server/activate before client/hello');
     if (!Array.isArray(activities) || !activities.every((a) => ACTIVITIES.includes(a))) throw new SendspinError('invalid activities');
     if (!nextRoles.every((r) => this.negotiatedRoles.includes(r))) throw new SendspinError('role was not negotiated with this client');
-    if (!this.#allowedSet(activities) || (nextRoles.length && !this.#allowedSet(activities, true))) {
-      throw new SendspinError(this.credentialMismatch ? 'credential mismatch: re-pair before playback' : 'activity set not allowed for this session');
+    if (!this.#allowedSet(activities, false, category, mismatch) || (nextRoles.length && !this.#allowedSet(activities, true, category, mismatch))) {
+      throw new SendspinError(mismatch ? 'credential mismatch: re-pair before playback' : 'activity set not allowed for this session');
     }
-    this.#checkPairing(activities, pairing);
+    this.#checkPairing(activities, pairing, category);
     if (this.#rehandshake && !this.#rehandshake.done) throw new SendspinError('re-handshake in progress');
   }
 
@@ -707,8 +722,13 @@ export class SendspinConnection extends EventEmitter {
     return plaintext.length;
   }
 
-  rehandshake({ psk, category, activation = {} }) {
+  rehandshake({ psk, category, activation = {}, beforeActivate = null }) {
     if (!this.#activated || this.#rehandshake) throw new SendspinError('re-handshake needs an activated, idle connection');
+    const acts = activation.activities ?? this.activities;
+    const nextRoles = activation.roles ?? this.activeRoles;
+    this.#checkActivation(acts, nextRoles, activation.pairing, category, false);
+    const ended = this.#streamsEndedBy(acts, nextRoles);
+    if (ended.length) this.streamEnd(ended);
     const initiator = new NoiseInitiator({
       suite: this.suite,
       staticKeyPair: { publicKey: this.#identity.publicKey, privateKey: this.#identity.privateKey },
@@ -717,7 +737,7 @@ export class SendspinConnection extends EventEmitter {
       psk,
     });
     const msg1 = initiator.writeMessage1(encodeMsg1Payload(pskId(psk), category));
-    const state = { done: false, initiator, category, activation };
+    const state = { done: false, initiator, category, activation, beforeActivate, pskId: pskId(psk) };
     state.promise = new Promise((resolve, reject) => { state.resolve = resolve; state.reject = reject; });
     state.promise.catch(() => {});
     this.#sendJsonNow('noise/handshake', { data: msg1.toString('base64url') });
@@ -742,10 +762,13 @@ export class SendspinConnection extends EventEmitter {
     this.#reassembler = new Reassembler({ maxBytes: MAX_INBOUND_MESSAGE });
     this.handshakeHash = state.initiator.handshakeHash;
     this.pskCategory = state.category;
+    this.pskId = state.pskId;
+    this.pairingIndex = 0;
     this.credentialMismatch = false;
     state.done = true;
     this.#rehandshake = null;
     this.#disarm();
+    state.beforeActivate?.();
     this.activate(state.activation);
     state.resolve();
   }
