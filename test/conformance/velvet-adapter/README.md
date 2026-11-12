@@ -31,7 +31,11 @@ client are derived from `--server-id`/`--client-id` exactly as the harness's
 aiosendspin adapters derive theirs, so pre-paired clients take the `lt` path.
 Clients with their own identity connect with the Sentinel PSK; the adapter
 approves every client for unpaired access (the same policy as the aiosendspin
-server adapter's pairing store). Opus is offered (`supports_opus=True`):
+server adapter's pairing store) and as a source. It offers every role Velvet
+implements (player, controller, metadata, artwork, color, visualizer, source);
+the harness has no visualizer or source scenario yet. All harness peers are
+loopback, so the per-address admission caps are raised to 32 (as in the hostile
+tests). Opus is offered (`supports_opus=True`):
 raw packets from `audio.js`'s Ogg demuxer.
 
 ## Running it

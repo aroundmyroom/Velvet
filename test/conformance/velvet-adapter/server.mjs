@@ -16,7 +16,7 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 const SPEC_REVISION = '8c9577ea8719ad082d051ec13cc73ef15ed68948';
 const ERROR_MARGIN_MS = 10_000;
 const SETTLE_MS = 500;
-const ALL_ROLES = ['player@v1', 'controller@v1', 'metadata@v1', 'artwork@v1', 'color@v1'];
+const ALL_ROLES = ['player@v1', 'controller@v1', 'metadata@v1', 'artwork@v1', 'color@v1', 'visualizer@v1', 'source@v1'];
 
 const PLAYER_SCENARIOS = new Set([
   'client-initiated-pcm', 'server-initiated-pcm', 'server-initiated-pcm-24bit', 'server-initiated-flac',
@@ -374,6 +374,8 @@ async function main() {
   const server = new SendspinServer({
     dataDir, name: args.server_name, languages: ['en'], host: '127.0.0.1', port: Number(args.port), roles: ALL_ROLES,
     logger: log, discovery: false, allowLoopback: true,
+    // Every harness peer is loopback, so per-address caps would count the whole run as one host.
+    maxPendingPerAddress: 32, maxUntrustedPerAddress: 32,
   });
   let rooms = null;
   let target = null;
@@ -409,6 +411,7 @@ async function main() {
     // Harness policy, as in the aiosendspin adapter's pairing store: every
     // connecting implementation is approved for unpaired access.
     server.trustStore.isApproved = () => true;
+    server.trustStore.isSourceAllowed = () => true;
 
     const url = `ws://127.0.0.1:${server.port}/sendspin`;
     if (args.initiator_role === 'client') {

@@ -849,6 +849,9 @@ second test instance on another port for the owner.
   a "follows the room" badge; 17 keys × 12 locales. Tests: `sendspin-sonos` (10, fake SOAP Sonos), REST
   `sendspin-sonos-api` (3, spawned server + fake Sonos via `VELVET_TEST_SONOS`, NODE_ENV=test only). Not yet heard on a
   real Sonos: default delay, `x-rincon-mp3radio` with a chunked endless stream and ICY titles are to be checked by the owner.
+- 2026-11-12 — Conformance re-run on the final branch (adapter offers all 7 roles, source approved, loopback caps 32):
+  aiosendspin 14/14 (opus: its client adapter has no Opus), sendspin-cpp 12/14 + opus (2× client `format` limitation),
+  sendspin-js limited by its client adapter; identical to the previous run, no product regressions.
 
 ### Second test instance (owner)
 
