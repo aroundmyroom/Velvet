@@ -117,7 +117,7 @@ test('a staged token is used on the next connection; reconnecting afterwards is 
   assert.equal(server.trustStore.stagedPairingPsk(c.clientId), null, 'staged PSK consumed');
   c.close();
   await c.closed;
-  await new Promise((r) => setTimeout(r, 50));
+  await c.until(() => !server.getClient(c.clientId));
   const again = new TestClient({ keyPair: c.keyPair, pairingPsk: c.pairingPsk, records: c.records });
   await again.dial(`ws://127.0.0.1:${server.port}/sendspin`);
   t.after(() => again.close());

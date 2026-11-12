@@ -790,6 +790,9 @@ Open `https://music.aroundtheworld.net:3100` (same users as production). Product
   108.3/108.5; DB 137.2 settles a free 68.8. CPU ~0.75 % of one core per room at 30 fps (all types; 1.25 % at 60 fps;
   loudness/spectrum alone 0.2 %). 16 tests (`sendspin-visualizer`); E2E with an aiosendspin visualizer-only client:
   stream/start echo, 30 fps per type, beats every 500 ms on a 120 BPM click track, clear on seek, end on pause.
+- 2026-11-12 — Flaky Rooms tests: the jump test read a stale `rooms.json` (previous test's shuffle, 250 ms debounced
+  save) and waits matched old inbox messages; now keyed on `queueVersion`/new-message counts, clock bounds use measured
+  elapsed time. Test-only; 30/30 under CPU load, `npm test` 3/3.
 (`/home/velvet`, port 3000, `music.service`) is never touched.
 
 ### Reference daemon notes (sendspin CLI + aiosendspin client, Nov 2026)

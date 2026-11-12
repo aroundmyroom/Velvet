@@ -47,12 +47,15 @@ export class RoomClient {
     for (const w of this.waiters.splice(0)) w();
   }
 
-  async until(pred, ms = 8000) {
+  async until(pred, ms = 15000) {
     const deadline = Date.now() + ms;
     for (;;) {
       const v = pred();
       if (v) return v;
-      if (Date.now() > deadline) throw new Error('RoomClient: timed out');
+      if (Date.now() > deadline) {
+        const last = this.inbox.slice(-8).map((m) => m.type).join(', ');
+        throw new Error(`RoomClient: timed out after ${ms} ms (audio ${this.audio}, last messages: ${last})`);
+      }
       await Promise.race([new Promise((r) => this.waiters.push(r)), new Promise((r) => setTimeout(r, 50))]);
     }
   }

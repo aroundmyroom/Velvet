@@ -207,7 +207,7 @@ test('an initial available:false gets a grace period before the speaker is parke
   rm.attach(a2);
   rm.attach(b2);
   a2.setState({ available: true });
-  await sleep(150);
+  await until(() => rm.roomOf(b.clientId) !== id);
   assert.equal(rm.roomOf(a.clientId), id, 'synced in time: stays');
   assert.notEqual(rm.roomOf(b.clientId), id, 'still unavailable: parked');
   await rm.close();

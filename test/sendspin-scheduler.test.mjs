@@ -4,7 +4,7 @@ import fsp from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import {
-  GroupStream, negotiateFormat, memberLeadUs, producible, MIN_LEAD_FLOOR_MS,
+  GroupStream, negotiateFormat, memberLeadUs, producible, serverNow, MIN_LEAD_FLOOR_MS,
 } from '../src/sendspin/scheduler.js';
 import { samplesToUs } from '../src/sendspin/audio.js';
 import {
@@ -147,6 +147,7 @@ test('seek: stream/clear (never stream/end) and a new timeline from the new posi
   await sleep(200);
   const n = m.chunks.length;
   const marker = m.calls.length;
+  const seekAt = serverNow();
   s.play([{ file: F.long, startMs: 2000 }]);
   const after = m.calls.slice(marker);
   assert.equal(after[0].type, 'stream/clear');
@@ -155,7 +156,8 @@ test('seek: stream/clear (never stream/end) and a new timeline from the new posi
   const next = m.chunks[n];
   assert.ok(next.ts - next.at >= s.sendAheadUs - 5_000, 'new timeline starts a full send-ahead out');
   const pos = s.position();
-  assert.ok(pos.positionMs >= 2000 && pos.positionMs < 2300, `position ${pos.positionMs}`);
+  const elapsedMs = (serverNow() - seekAt) / 1000;
+  assert.ok(pos.positionMs >= 2000 && pos.positionMs <= 2000 + elapsedMs, `position ${pos.positionMs} after ${elapsedMs} ms`);
   s.stop();
 });
 
@@ -166,10 +168,12 @@ test('pause and resume: stream/end, remembered position, stream/start on resume'
   s.play([{ file: F.long, id: 'L' }]);
   await until(() => m.chunks.length > 0);
   await until(() => s.position().audibleAtUs !== null && Number(process.hrtime.bigint() / 1000n) > m.chunks[0].ts + 300_000);
+  const t0 = s.t0;
   const pos = s.stop();
+  const playedMs = (serverNow() - t0) / 1000;
   assert.equal(m.calls.at(-1).type, 'stream/end');
   assert.equal(pos.track.id, 'L');
-  assert.ok(pos.positionMs >= 290 && pos.positionMs < 700, `paused at ${pos.positionMs}`);
+  assert.ok(pos.positionMs >= 290 && pos.positionMs <= playedMs, `paused at ${pos.positionMs} after ${playedMs} ms`);
   assert.ok(!s.playing);
   const marker = m.calls.length;
   s.play([{ file: F.long, id: 'L', startMs: pos.positionMs }]);
@@ -265,8 +269,11 @@ test('no audio feed (metadata-only room): the timeline still runs in real time a
   assert.equal(tracks[0].timestampUs, s.t0);
   await sleep(250);
   const mid = s.position();
-  assert.equal(mid.track.id, 'a');
-  assert.ok(mid.positionMs >= 100 && mid.positionMs < 600, `position ${mid.positionMs}`);
+  const relMs = Math.min((mid.atUs - s.t0) / 1000, 1000);
+  assert.ok(relMs >= 100, `timeline at ${relMs} ms`);
+  const [id, expectMs] = relMs < 600 ? ['a', relMs] : ['b', relMs - 600];
+  assert.equal(mid.track.id, id);
+  assert.ok(Math.abs(mid.positionMs - expectMs) <= 2, `position ${mid.positionMs}, clock says ${expectMs}`);
   const endedAt = await ended;
   assert.deepEqual(tracks.map((t) => t.track.id), ['a', 'b']);
   assert.equal(tracks[1].timestampUs, s.t0 + 600_000);

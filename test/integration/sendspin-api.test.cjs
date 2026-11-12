@@ -94,9 +94,10 @@ describe('Velvet Rooms REST', async () => {
     }
     const r = await call('admin', 'POST', '/api/v1/admin/users/allow-mpv-cast', { username: 'caster', allow: true });
     assert.equal(r.status, 200);
-    for (let i = 0; i < 100; i++) {
+    for (const t0 = Date.now(); ;) {
       const s = await call('admin', 'GET', '/api/v1/db/status');
       if (s.body && !s.body.locked && s.body.totalFileCount >= 8) break;
+      if (Date.now() - t0 > 60000) throw new Error(`library scan incomplete: ${JSON.stringify(s.body)}`);
       await new Promise(res => setTimeout(res, 200));
     }
   });
@@ -248,12 +249,13 @@ describe('Velvet Rooms REST', async () => {
     assert.equal(add.body.queueLength, 3);
     assert.ok(add.body.queueVersion > startVersion);
 
+    const ends = inboxCount('stream/end');
     const stop = await call('caster', 'POST', `/api/v1/rooms/${id}/stop`);
     assert.equal(stop.body.state, 'stopped');
     assert.equal(typeof stop.body.stoppedAt.index, 'number');
     assert.equal(typeof stop.body.stoppedAt.positionMs, 'number');
     assert.ok(stop.body.current, 'current names the stopped track');
-    await speaker.waitFor('stream/end');
+    await speaker.until(() => inboxCount('stream/end') > ends);
 
     const state = await call('caster', 'GET', `/api/v1/rooms/${id}/state`);
     assert.equal(state.body.state, 'stopped');
@@ -268,15 +270,21 @@ describe('Velvet Rooms REST', async () => {
     assert.equal(played.body.state, 'playing');
     const shuf = await call('caster', 'POST', `/api/v1/rooms/${id}/shuffle`, { shuffle: true });
     assert.ok(shuf.body.queueVersion > played.body.queueVersion, 'shuffle changes the play order');
-    const saved = await waitFile(f => f.rooms.find(r => r.id === id)?.shuffle === true);
+    const saved = await waitFile(f => {
+      const r = f.rooms.find(x => x.id === id);
+      return r?.shuffle === true && r.queueVersion === shuf.body.queueVersion;
+    });
     const order = saved.rooms.find(r => r.id === id).order;
     const target = order[2];
     const jump = await call('caster', 'POST', `/api/v1/rooms/${id}/jump`, { index: target });
-    assert.equal(jump.status, 200);
+    assert.equal(jump.status, 200, JSON.stringify(jump.body));
     assert.equal(jump.body.index, target);
     assert.equal(jump.body.current.filepath, T[target]);
     assert.equal(jump.body.queueVersion, shuf.body.queueVersion, 'jump is not a queue change');
-    const after = await waitFile(f => f.rooms.find(r => r.id === id)?.index === target);
+    const after = await waitFile(f => {
+      const r = f.rooms.find(x => x.id === id);
+      return r?.index === target && r.queueVersion === shuf.body.queueVersion;
+    });
     assert.deepEqual(after.rooms.find(r => r.id === id).order, order, 'jump keeps the shuffle order');
     assert.equal((await call('caster', 'POST', `/api/v1/rooms/${id}/jump`, { index: 3 })).body.code, 'invalid_body');
 
@@ -284,10 +292,13 @@ describe('Velvet Rooms REST', async () => {
     const jumpClears = inboxCount('stream/clear', p => p.from_timestamp === undefined);
     await call('caster', 'POST', `/api/v1/rooms/${id}/jump`, { index: 0 });
     await speaker.until(() => inboxCount('stream/clear', p => p.from_timestamp === undefined) > jumpClears);
+    // Play next only withdraws audio (stream/clear from_timestamp) once the end of the 12 s track was sent:
+    // wait for 13 s of 25 ms PCM chunks so the splice is the observable path, not a race with the read-ahead.
     const audio = speaker.audio;
-    await speaker.until(() => speaker.audio > audio + 50);
+    await speaker.until(() => speaker.audio > audio + 520);
     const starts = inboxCount('stream/start');
     const plainClears = inboxCount('stream/clear', p => p.from_timestamp === undefined);
+    const spliceClears = inboxCount('stream/clear', p => p.from_timestamp !== undefined);
     const next = await call('caster', 'POST', `/api/v1/rooms/${id}/add`, { songs: ['lib/Tones/c.flac'], next: true });
     assert.equal(next.status, 200);
     assert.equal(next.body.queueLength, 4);
@@ -295,7 +306,7 @@ describe('Velvet Rooms REST', async () => {
     assert.deepEqual(q.body.songs.map(x => x.filepath), [T[0], T[2], T[1], T[2]]);
     assert.equal(q.body.index, 0);
     assert.equal(q.body.queueVersion, next.body.queueVersion);
-    await speaker.waitFor('stream/clear', p => p.from_timestamp !== undefined);
+    await speaker.until(() => inboxCount('stream/clear', p => p.from_timestamp !== undefined) > spliceClears);
     const st = await call('caster', 'GET', `/api/v1/rooms/${id}/state`);
     assert.equal(st.body.state, 'playing');
     assert.equal(st.body.current.filepath, T[0]);
