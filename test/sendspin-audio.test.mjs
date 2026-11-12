@@ -301,3 +301,26 @@ test('ffmpeg errors are surfaced', async () => {
   assert.throws(() => createEncoder({ format: { ...format, codec: 'vorbis' }, inputRate: 44100, inputChannels: 2 }), /Unsupported codec/);
   assert.throws(() => createEncoder({ format: { ...format, codec: 'opus' }, inputRate: 44100, inputChannels: 2 }), /Opus sample rate/);
 });
+
+test('raw pipes into ffmpeg skip the input probe, so output starts with the first chunk', async (t) => {
+  const { mp3Encoder } = await import('../src/sendspin/sonos.js');
+  const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'velvet-fake-ffmpeg-'));
+  t.after(() => fsp.rm(dir, { recursive: true, force: true }));
+  const fake = path.join(dir, 'ffmpeg');
+  const log = path.join(dir, 'args.json');
+  await fsp.writeFile(fake, `#!${process.execPath}\nrequire('fs').writeFileSync(${JSON.stringify(log)}, JSON.stringify(process.argv.slice(2)));\nprocess.stdin.resume();\nprocess.stdin.on('end', () => process.exit(0));\n`, { mode: 0o755 });
+  const probedFirst = async () => {
+    for (let i = 0; i < 100 && !fs.existsSync(log); i++) await new Promise((r) => setTimeout(r, 20));
+    const args = JSON.parse(await fsp.readFile(log, 'utf8'));
+    await fsp.rm(log);
+    const at = (flag) => args.indexOf(flag);
+    return at('-probesize') >= 0 && at('-analyzeduration') >= 0 && at('-probesize') < at('-i') && args[at('-probesize') + 1] === '32';
+  };
+  const enc = createEncoder({ format: { codec: 'pcm', sample_rate: 8000, channels: 1, bit_depth: 16 }, inputRate: 44100, inputChannels: 2, ffmpeg: fake });
+  t.after(() => enc.close());
+  const room = await probedFirst();
+  const mp3 = mp3Encoder({ ffmpeg: fake });
+  t.after(() => mp3.close());
+  assert.ok(room, 'room encoder');
+  assert.ok(await probedFirst(), 'Sonos MP3 stream');
+});

@@ -82,7 +82,7 @@ export function createSonosSoap({ port = 1400, allowHost = isPrivateLan, timeout
 
 export function mp3Encoder({ ffmpeg = ffmpegBin(), bitrate = '320k' } = {}) {
   const proc = spawn(ffmpeg, [
-    '-hide_banner', '-loglevel', 'error', '-f', 's16le', '-ar', String(SONOS_RATE), '-ac', '2', '-i', 'pipe:0',
+    '-hide_banner', '-loglevel', 'error', '-probesize', '32', '-analyzeduration', '0', '-f', 's16le', '-ar', String(SONOS_RATE), '-ac', '2', '-i', 'pipe:0',
     '-c:a', 'libmp3lame', '-b:a', bitrate, '-id3v2_version', '0', '-write_xing', '0', '-flush_packets', '1', '-f', 'mp3', 'pipe:1',
   ], { stdio: ['pipe', 'pipe', 'ignore'] });
   proc.stdin.on('error', () => {});

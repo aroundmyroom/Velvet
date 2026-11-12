@@ -717,7 +717,8 @@ class FfmpegEncoder extends Encoder {
       onEnd = () => { for (const b of chunker.flush()) this.emit(b, b.length / fb); };
     }
     const args = [
-      '-hide_banner', '-nostdin', '-loglevel', 'error',
+      // ffmpeg before 7.1 probes 5 MB of a raw pipe before its first output — over 10 s of a live stream.
+      '-hide_banner', '-nostdin', '-loglevel', 'error', '-probesize', '32', '-analyzeduration', '0',
       '-f', 's32le', '-ar', String(inputRate), '-ac', String(inputChannels), '-i', 'pipe:0',
       ...out, '-flush_packets', '1', 'pipe:1',
     ];
