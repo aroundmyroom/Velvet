@@ -903,3 +903,4 @@ Open `https://music.aroundtheworld.net:3100` (same users as production). Product
   dynamic code is only logged (`Pairing required: enter pairing code 314-213 on the server.`). It has no pairing PSK
   by default (`pairing_psk: null` in `<settings-dir>/pairing-store-daemon.json`) and no way to show a token; for the
   token flow seed `pairing_psk: { psk_id, psk }` in that file before start and build the token from it + the client id.
+- 2026-11-12 — Development complete; test instance on :3100 restarted on f7b8f4b for the owner's validation. Open observation: one full `npm test` run reported 779 instead of 794 tests (0 failures); five later full runs and six isolated runs of the Rooms integration file were complete — not reproduced.
