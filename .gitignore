@@ -106,3 +106,5 @@ dev-app-update.yml
 
 # fork philosophy doc — kept local only, never published
 docs/dev/philosophy.md
+
+save/sendspin/

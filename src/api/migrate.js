@@ -8,6 +8,8 @@ import winston from 'winston';
 import * as config from '../state/config.js';
 import * as dbManager from '../db/manager.js';
 import { resolvePathWithinRoot } from '../util/path-security.js';
+import { sendspinBackupFiles, restoreSendspinFiles } from './backup.js';
+import * as sendspinApi from './sendspin.js';
 
 const TMP_DIR = os.tmpdir();
 const IMPORT_ID_RE = /^velvet-import-\d+$/;
@@ -88,7 +90,15 @@ async function createExportArchive(options = {}) {
     }
   }
 
-  // 5. Write manifest
+  // 5. Velvet Rooms identity + pairing records (both or neither)
+  const sendspinFiles = await sendspinBackupFiles();
+  if (sendspinFiles.length) {
+    await fsp.mkdir(path.join(tempDir, 'sendspin'), { recursive: true });
+    for (const { src, name } of sendspinFiles) await fsp.copyFile(src, path.join(tempDir, name));
+    manifest.includes.sendspin = true;
+  }
+
+  // 6. Write manifest
   await fsp.writeFile(path.join(tempDir, 'manifest.json'), JSON.stringify(manifest, null, 2));
 
   // 6. Create ZIP
@@ -230,6 +240,15 @@ async function applyImportData(extractId, options = {}) {
     winston.warn(`[migrate] Artist images restore failed: ${e.message}`);
   }
   
+  try {
+    // Stop first: a running server would flush its old trust store over the restored one.
+    await sendspinApi.stop();
+    await restoreSendspinFiles(path.join(extractDir, 'sendspin'));
+    await sendspinApi.applySettings();
+  } catch (e) {
+    winston.warn(`[migrate] Velvet Rooms restore failed: ${e.message}`);
+  }
+
   // Clean up temp directory
   await fsp.rm(extractDir, { recursive: true, force: true }).catch(() => {});
   

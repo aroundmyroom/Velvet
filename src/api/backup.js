@@ -58,6 +58,8 @@ async function createBackup() {
     }
   }
 
+  filesToInclude.push(...await sendspinBackupFiles());
+
   try {
     await new Promise((resolve, reject) => {
       const output = fs.createWriteStream(filepath);
@@ -78,6 +80,41 @@ async function createBackup() {
   await pruneOldBackups();
   winston.info(`Backup created: ${filename}`);
   return filename;
+}
+
+const SENDSPIN_IDENTITY = ['server-key.json', 'trust-store.json'];
+const SENDSPIN_STATE = ['rooms.json', 'known-devices.json'];
+
+export function sendspinDir() {
+  return path.join(config.program.storage.dbDirectory, '..', 'sendspin');
+}
+
+// The server key and the pairing records only work together: back up both or neither.
+export async function sendspinBackupFiles() {
+  const dir = sendspinDir();
+  const present = (name) => fsp.access(path.join(dir, name)).then(() => true, () => false);
+  if (!(await Promise.all(SENDSPIN_IDENTITY.map(present))).every(Boolean)) return [];
+  const names = [...SENDSPIN_IDENTITY];
+  for (const name of SENDSPIN_STATE) if (await present(name)) names.push(name);
+  return names.map((name) => ({ src: path.join(dir, name), name: `sendspin/${name}` }));
+}
+
+export async function restoreSendspinFiles(fromDir) {
+  const present = (name) => fsp.access(path.join(fromDir, name)).then(() => true, () => false);
+  if (!(await Promise.all(SENDSPIN_IDENTITY.map(present))).every(Boolean)) return false;
+  const dir = sendspinDir();
+  await fsp.mkdir(dir, { recursive: true, mode: 0o700 });
+  for (const name of [...SENDSPIN_IDENTITY, ...SENDSPIN_STATE]) {
+    if (!(await present(name))) {
+      await fsp.rm(path.join(dir, name), { force: true });
+      continue;
+    }
+    const tmp = path.join(dir, `${name}.restore.tmp`);
+    await fsp.copyFile(path.join(fromDir, name), tmp);
+    await fsp.chmod(tmp, 0o600);
+    await fsp.rename(tmp, path.join(dir, name));
+  }
+  return true;
 }
 
 async function pruneOldBackups() {

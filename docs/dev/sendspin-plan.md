@@ -635,6 +635,41 @@ second test instance on another port for the owner.
 - 2026-11-12 — user docs: `docs/rooms.md` (Velvet Rooms guide), `docs/docker.md` (host networking / port 8927),
   `COMMUNITY-SPEC-LICENSE-1.0.md` (verbatim spec licence, CSL 2.1.3.1) + `NOTICE.md`, todo backlog "Velvet Rooms — extensions".
 
+- 2026-11-12 — Velvet glue: `config.program.sendspin` (Joi: enabled/name/port/bind/path/discovery,
+  `docs/json_config.md`), `src/sendspin/service.js` (RoomsService: SendspinServer + RoomManager
+  lifecycle, restart on settings without a Velvet restart, start errors → `status.error`, Device/Room
+  views per `docs/API/rooms.md`, queueVersion), `src/sendspin/artwork.js` (album-art cache → embedded
+  → folder image; sharp fit-inside + black padding at exact size, LRU; palette with WCAG 4.5:1 checked
+  per spec colour rule), `src/api/sendspin.js` (every contract route; queue resolution through the
+  user's vpaths + `resolvePathWithinRoot` + DB row + stat, `..`/empty segments refused, gain capped at
+  the stored peak; pairing routes rate-limited, tokens never logged/echoed), backup/migrate include
+  `save/sendspin/` key + trust store (both or neither), `save/sendspin/` gitignored. Contract change:
+  `pair-token` body field is `pairingToken` (Velvet's auth reads a body `token` as the JWT).
+  `test/integration/sendspin-api.test.cjs` (11) + `test/sendspin-artwork.test.mjs` (2).
+  E2E: second instance on 3100 + `sendspin daemon` (null sink, found over mDNS, approved via REST):
+  FLAC 48k/24 stream, seek = one `stream/clear`, track 01 → 02 with no stream events (gapless),
+  pause = `stream/end`, resume = new `stream/start`, `Server set player volume: 60%`, stop =
+  `stream/end`; SIGTERM ends streams and exits in ~1 s.
+  Adapters waiting for RoomManager: `jump(id, index)` (now: `play` with the cached/re-resolved
+  queue, resets shuffle order), `add(id, items, { next })` (now: appends), `play(..., { paused })`
+  (now: play then pause), `forget(clientId)` (now: the solo room stays in rooms.json, hidden
+  because the device is unknown).
+
+### Second test instance (owner)
+
+Config, DB and Rooms state live outside git in `/home/velvet-work/sendspin-e2e/` (`conf/default.json`
+is a copy of production's with port 3100, one small `Music` folder, scans/webhooks/DLNA/Server
+Audio/AI/scrobbling off, `sendspin` on 8927 with discovery). Start / stop:
+
+```sh
+cd /home/velvet-work/sendspin && node cli-boot-wrapper.js -j /home/velvet-work/sendspin-e2e/conf/default.json \
+  > /home/velvet-work/sendspin-e2e/logs/run.log 2>&1 &
+kill <pid>     # SIGTERM: Rooms stop cleanly, then Velvet exits
+```
+
+Open `https://music.aroundtheworld.net:3100` (same users as production). Production
+(`/home/velvet`, port 3000, `music.service`) is never touched.
+
 ### Reference daemon notes (sendspin CLI + aiosendspin client, Nov 2026)
 
 - Needs PortAudio; this host has none installed. Spike recipe: `apt-get download

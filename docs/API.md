@@ -874,7 +874,7 @@ small local window for instant boot, then lazy-loads the rest from here.
 | `POST` | `/api/v1/admin/sendspin/devices/forget` | `{ clientId }` | **Admin.** Unpair, revoke and remove a device. |
 | `POST` | `/api/v1/admin/sendspin/devices/connect` | `{ clientId }` | **Admin.** Connect now (also takes a device back from another server). |
 | `POST` | `/api/v1/admin/sendspin/devices/unpair` | `{ clientId }` | **Admin.** `server/unpair` + delete the pairing record. |
-| `POST` | `/api/v1/admin/sendspin/devices/pair-token` | `{ token, clientId? }` | **Admin.** Pair with a pairing token (lenient decoding); `result: 'pairing' \| 'staged'`. |
+| `POST` | `/api/v1/admin/sendspin/devices/pair-token` | `{ pairingToken, clientId? }` | **Admin.** Pair with a pairing token (lenient decoding); `result: 'pairing' \| 'staged'`. |
 | `POST` | `/api/v1/admin/sendspin/devices/pair-code/start` | `{ clientId }` | **Admin.** Start code pairing; returns `PairStatus`. |
 | `GET` | `/api/v1/admin/sendspin/devices/pair-code/status?clientId=` | — | **Admin.** `PairStatus`: `waiting` / `pending {message}` / `need_code` / `wrong_code` / `paired` / `aborted {reason}`. |
 | `POST` | `/api/v1/admin/sendspin/devices/pair-code/submit` | `{ clientId, code }` | **Admin.** Submit the 6- or 8-digit code. |
@@ -885,8 +885,8 @@ small local window for instant boot, then lazy-loads the rest from here.
 | `DELETE` | `/api/v1/rooms/:id` | — | Dissolve a room; members return to solo rooms. |
 | `GET` | `/api/v1/rooms/:id/state` | — | Room state; polled ~1 s by the remote UI. |
 | `GET` | `/api/v1/rooms/:id/queue` | — | `{ queueVersion, index, songs[] }`. |
-| `POST` | `/api/v1/rooms/:id/play` | `{ songs[], index?, positionMs?, paused? }` | Hand a queue to the room (replaces its queue). |
-| `POST` | `/api/v1/rooms/:id/add` | `{ songs[], next? }` | Append (or insert after current with `next`). |
+| `POST` | `/api/v1/rooms/:id/play` | `{ songs[], index?, positionMs?, paused?, rgEnabled?, rgMode?, rgPreamp?, rgClip? }` | Hand a queue to the room (replaces its queue); `skipped` counts unresolvable songs. |
+| `POST` | `/api/v1/rooms/:id/add` | `{ songs[], next?, rgEnabled?, rgMode?, rgPreamp?, rgClip? }` | Append (or insert after current with `next`). |
 | `POST` | `/api/v1/rooms/:id/jump` | `{ index }` | Play the queue entry at `index`. |
 | `POST` | `/api/v1/rooms/:id/pause` | — | Pause. |
 | `POST` | `/api/v1/rooms/:id/resume` | — | Resume (an idle room resumes what it last played). |

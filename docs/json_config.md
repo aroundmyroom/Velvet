@@ -575,6 +575,42 @@ Enables the internet radio station feature in the player.
 
 Radio station data (URLs, names, logos, sort order) is stored in the database, not in the config file. Use Admin panel → Radio Streams or the [radio API](API/radio.md) to manage stations.
 
+## Velvet Rooms (`sendspin`)
+
+Velvet Rooms plays a server-side queue on speakers that implement the Sendspin
+protocol ("works with Sendspin speakers"). Off by default; the admin page
+*Velvet Rooms* toggles it, renames the server and changes the port without a
+Velvet restart.
+
+```json
+{
+  "sendspin": {
+    "enabled": false,
+    "name": "Velvet (myhost)",
+    "port": 8927,
+    "bind": "0.0.0.0",
+    "path": "/sendspin",
+    "discovery": true
+  }
+}
+```
+
+| Key | Default | Meaning |
+|---|---|---|
+| `enabled` | `false` | Start the Sendspin listener (plain WebSocket, encrypted per connection by the protocol). |
+| `name` | `Velvet (<hostname>)` | Name speakers show for this server; 1–63 characters, no control characters. |
+| `port` | `8927` | Listener port (1024–65535). Speakers that connect to the server use it. |
+| `bind` | `0.0.0.0` | Address the listener binds to. |
+| `path` | `/sendspin` | WebSocket path, also advertised over mDNS. |
+| `discovery` | `true` | Advertise `_sendspin-server._tcp` and find speakers (`_sendspin._tcp`) over mDNS. Needs host networking in Docker. |
+
+State lives in `save/sendspin/` (next to `save/db/`): `server-key.json` (the
+server identity), `trust-store.json` (pairings and approvals), `rooms.json`
+(rooms, queues) and `known-devices.json`. The key and the trust store belong
+together: Velvet's backups include all of them, and restoring one without the
+other means every speaker must pair again. A listener that cannot start (port
+in use) never stops Velvet from booting; the admin page shows the error.
+
 ## Opt-in vs Opt-out: How Feature Defaults Work
 
 Some features in Velvet are **opt-out** (enabled by default, set to `false` to turn off) while others are **opt-in** (disabled by default, must be explicitly enabled). This is a deliberate design distinction:

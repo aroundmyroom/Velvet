@@ -5319,7 +5319,7 @@ const roomsView = Vue.component('rooms-view', {
       if (!token) return;
       this.tokenBusy = true; this.tokenMsg = ''; this.tokenOk = null;
       try {
-        const data = { token };
+        const data = { pairingToken: token };
         if (this.tokenClientId) data.clientId = this.tokenClientId;
         const r = await API.axios({ method: 'POST', url: `${API.url()}/api/v1/admin/sendspin/devices/pair-token`, data });
         this.tokenValue = '';

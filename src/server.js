@@ -59,6 +59,7 @@ import * as aiQueueApi from './api/ai-queue.js';
 import * as dupWorkshopApi from './api/duplicate-workshop.js';
 import * as dlnaApi from './api/dlna.js';
 import * as sonosApi from './api/sonos.js';
+import * as sendspinApi from './api/sendspin.js';
 import * as authPasskeyApi from './api/auth-passkey.js';
 import * as authPairApi from './api/auth-pair.js';
 import * as updateApi from './api/update.js';
@@ -359,6 +360,7 @@ export async function serveIt(configFile) {
   dupWorkshopApi.setup(velvet);
   dlnaApi.setup(velvet);
   sonosApi.setup(velvet);
+  sendspinApi.setup(velvet);
   smartPlaylistMlApi.setup(velvet);
   // Kick off ffmpeg auto-download early so it's ready for radio-recorder,
   // discogs cover-art and ytdl use — non-blocking, safe to ignore errors here.

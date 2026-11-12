@@ -1,5 +1,6 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import os from 'node:os';
 import crypto from 'node:crypto';
 import Joi from 'joi';
 import winston from 'winston';
@@ -135,6 +136,22 @@ const sonosOptions = Joi.object({
   }).optional().allow(null).default(null),
 });
 
+// eslint-disable-next-line no-control-regex
+export const CONTROL_CHARS = /[\x00-\x1F\x7F]/;
+
+export function defaultSendspinName() {
+  return `Velvet (${os.hostname()})`.slice(0, 63);
+}
+
+const sendspinOptions = Joi.object({
+  enabled:   Joi.boolean().default(false),
+  name:      Joi.string().trim().min(1).max(63).pattern(CONTROL_CHARS, { invert: true }).default(() => defaultSendspinName()),
+  port:      Joi.number().integer().min(1024).max(65535).default(8927),
+  bind:      Joi.string().ip({ cidr: 'forbidden' }).default('0.0.0.0'),
+  path:      Joi.string().pattern(/^\/[A-Za-z0-9._~!$&'()*+,;=:@%/-]{0,255}$/).default('/sendspin'),
+  discovery: Joi.boolean().default(true),
+});
+
 const extAuthOptions = Joi.object({
   enabled:          Joi.boolean().default(false),
   // Header a trusted reverse proxy (or an auth layer in front of it) sets to the
@@ -221,6 +238,7 @@ const schema = Joi.object({
   dlna: dlnaOptions.default(dlnaOptions.validate({}).value),
   albumArt: albumArtOptions.default(albumArtOptions.validate({}).value),
   sonos: sonosOptions.default(sonosOptions.validate({}).value),
+  sendspin: sendspinOptions.default(() => sendspinOptions.validate({}).value),
   extAuth: extAuthOptions.default(extAuthOptions.validate({}).value),
   ui: Joi.string().valid('velvet', 'velvet-dark', 'velvet-light').default('velvet'),
   instanceId: Joi.string().optional(),

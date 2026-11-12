@@ -40,7 +40,9 @@ The player uses `GET /api/v1/rooms` as its capability check: any non-2xx means
 | 409 | `empty_queue` | `resume`/`next`/`jump` on a room with no queue and no history. |
 | 422 | `malformed_token` / `unsupported_token_version` / `wrong_client` | Pairing token rejected (nothing was sent to the device). `wrong_client` adds `tokenClientId`. |
 | 422 | `invalid_code` | Code is not 6 / 8 digits after stripping spaces and hyphens. |
+| 409 | `not_seekable` | `seek` while `canSeek` is false. |
 | 429 | `cooldown` | Code submitted during the device's back-off; adds `retryAfterMs`. |
+| 429 | `rate_limited` | Too many pairing calls (20 / min per admin for token/start/submit/cancel, 180 / min for status polls); adds `retryAfterMs`. |
 | 503 | `not_running` | Sendspin listener not running. |
 
 Error messages are never shown verbatim as markup; the UI maps `code` to a
@@ -58,7 +60,7 @@ translated string and falls back to `error` as plain text.
   requesting user's vpaths (same rules as Server Audio); entries the user cannot
   access or that do not exist are dropped and counted in `skipped`.
 - `index`: integer ≥ 0. `positionMs`: integer ≥ 0. `volume`: integer 0–100.
-- `token`: string ≤ 256. `code`: string ≤ 32.
+- `pairingToken`: string ≤ 256. `code`: string ≤ 32.
 
 ## Shared objects
 
@@ -195,7 +197,7 @@ states (`paired`, `aborted`) stay readable for 60 s after they occur.
 | `POST` | `/api/v1/admin/sendspin/devices/forget` | `{ clientId }` | `{ ok: true }` — unpairs (sends `server/unpair` if connected), revokes, removes from its room, forgets name. |
 | `POST` | `/api/v1/admin/sendspin/devices/connect` | `{ clientId }` | `{ ok: true, device }` — dial now (also takes a device back from another server). 409 `not_connected` if no address is known. |
 | `POST` | `/api/v1/admin/sendspin/devices/unpair` | `{ clientId }` | `{ ok: true, device }` — `server/unpair` + delete record. |
-| `POST` | `/api/v1/admin/sendspin/devices/pair-token` | `{ token, clientId? }` | `{ ok: true, result: 'pairing' \| 'staged', clientId, device: Device \| null }`. Token decoded leniently (trim, uppercase, optional `SP:`, `9`→`2`). If `clientId` is given and the token's client key differs → 422 `wrong_client`. Connected → `pairing` (attempt runs, poll `pair-code/status`); not connected → `staged` (used on the device's next connection, 24 h). Token/PSK never logged or echoed. |
+| `POST` | `/api/v1/admin/sendspin/devices/pair-token` | `{ pairingToken, clientId? }` | `{ ok: true, result: 'pairing' \| 'staged', clientId, device: Device \| null }`. Token decoded leniently (trim, uppercase, optional `SP:`, `9`→`2`). If `clientId` is given and the token's client key differs → 422 `wrong_client`. Connected → `pairing` (attempt runs, poll `pair-code/status`); not connected → `staged` (used on the device's next connection, 24 h). Token/PSK never logged or echoed. The field is `pairingToken`, not `token`: Velvet's auth reads a body `token` as the session JWT. |
 | `POST` | `/api/v1/admin/sendspin/devices/pair-code/start` | `{ clientId }` | `PairStatus` (usually `waiting`). Picks the code method with `chooseCodeMethod` (dynamic preferred; digits only). 409 `pairing_in_progress` / `not_connected`. |
 | `GET` | `/api/v1/admin/sendspin/devices/pair-code/status?clientId=` | — | `PairStatus`. Poll ~1 s while the dialog is open. 409 `no_pairing` if none (also after the 60 s terminal window). |
 | `POST` | `/api/v1/admin/sendspin/devices/pair-code/submit` | `{ clientId, code }` | `PairStatus` after queuing the code (`waiting` until the device answers). 422 `invalid_code`, 429 `cooldown`. |
@@ -214,7 +216,7 @@ states (`paired`, `aborted`) stay readable for 60 s after they occur.
 | `DELETE` | `/api/v1/rooms/:id` | — | `{ ok: true }`. Stops the room; every member returns to its own solo room. 409 `solo_room` for a one-member room. |
 | `GET` | `/api/v1/rooms/:id/state` | — | `Room`. **Remote UI polls this ~1 s** while a room is active and the page is visible; back off to ≥ 5 s when hidden or idle. Cheap: no DB access beyond the cached current entry. |
 | `GET` | `/api/v1/rooms/:id/queue` | — | `{ queueVersion, index, songs: QueueEntry[] }` |
-| `POST` | `/api/v1/rooms/:id/play` | `{ songs: string[], index?: integer = 0, positionMs?: integer = 0, paused?: boolean = false }` | `Room` + `skipped: number`. Replaces the room queue (server-side queue from now on), starts at `index`/`positionMs`. 400 if no entry survives resolution. 409 `not_playable`. |
+| `POST` | `/api/v1/rooms/:id/play` | `{ songs: string[], index?: integer = 0, positionMs?: integer = 0, paused?: boolean = false, rgEnabled?, rgMode?, rgPreamp?, rgClip? }` | `Room` + `skipped: number`. Replaces the room queue (server-side queue from now on), starts at `index`/`positionMs`. 400 if no entry survives resolution. 409 `not_playable`. |
 | `POST` | `/api/v1/rooms/:id/add` | `{ songs: string[], next?: boolean = false }` | `{ ok: true, queueLength, queueVersion, skipped }`. `next: true` inserts after the current track. Starts playback if the room was idle. |
 | `POST` | `/api/v1/rooms/:id/jump` | `{ index }` | `Room`. Play the queue entry at `index` from 0 ms. |
 | `POST` | `/api/v1/rooms/:id/pause` | — | `Room` (`paused`; position kept). |
@@ -227,6 +229,15 @@ states (`paired`, `aborted`) stay readable for 60 s after they occur.
 | `POST` | `/api/v1/rooms/:id/stop` | — | `Room` + `stoppedAt: { index, positionMs }` (where playback was when it stopped — used to take playback back to the browser). The queue is kept and `current` still names the track it stopped on. |
 | `POST` | `/api/v1/rooms/:id/repeat` | `{ repeat: 'off' \| 'all' \| 'one' }` | `Room`. |
 | `POST` | `/api/v1/rooms/:id/shuffle` | `{ shuffle: boolean }` | `Room`. |
+
+### ReplayGain
+
+`play` and `add` accept Server Audio's optional ReplayGain fields: `rgEnabled`
+(default on), `rgMode` (`'track'` default / `'album'`), `rgPreamp` (dB, −15…15).
+The gain comes from the DB (`resolveTrackGain`: measured → R128 → tag) and is
+applied in the server's decode. Without a limiter in that path, positive gain is
+always capped so the stored peak stays ≤ 0 dBFS (no peak known → never above
+0 dB); `rgClip` is accepted for symmetry but clipping protection is always on.
 
 ## Client behaviour (what the UI does)
 
