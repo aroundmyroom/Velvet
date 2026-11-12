@@ -48,9 +48,10 @@ export function negotiateFormat(member) {
   return f ? pickFormat(f) : null;
 }
 
-export function memberLeadUs(member) {
+// Live audio gets no extension toward required_lead_time_ms: it would only add latency (spec, send constraints).
+export function memberLeadUs(member, live = false) {
   const p = member.state.player;
-  const lead = Math.max(p.minBufferMs, Math.min(p.requiredLeadTimeMs, MAX_LEAD_MS), MIN_LEAD_FLOOR_MS);
+  const lead = Math.max(p.minBufferMs, live ? 0 : Math.min(p.requiredLeadTimeMs, MAX_LEAD_MS), MIN_LEAD_FLOOR_MS);
   return (lead + p.outputDelayMs) * 1000;
 }
 
@@ -105,7 +106,8 @@ export class GroupStream extends EventEmitter {
 
   get sendAheadUs() {
     let max = 0;
-    for (const m of this.#members.values()) max = Math.max(max, memberLeadUs(m.member));
+    const live = Boolean(this.#epoch?.live);
+    for (const m of this.#members.values()) max = Math.max(max, memberLeadUs(m.member, live));
     return max + this.#opts.safetyUs;
   }
 
@@ -141,7 +143,7 @@ export class GroupStream extends EventEmitter {
     if (ep.t0 === null) {
       this.#openFeed(m, 0, 0, 'start');
     } else {
-      const lead = Math.max(memberLeadUs(member), LATE_JOIN_MIN_LEAD_MS * 1000) + this.#opts.joinMarginUs;
+      const lead = Math.max(memberLeadUs(member, Boolean(ep.live)), LATE_JOIN_MIN_LEAD_MS * 1000) + this.#opts.joinMarginUs;
       const start = Math.max(0, usToSamples(this.#now() + lead - ep.t0, ep.rate));
       this.#openFeed(m, start, samplesToUs(start, ep.rate), 'start');
     }
@@ -194,6 +196,7 @@ export class GroupStream extends EventEmitter {
       rate, frameBytes: MASTER_BYTES_PER_SAMPLE * MASTER_CHANNELS, ac: new AbortController(), t0: null,
       history: [], historyOffset: 0, decodedEnd: 0, decodeDone: false, boundaries: [], pendingTracks: [],
       waiter: null, ended: false, decodeGen: 0, decodeAc: null, splice: null,
+      live: typeof tracks?.live === 'function' ? tracks.live : null,
     };
     this.#epoch = ep;
     for (const m of this.#members.values()) {
@@ -380,9 +383,8 @@ export class GroupStream extends EventEmitter {
     ep.waiter = null;
     waiter?.();
     try {
-      for await (const item of decodeQueue(tracks, {
-        sampleRate: ep.rate, channels: MASTER_CHANNELS, signal: AbortSignal.any([ep.ac.signal, ac.signal]), ffmpeg: this.#ffmpeg,
-      })) {
+      const opts = { sampleRate: ep.rate, channels: MASTER_CHANNELS, signal: AbortSignal.any([ep.ac.signal, ac.signal]), ffmpeg: this.#ffmpeg };
+      for await (const item of this.#source(ep, tracks, opts)) {
         if (!(await this.#take(ep, base ? { ...item, sample: item.sample + base } : item, gen))) return;
       }
       if (!this.#current(ep, gen)) return;
@@ -399,6 +401,10 @@ export class GroupStream extends EventEmitter {
     } catch (err) {
       if (this.#current(ep, gen) && !ep.ac.signal.aborted) this.#fail(err);
     }
+  }
+
+  #source(ep, tracks, opts) {
+    return ep.live ? ep.live(opts) : decodeQueue(tracks, opts);
   }
 
   async #take(ep, item, gen) {
@@ -419,7 +425,7 @@ export class GroupStream extends EventEmitter {
     await Promise.all(live.map((m) => this.#feed(m, m.seg, item)));
     if (!this.#current(ep, gen)) return false;
     this.#kick();
-    if (!this.#needsMore(ep)) {
+    if (!ep.live && !this.#needsMore(ep)) {
       let resume;
       await new Promise((resolve) => {
         resume = resolve;

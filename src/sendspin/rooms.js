@@ -20,6 +20,7 @@ const BASE_COMMANDS = Object.freeze([
   'play', 'pause', 'stop', 'next', 'previous', 'repeat_off', 'repeat_one', 'repeat_all', 'shuffle', 'unshuffle', 'switch',
 ]);
 const TEXT_FIELDS = ['title', 'artist', 'album_artist', 'album'];
+const LIVE_COMMANDS = Object.freeze(['play', 'pause', 'stop', 'switch']);
 
 export class RoomError extends Error {
   constructor(code, message) {
@@ -329,6 +330,40 @@ export class RoomManager extends EventEmitter {
     return room.queue.length;
   }
 
+  // Line-in: the room plays a live feed instead of its queue; the queue keeps its place (paused) underneath.
+  // feed(track) -> async generator function in GroupStream's decode shape (see SourceSession.feed).
+  playLive(id, { sourceId, name, feed }) {
+    const room = this.#room(id);
+    if (room.state === 'playing') this.#halt(room, room.queue.length ? 'paused' : 'stopped');
+    const item = { filepath: null, live: true, meta: { title: truncateUtf8(`Line-in — ${name}`, 255), durationMs: 0 } };
+    room.live = { sourceId, name, item };
+    this.#clearTimers(room);
+    clearTimeout(room.idleTimer);
+    room.token++;
+    room.state = 'playing';
+    room.current = null;
+    const stream = this.#stream(room);
+    stream.removeMember(sourceId);
+    for (const cid of room.members) this.#join(room, this.#clients.get(cid));
+    stream.play({ live: feed({ item, startMs: 0, live: true, get index() { return room.index; } }) });
+    for (const cid of room.members) this.#sendGroup(this.#clients.get(cid));
+    this.#changed(room);
+    return this.getRoom(id);
+  }
+
+  stopLive(id, sourceId = null) {
+    const room = this.#rooms.get(id);
+    if (!room?.live || (sourceId && room.live.sourceId !== sourceId)) return;
+    this.#halt(room, room.queue.length ? 'paused' : 'stopped');
+  }
+
+  #endLive(room) {
+    const live = room.live;
+    if (!live) return;
+    room.live = null;
+    this.emit('live-ended', room.id, live.sourceId);
+  }
+
   jump(id, index) {
     const room = this.#room(id);
     if (!room.queue.length) throw new RoomError('empty', 'nothing to play');
@@ -510,7 +545,7 @@ export class RoomManager extends EventEmitter {
     const room = {
       id, name, solo, members: [], queue: [], order: [], index: 0, positionMs: 0, state: 'stopped',
       repeat: 'off', shuffle: false, lastPlayedAt: null, stream: null, timers: [], idleTimer: null,
-      current: null, scheduled: null, token: 0, queueVersion: 1,
+      current: null, scheduled: null, token: 0, queueVersion: 1, live: null,
     };
     this.#rooms.set(room.id, room);
     return room;
@@ -722,6 +757,8 @@ export class RoomManager extends EventEmitter {
   }
 
   #join(room, c) {
+    // A device never hears its own line-in: it would play its input back with the room's delay (an echo).
+    if (room.live?.sourceId === c.id) return;
     const audio = this.#eligible(c) && !room.stream?.has(c.id);
     const vis = canVisualize(c.member);
     if ((!audio && !vis) || !this.#setPlayback(c, true)) return;
@@ -732,6 +769,7 @@ export class RoomManager extends EventEmitter {
   }
 
   #start(room, index, positionMs) {
+    this.#endLive(room);
     this.#clearTimers(room);
     clearTimeout(room.idleTimer);
     room.token++;
@@ -773,7 +811,7 @@ export class RoomManager extends EventEmitter {
   // A queue/order change while playing: the current track plays on, what the decode already read ahead is
   // replaced from the track the scheduler can still change (see GroupStream.replaceUpcoming).
   #editTail(room, edit) {
-    if (room.state !== 'playing' || !room.stream?.playing) {
+    if (room.state !== 'playing' || !room.stream?.playing || room.live) {
       edit(this.#currentIndex(room));
       return;
     }
@@ -893,13 +931,14 @@ export class RoomManager extends EventEmitter {
 
   #halt(room, state) {
     const pos = room.stream?.stop() ?? null;
-    if (pos && room.state === 'playing') {
+    if (pos && room.state === 'playing' && !room.live) {
       room.index = pos.track.index;
       room.positionMs = pos.positionMs;
     }
     this.#cancelScheduled(room);
     room.state = state;
-    if (state === 'stopped') room.positionMs = 0;
+    if (state === 'stopped' && !room.live) room.positionMs = 0;
+    this.#endLive(room);
     room.current = null;
     for (const cid of room.members) this.#sendGroup(this.#clients.get(cid));
     this.#pushTrackState(room, this.#now());
@@ -920,6 +959,10 @@ export class RoomManager extends EventEmitter {
   }
 
   #onEnded(room) {
+    if (room.live) {
+      this.#halt(room, room.queue.length ? 'paused' : 'stopped');
+      return;
+    }
     room.stream.stop();
     room.index = room.order[0] ?? 0;
     this.#halt(room, 'stopped');
@@ -984,6 +1027,7 @@ export class RoomManager extends EventEmitter {
   }
 
   #currentPosition(room) {
+    if (room.live) return 0;
     if (room.state !== 'playing') return room.positionMs;
     return room.stream?.position()?.positionMs ?? room.positionMs;
   }
@@ -993,7 +1037,7 @@ export class RoomManager extends EventEmitter {
     const { item } = track;
     const entry = {
       item, startMs: track.startMs ?? 0, timestampUs,
-      get index() { return room.queue.indexOf(item); },
+      get index() { return item.live ? room.index : room.queue.indexOf(item); },
     };
     if (first) {
       room.lastScheduledUs = timestampUs;
@@ -1017,7 +1061,7 @@ export class RoomManager extends EventEmitter {
   #becomeCurrent(room, entry, { announce = true } = {}) {
     room.current = entry;
     room.index = entry.index;
-    room.positionMs = entry.startMs;
+    if (!entry.item.live) room.positionMs = entry.startMs;
     if (announce) this.#pushTrackState(room, entry.timestampUs, entry);
     this.#pushController(room);
     this.#save();
@@ -1061,10 +1105,10 @@ export class RoomManager extends EventEmitter {
     const players = this.#players(room);
     const vol = players.filter(({ p }) => p.supportedCommands.includes('volume') && Number.isInteger(p.volume));
     const mute = players.filter(({ p }) => p.supportedCommands.includes('mute') && typeof p.muted === 'boolean');
-    const commands = [...BASE_COMMANDS];
+    const commands = room.live ? [...LIVE_COMMANDS] : [...BASE_COMMANDS];
     if (vol.length) commands.push('volume');
     if (mute.length) commands.push('mute');
-    const dur = room.queue[this.#currentIndex(room)]?.meta?.durationMs;
+    const dur = room.live ? 0 : room.queue[this.#currentIndex(room)]?.meta?.durationMs;
     if (dur > 0) commands.push('seek', 'seek_relative');
     const state = {
       supported_commands: commands,
@@ -1322,10 +1366,10 @@ export class RoomManager extends EventEmitter {
 
   #view(room, { queue }) {
     const playing = room.state === 'playing';
-    const pos = playing ? room.stream?.position() : null;
+    const pos = playing && !room.live ? room.stream?.position() : null;
     const index = pos?.track.index ?? room.current?.index ?? room.index;
     const ctl = this.#controllerState(room);
-    const item = room.queue[index] ?? null;
+    const item = room.live?.item ?? room.queue[index] ?? null;
     const view = {
       id: room.id,
       name: this.#roomName(room),
@@ -1344,6 +1388,7 @@ export class RoomManager extends EventEmitter {
       supportedCommands: ctl.supported_commands,
       lastPlayedAt: room.lastPlayedAt,
       queueVersion: room.queueVersion,
+      live: room.live ? { sourceId: room.live.sourceId, name: room.live.name } : null,
       members: room.members.map((cid) => this.#memberView(room, this.#clients.get(cid))),
     };
     if (queue) {
@@ -1383,12 +1428,12 @@ export class RoomManager extends EventEmitter {
 
   #snapshot() {
     const rooms = [...this.#rooms.values()].map((r) => {
-      const playing = r.state === 'playing';
+      const playing = r.state === 'playing' && !r.live;
       const pos = playing ? r.stream?.position() : null;
       return {
         id: r.id, name: r.name, solo: r.solo, members: r.members, queue: r.queue, order: r.order,
         index: pos?.track.index ?? r.index, positionMs: pos?.positionMs ?? r.positionMs,
-        repeat: r.repeat, shuffle: r.shuffle, state: r.state, lastPlayedAt: r.lastPlayedAt, queueVersion: r.queueVersion,
+        repeat: r.repeat, shuffle: r.shuffle, state: r.live ? 'paused' : r.state, lastPlayedAt: r.lastPlayedAt, queueVersion: r.queueVersion,
       };
     });
     const clients = Object.fromEntries([...this.#clients.values()].map((c) => [c.id, {

@@ -19826,10 +19826,12 @@ async function _roomsProbe() {
     const d = await api('GET', 'api/v1/rooms');
     S.roomsAvailable = true;
     S.rooms = Array.isArray(d?.rooms) ? d.rooms : [];
+    S.roomSources = Array.isArray(d?.sources) ? d.sources : [];
   } catch (e) {
     if (e.status === 404 || e.status === 403 || e.status === 401) {
       S.roomsAvailable = false;
       S.rooms = [];
+      S.roomSources = [];
       if (_room) _roomFallback(t('player.rooms.unavailable'));
     }
   }
@@ -19873,7 +19875,9 @@ function _roomEnter(room) {
 function _roomExit({ keepKey = false } = {}) {
   _roomStopPoll();
   clearTimeout(_roomVolTimer);
+  const wasLive = !!_room?.lineIn;
   _room = null;
+  if (wasLive) Player.updateBar();
   _roomHandedVersion = -1;
   _roomMirror = null;
   _roomDjVersion = -1;
@@ -19947,6 +19951,60 @@ async function _roomStart(room) {
   }
 }
 
+// Line-in: the room plays a source device's input; this browser becomes its remote (no queue hand-over).
+async function _roomLineIn(room, src) {
+  try {
+    const st = await api('POST', _roomUrl(room.id, 'line-in'), { clientId: src.clientId });
+    if (_room && _room.id !== room.id) _roomExit();
+    audioEl.pause();
+    if (S.castingToMpv) _deactivateCast(true);
+    if (S.castingToSonos) _deactivateSonosCast(false);
+    if (_sonosFav) _exitSonosFavorite({ stopDevice: true });
+    if (_room) _roomApply(st);
+    else _roomEnter(st && st.id ? st : room);
+    toast(t('player.rooms.lineIn.started', { name: src.name, room: (st && st.name) || room.name }));
+  } catch (e) {
+    toastError(_roomErrText(e, 'player.rooms.lineIn.failed'));
+  }
+  _roomsProbe();
+}
+
+async function _roomLineInStop(id) {
+  try {
+    const st = await api('POST', _roomUrl(id, 'line-in/stop'));
+    if (_room && _room.id === id) _roomApply(st);
+    toast(t('player.rooms.lineIn.stopped'));
+  } catch (e) {
+    toastError(_roomErrText(e, 'player.rooms.cmdFailed'));
+  }
+  _roomsProbe();
+}
+
+function _roomLineInRows(room, row) {
+  const out = [];
+  const sub = (el) => { el.classList.add('out-row-sub'); out.push(el); };
+  if (room.lineIn) sub(row(t('player.rooms.lineIn.stop'), false, () => _roomLineInStop(room.id)));
+  for (const src of S.roomSources || []) {
+    if (room.lineIn?.clientId === src.clientId) continue;
+    const el = row(t('player.rooms.lineIn.playFrom', { name: src.name }), false, () => _roomLineIn(room, src));
+    const dot = document.createElement('span');
+    const present = src.signal === 'present';
+    dot.className = 'out-status-dot ' + (present ? 'out-status-ready' : 'out-status-offline');
+    dot.title = present ? t('player.rooms.lineIn.signal') : t('player.rooms.lineIn.noSignal');
+    el.appendChild(dot);
+    if (!src.available) { el.dataset.disabled = '1'; el.classList.add('out-row-disabled'); }
+    sub(el);
+  }
+  return out;
+}
+
+function _roomLineInTitle() {
+  if (!_room?.lineIn) return;
+  document.getElementById('player-title').textContent = t('player.rooms.lineIn.title', { name: _room.lineIn.name || '' });
+  document.getElementById('player-artist').textContent = _room.name || '';
+  document.getElementById('player-album')?.classList.add('hidden');
+}
+
 async function _roomTakeBack() {
   if (!_room) return;
   const id = _room.id;
@@ -19968,7 +20026,8 @@ function _roomErrText(e, key) {
   const codes = {
     not_playable: 'player.rooms.err.notPlayable', rooms_disabled: 'player.rooms.unavailable', not_running: 'player.rooms.err.notRunning',
     empty_queue: 'player.rooms.err.emptyQueue', queue_changed: 'player.rooms.queueChanged', solo_room: 'player.rooms.err.soloRoom',
-    not_found: 'player.rooms.err.notFound',
+    not_found: 'player.rooms.err.notFound', not_connected: 'player.rooms.lineIn.err.notConnected',
+    unavailable: 'player.rooms.lineIn.err.unavailable', not_allowed: 'player.rooms.lineIn.err.notAllowed',
   };
   if (e?.code && codes[e.code]) return t(codes[e.code]);
   return t(key, { error: e?.message || '' });
@@ -20232,7 +20291,7 @@ function _roomLocalIndex(st) {
 
 function _roomAlignIndex(st) {
   const cur = st.current;
-  if (!cur || !Number.isInteger(st.index) || st.index < 0) return;
+  if (st.lineIn || !cur || !Number.isInteger(st.index) || st.index < 0) return;
   const idx = _roomLocalIndex(st);
   if (idx < 0) { _roomFetchQueue(); return; }
   if (idx !== S.idx) {
@@ -20258,6 +20317,10 @@ function _roomApply(st) {
     index: st.index,
     canSeek: st.canSeek !== false,
   });
+  const wasLive = !!_room.lineIn;
+  _room.lineIn = st.lineIn || null;
+  if (_room.lineIn) _roomLineInTitle();
+  else if (wasLive) Player.updateBar();
   if (Date.now() - _roomVolTouchedAt > 1500) {
     _room.volume = st.volume;
     _room.muted = st.muted === true;
@@ -20404,20 +20467,37 @@ function _roomToggleMute() {
 }
 
 function _roomRenderIndicator() {
-  const text = _room ? t('player.rooms.playingIn', { room: _room.name || '' }) : '';
-  for (const [boxId, textId] of [['player-room', 'player-room-text'], ['qp-room-banner', 'qp-room-text']]) {
+  const live = _room?.lineIn || null;
+  let text = '';
+  if (live) text = t('player.rooms.lineIn.banner', { name: live.name || '', room: _room.name || '' });
+  else if (_room) text = t('player.rooms.playingIn', { room: _room.name || '' });
+  for (const [boxId, textId, backId] of [['player-room', 'player-room-text', 'player-room-back'], ['qp-room-banner', 'qp-room-text', 'qp-room-back']]) {
     const box = document.getElementById(boxId);
     if (!box) continue;
     box.classList.toggle('hidden', !_room);
+    box.classList.toggle('room-banner-live', !!live);
+    let badge = box.querySelector('.room-live-badge');
+    if (live && !badge) {
+      badge = document.createElement('span');
+      badge.className = 'room-live-badge';
+      box.insertBefore(badge, document.getElementById(textId));
+    }
+    if (badge) {
+      badge.textContent = t('player.rooms.lineIn.badge');
+      badge.classList.toggle('hidden', !live);
+    }
     const tx = document.getElementById(textId);
     if (tx) tx.textContent = text;
+    const back = document.getElementById(backId);
+    if (back) back.textContent = live ? t('player.rooms.lineIn.stop') : t('player.rooms.takeBack');
   }
 }
 
 for (const id of ['player-room-back', 'qp-room-back']) {
   document.getElementById(id)?.addEventListener('click', e => {
     e.stopPropagation();
-    _roomTakeBack();
+    if (_room?.lineIn) _roomLineInStop(_room.id);
+    else _roomTakeBack();
   });
 }
 

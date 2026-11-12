@@ -1509,6 +1509,13 @@ body.vu-needle-mode .eq-panel{bottom:calc(var(--player) + 8px);}
 .room-banner-btn{flex-shrink:0;background:none;border:1px solid var(--border);border-radius:999px;color:var(--t2);font-size:11px;padding:1px 9px;cursor:pointer;transition:color .12s,border-color .12s;}
 .room-banner-btn:hover,.room-banner-btn:focus-visible{color:var(--t1);border-color:var(--primary);}
 .player-room{margin-top:3px;}
+.room-live-badge{flex-shrink:0;font-size:10px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;color:#fff;background:var(--red,#e5484d);border-radius:4px;padding:1px 6px;}
+.room-live-badge.hidden{display:none;}
+.room-banner-live .room-banner-dot{background:var(--red,#e5484d);box-shadow:0 0 6px var(--red,#e5484d);}
+#output-dropdown .out-row .room-live-badge{margin-left:auto;}
+#output-dropdown .out-row.out-row-sub{padding-left:34px;font-size:13px;color:var(--t2);}
+#output-dropdown .out-row.out-row-sub .out-dot{display:none;}
+#output-dropdown .out-row.out-row-sub .out-status-dot{margin-left:auto;}
 .qp-room-banner{margin-bottom:10px;padding:6px 10px;border:1px solid color-mix(in srgb,var(--green) 45%,transparent);border-radius:8px;background:color-mix(in srgb,var(--green) 8%,transparent);}
 body.room-remote #vu-spec-row{opacity:.35;}
 .crossfade-light{position:relative;}

@@ -190,7 +190,7 @@ for (const suite of SUITES) {
     assert.equal(client.serverId, server.serverId);
     assert.equal(client.msg1.pskId, SENTINEL_PSK_ID);
     assert.equal(client.msg1.pskCategory, 'sn');
-    assert.deepEqual(sh.payload, { name: 'Velvet Test', languages: ['nl', 'en'] });
+    assert.deepEqual(sh.payload, { name: 'Velvet Test', languages: ['nl', 'en'], 'source@v1_support': { supported_codecs: ['flac', 'pcm'] } });
     assert.deepEqual(client.activate.payload, { activities: [], active_roles: [] });
     const conn = server.getClient(client.clientId);
     assert.equal(conn.suite, suite);

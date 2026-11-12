@@ -354,6 +354,27 @@ export class RoomVisualizer {          // one per GroupStream (RoomManager creat
 //   items, add, shuffle; persisted*/,
 //   members: [{ clientId, name, connected, available, player, volume, muted, volumeSettable, muteSettable, format,
 //               streaming, parked }] }   listRooms() = the same without queue/order; solo rooms only while occupied
+// source.js  (source@v1 = line-in; policy in SourceManager, protocol state in SendspinConnection)
+export const SOURCE_ROLE, TARGET_MS /*150*/, MAX_EXCESS_MS /*250*/, MAX_PPM /*1000*/, KP /*0.02*/, KI /*KP^2/4*/, STALE_MS /*500*/;
+export class SourceError;             // .code: not_allowed | not_connected | unavailable | pairing_required | not_approved (REST 409)
+export function checkSourceFormat(f); // pcm 16/24/32 | flac (STREAMINFO checked, last-block flag set); 8–384 kHz, 1–8 ch; opus refused
+export class LiveResampler { constructor({ rate, targetMs, maxExcessMs, kp, ki, maxPpm, emaMs }); push(stereoF32); pull(n) -> F32;
+                             ready; priming; levelSeconds; ratio; ppm; underruns; dropped }
+export class SourceSession { onStart(fmt|null); onEnd(); onAudio(tsBigInt, frame) -> bool; feed(track) -> live(opts) generator;
+                             attach(rate); detach(rs); view() }
+export class SourceManager extends EventEmitter {
+  constructor({ server, rooms, logger, now, ffmpeg, resampler, tickMs });
+  async allow(id, on) /* explicit, needs paired|approved */; async setAutoSwitch(id, on, roomId?); start(roomId, id); stop(id);
+  stopRoom(roomId); session(id); view(id) /* Device.source */; list() /* player sources */; close();
+}
+// connection.js additions: SOURCE_CODECS ['flac','pcm'] in server/hello source@v1_support; parseSourceStreamStart();
+//   sourceCommand('start'|'stop') (start needs role + playback + source state + available); sourceStreamOpen; sourceStateReceived;
+//   events 'source-start'(fmt|null = discarded), 'source-audio'(tsBigInt, frame), 'source-end'(why), 'source-declined'.
+//   Unsolicited client-stream/start and type-12 without an open stream close 1002; in-flight answers after stop are tolerated.
+// server.js additions: allowSource(id, on); setSourcePlayback(id, on) — 'playback' held while a room plays OR a source streams;
+//   source@v1 activated only when paired or explicitly allowed (TrustStore.isSourceAllowed / allowSource / setSourcePolicy).
+// rooms.js additions: playLive(id, { sourceId, name, feed(track) }), stopLive(id, sourceId?); 'live-ended'(roomId, sourceId);
+//   view.live = { sourceId, name } | null. GroupStream.play({ live(opts) }) = live epoch: lead without required_lead_time_ms.
 ```
 
 ### Member interface (scheduler.js / rooms.js ↔ connection.js)
@@ -764,6 +785,21 @@ second test instance on another port for the owner.
   respected, `bit_depth` ignored. ~1 % of one core per stereo stream (FLAC ~0.25 %). `test/sendspin-opus.test.mjs` (8).
   Conformance `server-initiated-opus`: sendspin-cpp passed (8 kHz mono, 251 packets); aiosendspin and sendspin-js client
   adapters do not offer Opus (harness fail-fast).
+- 2026-11-12 — Source role (`source@v1`, line-in, `source.js`): explicit per-device source approval in the trust store (separate
+  from playback approval, never implied; survives pairing, dropped with trust); role activated only when paired or allowed;
+  `start` only after operator action (or auto-switch), with `playback` declared and the source state received. Ingest: PCM
+  in-process, FLAC (and PCM at another rate) through one long-lived ffmpeg per input (~350 ms decoder lag), chunks counted
+  from frame headers (≤ 150 ms, ≤ 1 s ahead of real time), stale backlog (> 500 ms behind the 5 s best delay) dropped. Drift:
+  own ASRC — FIFO level (EMA 1 s) → critically damped PI (kp 0.02, ki kp²/4, ±1000 ppm) → Catmull-Rom read at that ratio;
+  ffmpeg `aresample=async` was rejected because it stretches/cuts by input pts, i.e. at timestamps, which the spec says
+  not to do. Timestamps anchor (stale/jump/gap stats) only. Room: `playLive` (queue paused underneath), clock-driven feed into
+  GroupStream (live lead = min_buffer + output_delay, no seek, metadata `Line-in — <name>` / duration 0); a device that is
+  source and player is excluded as player while its own input plays (echo). Auto-switch on `signal` per source (off by
+  default, room = where it last played). REST `devices/source`, `devices/source-auto`, `rooms/:id/line-in[/stop]`, `sources`
+  in `GET /rooms`; admin row + player picker/banner, 32 keys × 12 locales. Tests: 11 (`sendspin-source`: drift ±200/800 ppm
+  over 15 simulated min bounded ±15 ms, stall, gating, mic refused, protocol errors, PCM/FLAC end-to-end, auto-switch, echo)
+  + REST. Live: aiosendspin `SourceCapture` (FLAC and PCM, 1 kHz file input) → Velvet → room: 0 timeline gaps, lead
+  284–307 ms (min_buffer 250), buffer settles ~160 ms.
 
 ### Second test instance (owner)
 

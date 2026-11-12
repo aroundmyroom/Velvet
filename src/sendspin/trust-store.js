@@ -29,6 +29,7 @@ export class TrustStore {
   #records = new Map();
   #approvals = new Map();
   #staged = new Map();
+  #sources = new Map();
   #writing = Promise.resolve();
 
   constructor(dir, { file = TRUST_STORE_FILE, now = Date.now } = {}) {
@@ -70,6 +71,13 @@ export class TrustStore {
       checkClientId(a.clientId);
       this.#approvals.set(a.clientId, { clientId: a.clientId, approvedAt: a.approvedAt, name: label(a.name), roles: Array.isArray(a.roles) ? a.roles.filter((x) => typeof x === 'string') : [] });
     }
+    for (const x of Object.values(data.sources ?? {})) {
+      checkClientId(x.clientId);
+      this.#sources.set(x.clientId, {
+        clientId: x.clientId, allowedAt: x.allowedAt, autoSwitch: x.autoSwitch === true,
+        roomId: typeof x.roomId === 'string' ? x.roomId.slice(0, 64) : null,
+      });
+    }
     for (const s of Object.values(data.staged ?? {})) {
       const psk = Buffer.from(s.psk, 'base64url');
       checkClientId(s.clientId);
@@ -86,7 +94,8 @@ export class TrustStore {
     for (const s of this.#staged.values()) {
       if (!this.#expired(s)) staged[s.clientId] = { clientId: s.clientId, psk: s.psk.toString('base64url'), createdAt: s.createdAt };
     }
-    return JSON.stringify({ version: 1, records, approvals, staged }, null, 2) + '\n';
+    const sources = Object.fromEntries([...this.#sources].map(([k, v]) => [k, { ...v }]));
+    return JSON.stringify({ version: 1, records, approvals, staged, sources }, null, 2) + '\n';
   }
 
   #save() {
@@ -163,6 +172,7 @@ export class TrustStore {
 
   async unpair(clientId) {
     if (!this.#records.delete(clientId)) return false;
+    this.#sources.delete(clientId);
     await this.#save();
     return true;
   }
@@ -229,6 +239,44 @@ export class TrustStore {
 
   async revokeApproval(clientId) {
     if (!this.#approvals.delete(clientId)) return false;
+    if (!this.#records.has(clientId)) this.#sources.delete(clientId);
+    await this.#save();
+    return true;
+  }
+
+  // ---- source approvals (explicit, separate from playback; survive pairing, die with trust) ----
+
+  isSourceAllowed(clientId) {
+    return this.#sources.has(clientId);
+  }
+
+  sourcePolicy(clientId) {
+    const x = this.#sources.get(clientId);
+    return x ? { ...x } : null;
+  }
+
+  listSources() {
+    return [...this.#sources.values()].map((x) => ({ ...x }));
+  }
+
+  async allowSource(clientId, on) {
+    checkClientId(clientId);
+    if (!on) {
+      if (!this.#sources.delete(clientId)) return false;
+    } else {
+      if (!this.#records.has(clientId) && !this.#approvals.has(clientId)) return false;
+      if (this.#sources.has(clientId)) return true;
+      this.#sources.set(clientId, { clientId, allowedAt: nowIso(this.#now), autoSwitch: false, roomId: null });
+    }
+    await this.#save();
+    return true;
+  }
+
+  async setSourcePolicy(clientId, { autoSwitch, roomId } = {}) {
+    const x = this.#sources.get(clientId);
+    if (!x) return false;
+    if (typeof autoSwitch === 'boolean') x.autoSwitch = autoSwitch;
+    if (roomId !== undefined) x.roomId = typeof roomId === 'string' ? roomId.slice(0, 64) : null;
     await this.#save();
     return true;
   }

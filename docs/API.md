@@ -879,7 +879,9 @@ small local window for instant boot, then lazy-loads the rest from here.
 | `GET` | `/api/v1/admin/sendspin/devices/pair-code/status?clientId=` | — | **Admin.** `PairStatus`: `waiting` / `pending {message}` / `need_code` / `wrong_code` / `paired` / `aborted {reason}`. |
 | `POST` | `/api/v1/admin/sendspin/devices/pair-code/submit` | `{ clientId, code }` | **Admin.** Submit the 6- or 8-digit code. |
 | `POST` | `/api/v1/admin/sendspin/devices/pair-code/cancel` | `{ clientId }` | **Admin.** Cancel (`pair/abort user_cancelled`). |
-| `GET` | `/api/v1/rooms` | — | Rooms with members and live state. Also the player's capability check. |
+| `POST` | `/api/v1/admin/sendspin/devices/source` | `{ clientId, allowed }` | **Admin.** Allow / disallow a paired or approved device as a line-in source (explicit, separate from playback approval). |
+| `POST` | `/api/v1/admin/sendspin/devices/source-auto` | `{ clientId, autoSwitch, roomId? }` | **Admin.** Auto-switch: start the line-in when the device reports signal, stop when it goes. |
+| `GET` | `/api/v1/rooms` | — | Rooms with members and live state, plus the line-in `sources` a room can play. Also the player's capability check. |
 | `POST` | `/api/v1/rooms` | `{ name, members[] }` | Create a room from speakers (they leave their old rooms). |
 | `PATCH` | `/api/v1/rooms/:id` | `{ name?, members? }` | Rename / set members (moves speakers). |
 | `DELETE` | `/api/v1/rooms/:id` | — | Dissolve a room; members return to solo rooms. |
@@ -901,6 +903,8 @@ small local window for instant boot, then lazy-loads the rest from here.
 | `POST` | `/api/v1/rooms/:id/stop` | — | Stop; response carries `stoppedAt: { index, positionMs }`. |
 | `POST` | `/api/v1/rooms/:id/repeat` | `{ repeat }` | `'off' \| 'all' \| 'one'`. |
 | `POST` | `/api/v1/rooms/:id/shuffle` | `{ shuffle }` | Shuffle on/off. |
+| `POST` | `/api/v1/rooms/:id/line-in` | `{ clientId }` | Play a source device's input (line-in) in the room; the queue pauses underneath. |
+| `POST` | `/api/v1/rooms/:id/line-in/stop` | — | Stop the line-in; the room returns to its paused queue. |
 
 ---
 

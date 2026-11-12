@@ -4808,7 +4808,7 @@ const sonosView = Vue.component('sonos-view', {
 });
 
 // ── Velvet Rooms Admin View ─────────────────────────────────────────────────
-const VR_ERR_CODES = ['invalid_body', 'forbidden', 'not_found', 'not_connected', 'pairing_in_progress', 'no_pairing', 'not_playable', 'solo_room', 'malformed_token', 'unsupported_token_version', 'wrong_client', 'invalid_code', 'cooldown', 'not_running'];
+const VR_ERR_CODES = ['invalid_body', 'forbidden', 'not_found', 'not_connected', 'pairing_in_progress', 'no_pairing', 'not_playable', 'solo_room', 'malformed_token', 'unsupported_token_version', 'wrong_client', 'invalid_code', 'cooldown', 'not_running', 'pairing_required', 'not_approved', 'not_allowed', 'unavailable'];
 const VR_PAIR_TIMEOUT_MS = 360000;
 const roomsView = Vue.component('rooms-view', {
   data() {
@@ -4955,6 +4955,33 @@ const roomsView = Vue.component('rooms-view', {
                   <button v-if="trustKey(d) === 'paired' || trustKey(d) === 'mismatch'" type="button" class="btn-small btn-flat" @click="confirmAct('unpair', d)" :disabled="busy">{{ this.t('admin.rooms.btnUnpair') }}</button>
                   <button type="button" class="btn-small btn-flat" @click="startRename(d)" :disabled="busy">{{ this.t('admin.rooms.btnRename') }}</button>
                   <button type="button" class="btn-small red" @click="confirmAct('forget', d)" :disabled="busy">{{ this.t('admin.rooms.btnForget') }}</button>
+                </div>
+
+                <div v-if="d.source" class="vr-source" role="group" :aria-label="this.t('admin.rooms.source.title')">
+                  <div class="vr-source-head">
+                    <span class="vr-source-badge" :class="{ 'vr-source-live': d.source.roomId }">{{ this.t('admin.rooms.source.title') }}</span>
+                    <span v-if="d.source.roomId" class="vr-source-state vr-source-live-text">{{ this.t('admin.rooms.source.playingIn', { room: roomName(d.source.roomId) || '?' }) }}</span>
+                    <span v-else-if="d.source.allowed" class="vr-source-state">{{ this.t('admin.rooms.source.allowed') }}</span>
+                    <span v-if="d.source.signal" class="vr-source-signal" :class="'vr-signal-' + d.source.signal">{{ d.source.signal === 'present' ? this.t('admin.rooms.source.signalPresent') : this.t('admin.rooms.source.signalAbsent') }}</span>
+                  </div>
+                  <div v-if="d.source.needsPairing" class="vr-note">{{ this.t('admin.rooms.source.needsPairing') }}</div>
+                  <div v-else-if="!d.source.allowed && !d.source.canAllow" class="vr-note">{{ this.t('admin.rooms.source.allowFirst') }}</div>
+                  <div v-else-if="!d.source.allowed" class="vr-note">{{ this.t('admin.rooms.source.explain') }}</div>
+                  <div v-if="d.source.lastError === 'declined'" class="vr-note">{{ this.t('admin.rooms.source.declined') }}</div>
+                  <div class="vr-actions">
+                    <button v-if="!d.source.allowed && d.source.canAllow" type="button" class="btn-small" @click="setSource(d, true)" :disabled="busy">{{ this.t('admin.rooms.source.btnAllow') }}</button>
+                    <button v-if="d.source.roomId" type="button" class="btn-small" @click="stopSource(d)" :disabled="busy">{{ this.t('admin.rooms.source.btnStop') }}</button>
+                    <button v-if="d.source.allowed" type="button" class="btn-small btn-flat" @click="setSource(d, false)" :disabled="busy">{{ this.t('admin.rooms.source.btnRevoke') }}</button>
+                    <label v-if="d.source.allowed" class="vr-switch">
+                      <span class="vr-switch-track">
+                        <input type="checkbox" :checked="d.source.autoSwitch" @change="setSourceAuto(d, !d.source.autoSwitch)" :disabled="busy" :aria-label="this.t('admin.rooms.source.auto')">
+                        <span class="vr-switch-bg" :class="{ on: d.source.autoSwitch }"></span>
+                        <span class="vr-switch-knob" :class="{ on: d.source.autoSwitch }"></span>
+                      </span>
+                      <span style="font-size:.85rem;color:var(--t2)">{{ this.t('admin.rooms.source.auto') }}</span>
+                    </label>
+                  </div>
+                  <div v-if="d.source.allowed && d.source.autoSwitch" class="vr-note">{{ d.source.autoRoomId && roomName(d.source.autoRoomId) ? this.t('admin.rooms.source.autoRoom', { room: roomName(d.source.autoRoomId) }) : this.t('admin.rooms.source.autoNoRoom') }}</div>
                 </div>
 
                 <div v-if="pairing && pairing.clientId === d.clientId" class="vr-pair" role="region" :aria-label="this.t('admin.rooms.pairTitle', { name: d.name || d.clientId })">
@@ -5154,6 +5181,24 @@ const roomsView = Vue.component('rooms-view', {
       } catch (e) {
         this.error = this.errMsg(e);
       } finally { this.busy = false; }
+    },
+    async sourceCall(url, data) {
+      this.busy = true; this.error = null;
+      try {
+        await API.axios({ method: 'POST', url: `${API.url()}${url}`, data });
+        await this.load();
+      } catch (e) {
+        this.error = this.errMsg(e);
+      } finally { this.busy = false; }
+    },
+    setSource(d, allowed) {
+      return this.sourceCall('/api/v1/admin/sendspin/devices/source', { clientId: d.clientId, allowed });
+    },
+    setSourceAuto(d, autoSwitch) {
+      return this.sourceCall('/api/v1/admin/sendspin/devices/source-auto', { clientId: d.clientId, autoSwitch });
+    },
+    stopSource(d) {
+      return this.sourceCall(`/api/v1/rooms/${encodeURIComponent(d.source.roomId)}/line-in/stop`, {});
     },
     confirmAct(action, d) {
       const name = _esc(d.name || d.clientId);

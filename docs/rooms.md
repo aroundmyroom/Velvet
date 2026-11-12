@@ -343,6 +343,61 @@ has a tempo for the song it is used as a guide, which settles whether a song
 is felt at 70 or 140 BPM; without it the tracker picks the tempo itself.
 Velvet does not mark the first beat of each bar (downbeats).
 
+---
+
+## Line-in (source devices)
+
+Some Sendspin devices capture audio instead of (or next to) playing it: a
+turntable preamp, a speaker with an AUX input, a Bluetooth receiver, a
+microphone. Velvet can play such an input in any room, in sync on every
+speaker there.
+
+**Allow it first.** A source device needs its own, explicit approval: in
+**Admin → Velvet Rooms**, a device that offers line-in shows *Allow as
+source*. Allowing a speaker to play, or playing on it, never allows its input:
+the input is only used after you press that button, and *Stop allowing as
+source* takes it back at any time. Only a paired or allowed device can be
+allowed as a source. A device whose unpaired access is off (microphones should
+ship that way, since anyone on the network could otherwise listen in) has to
+be paired first; the device row says so.
+
+**Playing it.** In the player's room picker, a room offers *Play line-in
+from Turntable* (the device's name) for every allowed source that is
+connected. The room then plays the input instead of its queue: the player bar
+shows *Line-in — Turntable* with a **Line-in** badge, and *Stop line-in* (or
+pause/stop on the room or on a speaker's buttons) ends it. The queue stays
+where it was, paused; resume it or play something new to leave the line-in.
+One input plays in one room at a time.
+
+**Auto-switch.** A device with line sense reports when audio is present (the
+needle drops, the TV goes on). With *Start when signal appears* switched on for
+that source (off by default), Velvet starts the line-in in the room it last
+played in when the signal appears and stops it when the signal goes. Leave it
+off for an input with hum on it, which reports a signal all day.
+
+**What you hear.**
+
+- Latency: about half a second for PCM inputs, up to about a second for FLAC
+  inputs (the decoder's own buffering), plus each speaker's buffer. Live audio
+  gets no extra start-up lead and cannot be seeked.
+- The device's clock never matches Velvet's exactly. Velvet measures the input's
+  real rate from the audio that arrives and resamples it by a few hundred ppm at
+  most, inaudibly, so the delay stays the same for hours. It never cuts the audio
+  at the device's timestamps; those only anchor the start and show gaps.
+- After a network hiccup the room plays a moment of silence and continues at
+  the normal delay; audio that arrives late in a burst is dropped, not played
+  late.
+- A device that is both source and speaker in the same room does not play its
+  own input while it streams (it would echo it with the room's delay); it plays
+  again when the line-in stops.
+- Inputs in PCM (16/24/32-bit) and FLAC are accepted, any sample rate up to
+  384 kHz and up to 8 channels (the first two are used). Opus input is not
+  offered.
+
+
+
+---
+
 ## ReplayGain
 
 Rooms apply ReplayGain on the server, before the audio is sent: from Velvet's
@@ -423,7 +478,8 @@ Restoring a backup brings the key and the pairings back together. See
 
 Velvet Rooms runs entirely on your network. Velvet talks only to the speakers
 on your LAN: audio, metadata and artwork come from your own library and art
-cache. Nothing is sent to the Open Home Foundation, Home Assistant or any other
+cache. A line-in device's audio goes only to the room you start it in, and only
+after you allowed that device as a source. Nothing is sent to the Open Home Foundation, Home Assistant or any other
 outside service, and no account is needed.
 
 ---

@@ -141,7 +141,7 @@ describe('Velvet Rooms REST', async () => {
     assert.equal(plain.body.code, 'forbidden');
     const caster = await call('caster', 'GET', '/api/v1/rooms');
     assert.equal(caster.status, 200);
-    assert.deepEqual(caster.body, { enabled: true, rooms: [] });
+    assert.deepEqual(caster.body, { enabled: true, rooms: [], sources: [] });
   });
 
   it('lists a connecting speaker, approves it and shows its solo room', async () => {
@@ -410,6 +410,76 @@ describe('Velvet Rooms REST', async () => {
     const renamed = await call('caster', 'PATCH', `/api/v1/rooms/${created.body.id}`, { name: 'Lounge' });
     assert.equal(renamed.body.name, 'Lounge');
     assert.equal((await call('caster', 'PATCH', `/api/v1/rooms/${created.body.id}`, { members: [] })).status, 400);
+  });
+
+  it('line-in: explicit source approval, play in a room, auto-switch toggle, stop, revoke', async () => {
+    const { SourceClient, sourceHello, sinePcm16 } = await import('../helpers/sendspin-source-client.mjs');
+    const src = new SourceClient();
+    await src.dial(`ws://127.0.0.1:${ssPort}/sendspin`);
+    await src.connect(sourceHello({ name: 'Turntable' }));
+    const dev = async () => (await call('admin', 'GET', '/api/v1/admin/sendspin/status')).body.devices.find(d => d.clientId === src.clientId);
+    let d;
+    for (let i = 0; i < 50 && !d; i++) {
+      d = await dev();
+      if (!d) await new Promise(res => setTimeout(res, 100));
+    }
+    assert.equal(d.source.supported, true);
+    assert.equal(d.source.allowed, false);
+    assert.equal(d.source.canAllow, false);
+    const early = await call('admin', 'POST', '/api/v1/admin/sendspin/devices/source', { clientId: src.clientId, allowed: true });
+    assert.equal(early.status, 409);
+    assert.equal(early.body.code, 'not_approved');
+    assert.equal((await call('caster', 'POST', '/api/v1/admin/sendspin/devices/source', { clientId: src.clientId, allowed: true })).status, 403);
+    assert.equal((await call('admin', 'POST', '/api/v1/admin/sendspin/devices/approve', { clientId: src.clientId })).status, 200);
+    assert.ok(!src.inbox.some(m => m.type === 'server/activate' && m.payload.active_roles?.includes('source@v1')), 'playback approval is not source approval');
+    const ok = await call('admin', 'POST', '/api/v1/admin/sendspin/devices/source', { clientId: src.clientId, allowed: true });
+    assert.equal(ok.status, 200);
+    assert.equal(ok.body.device.source.allowed, true);
+    await src.expect('server/activate', p => p.active_roles?.includes('source@v1'));
+    src.state(true, 'present');
+
+    let listed;
+    for (let i = 0; i < 50 && !listed?.signal; i++) {
+      listed = (await call('caster', 'GET', '/api/v1/rooms')).body.sources.find(x => x.clientId === src.clientId);
+      if (!listed?.signal) await new Promise(res => setTimeout(res, 50));
+    }
+    assert.deepEqual(listed, { clientId: src.clientId, name: 'Turntable', available: true, signal: 'present', streaming: false, roomId: null });
+    const room = (await call('caster', 'GET', '/api/v1/rooms')).body.rooms.find(r => r.members.some(m => m.clientId === speaker.clientId));
+    assert.equal((await call('plain', 'POST', `/api/v1/rooms/${room.id}/line-in`, { clientId: src.clientId })).status, 403);
+    assert.equal((await call('caster', 'POST', `/api/v1/rooms/${room.id}/line-in`, { clientId: speaker.clientId })).status, 404);
+    assert.equal((await call('caster', 'POST', `/api/v1/rooms/${room.id}/line-in`, {})).status, 400);
+    const audio = speaker.audio;
+    const on = await call('caster', 'POST', `/api/v1/rooms/${room.id}/line-in`, { clientId: src.clientId });
+    assert.equal(on.status, 200, JSON.stringify(on.body));
+    assert.deepEqual(on.body.lineIn, { clientId: src.clientId, name: 'Turntable' });
+    assert.equal(on.body.state, 'playing');
+    assert.equal(on.body.current.title, 'Line-in — Turntable');
+    assert.equal(on.body.canSeek, false);
+    await src.until(() => src.commands().includes('start'));
+    src.streamStart({ codec: 'pcm', sample_rate: 48000, channels: 2, bit_depth: 16 });
+    const t0 = Date.now() * 1000;
+    for (let k = 0; k < 40; k++) {
+      src.sendAudio(t0 + k * 20_000, sinePcm16(960, { offset: k * 960 }));
+      await new Promise(res => setTimeout(res, 20));
+    }
+    await speaker.until(() => speaker.audio > audio + 10);
+    assert.equal((await call('caster', 'GET', '/api/v1/rooms')).body.sources[0].roomId, room.id);
+
+    const auto = await call('admin', 'POST', '/api/v1/admin/sendspin/devices/source-auto', { clientId: src.clientId, autoSwitch: true });
+    assert.equal(auto.body.device.source.autoSwitch, true);
+    assert.equal(auto.body.device.source.autoRoomId, room.id, 'auto-switch uses the room the line-in last played in');
+
+    const off = await call('caster', 'POST', `/api/v1/rooms/${room.id}/line-in/stop`);
+    assert.equal(off.status, 200);
+    assert.equal(off.body.lineIn, null);
+    assert.notEqual(off.body.state, 'playing');
+    await src.until(() => src.commands().includes('stop'));
+
+    const revoked = await call('admin', 'POST', '/api/v1/admin/sendspin/devices/source', { clientId: src.clientId, allowed: false });
+    assert.equal(revoked.body.device.source.allowed, false);
+    assert.deepEqual((await call('caster', 'GET', '/api/v1/rooms')).body.sources, []);
+    src.close();
+    assert.equal((await call('admin', 'POST', '/api/v1/admin/sendspin/devices/forget', { clientId: src.clientId })).status, 200);
   });
 
   it('rejects malformed pairing input without echoing it', async () => {

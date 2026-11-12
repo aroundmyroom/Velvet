@@ -17,6 +17,8 @@
  *   GET  /api/v1/admin/sendspin/devices/pair-code/status  — poll a pairing attempt
  *   POST /api/v1/admin/sendspin/devices/pair-code/submit  — submit the code shown on the device
  *   POST /api/v1/admin/sendspin/devices/pair-code/cancel  — cancel the attempt
+ *   POST /api/v1/admin/sendspin/devices/source           — allow / disallow a device as a line-in source
+ *   POST /api/v1/admin/sendspin/devices/source-auto      — auto-switch on line sense
  *
  * Player endpoints (allow-mpv-cast or admin):
  *   GET    /api/v1/rooms                — rooms (capability probe)
@@ -33,6 +35,8 @@
  *   POST   /api/v1/rooms/:id/reorder    — reorder the whole queue
  *   POST   /api/v1/rooms/:id/pause|resume|next|previous|stop
  *   POST   /api/v1/rooms/:id/seek|volume|mute|repeat|shuffle
+ *   POST   /api/v1/rooms/:id/line-in        — play a source device's input in the room
+ *   POST   /api/v1/rooms/:id/line-in/stop   — stop the line-in (the queue stays paused)
  */
 
 import fsp from 'node:fs/promises';
@@ -45,7 +49,7 @@ import * as vpath from '../util/vpath.js';
 import { loadFile, saveFile } from '../util/admin.js';
 import { resolvePathWithinRoot } from '../util/path-security.js';
 import { resolveTrackGain } from './db.js';
-import { RoomsService, RoomError, STOP_TIMEOUT_MS } from '../sendspin/service.js';
+import { RoomsService, RoomError, SourceError, STOP_TIMEOUT_MS } from '../sendspin/service.js';
 import { createArtwork } from '../sendspin/artwork.js';
 import { PairingInputError, decodePskToken } from '../sendspin/pairing.js';
 
@@ -95,6 +99,9 @@ const SCHEMAS = {
   repeat: Joi.object({ repeat: Joi.string().valid('off', 'all', 'one').required() }),
   shuffle: Joi.object({ shuffle: Joi.boolean().required() }),
   empty: Joi.object({}),
+  source: Joi.object({ clientId, allowed: Joi.boolean().required() }),
+  sourceAuto: Joi.object({ clientId, autoSwitch: Joi.boolean().required(), roomId: Joi.string().min(1).max(64) }),
+  lineIn: Joi.object({ clientId }),
 };
 SCHEMAS.play = Joi.object({
   songs: SCHEMAS.songs, index: Joi.number().integer().min(0).default(0), positionMs: Joi.number().integer().min(0).default(0),
@@ -130,6 +137,7 @@ function route(fn) {
         return res.status(status).json({ error: err.message, code });
       }
       if (err instanceof PairingInputError) return sendPairingError(res, err, req.body?.pairingToken);
+      if (err instanceof SourceError) return res.status(409).json({ error: err.message, code: err.code });
       winston.error(`[rooms] ${req.method} ${req.path}: ${err.message}`);
       res.status(500).json({ error: 'Server Error', code: 'server_error' });
     }
@@ -518,7 +526,24 @@ export function setup(velvet) {
     return sv.server.cancelPairing(id);
   }));
 
-  player('get', '', () => ({ enabled: true, rooms: service.listRooms() }));
+  admin('post', '/devices/source', route(async (req) => {
+    const { clientId: id, allowed } = validate(SCHEMAS.source, req.body);
+    const sv = requireRunning();
+    requireDevice(sv, id);
+    await sv.sources.allow(id, allowed);
+    return { ok: true, device: sv.device(id) };
+  }));
+
+  admin('post', '/devices/source-auto', route(async (req) => {
+    const { clientId: id, autoSwitch, roomId } = validate(SCHEMAS.sourceAuto, req.body);
+    const sv = requireRunning();
+    requireDevice(sv, id);
+    if (roomId) lightView(sv, roomId);
+    await sv.sources.setAutoSwitch(id, autoSwitch, roomId);
+    return { ok: true, device: sv.device(id) };
+  }));
+
+  player('get', '', () => ({ enabled: true, rooms: service.listRooms(), sources: service.listSources() }));
 
   player('post', '', (req, res) => {
     const { name, members } = validate(SCHEMAS.createRoom, req.body);
@@ -648,6 +673,21 @@ export function setup(velvet) {
     const before = service.room(id);
     service.rooms.stop(id);
     return { ...service.room(id), stoppedAt: { index: before.index, positionMs: before.positionMs } };
+  });
+
+  player('post', '/:id/line-in', (req) => {
+    const { clientId: id } = validate(SCHEMAS.lineIn, req.body);
+    lightView(service, req.params.id);
+    if (!service.listSources().some((x) => x.clientId === id)) fail(404, 'not_found', 'unknown or not allowed source');
+    service.sources.start(req.params.id, id);
+    return service.room(req.params.id);
+  });
+
+  player('post', '/:id/line-in/stop', (req) => {
+    validate(SCHEMAS.empty, req.body);
+    lightView(service, req.params.id);
+    service.sources.stopRoom(req.params.id);
+    return service.room(req.params.id);
   });
 
   player('post', '/:id/seek', (req) => {

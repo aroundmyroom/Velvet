@@ -88,7 +88,8 @@ translated string and falls back to `error` as plain text.
   "address": "192.168.1.40:8928",
   "otherServer": null,
   "lastSeen": 1763000000000,
-  "pairing": null
+  "pairing": null,
+  "source": null
 }
 ```
 
@@ -110,6 +111,7 @@ translated string and falls back to `error` as plain text.
 | `otherServer` | `{ name: string \| null } \| null` | Set when `connection === 'other-server'` and the other server is known. |
 | `lastSeen` | `number \| null` | ms epoch of the last message. |
 | `pairing` | `PairStatus \| null` | Live attempt, see below. |
+| `source` | `SourceState \| null` | Line-in; `null` for a device that does not offer `source@v1` and was never allowed as one. |
 
 **UI state** (one of the guide's eight), first match wins:
 `connection === 'pairing'` or `pairing` set → *pairing in progress*;
@@ -141,6 +143,30 @@ visible next to the connection state in every case.
 `deadline`: ms epoch of the server's own timeout, or `null`. Terminal
 states (`paired`, `aborted`) stay readable for 60 s after they occur.
 
+### SourceState
+
+```json
+{ "supported": true, "allowed": true, "canAllow": true, "needsPairing": false, "roleActive": true, "available": true,
+  "signal": "present", "streaming": true, "roomId": "r_8f2c", "autoSwitch": false, "autoRoomId": "r_8f2c", "lastError": null,
+  "stats": { "format": { "codec": "flac", "sampleRate": 48000, "channels": 2, "bitDepth": 16 }, "bufferMs": 152, "ppm": 186,
+             "underruns": 0, "chunks": 4210, "rejected": 0, "stale": 0, "ahead": 0, "jumps": 1, "gaps": 0, "delayMs": 9 } }
+```
+
+| Field | Type | Notes |
+|---|---|---|
+| `supported` | boolean | The connected device lists `source@v1` in `client/hello`. |
+| `allowed` | boolean | Explicit source approval (separate from playback approval; survives pairing, dropped on revoke/unpair/forget). |
+| `canAllow` | boolean | Paired or approved: only then can it be allowed as a source. |
+| `needsPairing` | boolean | Not trusted and unpaired access is off (microphones should ship like this): pair it first. |
+| `roleActive` | boolean | `source@v1` is in its `active_roles` (paired, or approved **and** allowed as a source). |
+| `available` | boolean | Last `client/state` `available`. |
+| `signal` | `'present' \| 'absent' \| null` | Line sense from `client/state`. |
+| `streaming` | boolean | An input stream is open (`client-stream/start` received). |
+| `roomId` | `string \| null` | The room playing this line-in now. |
+| `autoSwitch` / `autoRoomId` | boolean / `string \| null` | Auto-switch policy (off by default): start `autoRoomId` (the room the line-in last played in) on signal `present`, stop on `absent`. |
+| `lastError` | `'declined' \| null` | The device declined the last start. |
+| `stats` | object \| null | Ingest diagnostics: jitter buffer (`bufferMs`), clock correction (`ppm`), rejected/stale/over-pace chunks, timestamp `jumps`/`gaps`, last input delay. |
+
 ### Room
 
 ```json
@@ -164,7 +190,8 @@ states (`paired`, `aborted`) stay readable for 60 s after they occur.
   "repeat": "off",
   "shuffle": false,
   "canSeek": true,
-  "playable": true
+  "playable": true,
+  "lineIn": null
 }
 ```
 
@@ -186,6 +213,7 @@ states (`paired`, `aborted`) stay readable for 60 s after they occur.
 | `shuffle` | boolean | |
 | `canSeek` | boolean | |
 | `playable` | boolean | At least one member can play now (online, trusted for playback). |
+| `lineIn` | `{ clientId, name } \| null` | The room plays a source device's input instead of its queue. Then `state` is `playing`, `current` is `{ filepath: null, title: "Line-in — <name>", durationMs: null, … }`, `canSeek` is false and the queue (with `index`/`positionMs`) waits underneath, paused. |
 
 ### QueueEntry
 
@@ -208,6 +236,8 @@ states (`paired`, `aborted`) stay readable for 60 s after they occur.
 | `GET` | `/api/v1/admin/sendspin/devices/pair-code/status?clientId=` | — | `PairStatus`. Poll ~1 s while the dialog is open. 409 `no_pairing` if none (also after the 60 s terminal window). |
 | `POST` | `/api/v1/admin/sendspin/devices/pair-code/submit` | `{ clientId, code }` | `PairStatus` after queuing the code (`waiting` until the device answers). 422 `invalid_code`, 429 `cooldown`. |
 | `POST` | `/api/v1/admin/sendspin/devices/pair-code/cancel` | `{ clientId }` | `PairStatus` (`aborted`, `reason: 'user_cancelled'`). Idempotent once terminal. |
+| `POST` | `/api/v1/admin/sendspin/devices/source` | `{ clientId, allowed: boolean }` | `{ ok: true, device }`. Explicit "Allow as source" (never implied by playback approval or by playing on the device). `allowed: true` needs a paired or approved device: 409 `pairing_required` (unpaired access off — e.g. a microphone) or `not_approved`. `false` stops a running line-in and removes `source@v1` from the device's roles (unless paired). |
+| `POST` | `/api/v1/admin/sendspin/devices/source-auto` | `{ clientId, autoSwitch: boolean, roomId? }` | `{ ok: true, device }`. Auto-switch on line sense; `roomId` overrides the room it starts (default: where it last played). 409 `not_allowed` if the device is not allowed as a source. |
 
 `serverIdShort`: first 8 characters of `serverId` (base64url) for display.
 `error`: `string | null` — last listener start error (e.g. `EADDRINUSE`).
@@ -221,7 +251,7 @@ whose approval is revoked or that is unpaired leaves its room.
 
 | Method | Endpoint | Body | Response |
 |---|---|---|---|
-| `GET` | `/api/v1/rooms` | — | `{ enabled: true, rooms: Room[] }` (rooms with at least one trusted member; sorted by name). |
+| `GET` | `/api/v1/rooms` | — | `{ enabled: true, rooms: Room[], sources: Source[] }` (rooms with at least one trusted member; sorted by name). `Source = { clientId, name, available, signal, streaming, roomId }`: devices allowed as a source and connected with the role active. |
 | `POST` | `/api/v1/rooms` | `{ name, members: string[] (clientIds, 1–32) }` | `201 Room`. Members leave their current rooms (a solo room left empty disappears; playback in the room they leave continues for the others). |
 | `PATCH` | `/api/v1/rooms/:id` | `{ name?, members? }` | `Room`. `members` is the full new list. A speaker belongs to exactly one room: listing it here moves it out of its old room; a speaker dropped from the list returns to a solo room named after it. An empty `members` → 400. |
 | `DELETE` | `/api/v1/rooms/:id` | — | `{ ok: true }`. Stops the room; every member returns to its own solo room. 409 `solo_room` for a one-member room. |
@@ -242,6 +272,8 @@ whose approval is revoked or that is unpaired leaves its room.
 | `POST` | `/api/v1/rooms/:id/mute` | `{ muted, clientId? }` | `Room`. |
 | `POST` | `/api/v1/rooms/:id/stop` | — | `Room` + `stoppedAt: { index, positionMs }` (where playback was when it stopped — used to take playback back to the browser). The queue is kept and `current` still names the track it stopped on. |
 | `POST` | `/api/v1/rooms/:id/repeat` | `{ repeat: 'off' \| 'all' \| 'one' }` | `Room`. |
+| `POST` | `/api/v1/rooms/:id/line-in` | `{ clientId }` | `Room` with `lineIn`. Plays the source's input in the room (the queue pauses underneath). 404 when `clientId` is not in `sources`; 409 `not_connected` / `unavailable` / `not_allowed`. The server declares `playback` on the source and sends `server/command` `source: start` (once its `client/state` with the source object arrived). A source that is also a member of the room is left out as a player while its own input plays (no echo). Live timing: each player's lead is `min_buffer_ms + output_delay_ms` (no extension toward `required_lead_time_ms`), no seek. |
+| `POST` | `/api/v1/rooms/:id/line-in/stop` | — | `Room`. Sends `source: stop`, drops `playback` on the source, the room returns to its paused queue (or `stopped`). Pause/stop on the room or a speaker's controller do the same; `play`/`jump` with a queue replaces the line-in. |
 | `POST` | `/api/v1/rooms/:id/shuffle` | `{ shuffle: boolean }` | `Room`. |
 
 ### ReplayGain

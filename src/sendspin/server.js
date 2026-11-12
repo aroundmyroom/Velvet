@@ -120,6 +120,8 @@ export class SendspinServer extends EventEmitter {
   #stopping = false;
   #pairings = new Map();
   #cooldowns = new Map();
+  #roomHolds = new Set();
+  #sourceHolds = new Set();
   #known = new Map();
   #knownWrite = Promise.resolve();
   #knownTimer = null;
@@ -389,7 +391,19 @@ export class SendspinServer extends EventEmitter {
 
   #allowedRoles(conn) {
     if (!conn.playbackAllowed || !this.#trusted(conn)) return [];
-    return conn.negotiatedRoles.filter((r) => this.#opts.roles.includes(r));
+    return conn.negotiatedRoles.filter((r) => this.#opts.roles.includes(r) && (r !== 'source@v1' || this.#sourceRoleAllowed(conn)));
+  }
+
+  // spec: an unpaired device gets source@v1 only after the operator approved it as a source, never implied.
+  #sourceRoleAllowed(conn) {
+    return (conn.isPaired && this.#store.isPaired(conn.clientId)) || this.#store.isSourceAllowed(conn.clientId);
+  }
+
+  async allowSource(clientId, on) {
+    if (!isKeyId(clientId)) throw new Error('invalid client id');
+    const changed = await this.#store.allowSource(clientId, on);
+    if (changed) this.#trustChanged(clientId);
+    return changed;
   }
 
   canPlay(clientId) {
@@ -397,12 +411,26 @@ export class SendspinServer extends EventEmitter {
     return Boolean(conn?.isActivated && conn.playbackAllowed && this.#trusted(conn));
   }
 
+  // 'playback' is declared while a room plays on the client or while we want its source to stream.
   setPlayback(clientId, on) {
+    return this.#holdPlayback(this.#roomHolds, clientId, on);
+  }
+
+  setSourcePlayback(clientId, on) {
+    return this.#holdPlayback(this.#sourceHolds, clientId, on);
+  }
+
+  #holdPlayback(holds, clientId, wanted) {
+    if (wanted) holds.add(clientId);
+    else holds.delete(clientId);
+    const on = this.#roomHolds.has(clientId) || this.#sourceHolds.has(clientId);
     const conn = this.#clients.get(clientId);
-    if (!conn?.isActivated) return false;
-    if (on && !this.canPlay(clientId)) return false;
+    if (!conn?.isActivated || (on && !this.canPlay(clientId))) {
+      if (wanted) holds.delete(clientId);
+      return false;
+    }
     const has = conn.activities.includes('playback');
-    if (has === Boolean(on)) return true;
+    if (has === on) return true;
     const activities = on ? [...conn.activities, 'playback'] : conn.activities.filter((a) => a !== 'playback');
     const needsRoles = on && !conn.activeRoles.length;
     return conn.activate(needsRoles ? { activities, roles: this.#allowedRoles(conn) } : { activities });
@@ -414,6 +442,8 @@ export class SendspinServer extends EventEmitter {
     this.#pairingClosed(conn);
     if (this.#clients.get(conn.clientId) === conn) {
       this.#clients.delete(conn.clientId);
+      this.#roomHolds.delete(conn.clientId);
+      this.#sourceHolds.delete(conn.clientId);
       this.#forgetLive(conn, info);
       this.emit('client-removed', conn, info);
     }
@@ -537,7 +567,9 @@ export class SendspinServer extends EventEmitter {
     }
     if (conn.activities.includes('pairing')) return;
     if (this.#trusted(conn)) {
-      if (!conn.activeRoles.length && conn.playbackAllowed) conn.activate({ roles: this.#allowedRoles(conn) });
+      const roles = this.#allowedRoles(conn);
+      const same = roles.length === conn.activeRoles.length && roles.every((r) => conn.activeRoles.includes(r));
+      if (conn.activeRoles.length ? !same : conn.playbackAllowed) conn.activate({ roles });
     } else if (conn.activeRoles.length || conn.activities.includes('playback')) {
       conn.activate({ activities: conn.activities.filter((a) => a !== 'playback'), roles: [] });
     }

@@ -2,6 +2,7 @@ import { EventEmitter } from 'node:events';
 import { SendspinServer } from './server.js';
 import { RoomManager, RoomError } from './rooms.js';
 import { IMPLEMENTED_ROLES } from './connection.js';
+import { SourceManager, SourceError, SOURCE_ROLE } from './source.js';
 
 const START_TIMEOUT_MS = 15_000;
 export const STOP_TIMEOUT_MS = 3_000;
@@ -22,15 +23,16 @@ export class RoomsService extends EventEmitter {
   #deps;
   #server = null;
   #rooms = null;
+  #sources = null;
   #error = null;
   #settings = null;
   #names = new Map();
   #busy = Promise.resolve();
 
-  constructor({ dataDir, logger, artworkFor = null, colorFor = null, serverOptions = {}, roomOptions = {} }) {
+  constructor({ dataDir, logger, artworkFor = null, colorFor = null, serverOptions = {}, roomOptions = {}, sourceOptions = {} }) {
     super();
     this.#log = logger;
-    this.#deps = { dataDir, artworkFor, colorFor, serverOptions, roomOptions };
+    this.#deps = { dataDir, artworkFor, colorFor, serverOptions, roomOptions, sourceOptions };
   }
 
   get running() {
@@ -47,6 +49,10 @@ export class RoomsService extends EventEmitter {
 
   get rooms() {
     return this.#rooms;
+  }
+
+  get sources() {
+    return this.#sources;
   }
 
   get settings() {
@@ -69,7 +75,7 @@ export class RoomsService extends EventEmitter {
 
   async #start(s) {
     this.#error = null;
-    const { dataDir, artworkFor, colorFor, serverOptions, roomOptions } = this.#deps;
+    const { dataDir, artworkFor, colorFor, serverOptions, roomOptions, sourceOptions } = this.#deps;
     const server = new SendspinServer({
       dataDir, name: s.name, languages: s.languages, host: s.bind, port: s.port, path: s.path,
       roles: [...IMPLEMENTED_ROLES], logger: this.#log, discovery: s.discovery, ...serverOptions,
@@ -91,6 +97,7 @@ export class RoomsService extends EventEmitter {
       server.on('trust', sync);
       server.on('client-removed', (conn) => rooms.detach(conn.clientId));
       for (const conn of server.clients.values()) sync(conn.clientId);
+      this.#sources = new SourceManager({ server, rooms, logger: this.#log, ffmpeg: roomOptions.ffmpeg, ...sourceOptions });
       this.#server = server;
       this.#rooms = rooms;
     } catch (err) {
@@ -104,9 +111,12 @@ export class RoomsService extends EventEmitter {
   async #stop() {
     const { server } = this;
     const rooms = this.#rooms;
+    const sources = this.#sources;
     this.#server = null;
     this.#rooms = null;
+    this.#sources = null;
     const graceful = async () => {
+      sources?.close();
       if (rooms) {
         rooms.removeAllListeners();
         await rooms.close().catch((err) => this.#log.warn(`[rooms] close failed: ${err.message}`));
@@ -165,7 +175,28 @@ export class RoomsService extends EventEmitter {
       canSetVolume: Boolean(p?.supportedCommands?.includes('volume')),
       canMute: Boolean(p?.supportedCommands?.includes('mute')),
       otherServer: d.connection === 'other-server' ? { name: null } : null,
+      source: this.#sourceView(clientId, conn, d),
     };
+  }
+
+  // null for devices without the source role; needsPairing: unpaired access is off, so only pairing can trust it.
+  #sourceView(clientId, conn, d) {
+    const supported = Boolean(conn?.info?.supportedRoles?.includes(SOURCE_ROLE));
+    const v = this.#sources?.view(clientId) ?? null;
+    if (!supported && !v?.allowed) return null;
+    const trusted = d.trust === 'paired' || d.trust === 'approved';
+    return {
+      supported,
+      allowed: false, roleActive: false, available: false, signal: null, streaming: false, roomId: null,
+      autoSwitch: false, autoRoomId: null, lastError: null, stats: null,
+      ...v,
+      canAllow: trusted,
+      needsPairing: !trusted && !d.unpairedAccess,
+    };
+  }
+
+  listSources() {
+    return this.#sources ? this.#sources.list() : [];
   }
 
   devices() {
@@ -178,7 +209,7 @@ export class RoomsService extends EventEmitter {
   }
 
   roomView(view) {
-    const idle = view.queueLength === 0;
+    const idle = view.queueLength === 0 && !view.live;
     const meta = view.current?.meta ?? {};
     const aaFile = typeof meta.aaFile === 'string' ? meta.aaFile : null;
     const devices = new Map(this.devices().map((d) => [d.clientId, d]));
@@ -219,6 +250,7 @@ export class RoomsService extends EventEmitter {
       shuffle: view.shuffle,
       canSeek: view.supportedCommands.includes('seek'),
       playable: this.playable(view),
+      lineIn: view.live ? { clientId: view.live.sourceId, name: view.live.name } : null,
     };
   }
 
@@ -237,4 +269,4 @@ export class RoomsService extends EventEmitter {
   }
 }
 
-export { RoomError };
+export { RoomError, SourceError };

@@ -948,6 +948,14 @@ tr:hover td { background: var(--raised); }
 .vr-dev-offline{border-left-color:var(--border);opacity:.75;}
 .vr-warn{margin-top:4px;font-size:.82rem;color:var(--red);font-weight:600;}
 .vr-note{margin-top:4px;font-size:.82rem;color:var(--t2);}
+.vr-source{margin-top:.6rem;padding-top:.5rem;border-top:1px dashed var(--border);}
+.vr-source-head{display:flex;align-items:center;gap:.5rem;flex-wrap:wrap;font-size:.85rem;}
+.vr-source-badge{font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.04em;padding:1px 7px;border-radius:4px;border:1px solid var(--border2);color:var(--t2);}
+.vr-source-badge.vr-source-live{background:var(--red);border-color:var(--red);color:#fff;}
+.vr-source-state{color:var(--t2);}
+.vr-source-live-text{color:var(--red);font-weight:600;}
+.vr-source-signal{font-size:.78rem;color:var(--t2);}
+.vr-signal-present{color:var(--green);}
 .vr-actions{display:flex;gap:.4rem;flex-wrap:wrap;margin-top:.6rem;}
 .vr-rename{display:flex;gap:.4rem;align-items:center;flex-wrap:wrap;}
 .vr-rename input{max-width:240px;}

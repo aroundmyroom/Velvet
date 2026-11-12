@@ -4,7 +4,7 @@ import {
   NoiseInitiator, NoiseError, SUITES, encodeMsg1Payload, parseMsg2Payload, packHandshake, unpackHandshake,
 } from './noise.js';
 import { SENTINEL_PSK, SENTINEL_PSK_ID, PSK_CATEGORY, pskId, decodeKeyId, isKeyId } from './keys.js';
-import { MSG, WireError, Reassembler, fragment, frame, decodeJson, encodeAudioChunk, SEND_AHEAD_MAX } from './wire.js';
+import { MSG, WireError, Reassembler, fragment, frame, decodeJson, encodeAudioChunk, decodeSourceAudio, SEND_AHEAD_MAX } from './wire.js';
 
 export const PROTOCOL_VERSION = 1;
 export const MAX_WS_PAYLOAD = 65535;
@@ -12,7 +12,7 @@ export const MAX_CLIENT_HELLO_BYTES = 16384;
 export const MAX_CLIENT_HELLO_DEPTH = 10;
 export const MAX_INBOUND_MESSAGE = 1024 * 1024;
 export const MAX_NAME_BYTES = 64;
-export const IMPLEMENTED_ROLES = Object.freeze(['player@v1', 'controller@v1', 'metadata@v1', 'artwork@v1', 'color@v1', 'visualizer@v1']);
+export const IMPLEMENTED_ROLES = Object.freeze(['player@v1', 'controller@v1', 'metadata@v1', 'artwork@v1', 'color@v1', 'visualizer@v1', 'source@v1']);
 export const GOODBYE_REASONS = Object.freeze([
   'another_server', 'shutdown', 'restart', 'user_request', 'unauthorized', 'pairing_required', 'concurrent_attempt', 'unpaired',
 ]);
@@ -22,6 +22,7 @@ export const PAIR_FORMATS = Object.freeze(['digits', 'qr_code']);
 export const PLAYER_COMMANDS = Object.freeze(['volume', 'mute', 'set_output_delay']);
 export const CODECS = Object.freeze(['opus', 'flac', 'pcm']);
 export const STREAM_ROLES = Object.freeze(['player', 'artwork', 'visualizer']);
+export const SOURCE_CODECS = Object.freeze(['flac', 'pcm']);
 
 const DEFAULT_TIMEOUTS = Object.freeze({ handshakeMs: 30_000, helloMs: 30_000, activateFallbackMs: 20_000, pingMs: 30_000, pongMs: 15_000 });
 const SUPPORT_REQUIRED = new Set(['player@v1', 'visualizer@v1']);
@@ -263,6 +264,16 @@ export function parseSourceState(obj) {
 
 const ROLE_STATE_PARSERS = Object.freeze({ artwork: parseArtworkState, visualizer: parseVisualizerState, source: parseSourceState });
 
+// Shape only; whether the server accepts the format is the source manager's call.
+export function parseSourceStreamStart(obj) {
+  if (!isObject(obj) || !CODECS.includes(obj.codec) || !isInt(obj.channels, 1, 32) || !isInt(obj.sample_rate, 1, 768000)) return null;
+  if (obj.codec !== 'opus' && !isInt(obj.bit_depth, 1, 64)) return null;
+  if (obj.codec_header !== undefined && (typeof obj.codec_header !== 'string' || obj.codec_header.length > 4096)) return null;
+  const out = { codec: obj.codec, channels: obj.channels, sample_rate: obj.sample_rate, bit_depth: obj.codec === 'opus' ? null : obj.bit_depth };
+  if (obj.codec_header !== undefined) out.codec_header = obj.codec_header;
+  return out;
+}
+
 export function parseControllerCommand(c) {
   if (!isObject(c) || typeof c.command !== 'string' || c.command.length > 64) return null;
   const out = { command: c.command };
@@ -299,9 +310,12 @@ export class SendspinConnection extends EventEmitter {
   #mismatchCheck = Promise.resolve();
   #streams = new Set();
   #playerStateReceived = false;
+  // authorized: a start was sent that no client-stream/start has used yet; discard: audio of the open stream is
+  // dropped (stop sent, role or playback removed) while in-flight messages are still tolerated.
+  #source = { stateReceived: false, authorized: false, open: false, discard: false };
 
   constructor({ ws, identity, name, languages, direction = 'inbound', url = null, remoteAddress = null,
-    resolvePsk = null, hasPairingRecord = null, implementedRoles = IMPLEMENTED_ROLES, logger = winston, timeouts = {} }) {
+    resolvePsk = null, hasPairingRecord = null, implementedRoles = IMPLEMENTED_ROLES, sourceCodecs = SOURCE_CODECS, logger = winston, timeouts = {} }) {
     super();
     this.#ws = ws;
     this.#identity = identity;
@@ -310,6 +324,7 @@ export class SendspinConnection extends EventEmitter {
     this.#resolvePsk = resolvePsk ?? (() => ({ psk: SENTINEL_PSK, category: PSK_CATEGORY.SENTINEL }));
     this.#hasPairingRecord = hasPairingRecord ?? (() => false);
     this.#implemented = implementedRoles;
+    this.sourceCodecs = [...sourceCodecs];
     this.serverName = truncateUtf8(String(name || 'Velvet'), MAX_NAME_BYTES);
     this.languages = Array.isArray(languages) && languages.length ? languages.filter((l) => typeof l === 'string') : null;
     this.direction = direction;
@@ -363,6 +378,14 @@ export class SendspinConnection extends EventEmitter {
 
   get playerStateReceived() {
     return this.#playerStateReceived;
+  }
+
+  get sourceStreamOpen() {
+    return this.#source.open && !this.#source.discard;
+  }
+
+  get sourceStateReceived() {
+    return this.#source.stateReceived;
   }
 
   get isPaired() {
@@ -540,7 +563,9 @@ export class SendspinConnection extends EventEmitter {
       }).catch(() => { this.credentialMismatch = true; });
     }
     this.#debug(`handshake complete (${this.suite}, psk ${this.pskCategory}${mismatch ? ', sentinel fallback' : ''})`);
-    this.#sendJsonNow('server/hello', this.languages ? { name: this.serverName, languages: this.languages } : { name: this.serverName });
+    const hello = this.languages ? { name: this.serverName, languages: this.languages } : { name: this.serverName };
+    if (this.#implemented.includes('source@v1')) hello['source@v1_support'] = { supported_codecs: this.sourceCodecs };
+    this.#sendJsonNow('server/hello', hello);
     this.#arm(this.#timeouts.helloMs, 'client/hello');
     this.#startPing();
   }
@@ -553,6 +578,7 @@ export class SendspinConnection extends EventEmitter {
     const plaintext = this.#rx.decrypt(raw);
     const msg = this.#reassembler.push(plaintext);
     if (!msg) return;
+    if (msg.type === MSG.SOURCE_AUDIO && this.#activated) return this.#onSourceAudio(msg.payload);
     if (msg.type !== MSG.JSON) return;
     if (this.#phase === 'hello' && msg.payload.length > MAX_CLIENT_HELLO_BYTES) throw new ProtocolError('client/hello exceeds 16384 bytes');
     this.#onJson(decodeJson(msg.payload), recvUs);
@@ -577,6 +603,8 @@ export class SendspinConnection extends EventEmitter {
       case 'client/state': return this.#onState(payload);
       case 'client/command': return this.#onCommand(payload);
       case 'client/leave': return this.emit('leave');
+      case 'client-stream/start': return this.#onClientStreamStart(payload);
+      case 'client-stream/end': return this.#onClientStreamEnd(payload);
       case 'client/hello': throw new ProtocolError('duplicate client/hello');
       default:
         this.emit('message', type, payload);
@@ -641,8 +669,78 @@ export class SendspinConnection extends EventEmitter {
       const parsed = parse(payload[family]);
       if (parsed) next.roles[family] = parsed;
     }
+    if (this.hasRole('source') && isObject(payload.source)) this.#source.stateReceived = true;
     this.state = next;
+    // A source that turns unavailable has ended its input stream (spec: an implicit stop).
+    if (!next.available) this.#endSourceStream('unavailable');
     this.emit('state', next, prev);
+  }
+
+  #sourceNegotiated() {
+    return this.negotiatedRoles.some((r) => roleFamily(r) === 'source');
+  }
+
+  #onClientStreamStart(payload) {
+    if (!isObject(payload) || payload.source === undefined) return;
+    if (!this.#sourceNegotiated()) return;
+    const src = this.#source;
+    const format = parseSourceStreamStart(payload.source);
+    if (!src.open) {
+      if (!src.authorized) throw new ProtocolError('client-stream/start without a server start');
+      src.authorized = false;
+      src.open = true;
+    }
+    if (!format || !this.sourceCodecs.includes(format.codec)) {
+      this.#debug(`source stream format refused: ${cleanText(payload.source?.codec)}`);
+      src.discard = true;
+      this.emit('source-start', null);
+      return;
+    }
+    this.emit('source-start', src.discard ? null : format);
+  }
+
+  #onClientStreamEnd(payload) {
+    if (!isObject(payload) || !this.#sourceNegotiated()) return;
+    if (payload.roles !== undefined && !(Array.isArray(payload.roles) && payload.roles.includes('source'))) return;
+    const src = this.#source;
+    if (!src.open) {
+      if (!src.authorized) return;
+      src.authorized = false;
+      this.emit('source-declined');
+      return;
+    }
+    this.#endSourceStream('ended');
+  }
+
+  #endSourceStream(why) {
+    const src = this.#source;
+    if (why === 'unavailable') src.authorized = false;
+    if (!src.open) return;
+    src.open = false;
+    src.discard = false;
+    this.emit('source-end', why);
+  }
+
+  #onSourceAudio(payload) {
+    if (!this.#sourceNegotiated()) return;
+    if (!this.#source.open || this.state?.available === false) throw new ProtocolError('source audio without an open input stream');
+    const { timestampUs, frame: data } = decodeSourceAudio(frame(MSG.SOURCE_AUDIO, payload));
+    if (!this.#source.discard) this.emit('source-audio', timestampUs, data);
+  }
+
+  // spec: start only with the role active, playback declared, the role's state received and available: true.
+  sourceCommand(command) {
+    if (command !== 'start' && command !== 'stop') throw new SendspinError('source command must be start or stop');
+    const src = this.#source;
+    if (command === 'start') {
+      if (!this.hasRole('source') || !this.activities.includes('playback')) throw new SendspinError('source start needs the source role and playback');
+      if (!src.stateReceived || this.state?.available !== true) throw new SendspinError('source start before the source state');
+      if (src.authorized || (src.open && !src.discard)) return true;
+    }
+    if (!this.sendJson('server/command', { source: { command } })) return false;
+    src.discard = command === 'stop';
+    if (command === 'start') src.authorized = true;
+    return true;
   }
 
   #onCommand(payload) {
@@ -727,6 +825,10 @@ export class SendspinConnection extends EventEmitter {
     if (pairing) payload.pairing = pairing.format ? { method: pairing.method, format: pairing.format } : { method: pairing.method };
     this.#sendJsonNow('server/activate', payload);
     if (!nextRoles.some((r) => roleFamily(r) === 'player')) this.#playerStateReceived = false;
+    const hadSource = this.hasRole('source');
+    const keepsSource = nextRoles.some((r) => roleFamily(r) === 'source');
+    if (!keepsSource || !hadSource) this.#source.stateReceived = false;
+    if (!keepsSource || !acts.includes('playback')) this.#source.discard = true;
     this.activities = acts;
     this.activeRoles = [...nextRoles];
     if (first) {
