@@ -19774,6 +19774,7 @@ let _roomOpsPending = 0;
 let _roomDjVersion = -1;
 let _roomVolTimer = null;
 let _roomVolTouchedAt = 0;
+let _roomEqTouchedAt = 0;
 let _roomModeTouchedAt = 0;
 const _ROOM_MAX_SONGS = 10000;
 
@@ -19800,6 +19801,11 @@ function _playerDurSec() {
 function _playerPosSec() {
   if (_room) return _roomPosSec();
   return Number.isFinite(audioEl.currentTime) ? audioEl.currentTime : 0;
+}
+function _roomEqOf(st) {
+  const eq = st?.eq;
+  if (!eq || !Array.isArray(eq.gains) || eq.gains.length !== EQ_BANDS.length) return null;
+  return { enabled: eq.enabled !== false, gains: eq.gains.map(Number) };
 }
 function _roomRgFields() {
   return { rgEnabled: S.rgEnabled, rgMode: S.rgMode, rgPreamp: S.rgPreamp, rgClip: S.rgClip };
@@ -19859,7 +19865,7 @@ function _roomEnter(room) {
     id: room.id, name: room.name, state: room.state, positionMs: room.positionMs || 0, positionAt: Date.now(),
     durationMs: room.current?.durationMs ?? null, volume: room.volume, muted: room.muted === true,
     queueVersion: room.queueVersion, index: room.index, canSeek: room.canSeek !== false,
-    repeat: room.repeat || 'off', shuffle: room.shuffle === true,
+    repeat: room.repeat || 'off', shuffle: room.shuffle === true, eq: _roomEqOf(room),
   };
   _roomPollFails = 0;
   try { localStorage.setItem(_uKey('room'), room.id); } catch (_) {}
@@ -19868,6 +19874,7 @@ function _roomEnter(room) {
   _roomApply(room);
   _syncRepeatIcon();
   _syncShuffleBtn();
+  EQ.refresh();
   _roomStartPoll();
   _updateOutputBtn();
 }
@@ -19887,6 +19894,7 @@ function _roomExit({ keepKey = false } = {}) {
   _roomRestoreLocalVolume();
   _syncRepeatIcon();
   _syncShuffleBtn();
+  EQ.refresh();
   syncPlayIcons();
   _updateOutputBtn();
 }
@@ -20324,6 +20332,10 @@ function _roomApply(st) {
   if (Date.now() - _roomVolTouchedAt > 1500) {
     _room.volume = st.volume;
     _room.muted = st.muted === true;
+  }
+  if (Date.now() - _roomEqTouchedAt > 1500) {
+    const eq = _roomEqOf(st);
+    if (JSON.stringify(eq) !== JSON.stringify(_room.eq)) { _room.eq = eq; EQ.refresh(); }
   }
   if (Date.now() - _roomModeTouchedAt > 1500) {
     const repeat = st.repeat || 'off';
@@ -25103,24 +25115,58 @@ document.getElementById('player-stars').addEventListener('click', e => {
 
 // ── EQUALIZER ────────────────────────────────────────────────
 const EQ = (() => {
-  let gains   = JSON.parse(localStorage.getItem(_uKey('eq'))    || 'null') || Array(8).fill(0);
-  let enabled = localStorage.getItem(_uKey('eq_on')) !== 'false';
+  const local = {
+    gains:   JSON.parse(localStorage.getItem(_uKey('eq'))    || 'null') || Array(8).fill(0),
+    enabled: localStorage.getItem(_uKey('eq_on')) !== 'false',
+  };
+  let roomTimer = null;
+
+  // In Rooms remote mode the panel edits the room's EQ (server-side); the browser's own EQ stays as it was.
+  const cur = () => _room?.eq || local;
 
   function save() {
-    localStorage.setItem(_uKey('eq'), JSON.stringify(gains));
-    localStorage.setItem(_uKey('eq_on'), enabled ? 'true' : 'false');
+    localStorage.setItem(_uKey('eq'), JSON.stringify(local.gains));
+    localStorage.setItem(_uKey('eq_on'), local.enabled ? 'true' : 'false');
     _syncPrefs();
   }
 
   function applyToFilters() {
     if (!eqFilters.length) return;
-    eqFilters.forEach((f, i) => { f.gain.value = enabled ? (gains[i] || 0) : 0; });
+    eqFilters.forEach((f, i) => { f.gain.value = local.enabled ? (local.gains[i] || 0) : 0; });
+  }
+
+  function presetOf(g) {
+    return Object.keys(EQ_PRESETS).find(k => JSON.stringify(EQ_PRESETS[k]) === JSON.stringify(g)) || null;
+  }
+
+  function pushRoom() {
+    const id = _room.id;
+    _roomEqTouchedAt = Date.now();
+    clearTimeout(roomTimer);
+    roomTimer = setTimeout(async () => {
+      const eq = _room?.id === id ? _room.eq : null;
+      if (!eq) return;
+      _roomEqTouchedAt = Date.now();
+      try {
+        const st = await api('PUT', _roomUrl(id, 'eq'), { enabled: eq.enabled, gains: eq.gains, preset: presetOf(eq.gains) });
+        _roomEqTouchedAt = Date.now();
+        _roomApply(st);
+      } catch (e) {
+        toastError(_roomErrText(e, 'player.rooms.eqFailed'));
+      }
+    }, 300);
+  }
+
+  function changed() {
+    if (_room?.eq) pushRoom();
+    else { applyToFilters(); save(); }
   }
 
   const dbLabel = v => (v > 0 ? '+' : '') + v;
   const dbColor = v => v > 0 ? 'var(--primary)' : v < 0 ? 'var(--accent)' : 'var(--t3)';
 
   function updateSliderUIs() {
+    const { gains } = cur();
     EQ_BANDS.forEach((_, i) => {
       const s = document.getElementById(`eq-s-${i}`);
       const l = document.getElementById(`eq-db-${i}`);
@@ -25131,6 +25177,7 @@ const EQ = (() => {
   }
 
   function updateActivePreset() {
+    const { gains } = cur();
     document.querySelectorAll('.eq-preset-btn').forEach(btn => {
       const p = EQ_PRESETS[btn.dataset.preset];
       btn.classList.toggle('active', !!p && JSON.stringify(p) === JSON.stringify(gains));
@@ -25138,6 +25185,7 @@ const EQ = (() => {
   }
 
   function updateBypassUI() {
+    const { gains, enabled } = cur();
     const track = document.getElementById('eq-bypass-track');
     const lbl   = document.getElementById('eq-bypass-text');
     if (track) track.classList.toggle('lit', enabled);
@@ -25148,6 +25196,7 @@ const EQ = (() => {
   function renderSliders() {
     const wrap = document.getElementById('eq-sliders');
     if (!wrap) return;
+    const { gains } = cur();
     wrap.innerHTML = EQ_BANDS.map((b, i) => `
       <div class="eq-band">
         <span class="eq-db" id="eq-db-${i}" style="color:${dbColor(gains[i])}">${dbLabel(gains[i])}</span>
@@ -25158,21 +25207,32 @@ const EQ = (() => {
     EQ_BANDS.forEach((_, i) => {
       document.getElementById(`eq-s-${i}`).addEventListener('input', e => {
         const v = Number.parseFloat(e.target.value);
-        gains[i] = v;
+        cur().gains[i] = v;
         const l = document.getElementById(`eq-db-${i}`);
         if (l) { l.textContent = dbLabel(v); l.style.color = dbColor(v); }
-        applyToFilters(); save(); updateActivePreset(); updateBypassUI();
-      });
-    });
-    document.querySelectorAll('.eq-preset-btn').forEach(btn => {
-      btn.addEventListener('click', () => {
-        const p = EQ_PRESETS[btn.dataset.preset];
-        if (!p) return;
-        gains = [...p];
-        applyToFilters(); save(); updateSliderUIs(); updateBypassUI();
+        changed(); updateActivePreset(); updateBypassUI();
       });
     });
     updateActivePreset();
+  }
+
+  document.querySelectorAll('.eq-preset-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const p = EQ_PRESETS[btn.dataset.preset];
+      if (!p) return;
+      cur().gains = [...p];
+      changed(); updateSliderUIs(); updateBypassUI();
+    });
+  });
+
+  function isOpen() {
+    const panel = document.getElementById('eq-panel');
+    return !!panel && !panel.classList.contains('hidden');
+  }
+
+  function updateTitle() {
+    const title = document.querySelector('#eq-panel .eq-title');
+    if (title) title.textContent = _room?.eq ? t('player.eq.roomTitle', { room: _room.name || '' }) : t('player.eq.title');
   }
 
   function open() {
@@ -25181,6 +25241,7 @@ const EQ = (() => {
     requestAnimationFrame(() => panel.classList.add('open'));
     renderSliders();
     updateBypassUI();
+    updateTitle();
   }
 
   function close() {
@@ -25194,20 +25255,24 @@ const EQ = (() => {
     (panel.classList.contains('hidden') || !panel.classList.contains('open')) ? open() : close();
   }
 
+  // Called when the output switches between this browser and a room, or a room's EQ arrives from the poll.
+  function refresh() {
+    if (isOpen()) { updateSliderUIs(); updateTitle(); }
+    updateBypassUI();
+  }
+
   document.getElementById('eq-bypass-track').addEventListener('click', () => {
-    enabled = !enabled;
-    applyToFilters(); save(); updateBypassUI();
+    const st = cur();
+    st.enabled = !st.enabled;
+    changed(); updateBypassUI();
   });
   document.getElementById('eq-close-btn').addEventListener('click', close);
   document.addEventListener('keydown', e => {
-    if (e.key === 'Escape') {
-      const panel = document.getElementById('eq-panel');
-      if (panel && !panel.classList.contains('hidden')) close();
-    }
+    if (e.key === 'Escape' && isOpen()) close();
   });
 
   updateBypassUI();
-  return { toggle, open, close, applyToFilters };
+  return { toggle, open, close, applyToFilters, refresh };
 })();
 
 // Close ctx / rate panel on outside click
