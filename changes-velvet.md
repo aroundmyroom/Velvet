@@ -1,4 +1,6 @@
-## Unreleased
+## v0.9.2 (2026-11-12)
+
+Equalizer per room and a Home Assistant integration
 
 ### Added
 
@@ -11,6 +13,17 @@
   the audio untouched. The browser's own EQ is unchanged and applies again
   after *Play in this browser*. A line-in is not equalised. New endpoints
   `GET`/`PUT /api/v1/rooms/:id/eq`; the room state carries `eq`.
+- **Home Assistant integration.** Every Velvet Room becomes a Home Assistant
+  media player: play/pause, next/previous, seek, volume, mute, shuffle,
+  repeat, now playing with artwork, and the room's speakers as attributes.
+  The Velvet library (artists, albums, playlists, smart playlists, recently
+  added) appears in Home Assistant's media browser and plays straight into a
+  room, with enqueue modes play/next/add/replace; Assist voice works ("play
+  *album* in the kitchen"). Setup needs no password: Home Assistant shows a
+  code and you approve it in Velvet under *Pair a Device*. The integration
+  lives in this repository (`custom_components/velvet/`) and installs through
+  HACS as a custom repository; its version follows Velvet's. Requires Home
+  Assistant 2026.2 or newer. (`docs/home-assistant.md`.)
 
 ## v0.9.1 (2026-11-12)
 
