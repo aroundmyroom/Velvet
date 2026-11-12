@@ -1480,6 +1480,26 @@ body.vu-needle-mode .eq-panel{bottom:calc(var(--player) + 8px);}
 #output-dropdown .out-row.out-active .out-dot{background:var(--green);border-color:var(--green);}
 #output-dropdown .out-divider{height:1px;background:var(--border);margin:4px 0;}
 #output-dropdown .out-section-label{padding:6px 16px 2px;font-size:10px;font-weight:700;letter-spacing:1px;text-transform:uppercase;color:var(--t3);}
+#output-dropdown .out-section-label.out-section-edit{display:flex;align-items:center;justify-content:space-between;gap:8px;padding-right:8px;}
+#output-dropdown .out-edit-btn{display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;padding:0;border:none;border-radius:var(--r);background:none;color:var(--t3);cursor:pointer;}
+#output-dropdown .out-edit-btn:hover,#output-dropdown .out-edit-btn:focus-visible{color:var(--t1);background:var(--hover);}
+.rooms-edit-box{max-width:440px;max-height:86vh;overflow-y:auto;}
+.rooms-edit-desc{font-size:12.5px;color:var(--t2);margin:-8px 0 12px;}
+.rooms-edit-list{display:flex;flex-direction:column;gap:8px;}
+.rooms-edit-room{border:1px solid var(--border);border-radius:var(--r);padding:8px 10px;background:var(--raised);}
+.rooms-edit-head{display:flex;align-items:center;gap:8px;}
+.modal-box .rooms-edit-head input.rooms-edit-name{flex:1;min-width:0;padding:6px 8px;font-size:13px;font-weight:600;background:transparent;}
+.rooms-edit-split{flex-shrink:0;padding:5px 10px;font-size:12px;}
+.rooms-edit-member{display:flex;align-items:center;gap:8px;padding:4px 2px 0;font-size:13px;color:var(--t2);}
+.rooms-edit-dot{width:8px;height:8px;border-radius:50%;flex-shrink:0;background:#f87171;}
+.rooms-edit-dot.online{background:#4ade80;}
+.rooms-edit-member-name{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.rooms-edit-move{max-width:45%;padding:4px 6px;font-size:12px;background:var(--surface);border:1px solid var(--border);border-radius:var(--r);color:var(--t1);}
+.rooms-edit-new{margin-top:14px;padding-top:12px;border-top:1px solid var(--border);display:flex;flex-direction:column;gap:8px;}
+.rooms-edit-sub{font-size:11px;font-weight:700;letter-spacing:.8px;text-transform:uppercase;color:var(--t3);}
+.rooms-edit-speakers{display:flex;flex-wrap:wrap;gap:6px 14px;font-size:13px;color:var(--t2);}
+.rooms-edit-speakers label{display:inline-flex;align-items:center;gap:6px;cursor:pointer;}
+.modal-box .rooms-edit-speakers input{width:auto;padding:0;}
 #output-dropdown .out-row:focus-visible{outline:2px solid var(--primary);outline-offset:-2px;}
 /* Velvet Rooms: "Playing in <room>" indicator (player bar + queue panel) */
 .room-banner{display:flex;align-items:center;gap:8px;min-width:0;font-size:var(--type-sm,12px);color:var(--green);}

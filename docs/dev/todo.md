@@ -454,9 +454,6 @@ Phase 1 complete (v6.14.17): `audio_features` table, `essentia-bpm-worker.mjs`, 
 - [ ] Visualizer role: beat/loudness from the BPM analysis
 - [ ] Source role (line-in from a speaker into a room)
 - [ ] Sonos as a room member
-- [ ] Send browser-queue reorder/remove to the room (today only add/jump/play)
-- [ ] Auto-DJ top-up for a room's server-side queue
-- [ ] Room editing in the player (today admin page only)
 - [ ] `_velvet_…` vendor roles (e.g. queue, lyrics) for speakers that want them
 - [ ] IPv6 mDNS discovery
 

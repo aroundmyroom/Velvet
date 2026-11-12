@@ -319,6 +319,76 @@ describe('Velvet Rooms REST', async () => {
     await call('caster', 'POST', `/api/v1/rooms/${id}/stop`);
   });
 
+  it('edits the queue: remove, move, reorder, version guard, validation, permissions', async () => {
+    const id = (await call('caster', 'GET', '/api/v1/rooms')).body.rooms[0].id;
+    const T = ['lib/Tones/a.flac', 'lib/Tones/b.flac', 'lib/Tones/c.flac'];
+    const audio = speaker.audio;
+    const played = await call('caster', 'POST', `/api/v1/rooms/${id}/play`, { songs: [...T, T[0]] });
+    assert.equal(played.status, 200);
+    assert.equal(played.body.upcoming, 3);
+    const files = async () => (await call('caster', 'GET', `/api/v1/rooms/${id}/queue`)).body.songs.map(s => s.filepath);
+    await speaker.until(() => speaker.audio > audio + 50);
+    const starts = inboxCount('stream/start');
+    const plainClears = inboxCount('stream/clear', p => p.from_timestamp === undefined);
+
+    const stale = await call('caster', 'POST', `/api/v1/rooms/${id}/remove`, { indexes: [1], queueVersion: played.body.queueVersion - 1 });
+    assert.equal(stale.status, 409);
+    assert.equal(stale.body.code, 'queue_changed');
+    assert.equal(stale.body.queueVersion, played.body.queueVersion);
+
+    const removed = await call('caster', 'POST', `/api/v1/rooms/${id}/remove`, { indexes: [1], queueVersion: played.body.queueVersion });
+    assert.equal(removed.status, 200, JSON.stringify(removed.body));
+    assert.equal(removed.body.queueVersion, played.body.queueVersion + 1);
+    assert.equal(removed.body.current.filepath, T[0]);
+    assert.equal(removed.body.queueLength, 3);
+    assert.deepEqual(await files(), [T[0], T[2], T[0]]);
+
+    const moved = await call('caster', 'POST', `/api/v1/rooms/${id}/move`, { from: 0, to: 2 });
+    assert.equal(moved.status, 200);
+    assert.equal(moved.body.index, 2, 'the current entry moved with its identity');
+    assert.equal(moved.body.state, 'playing');
+    assert.deepEqual(await files(), [T[2], T[0], T[0]]);
+
+    const reordered = await call('caster', 'POST', `/api/v1/rooms/${id}/reorder`, { order: [2, 0, 1] });
+    assert.equal(reordered.status, 200);
+    assert.equal(reordered.body.index, 0);
+    assert.equal(reordered.body.upcoming, 2);
+    assert.deepEqual(await files(), [T[0], T[2], T[0]]);
+    assert.equal(inboxCount('stream/start'), starts, 'edits of other entries do not restart the stream');
+    assert.equal(inboxCount('stream/clear', p => p.from_timestamp === undefined), plainClears, 'the current track is not cleared');
+
+    const skip = await call('caster', 'POST', `/api/v1/rooms/${id}/remove`, { indexes: [0] });
+    assert.equal(skip.status, 200);
+    assert.equal(skip.body.state, 'playing');
+    assert.equal(skip.body.current.filepath, T[2], 'removing the current entry plays the next one');
+    assert.equal(skip.body.index, 0);
+
+    for (const [sub, body] of [
+      ['remove', { indexes: [] }], ['remove', { indexes: [0, 0] }], ['remove', { indexes: [9] }], ['remove', { indexes: [-1] }],
+      ['move', { from: 0 }], ['move', { from: 0, to: 9 }], ['reorder', { order: [0] }], ['reorder', { order: [1, 1] }],
+      ['remove', { indexes: [0], queueVersion: 'x' }],
+    ]) {
+      const r = await call('caster', 'POST', `/api/v1/rooms/${id}/${sub}`, body);
+      assert.equal(r.status, 400, `${sub} ${JSON.stringify(body)}`);
+      assert.equal(r.body.code, 'invalid_body');
+    }
+    assert.equal((await call('plain', 'POST', `/api/v1/rooms/${id}/remove`, { indexes: [0] })).status, 403);
+    assert.equal((await call('caster', 'POST', '/api/v1/rooms/r_none/move', { from: 0, to: 1 })).status, 404);
+
+    const addStale = await call('caster', 'POST', `/api/v1/rooms/${id}/add`, { songs: [T[1]], queueVersion: 0 });
+    assert.equal(addStale.body.code, 'queue_changed');
+    const cur = (await call('caster', 'GET', `/api/v1/rooms/${id}/state`)).body;
+    const added = await call('caster', 'POST', `/api/v1/rooms/${id}/add`, { songs: [T[1]], queueVersion: cur.queueVersion });
+    assert.equal(added.body.queueVersion, cur.queueVersion + 1);
+
+    const all = (await call('caster', 'GET', `/api/v1/rooms/${id}/queue`)).body.songs.map((_, i) => i);
+    const ends = inboxCount('stream/end');
+    const emptied = await call('caster', 'POST', `/api/v1/rooms/${id}/remove`, { indexes: all });
+    assert.equal(emptied.body.state, 'idle');
+    assert.equal(emptied.body.queueLength, 0);
+    await speaker.until(() => inboxCount('stream/end') > ends);
+  });
+
   it('manages rooms', async () => {
     const solo = (await call('caster', 'GET', '/api/v1/rooms')).body.rooms[0];
     assert.equal((await call('caster', 'DELETE', `/api/v1/rooms/${solo.id}`)).body.code, 'solo_room');

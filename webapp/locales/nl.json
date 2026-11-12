@@ -3552,5 +3552,22 @@
   "player.rooms.cantPlayRadio": "Radio- en podcaststreams spelen in deze browser",
   "player.rooms.err.notPlayable": "Geen van de speakers in deze kamer kan nu spelen",
   "player.rooms.err.notRunning": "Velvet Rooms draait niet op de server",
-  "player.rooms.err.emptyQueue": "De kamer heeft niets om te spelen"
+  "player.rooms.err.emptyQueue": "De kamer heeft niets om te spelen",
+  "player.rooms.err.soloRoom": "Een kamer met één speaker kan niet worden opgesplitst",
+  "player.rooms.err.notFound": "Die speaker of kamer bestaat niet meer",
+  "player.rooms.queueChanged": "De wachtrij van de kamer is ergens anders gewijzigd — die wordt nu opnieuw getoond",
+  "player.rooms.editFailed": "Kon de wachtrij van de kamer niet wijzigen: {{error}}",
+  "player.rooms.edit.title": "Kamers bewerken",
+  "player.rooms.edit.desc": "Voeg speakers samen in één kamer om overal tegelijk dezelfde muziek te spelen.",
+  "player.rooms.edit.nameLabel": "Naam van de kamer",
+  "player.rooms.edit.split": "Opsplitsen",
+  "player.rooms.edit.splitTitle": "{{name}} opsplitsen?",
+  "player.rooms.edit.splitMsg": "Het afspelen in deze kamer stopt en elke speaker krijgt weer een eigen kamer.",
+  "player.rooms.edit.moveTo": "Verplaatsen naar…",
+  "player.rooms.edit.moveLabel": "{{name}} naar een andere kamer verplaatsen",
+  "player.rooms.edit.ownRoom": "Een eigen kamer",
+  "player.rooms.edit.newRoom": "Nieuwe kamer",
+  "player.rooms.edit.newRoomPlaceholder": "bijv. Beneden",
+  "player.rooms.edit.create": "Kamer maken",
+  "player.rooms.edit.failed": "Kon de kamers niet wijzigen: {{error}}"
 }

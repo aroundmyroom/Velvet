@@ -28,6 +28,9 @@
  *   POST   /api/v1/rooms/:id/play       — replace the queue and play
  *   POST   /api/v1/rooms/:id/add        — append (or play next)
  *   POST   /api/v1/rooms/:id/jump       — play the entry at index
+ *   POST   /api/v1/rooms/:id/remove     — remove queue entries (the current one → next)
+ *   POST   /api/v1/rooms/:id/move       — move one queue entry
+ *   POST   /api/v1/rooms/:id/reorder    — reorder the whole queue
  *   POST   /api/v1/rooms/:id/pause|resume|next|previous|stop
  *   POST   /api/v1/rooms/:id/seek|volume|mute|repeat|shuffle
  */
@@ -85,6 +88,7 @@ const SCHEMAS = {
     rgPreamp: Joi.number().min(-15).max(15), rgClip: Joi.boolean(),
   },
   index: Joi.object({ index: Joi.number().integer().min(0).required() }),
+  queueVersion: Joi.number().integer().min(0),
   seek: Joi.object({ positionMs: Joi.number().integer().min(0).required() }),
   volume: Joi.object({ volume: Joi.number().integer().min(0).max(100).required(), clientId: Joi.string().min(1).max(128) }),
   mute: Joi.object({ muted: Joi.boolean().required(), clientId: Joi.string().min(1).max(128) }),
@@ -96,7 +100,13 @@ SCHEMAS.play = Joi.object({
   songs: SCHEMAS.songs, index: Joi.number().integer().min(0).default(0), positionMs: Joi.number().integer().min(0).default(0),
   paused: Joi.boolean().default(false), ...SCHEMAS.rg,
 });
-SCHEMAS.add = Joi.object({ songs: SCHEMAS.songs, next: Joi.boolean().default(false), ...SCHEMAS.rg });
+SCHEMAS.add = Joi.object({ songs: SCHEMAS.songs, next: Joi.boolean().default(false), queueVersion: SCHEMAS.queueVersion, ...SCHEMAS.rg });
+const queueIndexes = Joi.array().items(Joi.number().integer().min(0)).min(1).max(MAX_SONGS).unique().required();
+SCHEMAS.remove = Joi.object({ indexes: queueIndexes, queueVersion: SCHEMAS.queueVersion });
+SCHEMAS.move = Joi.object({
+  from: Joi.number().integer().min(0).required(), to: Joi.number().integer().min(0).required(), queueVersion: SCHEMAS.queueVersion,
+});
+SCHEMAS.reorder = Joi.object({ order: queueIndexes, queueVersion: SCHEMAS.queueVersion });
 
 function validate(schema, value) {
   const { error, value: v } = schema.validate(value ?? {}, { abortEarly: true });
@@ -319,6 +329,7 @@ function metaOf(row) {
     year: Number.isInteger(row.year) ? row.year : null,
     track: Number.isInteger(row.track) ? row.track : null,
     durationMs: row.duration > 0 ? Math.round(row.duration * 1000) : null,
+    bpm: Number.isFinite(row.bpm) && row.bpm >= 1 ? Math.round(row.bpm) : null,
     aaFile: str(row.aaFile),
   };
 }
@@ -372,6 +383,13 @@ function lightView(sv, id) {
   const v = sv.rooms.listRooms().find((r) => r.id === id);
   if (v) return v;
   return sv.rooms.getRoom(id);
+}
+
+// Index-based edits name the queue the client saw; a stale view would edit the wrong entries.
+function checkVersion(view, queueVersion) {
+  if (queueVersion !== undefined && view.queueVersion !== queueVersion) {
+    fail(409, 'queue_changed', 'the room queue changed', { queueVersion: view.queueVersion });
+  }
 }
 
 function checkPlayable(sv, id) {
@@ -567,6 +585,7 @@ export function setup(velvet) {
     const before = lightView(service, id);
     const { items, skipped } = await resolveSongs(body.songs, req.user, body);
     if (!items.length) fail(400, 'invalid_body', 'no playable song in songs', { skipped });
+    checkVersion(lightView(service, id), body.queueVersion);
     if (before.queueLength === 0) {
       checkPlayable(service, id);
       service.rooms.play(id, { items });
@@ -587,6 +606,18 @@ export function setup(velvet) {
     service.rooms.jump(id, index);
     return service.room(id);
   });
+
+  const edit = (action, schema, fn) => player('post', `/:id/${action}`, (req) => {
+    const body = validate(schema, req.body);
+    const { id } = req.params;
+    checkVersion(lightView(service, id), body.queueVersion);
+    fn(id, body);
+    return service.room(id);
+  });
+
+  edit('remove', SCHEMAS.remove, (id, { indexes }) => service.rooms.remove(id, indexes));
+  edit('move', SCHEMAS.move, (id, { from, to }) => service.rooms.move(id, from, to));
+  edit('reorder', SCHEMAS.reorder, (id, { order }) => service.rooms.reorder(id, order));
 
   const simple = (action, fn, { needsQueue = false } = {}) => player('post', `/:id/${action}`, (req) => {
     validate(SCHEMAS.empty, req.body);

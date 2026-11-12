@@ -1181,7 +1181,7 @@ function _syncQueueToDbNow(playingOverride) {
 // Expand the in-memory queue from the DB when the local snapshot is a windowed
 // subset. Called 3 s after boot so the audio media request gets connection priority.
 async function _lazyLoadQueueFromDb() {
-  if (!S.token || !S.username || _bootRestoring) return;
+  if (!S.token || !S.username || _bootRestoring || _room) return;
   try {
     const r = await api('GET', 'api/v1/queue');
     if (!r || !Array.isArray(r.queue) || r.queue.length <= S.queue.length) return;
@@ -2855,38 +2855,45 @@ function _persistDjIgnore(list) {
   }
 }
 
+// One Auto-DJ pick with genre-drift escape; records it in the DJ histories.
+async function _djNextPick() {
+  let song = await _djPickSong();
+  if (!song) return null;
+  // ── Genre drift prevention ────────────────────────────────────────────────
+  // Skip when user has an active genre whitelist — the escape blacklist would
+  // conflict with it and the whitelist already restricts the pool.
+  if (!_djEscaping && song?.genre && !(S.djGenreEnabled && S.djGenreMode === 'whitelist')) {
+    const songGenreNorm = song.genre.trim().toLowerCase();
+    const { genre: consecGenre, count: consecCount } = _djGenreConsecutive();
+    const overGenre   = _djGenreOverrepresented();
+    const escapeGenre = consecCount >= DJ_GENRE_CONSEC_SOFT ? consecGenre : overGenre;
+    if (escapeGenre && songGenreNorm === escapeGenre) {
+      _djEscaping = true;
+      try {
+        const escOpts = { escapeGenre, dropArtistFilter: consecCount >= DJ_GENRE_CONSEC_HARD };
+        const escSong = await _djPickSong(escOpts);
+        if (escSong) {
+          song = escSong;
+          console.log(`[Auto-DJ] Genre escape: "${escapeGenre}" → "${song.genre || '?'}"`);
+        }
+      } catch (_) { /* accept original if escape fails */ }
+      finally { _djEscaping = false; }
+    }
+  }
+  // ─────────────────────────────────────────────────────────────────────────
+  _djPushArtistHistory(song.artist);
+  _djGenreHistoryPush(song);
+  _djLastPickFree = (song.bpm == null);
+  return song;
+}
+
 async function autoDJPrefetch() {
-  if (S._djPrefetching) return;          // already in-flight
+  if (S._djPrefetching || _room) return;  // in-flight, or a room is topped up by _roomDjTopUp
   if (S.queue.length > S.idx + 1) return; // already pre-queued
   S._djPrefetching = true;
   try {
-    let song = await _djPickSong();
+    const song = await _djNextPick();
     if (!song) { console.warn('[Auto-DJ] prefetch: no candidates available'); return; }
-    // ── Genre drift prevention ────────────────────────────────────────────────
-    // Skip when user has an active genre whitelist — the escape blacklist would
-    // conflict with it and the whitelist already restricts the pool.
-    if (!_djEscaping && song?.genre && !(S.djGenreEnabled && S.djGenreMode === 'whitelist')) {
-      const songGenreNorm = song.genre.trim().toLowerCase();
-      const { genre: consecGenre, count: consecCount } = _djGenreConsecutive();
-      const overGenre   = _djGenreOverrepresented();
-      const escapeGenre = consecCount >= DJ_GENRE_CONSEC_SOFT ? consecGenre : overGenre;
-      if (escapeGenre && songGenreNorm === escapeGenre) {
-        _djEscaping = true;
-        try {
-          const escOpts = { escapeGenre, dropArtistFilter: consecCount >= DJ_GENRE_CONSEC_HARD };
-          const escSong = await _djPickSong(escOpts);
-          if (escSong) {
-            song = escSong;
-            console.log(`[Auto-DJ] Genre escape: "${escapeGenre}" → "${song.genre || '?'}"`);
-          }
-        } catch (_) { /* accept original if escape fails */ }
-        finally { _djEscaping = false; }
-      }
-    }
-    // ─────────────────────────────────────────────────────────────────────────
-    _djPushArtistHistory(song.artist);
-    _djGenreHistoryPush(song);
-    _djLastPickFree = (song.bpm == null);
     // Only push if nothing was added while we were waiting (autoDJFetch race guard)
     if (S.queue.length <= S.idx + 1) {
       _pruneQueue();
@@ -2919,31 +2926,8 @@ async function autoDJFetch() {
   }
   S._djPrefetching = true;
   try {
-    let song = await _djPickSong();
+    const song = await _djNextPick();
     if (!song) { toast(t('player.toast.djNoSong')); return; }
-    // ── Genre drift prevention (same logic as autoDJPrefetch) ────────────────
-    if (!_djEscaping && song?.genre && !(S.djGenreEnabled && S.djGenreMode === 'whitelist')) {
-      const songGenreNorm = song.genre.trim().toLowerCase();
-      const { genre: consecGenre, count: consecCount } = _djGenreConsecutive();
-      const overGenre   = _djGenreOverrepresented();
-      const escapeGenre = consecCount >= DJ_GENRE_CONSEC_SOFT ? consecGenre : overGenre;
-      if (escapeGenre && songGenreNorm === escapeGenre) {
-        _djEscaping = true;
-        try {
-          const escOpts = { escapeGenre, dropArtistFilter: consecCount >= DJ_GENRE_CONSEC_HARD };
-          const escSong = await _djPickSong(escOpts);
-          if (escSong) {
-            song = escSong;
-            console.log(`[Auto-DJ] Genre escape: "${escapeGenre}" → "${song.genre || '?'}"`);
-          }
-        } catch (_) { /* accept original if escape fails */ }
-        finally { _djEscaping = false; }
-      }
-    }
-    // ─────────────────────────────────────────────────────────────────────────
-    _djPushArtistHistory(song.artist);
-    _djGenreHistoryPush(song);
-    _djLastPickFree = (song.bpm == null);
     _pruneQueue();
     song._dj = true;
     S.queue.push(song); _qvsVersion++;
@@ -2980,7 +2964,11 @@ function setAutoDJ(on, skipAutoStart) {
   if (btn) { btn.classList.toggle('on', on); btn.textContent = on ? t('player.autodj.btnStop') : t('player.autodj.btnStart'); }
   const status = document.querySelector('.autodj-status');
   if (status) { status.classList.toggle('on', on); status.textContent = on ? t('player.autodj.statusOn') : t('player.autodj.statusOff'); }
-  if (on && !skipAutoStart) {
+  if (on && _room) {
+    // A room is topped up from its polled state (_roomDjTopUp), never by the paused local <audio>.
+    _roomDjVersion = -1;
+    _roomPoll();
+  } else if (on && !skipAutoStart) {
     if (!audioEl.src || audioEl.ended || S.queue.length === 0) {
       // Nothing playing and nothing queued — fetch a new song and play it
       autoDJFetch();
@@ -3449,6 +3437,7 @@ function _initQueueListeners() {
       persistQueue();
       _syncQueueToDb();
       refreshQueueUI();
+      _roomQueueEdited();
       return;
     }
     const item = e.target.closest('.q-item');
@@ -3582,6 +3571,7 @@ function _initQueueListeners() {
       persistQueue();
       _syncQueueToDb();
       refreshQueueUI();
+      _roomQueueEdited();
       return;
     }
 
@@ -3603,6 +3593,7 @@ function _initQueueListeners() {
     persistQueue();
     _syncQueueToDb();
     refreshQueueUI();
+    _roomQueueEdited();
   });
 }
 
@@ -13406,6 +13397,7 @@ function renderFileExplorer(d) {
               else if (S.idx === qi) S.idx = Math.min(S.idx, S.queue.length - 1);
               persistQueue();
               refreshQueueUI();
+              _roomQueueEdited();
             }
           } catch(_e) {
             toast(t('player.toast.recordingDeleteFailed'));
@@ -16019,6 +16011,7 @@ function _connectJukebox() {
             else if (S.idx === idx) S.idx = Math.min(S.idx, S.queue.length - 1);
             persistQueue();
             refreshQueueUI();
+            _roomQueueEdited();
           }
         }
         else if (msg.command === 'goToSong') {
@@ -19774,7 +19767,11 @@ let _roomPollInFlight = false;
 let _roomPollFails = 0;
 let _roomQueueFetching = false;
 let _roomHandedVersion = -1;
-let _roomQvs = -1;
+// The room's queue as this tab's song objects (queue order) at _roomHandedVersion; null = unknown, refetch first.
+let _roomMirror = null;
+let _roomOps = Promise.resolve();
+let _roomOpsPending = 0;
+let _roomDjVersion = -1;
 let _roomVolTimer = null;
 let _roomVolTouchedAt = 0;
 let _roomModeTouchedAt = 0;
@@ -19878,7 +19875,8 @@ function _roomExit({ keepKey = false } = {}) {
   clearTimeout(_roomVolTimer);
   _room = null;
   _roomHandedVersion = -1;
-  _roomQvs = -1;
+  _roomMirror = null;
+  _roomDjVersion = -1;
   if (!keepKey) { try { localStorage.removeItem(_uKey('room')); } catch (_) {} }
   document.body.classList.remove('room-remote');
   _roomRenderIndicator();
@@ -19938,9 +19936,9 @@ async function _roomStart(room) {
       api('POST', _roomUrl(prev.id, 'stop')).catch(() => {});
       _roomExit();
     }
-    _roomHandedVersion = st?.queueVersion ?? -1;
-    _roomQvs = complete ? _qvsVersion : -1;
     _roomEnter(st && st.id ? st : room);
+    if (complete && !st?.skipped && st?.queueVersion != null) _roomMirrorSet(st.queueVersion);
+    else _roomFetchQueue();
     toast(t('player.rooms.nowPlayingIn', { room: (st && st.name) || room.name }));
     if (st?.skipped > 0) toast(t('player.rooms.skipped', { count: st.skipped }));
   } catch (e) {
@@ -19967,17 +19965,24 @@ async function _roomTakeBack() {
 }
 
 function _roomErrText(e, key) {
-  const codes = { not_playable: 'player.rooms.err.notPlayable', rooms_disabled: 'player.rooms.unavailable', not_running: 'player.rooms.err.notRunning', empty_queue: 'player.rooms.err.emptyQueue' };
+  const codes = {
+    not_playable: 'player.rooms.err.notPlayable', rooms_disabled: 'player.rooms.unavailable', not_running: 'player.rooms.err.notRunning',
+    empty_queue: 'player.rooms.err.emptyQueue', queue_changed: 'player.rooms.queueChanged', solo_room: 'player.rooms.err.soloRoom',
+    not_found: 'player.rooms.err.notFound',
+  };
   if (e?.code && codes[e.code]) return t(codes[e.code]);
   return t(key, { error: e?.message || '' });
 }
 
-async function _roomCmd(cmd, body) {
+async function _roomCmd(cmd, body, beforeApply) {
   if (!_room) return null;
   const id = _room.id;
   try {
     const st = await api('POST', _roomUrl(id, cmd), body);
-    if (st && st.id === id) _roomApply(st);
+    if (st && st.id === id && _room?.id === id) {
+      beforeApply?.(st);
+      _roomApply(st);
+    }
     return st;
   } catch (e) {
     if (e.status === 404 || e.status === 403) { _roomFallback(t('player.rooms.lost')); return null; }
@@ -20026,33 +20031,171 @@ function _roomPlayAt(idx) {
   highlightRow();
   refreshQueueUI();
   persistQueue();
-  if (_roomQvs === _qvsVersion && _room.queueVersion === _roomHandedVersion) {
+  if (_roomMirrorMatches()) {
     _roomCmd('jump', { index: idx });
     return;
   }
   const { songs, index, complete } = _roomQueuePayload(idx);
-  _roomCmd('play', { songs, index, positionMs: 0, ..._roomRgFields() }).then(st => {
-    if (!st) return;
-    _roomHandedVersion = st.queueVersion ?? -1;
-    if (_room) _room.queueVersion = _roomHandedVersion;
-    _roomQvs = complete ? _qvsVersion : -1;
+  _roomCmd('play', { songs, index, positionMs: 0, ..._roomRgFields() }, st => {
+    if (complete && !st.skipped) _roomMirrorSet(st.queueVersion);
+    else _roomMirror = null;
   });
 }
 
 function _roomAddSongs(songs, next) {
   if (!_room) return;
-  const fps = songs.filter(s => s?.filepath && !_roomIsUrl(s.filepath) && !s.isRadio).map(s => s.filepath);
-  if (!fps.length) return;
+  const valid = songs.filter(s => s?.filepath && !_roomIsUrl(s.filepath) && !s.isRadio).slice(0, _ROOM_MAX_SONGS);
+  if (!valid.length) return;
   const id = _room.id;
-  const inSync = _roomQvs !== -1 && _room.queueVersion === _roomHandedVersion;
-  api('POST', _roomUrl(id, 'add'), { songs: fps.slice(0, _ROOM_MAX_SONGS), next: next === true, ..._roomRgFields() }).then(r => {
+  _roomQueueOp(async () => {
     if (!_room || _room.id !== id) return;
-    _roomHandedVersion = r?.queueVersion ?? -1;
-    _room.queueVersion = _roomHandedVersion;
-    _roomQvs = inSync && fps.length === songs.length ? _qvsVersion : -1;
-  }).catch(e => {
-    if (e.status === 404 || e.status === 403) _roomFallback(t('player.rooms.lost'));
-    else toastError(_roomErrText(e, 'player.rooms.addFailed'));
+    const base = _roomInSync() ? _roomMirror : null;
+    const version = _roomHandedVersion;
+    const anchor = next ? base?.indexOf(S.queue[S.idx]) ?? -1 : -1;
+    try {
+      const r = await api('POST', _roomUrl(id, 'add'), { songs: valid.map(s => s.filepath), next: next === true, ..._roomRgFields() });
+      if (!_room || _room.id !== id) return;
+      if (base && _roomMirror === base && r?.queueVersion === version + 1 && !r.skipped && (!next || anchor >= 0)) {
+        const mirror = base.slice();
+        if (next) mirror.splice(anchor + 1, 0, ...valid);
+        else mirror.push(...valid);
+        _roomMirror = mirror;
+        _roomHandedVersion = r.queueVersion;
+        _room.queueVersion = r.queueVersion;
+      } else {
+        _roomFetchQueue();
+      }
+    } catch (e) {
+      if (e.status === 404 || e.status === 403) _roomFallback(t('player.rooms.lost'));
+      else toastError(_roomErrText(e, 'player.rooms.addFailed'));
+    }
+  });
+}
+
+function _roomMirrorSet(version) {
+  _roomHandedVersion = version ?? -1;
+  if (_room) _room.queueVersion = _roomHandedVersion;
+  _roomMirror = S.queue.slice();
+}
+function _roomInSync() { return !!_room && !!_roomMirror && _room.queueVersion === _roomHandedVersion; }
+function _roomMirrorMatches() {
+  return _roomInSync() && _roomMirror.length === S.queue.length && _roomMirror.every((s, i) => s === S.queue[i]);
+}
+// Room queue requests run one at a time, so each one is computed from the outcome of the previous one.
+function _roomQueueOp(fn) {
+  _roomOpsPending++;
+  _roomOps = _roomOps.then(fn).catch(e => console.warn('[rooms] queue op failed:', e)).finally(() => { _roomOpsPending--; });
+  return _roomOps;
+}
+
+// order[p] = old index of the entry now at p; a single splice-move as { from, to }, else null.
+function _roomSingleMove(order) {
+  let i = 0;
+  while (i < order.length && order[i] === i) i++;
+  let j = order.length - 1;
+  while (j > i && order[j] === j) j--;
+  if (i >= j) return null;
+  const between = (lo, hi, d) => {
+    for (let p = lo; p <= hi; p++) {
+      if (order[p] !== p + d) return false;
+    }
+    return true;
+  };
+  if (order[j] === i && between(i, j - 1, 1)) return { from: i, to: j };
+  if (order[i] === j && between(i + 1, j, -1)) return { from: j, to: i };
+  return null;
+}
+
+// Called after any local edit of S.queue while a room is active (remove, reorder, clear, shuffle, flow, undo).
+// Diffs S.queue against the room's queue by song identity and sends remove + move/reorder; additions go
+// through _roomAddSongs. A conflict (someone else changed the room queue) refetches the room's queue.
+function _roomQueueEdited() {
+  if (!_room) return;
+  const id = _room.id;
+  _roomQueueOp(async () => {
+    if (!_room || _room.id !== id) return;
+    if (!_roomInSync()) { _roomFetchQueue(); return; }
+    const base = _roomMirror;
+    const slots = new Map();
+    base.forEach((s, i) => {
+      if (!slots.has(s)) slots.set(s, []);
+      slots.get(s).push(i);
+    });
+    const kept = [];
+    for (const s of S.queue) { const l = slots.get(s); if (l?.length) kept.push(l.shift()); }
+    if (!kept.length && S.queue.length) { _roomFetchQueue(); return; }
+    const keptSet = new Set(kept);
+    const removed = base.map((_, i) => i).filter(i => !keptSet.has(i));
+    let mirror = base;
+    let order = kept;
+    let version = _roomHandedVersion;
+    let st = null;
+    const send = async (cmd, body) => {
+      st = await api('POST', _roomUrl(id, cmd), { ...body, queueVersion: version });
+      version = st.queueVersion;
+    };
+    try {
+      if (removed.length) {
+        await send('remove', { indexes: removed });
+        const renum = new Map();
+        kept.slice().sort((a, b) => a - b).forEach((old, n) => renum.set(old, n));
+        mirror = base.filter((_, i) => keptSet.has(i));
+        order = kept.map(i => renum.get(i));
+      }
+      if (order.some((x, p) => x !== p)) {
+        const move = _roomSingleMove(order);
+        await send(move ? 'move' : 'reorder', move || { order });
+        mirror = order.map(i => mirror[i]);
+      }
+      if (!st || !_room || _room.id !== id) return;
+      if (_roomMirror === base) {
+        _roomMirror = mirror;
+        _roomHandedVersion = st.queueVersion;
+        _room.queueVersion = st.queueVersion;
+      }
+      _roomApply(st);
+    } catch (e) {
+      if (!_room || _room.id !== id) return;
+      if (e.status === 404 || e.status === 403) { _roomFallback(t('player.rooms.lost')); return; }
+      toastError(e.code === 'queue_changed' ? t('player.rooms.queueChanged') : _roomErrText(e, 'player.rooms.editFailed'));
+      _roomMirror = null;
+      _roomFetchQueue();
+    }
+  });
+}
+
+// Auto-DJ for a room: the browser picks exactly as it does locally and appends when the room plays its last
+// entry. queueVersion makes a second open tab (or a stale view) fail with queue_changed instead of adding twice.
+function _roomDjTopUp(st) {
+  if (!S.autoDJ || !_room || S._djPrefetching || _roomDjVersion === st.queueVersion) return;
+  if (!(st.state === 'playing' || st.state === 'buffering') || st.repeat === 'one' || st.upcoming !== 0 || !st.current) return;
+  if (!_isMusicSong(S.queue[S.idx] || st.current)) return;
+  const id = _room.id;
+  const version = st.queueVersion;
+  _roomDjVersion = version;
+  S._djPrefetching = true;
+  _roomQueueOp(async () => {
+    try {
+      if (!_room || _room.id !== id || _room.queueVersion !== version) return;
+      const song = await _djNextPick();
+      if (!song || !_room || _room.id !== id) return;
+      song._dj = true;
+      const r = await api('POST', _roomUrl(id, 'add'), { songs: [song.filepath], queueVersion: version, ..._roomRgFields() });
+      if (!_room || _room.id !== id) return;
+      if (_roomMirrorMatches() && _roomHandedVersion === version && !r?.skipped) {
+        S.queue.push(song); _qvsVersion++;
+        _roomMirrorSet(r.queueVersion);
+        refreshQueueUI();
+        persistQueue();
+      } else {
+        _roomFetchQueue();
+      }
+      _showDJStrip(song);
+    } catch (e) {
+      if (e?.code !== 'queue_changed') console.warn('[rooms] Auto-DJ top-up failed:', e);
+    } finally {
+      S._djPrefetching = false;
+    }
   });
 }
 
@@ -20068,9 +20211,7 @@ async function _roomFetchQueue() {
       'album-art': e.aaFile, duration: e.durationMs ? e.durationMs / 1000 : null,
     } }));
     _qvsVersion++;
-    _roomQvs = _qvsVersion;
-    _roomHandedVersion = d.queueVersion;
-    _room.queueVersion = d.queueVersion;
+    _roomMirrorSet(d.queueVersion);
     if (Number.isInteger(d.index) && d.index >= 0 && d.index < S.queue.length) S.idx = d.index;
     Player.updateBar();
     highlightRow();
@@ -20129,9 +20270,10 @@ function _roomApply(st) {
   }
   if (st.queueVersion != null && st.queueVersion !== _room.queueVersion) {
     _room.queueVersion = st.queueVersion;
-    if (st.queueVersion !== _roomHandedVersion) _roomFetchQueue();
+    if (st.queueVersion !== _roomHandedVersion && !_roomOpsPending) _roomFetchQueue();
   }
   _roomAlignIndex(st);
+  _roomDjTopUp(st);
   _roomPaintProgress();
   _roomPaintVolume();
   _roomRenderIndicator();
@@ -20278,6 +20420,161 @@ for (const id of ['player-room-back', 'qp-room-back']) {
     _roomTakeBack();
   });
 }
+
+// ── VELVET ROOMS: edit rooms in the player (same /api/v1/rooms calls as the admin page) ──
+let _roomsEditBusy = false;
+const _roomsEditNewPicked = new Set();
+
+function _roomsEditOpen() {
+  const name = document.getElementById('rooms-edit-new-name');
+  if (name) name.value = '';
+  _roomsEditNewPicked.clear();
+  showModal('rooms-edit-modal');
+  _roomsEditRender();
+  _roomsProbe().then(() => _roomsEditRender());
+}
+
+async function _roomsEditCall(method, path, body) {
+  if (_roomsEditBusy) return false;
+  _roomsEditBusy = true;
+  let ok = false;
+  try {
+    await api(method, 'api/v1/rooms' + path, body);
+    ok = true;
+  } catch (e) {
+    toastError(_roomErrText(e, 'player.rooms.edit.failed'));
+  }
+  _roomsEditBusy = false;
+  await _roomsProbe();
+  _roomsEditRender();
+  const mine = _room && S.rooms.find(r => r.id === _room.id);
+  if (mine && mine.name !== _room.name) {
+    _room.name = mine.name;
+    _roomRenderIndicator();
+    _updateOutputBtn();
+  }
+  return ok;
+}
+
+function _roomsEditSpeakers() {
+  const out = [];
+  for (const r of S.rooms) for (const m of r.members || []) out.push(m);
+  return out.sort((a, b) => String(a.name).localeCompare(String(b.name)));
+}
+
+function _roomsEditRender() {
+  const modal = document.getElementById('rooms-edit-modal');
+  const list = document.getElementById('rooms-edit-list');
+  if (!modal || !list || modal.classList.contains('hidden')) return;
+  list.textContent = '';
+  const enc = id => '/' + encodeURIComponent(id);
+  for (const r of S.rooms) {
+    const members = Array.isArray(r.members) ? r.members : [];
+    const card = document.createElement('div');
+    card.className = 'rooms-edit-room';
+    const head = document.createElement('div');
+    head.className = 'rooms-edit-head';
+    const name = document.createElement('input');
+    name.type = 'text';
+    name.maxLength = 63;
+    name.className = 'rooms-edit-name';
+    name.value = r.name || '';
+    name.setAttribute('aria-label', t('player.rooms.edit.nameLabel'));
+    name.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); name.blur(); } });
+    name.addEventListener('change', () => {
+      const v = name.value.trim();
+      if (!v || v === r.name) { name.value = r.name || ''; return; }
+      _roomsEditCall('PATCH', enc(r.id), { name: v });
+    });
+    head.appendChild(name);
+    if (members.length > 1) {
+      const split = document.createElement('button');
+      split.type = 'button';
+      split.className = 'btn-ghost rooms-edit-split';
+      split.textContent = t('player.rooms.edit.split');
+      split.addEventListener('click', () => showConfirmModal(
+        t('player.rooms.edit.splitTitle', { name: r.name }),
+        t('player.rooms.edit.splitMsg'),
+        () => _roomsEditCall('DELETE', enc(r.id)),
+      ));
+      head.appendChild(split);
+    }
+    card.appendChild(head);
+    for (const m of members) {
+      const row = document.createElement('div');
+      row.className = 'rooms-edit-member';
+      const online = m.connection === 'online';
+      const dot = document.createElement('span');
+      dot.className = 'rooms-edit-dot' + (online ? ' online' : '');
+      dot.title = online ? t('player.output.statusReady') : t('player.output.statusOffline');
+      const label = document.createElement('span');
+      label.className = 'rooms-edit-member-name';
+      label.textContent = m.name || m.clientId;
+      row.append(dot, label);
+      const targets = S.rooms.filter(o => o.id !== r.id);
+      if (targets.length || members.length > 1) {
+        const sel = document.createElement('select');
+        sel.className = 'rooms-edit-move';
+        sel.setAttribute('aria-label', t('player.rooms.edit.moveLabel', { name: m.name || '' }));
+        sel.add(new Option(t('player.rooms.edit.moveTo'), ''));
+        for (const o of targets) sel.add(new Option(o.name, o.id));
+        if (members.length > 1) sel.add(new Option(t('player.rooms.edit.ownRoom'), '__solo'));
+        sel.addEventListener('change', () => {
+          const to = sel.value;
+          if (!to) return;
+          if (to === '__solo') {
+            _roomsEditCall('PATCH', enc(r.id), { members: members.map(x => x.clientId).filter(id => id !== m.clientId) });
+            return;
+          }
+          const target = S.rooms.find(o => o.id === to);
+          if (target) _roomsEditCall('PATCH', enc(target.id), { members: [...(target.members || []).map(x => x.clientId), m.clientId] });
+        });
+        row.appendChild(sel);
+      }
+      card.appendChild(row);
+    }
+    list.appendChild(card);
+  }
+  const box = document.getElementById('rooms-edit-new-speakers');
+  if (box) {
+    box.textContent = '';
+    const speakers = _roomsEditSpeakers();
+    for (const id of [..._roomsEditNewPicked]) if (!speakers.some(m => m.clientId === id)) _roomsEditNewPicked.delete(id);
+    for (const m of speakers) {
+      const lbl = document.createElement('label');
+      const cb = document.createElement('input');
+      cb.type = 'checkbox';
+      cb.checked = _roomsEditNewPicked.has(m.clientId);
+      cb.addEventListener('change', () => {
+        if (cb.checked) _roomsEditNewPicked.add(m.clientId);
+        else _roomsEditNewPicked.delete(m.clientId);
+        _roomsEditSyncCreate();
+      });
+      lbl.append(cb, document.createTextNode(m.name || m.clientId));
+      box.appendChild(lbl);
+    }
+  }
+  _roomsEditSyncCreate();
+}
+
+function _roomsEditSyncCreate() {
+  const btn = document.getElementById('rooms-edit-create');
+  const name = document.getElementById('rooms-edit-new-name');
+  if (btn && name) btn.disabled = !name.value.trim() || !_roomsEditNewPicked.size;
+}
+
+document.getElementById('rooms-edit-new-name')?.addEventListener('input', _roomsEditSyncCreate);
+document.getElementById('rooms-edit-close')?.addEventListener('click', () => hideModal('rooms-edit-modal'));
+document.getElementById('rooms-edit-create')?.addEventListener('click', async () => {
+  const input = document.getElementById('rooms-edit-new-name');
+  const name = input.value.trim();
+  if (!name || !_roomsEditNewPicked.size) return;
+  if (await _roomsEditCall('POST', '', { name, members: [..._roomsEditNewPicked] })) {
+    input.value = '';
+    _roomsEditNewPicked.clear();
+    _roomsEditRender();
+  }
+});
 
 // ── OUTPUT PICKER (Browser / Server Speaker / Sonos) ─────────
 function _hasAnyOutput() {
@@ -20526,8 +20823,21 @@ function _openOutputPicker() {
   if (S.roomsAvailable && S.rooms.length) {
     if (hasMpv || hasSonos) drop.appendChild(divider());
     const hdr = document.createElement('div');
-    hdr.className = 'out-section-label';
-    hdr.textContent = t('player.rooms.sectionLabel');
+    hdr.className = 'out-section-label out-section-edit';
+    const hdrText = document.createElement('span');
+    hdrText.textContent = t('player.rooms.sectionLabel');
+    const editBtn = document.createElement('button');
+    editBtn.type = 'button';
+    editBtn.className = 'out-edit-btn';
+    editBtn.title = t('player.rooms.edit.title');
+    editBtn.setAttribute('aria-label', t('player.rooms.edit.title'));
+    editBtn.innerHTML = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>';
+    editBtn.addEventListener('click', e => {
+      e.stopPropagation();
+      _closeOutputDropdown();
+      _roomsEditOpen();
+    });
+    hdr.append(hdrText, editBtn);
     drop.appendChild(hdr);
     for (const room of S.rooms) {
       const isActive = !!_room && _room.id === room.id;
@@ -24285,6 +24595,7 @@ document.getElementById('q-sel-remove-btn')?.addEventListener('click', () => {
   _syncQueueToDb();
   refreshQueueUI();
   _updateQueueSelBar();
+  _roomQueueEdited();
 });
 document.getElementById('q-sel-atp-btn')?.addEventListener('click', () => {
   const songs = [..._qvsSelected].sort((a, b) => a - b).map(qi => S.queue[qi]).filter(Boolean);
@@ -24293,16 +24604,19 @@ document.getElementById('q-sel-atp-btn')?.addEventListener('click', () => {
 });
 document.getElementById('qp-shuffle-btn').addEventListener('click', () => {
   if (!S.queue.length) return;
+  const current = S.queue[S.idx];
   // Fisher-Yates shuffle
   for (let i = S.queue.length - 1; i > 0; i--) {
     const j = Math.floor(Math.random() * (i + 1));
     [S.queue[i], S.queue[j]] = [S.queue[j], S.queue[i]];
   }
-  S.idx = 0; _qvsVersion++;
+  // A room keeps playing its current entry, so the cursor follows it.
+  S.idx = _room ? Math.max(0, S.queue.indexOf(current)) : 0; _qvsVersion++;
   refreshQueueUI();
   toast(t('player.toast.queueShuffled'));
   persistQueue();
   _syncQueueToDb();
+  _roomQueueEdited();
 });
 // Flow: the song playing stays where it is, every song after it is re-ordered
 // so each flows into the next — the DJ's own tempo ladder, Camelot pass and
@@ -24323,6 +24637,7 @@ async function _flowQueue() {
     S.queue = [...before.slice(0, from), ...ordered, ...tail]; _qvsVersion++;
     S.idx = beforeIdx >= 0 ? from : 0;
     refreshQueueUI(); persistQueue(); _syncQueueToDb();
+    _roomQueueEdited();
     const st = r.stats || {};
     const parts = [t('player.toast.queueFlowed', { count: ordered.length - (beforeIdx >= 0 ? 1 : 0) })];
     if (st.maxStep != null) parts.push(t('player.aidj.statsStep', { n: st.maxStep }));
@@ -24331,6 +24646,7 @@ async function _flowQueue() {
     _showToast(parts.join(' · '), { action: { label: t('player.toast.undo'), onClick: () => {
       S.queue = before; S.idx = beforeIdx; _qvsVersion++;
       refreshQueueUI(); persistQueue(); _syncQueueToDb();
+      _roomQueueEdited();
     } } });
   } catch (e) {
     toastError(t('player.toast.flowFailed'));
@@ -24345,7 +24661,10 @@ document.getElementById('qp-clear-btn').addEventListener('click', () => {
   // If a song is currently loaded/playing, keep it as the only queue item so
   // the player bar stays correct and audio continues uninterrupted.
   const current = S.idx >= 0 ? S.queue[S.idx] : null;
-  if (current && !audioEl.paused) {
+  if (current && _room) {
+    // The room's current entry stays (a room that has stopped clears completely).
+    if (_room.state === 'stopped' || _room.state === 'idle') { S.queue = []; S.idx = -1; } else { S.queue = [current]; S.idx = 0; }
+  } else if (current && !audioEl.paused) {
     S.queue = [current]; S.idx = 0;
   } else if (current && audioEl.currentTime > 0) {
     S.queue = [current]; S.idx = 0;
@@ -24364,6 +24683,7 @@ document.getElementById('qp-clear-btn').addEventListener('click', () => {
   api('POST', 'api/v1/user/settings', { queue: {
     queue: S.queue, idx: S.idx, time: audioEl?.currentTime || 0, playing: !audioEl.paused, savedAt: Date.now(), browserId: _browserId,
   }}).catch(() => {});
+  _roomQueueEdited();
 });
 
 // Logout
@@ -24541,6 +24861,7 @@ document.getElementById('ctx-menu').querySelectorAll('.ctx-item').forEach(btn =>
               else if (S.idx === qi) S.idx = Math.min(S.idx, S.queue.length - 1);
               persistQueue();
               refreshQueueUI();
+              _roomQueueEdited();
             }
           } catch(e) {
             toast(t('player.toast.recordingDeleteFailed'));

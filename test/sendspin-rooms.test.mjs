@@ -676,3 +676,105 @@ test('a room whose only member shows metadata still advances, sends metadata and
   assert.equal(rm.getRoom(id).state, 'stopped');
   await rm.close();
 });
+
+test('remove and move upcoming entries while playing: the current track plays on, gapless, queueVersion bumps', async () => {
+  const rm = await manager();
+  const a = new FakeMember({ formats: [PCM48] });
+  const id = rm.attach(a);
+  rm.play(id, { items: [item(F.mid, 'M', 1500), item(F.a, 'A', 600), item(F.b, 'B', 500), item(F.a, 'C', 600)] });
+  await until(() => a.chunks.length > 0 && serverNow() > a.chunks[0].ts + 200_000);
+  let version = rm.getRoom(id).queueVersion;
+  const ended = new Promise((res) => rm.once('ended', res));
+
+  rm.remove(id, [1]);
+  let view = rm.getRoom(id);
+  assert.deepEqual(view.queue.map((q) => q.meta.title), ['M', 'B', 'C']);
+  assert.equal(view.index, 0);
+  assert.equal(view.upcoming, 2);
+  assert.equal(view.queueVersion, ++version);
+
+  rm.move(id, 2, 1);
+  view = rm.getRoom(id);
+  assert.deepEqual(view.queue.map((q) => q.meta.title), ['M', 'C', 'B']);
+  assert.equal(view.queueVersion, ++version);
+
+  rm.move(id, 0, 2);
+  view = rm.getRoom(id);
+  assert.deepEqual(view.queue.map((q) => q.meta.title), ['C', 'B', 'M']);
+  assert.equal(view.index, 2, 'the current entry keeps its identity');
+  assert.equal(view.upcoming, 0);
+  rm.reorder(id, [2, 1, 0]);
+  view = rm.getRoom(id);
+  assert.deepEqual(view.queue.map((q) => q.meta.title), ['M', 'B', 'C']);
+  assert.equal(view.index, 0);
+  assert.equal(view.queueVersion, version + 2);
+  rm.reorder(id, [0, 1, 2]);
+  rm.move(id, 1, 1);
+  assert.equal(rm.getRoom(id).queueVersion, version + 2, 'no-op edits are not queue changes');
+
+  await ended;
+  assert.equal(a.of('stream/start').length, 1, 'the stream never restarted');
+  assert.equal(a.of('stream/clear').filter((c) => c.payload.fromTimestamp === undefined).length, 0, 'the current track was never cleared');
+  assert.deepEqual(dedupe(titles(a)), ['M', 'B', 'C']);
+  const t0 = a.chunks[0].ts;
+  const end = a.chunks.at(-1).ts + pcmDurationUs(a.chunks.at(-1), PCM48);
+  assert.ok(Math.abs(end - t0 - 2_600_000) < 1000, `played M + B + C (${end - t0} µs)`);
+  for (const bad of [[3], [-1], [0.5], 'x']) assert.throws(() => rm.remove(id, bad), (err) => err.code === 'invalid');
+  assert.throws(() => rm.reorder(id, [0, 0, 1]), (err) => err.code === 'invalid');
+  assert.throws(() => rm.reorder(id, [0, 1]), (err) => err.code === 'invalid');
+  await rm.close();
+});
+
+test('removing the current entry plays the next one; removing the last one stops; shuffle order is kept', async () => {
+  let r = 0;
+  const random = () => {
+    r = (r * 7 + 3) % 10;
+    return r / 10;
+  };
+  const rm = await manager({ random });
+  const a = new FakeMember();
+  const id = rm.attach(a);
+  rm.play(id, { items: [item(F.long, 'L1', 4000), item(F.long, 'L2', 4000), item(F.a, 'A', 600)] });
+  await until(() => a.chunks.length > 0);
+  const version = rm.getRoom(id).queueVersion;
+  rm.remove(id, [0]);
+  let view = rm.getRoom(id);
+  assert.equal(view.state, 'playing');
+  assert.equal(view.current.meta.title, 'L2');
+  assert.equal(view.index, 0);
+  assert.equal(view.queueVersion, version + 1);
+  await until(() => metadataOf(a).at(-1)?.title === 'L2');
+
+  rm.setShuffle(id, true);
+  const { order, queue: q } = rm.getRoom(id);
+  const before = order.map((i) => q[i].meta.title);
+  rm.add(id, [item(F.b, 'B', 500), item(F.a, 'C', 600)]);
+  const full = rm.getRoom(id);
+  const playOrder = full.order.map((i) => full.queue[i].meta.title);
+  rm.remove(id, [full.queue.findIndex((x) => x.meta.title === 'B')]);
+  view = rm.getRoom(id);
+  assert.deepEqual(view.order.map((i) => view.queue[i].meta.title), playOrder.filter((t) => t !== 'B'), 'shuffle order kept');
+  assert.equal(before[0], 'L2');
+  assert.equal(view.current.meta.title, 'L2');
+
+  rm.pause(id);
+  const paused = rm.getRoom(id);
+  rm.remove(id, [paused.index]);
+  view = rm.getRoom(id);
+  assert.equal(view.state, 'paused');
+  assert.equal(view.positionMs, 0);
+  const o = paused.order.map((i) => paused.queue[i].meta.title);
+  assert.equal(view.current.meta.title, o[o.indexOf('L2') + 1]);
+
+  rm.setShuffle(id, false);
+  const starts = a.of('stream/start').length;
+  rm.resume(id);
+  await until(() => a.of('stream/start').length > starts);
+  rm.remove(id, view.queue.map((_, i) => i));
+  view = rm.getRoom(id);
+  assert.equal(view.state, 'stopped');
+  assert.equal(view.queueLength, 0);
+  assert.equal(view.current, null);
+  assert.equal(last(a, 'stream/end').payload.roles[0], 'player');
+  await rm.close();
+});

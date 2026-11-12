@@ -13,7 +13,7 @@
   <script defer src="../assets/js/lib/butterchurn.min.js"></script>
   <script defer src="../assets/js/lib/audiomotion-analyzer.js"></script>
   <script defer src="../assets/js/lib/qr.js"></script>
-  <link rel="stylesheet" href="/style.css?v=0.8.5-125d86c5">
+  <link rel="stylesheet" href="/style.css?v=0.8.5-6ded0c1f">
   <script src="/assets/js/lib/simplewebauthn-browser.js"></script>
   <script src="/assets/js/i18n.js"></script>
 </head>
@@ -158,6 +158,24 @@
     <div class="modal-actions">
       <button id="pl-new-cancel" class="btn-ghost" data-i18n="player.modal.cancel">Cancel</button>
       <button id="pl-new-ok" class="btn-primary" data-i18n="player.modal.create">Create</button>
+    </div>
+  </div>
+</div>
+
+<!-- Velvet Rooms: edit rooms (above it in the DOM so the split-up confirm shows on top) -->
+<div id="rooms-edit-modal" class="modal-overlay hidden">
+  <div class="modal-box rooms-edit-box">
+    <h3 data-i18n="player.rooms.edit.title">Edit rooms</h3>
+    <p class="rooms-edit-desc" data-i18n="player.rooms.edit.desc">Combine speakers into one room to play the same music on all of them, in sync.</p>
+    <div id="rooms-edit-list" class="rooms-edit-list"></div>
+    <div class="rooms-edit-new">
+      <div class="rooms-edit-sub" data-i18n="player.rooms.edit.newRoom">New room</div>
+      <input id="rooms-edit-new-name" type="text" maxlength="63" placeholder="e.g. Downstairs" data-i18n="player.rooms.edit.newRoomPlaceholder" data-i18n-attr="placeholder">
+      <div id="rooms-edit-new-speakers" class="rooms-edit-speakers"></div>
+    </div>
+    <div class="modal-actions">
+      <button id="rooms-edit-close" class="btn-ghost" data-i18n="player.modal.close">Close</button>
+      <button id="rooms-edit-create" class="btn-primary" data-i18n="player.rooms.edit.create" disabled>Create room</button>
     </div>
   </div>
 </div>
@@ -1095,7 +1113,7 @@
 
 <div id="tip-box"></div>
 <script src="/assets/js/player-locale.js"></script>
-  <script src="/app.js?v=0.8.5-f8aa0df2"></script>
+  <script src="/app.js?v=0.8.5-9180cf47"></script>
 
 </body>
 </html>

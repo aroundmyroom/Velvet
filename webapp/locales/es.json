@@ -3546,5 +3546,22 @@
   "player.rooms.cantPlayRadio": "Radio and podcast streams play in this browser",
   "player.rooms.err.notPlayable": "None of the speakers in this room can play right now",
   "player.rooms.err.notRunning": "Velvet Rooms is not running on the server",
-  "player.rooms.err.emptyQueue": "The room has nothing to play"
+  "player.rooms.err.emptyQueue": "The room has nothing to play",
+  "player.rooms.err.soloRoom": "A room with one speaker cannot be split up",
+  "player.rooms.err.notFound": "That speaker or room no longer exists",
+  "player.rooms.queueChanged": "The room's queue was changed elsewhere — showing it again",
+  "player.rooms.editFailed": "Could not change the room's queue: {{error}}",
+  "player.rooms.edit.title": "Edit rooms",
+  "player.rooms.edit.desc": "Combine speakers into one room to play the same music on all of them, in sync.",
+  "player.rooms.edit.nameLabel": "Room name",
+  "player.rooms.edit.split": "Split up",
+  "player.rooms.edit.splitTitle": "Split up {{name}}?",
+  "player.rooms.edit.splitMsg": "Playback in this room stops and every speaker goes back to a room of its own.",
+  "player.rooms.edit.moveTo": "Move to…",
+  "player.rooms.edit.moveLabel": "Move {{name}} to another room",
+  "player.rooms.edit.ownRoom": "Its own room",
+  "player.rooms.edit.newRoom": "New room",
+  "player.rooms.edit.newRoomPlaceholder": "e.g. Downstairs",
+  "player.rooms.edit.create": "Create room",
+  "player.rooms.edit.failed": "Could not change the rooms: {{error}}"
 }

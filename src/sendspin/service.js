@@ -211,6 +211,7 @@ export class RoomsService extends EventEmitter {
       positionAt: Date.now(),
       index: idle ? -1 : view.index,
       queueLength: view.queueLength,
+      upcoming: idle ? 0 : view.upcoming,
       queueVersion: view.queueVersion,
       volume: view.volume,
       muted: view.muted,

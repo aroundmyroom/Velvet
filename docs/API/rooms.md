@@ -38,6 +38,7 @@ The player uses `GET /api/v1/rooms` as its capability check: any non-2xx means
 | 409 | `not_playable` | `play` on a room whose members are all offline / unknown / mismatched / in use elsewhere. |
 | 409 | `solo_room` | `DELETE` on a room with one member. |
 | 409 | `empty_queue` | `resume`/`next`/`jump` on a room with no queue and no history. |
+| 409 | `queue_changed` | `remove`/`move`/`reorder`/`add` sent a `queueVersion` that is no longer current; adds `queueVersion` (the current one). Refetch `GET …/queue` and retry. |
 | 422 | `malformed_token` / `unsupported_token_version` / `wrong_client` | Pairing token rejected (nothing was sent to the device). `wrong_client` adds `tokenClientId`. |
 | 422 | `invalid_code` | Code is not 6 / 8 digits after stripping spaces and hyphens. |
 | 409 | `not_seekable` | `seek` while `canSeek` is false. |
@@ -60,6 +61,9 @@ translated string and falls back to `error` as plain text.
   requesting user's vpaths (same rules as Server Audio); entries the user cannot
   access or that do not exist are dropped and counted in `skipped`.
 - `index`: integer ≥ 0. `positionMs`: integer ≥ 0. `volume`: integer 0–100.
+- `indexes` (`remove`) / `order` (`reorder`): arrays of 1–10 000 distinct integers ≥ 0, each a
+  current queue index; `order` must list every index exactly once. `from`/`to` (`move`): queue
+  indexes. `queueVersion`: integer ≥ 0, optional on every queue edit.
 - `pairingToken`: string ≤ 256. `code`: string ≤ 32.
 
 ## Shared objects
@@ -153,6 +157,7 @@ states (`paired`, `aborted`) stay readable for 60 s after they occur.
   "positionAt": 1763000000123,
   "index": 3,
   "queueLength": 25,
+  "upcoming": 21,
   "queueVersion": 7,
   "volume": 40,
   "muted": false,
@@ -174,7 +179,8 @@ states (`paired`, `aborted`) stay readable for 60 s after they occur.
 | `positionAt` | number | Server ms epoch when `positionMs` was sampled; while `playing` the client may interpolate `positionMs + (now - positionAt)`. |
 | `index` | number | Index of `current` in the room queue (−1 when idle). |
 | `queueLength` | number | |
-| `queueVersion` | number | Increments on every queue change (play, add, any controller command that edits the queue). Remotes refetch `/queue` when it changes. |
+| `upcoming` | number | Entries still to play after `current` in play order (shuffle order when `shuffle` is on), not counting a `repeat` wrap. `0` on the last entry and when idle. |
+| `queueVersion` | number | Increments on every queue change (play, add, remove, move, reorder, shuffle, any controller command that edits the queue). Remotes refetch `/queue` when it changes. A request that changes nothing (a move onto itself, an identity `reorder`) keeps it. |
 | `volume` / `muted` | number / boolean | Group values (spec group-volume algorithm). |
 | `repeat` | `'off' \| 'all' \| 'one'` | |
 | `shuffle` | boolean | |
@@ -222,8 +228,11 @@ whose approval is revoked or that is unpaired leaves its room.
 | `GET` | `/api/v1/rooms/:id/state` | — | `Room`. **Remote UI polls this ~1 s** while a room is active and the page is visible; back off to ≥ 5 s when hidden or idle. Cheap: no DB access beyond the cached current entry. |
 | `GET` | `/api/v1/rooms/:id/queue` | — | `{ queueVersion, index, songs: QueueEntry[] }` |
 | `POST` | `/api/v1/rooms/:id/play` | `{ songs: string[], index?: integer = 0, positionMs?: integer = 0, paused?: boolean = false, rgEnabled?, rgMode?, rgPreamp?, rgClip? }` | `Room` + `skipped: number`. Replaces the room queue (server-side queue from now on), starts at `index`/`positionMs`. 400 if no entry survives resolution. 409 `not_playable`. |
-| `POST` | `/api/v1/rooms/:id/add` | `{ songs: string[], next?: boolean = false, rgEnabled?, rgMode?, rgPreamp?, rgClip? }` | `{ ok: true, queueLength, queueVersion, skipped }`. `next: true` inserts after the current track. Starts playback if the room was idle. |
+| `POST` | `/api/v1/rooms/:id/add` | `{ songs: string[], next?: boolean = false, queueVersion?, rgEnabled?, rgMode?, rgPreamp?, rgClip? }` | `{ ok: true, queueLength, queueVersion, skipped }`. `next: true` inserts after the current track. Starts playback if the room was idle. With `queueVersion`, 409 `queue_changed` when the queue changed meanwhile (checked after the songs are resolved) — Auto-DJ uses this so two tabs never both top up. |
 | `POST` | `/api/v1/rooms/:id/jump` | `{ index }` | `Room`. Play the queue entry at `index` from 0 ms. |
+| `POST` | `/api/v1/rooms/:id/remove` | `{ indexes: integer[], queueVersion? }` | `Room`. Removes the entries at `indexes` (queue order). Removing **upcoming** entries while playing never interrupts the current track (the read-ahead is re-spliced as for `add … next`, gapless). Removing the **current** entry behaves like `next` (next surviving entry in play order, from 0 ms; nothing left → `stopped`; on a paused room the cursor moves and it stays paused). Removing every entry → `idle`. The shuffle order of the entries that stay is kept. |
+| `POST` | `/api/v1/rooms/:id/move` | `{ from, to, queueVersion? }` | `Room`. Moves the entry at `from` so it ends up at index `to` (`splice` semantics). Entries keep their identity: moving the current entry, or anything else, never interrupts playback; `index` follows the current entry. Without shuffle the new queue order is the play order; with shuffle the play order is kept. |
+| `POST` | `/api/v1/rooms/:id/reorder` | `{ order: integer[], queueVersion? }` | `Room`. `order[p]` is the current index of the entry that goes to position `p` (a permutation of all indexes). Same playback rules as `move`. For bulk changes (shuffle the queue, flow, block moves). |
 | `POST` | `/api/v1/rooms/:id/pause` | — | `Room` (`paused`; position kept). |
 | `POST` | `/api/v1/rooms/:id/resume` | — | `Room`. On an idle room resumes what it last played (survives restarts). |
 | `POST` | `/api/v1/rooms/:id/next` | — | `Room`. Honours `repeat`/`shuffle`; at the end with `repeat: 'off'` → `stopped`. |
@@ -262,15 +271,35 @@ always capped so the stored peak stays ≤ 0 dBFS (no peak known → never above
   picker opens. Choosing a room: `POST …/play` with the browser queue (`songs`
   = `S.queue[].filepath`, unchanged), `index = S.idx`,
   `positionMs = audio.currentTime * 1000`; then pauses the local `<audio>` and
-  becomes a remote. A queue row click sends `jump` when the browser queue is the
-  one it handed over (same `queueVersion` as last seen), otherwise `play` with
-  the whole queue. Adding songs sends `add`. `play` and `add` carry the
+  becomes a remote. A queue row click sends `jump` when the browser queue matches the
+  room queue (same entries as at the last known `queueVersion`), otherwise
+  `play` with the whole queue. Adding songs sends `add`. `play` and `add` carry the
   listener's `rgEnabled`/`rgMode`/`rgPreamp`/`rgClip`. The repeat and
   shuffle buttons send `repeat`/`shuffle` and show the room's `repeat`/`shuffle`
   from the polled state; the browser's own values come back on leaving the
   room. Take back: `stop` → `stoppedAt` → play locally from that index/position.
 - Remotes treat `queueVersion` changes they did not cause as "someone else
   changed the queue" and refetch `GET …/queue`.
+- **Queue edits.** While a room is active the browser queue mirrors the room
+  queue (after a hand-over that dropped entries — radio, unresolvable songs,
+  over 10 000 — it refetches `GET …/queue`). Every local edit of the queue
+  panel (remove, multi-select remove, drag-reorder, disc-block move, clear,
+  shuffle queue, flow and its undo, deleting a recording, jukebox remove) is
+  diffed against that mirror by song identity and sent as `remove` and/or
+  `move` (one entry) / `reorder` (anything else), each with the
+  `queueVersion` it was computed from. Requests run one at a time. A
+  `409 queue_changed` refetches the room queue and shows it. *Clear* keeps the
+  room's current entry unless the room has stopped.
+- **Auto-DJ.** With Auto-DJ on, the browser watches the polled state: when the
+  room plays its last entry (`upcoming === 0`, `repeat` not `one`) it picks
+  the next song exactly as for local playback and sends `add` with the
+  `queueVersion` it saw, once per `queueVersion`. Auto-DJ logic stays in the
+  browser: a room only keeps being topped up while a tab with that room active
+  is open.
+- **Room editing.** The player's output picker has an edit button next to
+  *Velvet Rooms*: rename (any room), move a speaker to another room or to its
+  own room (`PATCH` with the full member list), split up (`DELETE`), and create
+  a room from picked speakers (`POST`).
 - Room `index` counts the room queue. The browser drops radio/podcast URL
   entries before handing a queue over, so it maps room → browser position by
   `current.filepath`, never by `index` alone. The server must therefore return

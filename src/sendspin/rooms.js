@@ -335,6 +335,32 @@ export class RoomManager extends EventEmitter {
     return this.getRoom(id);
   }
 
+  remove(id, indexes) {
+    const room = this.#room(id);
+    const drop = new Set(this.#checkIndexes(room, indexes));
+    if (!drop.size) return;
+    this.#rearrange(room, room.queue.filter((_, i) => !drop.has(i)));
+  }
+
+  move(id, from, to) {
+    const room = this.#room(id);
+    this.#checkIndexes(room, [from, to]);
+    if (from === to) return;
+    const next = room.queue.slice();
+    next.splice(to, 0, ...next.splice(from, 1));
+    this.#rearrange(room, next);
+  }
+
+  reorder(id, order) {
+    const room = this.#room(id);
+    this.#checkIndexes(room, order);
+    if (order.length !== room.queue.length || new Set(order).size !== order.length) {
+      throw new RoomError('invalid', 'order must list every queue index once');
+    }
+    if (order.every((i, at) => i === at)) return;
+    this.#rearrange(room, order.map((i) => room.queue[i]));
+  }
+
   forget(clientId) {
     const c = this.#clients.get(clientId);
     if (!c) return false;
@@ -772,6 +798,73 @@ export class RoomManager extends EventEmitter {
     } else {
       room.order.push(...added);
     }
+  }
+
+  #checkIndexes(room, indexes) {
+    if (!Array.isArray(indexes)) throw new RoomError('invalid', 'indexes must be a list');
+    for (const i of indexes) {
+      if (!Number.isInteger(i) || i < 0 || i >= room.queue.length) throw new RoomError('invalid', 'index is out of range');
+    }
+    return indexes;
+  }
+
+  // nextQueue holds existing entries (a subset, any order). Entries keep their identity, so the track playing
+  // is never interrupted unless it is the one removed; the shuffle order is kept for the entries that stay.
+  #rearrange(room, nextQueue) {
+    const cur = room.queue[this.#currentIndex(room)] ?? null;
+    const keep = new Set(nextQueue);
+    if (cur && !keep.has(cur)) {
+      this.#dropCurrent(room, cur, keep, nextQueue);
+    } else {
+      let restart = null;
+      this.#editTail(room, (anchor) => {
+        const committed = room.queue[anchor];
+        // The track after the current one was already handed to the stream (a boundary is a moment away).
+        if (committed && committed !== cur && !keep.has(committed)) restart = { from: this.#survivorAfter(room, committed, keep) };
+        this.#applyQueue(room, nextQueue);
+        if (cur) room.index = room.queue.indexOf(cur);
+      });
+      if (cur) room.index = room.queue.indexOf(cur);
+      if (restart?.from) this.#start(room, room.queue.indexOf(restart.from), 0);
+      else if (restart) this.#halt(room, 'stopped');
+    }
+    room.queueVersion++;
+    this.#pushController(room);
+    this.#save();
+    this.#changed(room);
+  }
+
+  #dropCurrent(room, cur, keep, nextQueue) {
+    const next = this.#survivorAfter(room, cur, keep);
+    if (!next && room.state !== 'stopped') this.#halt(room, 'stopped');
+    this.#applyQueue(room, nextQueue);
+    if (next) {
+      this.#jump(room, room.queue.indexOf(next), 0);
+      return;
+    }
+    room.index = room.order[0] ?? 0;
+    room.positionMs = 0;
+    room.current = null;
+    this.#pushTrackState(room, this.#now());
+  }
+
+  #survivorAfter(room, item, keep) {
+    const start = room.queue.indexOf(item);
+    let i = start;
+    for (let k = 0; k < room.queue.length; k++) {
+      i = this.#step(room, i, 1);
+      if (i === null || i === start) return null;
+      if (keep.has(room.queue[i])) return room.queue[i];
+    }
+    return null;
+  }
+
+  #applyQueue(room, nextQueue) {
+    const at = new Map(nextQueue.map((it, i) => [it, i]));
+    room.order = room.shuffle
+      ? room.order.map((i) => at.get(room.queue[i])).filter((i) => i !== undefined)
+      : nextQueue.map((_, i) => i);
+    room.queue = nextQueue;
   }
 
   #dropScheduledFrom(room, atUs) {
@@ -1235,6 +1328,7 @@ export class RoomManager extends EventEmitter {
       durationMs: item?.meta?.durationMs ?? 0,
       current: item ? { filepath: item.filepath, meta: item.meta ?? {} } : null,
       queueLength: room.queue.length,
+      upcoming: room.order.includes(index) ? room.order.length - 1 - room.order.indexOf(index) : 0,
       volume: ctl.volume,
       muted: ctl.muted,
       supportedCommands: ctl.supported_commands,

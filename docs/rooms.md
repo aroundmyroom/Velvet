@@ -211,7 +211,9 @@ speaker, see [Backup](#backup).
 ## Rooms
 
 The **Rooms** card (in *Admin → Velvet Rooms*) lists every room with its state
-(*Idle*, *Playing*, *Paused*, *Stopped*, *Starting…*).
+(*Idle*, *Playing*, *Paused*, *Stopped*, *Starting…*). Users with the Cast
+permission edit rooms in the player too: the **pencil** next to *Velvet Rooms*
+in the output picker opens *Edit rooms* with the same actions.
 
 - **Every speaker starts in a room of its own**, named after the speaker.
 - **Combine:** under *New room*, enter a name (e.g. *Downstairs*), tick the
@@ -226,8 +228,6 @@ The **Rooms** card (in *Admin → Velvet Rooms*) lists every room with its state
 A speaker belongs to exactly one room. Renaming, moving and volume changes
 never interrupt the music on the other speakers; a speaker that joins a playing
 room starts in sync at the current position.
-
-Rooms are edited on the admin page only.
 
 ---
 
@@ -251,11 +251,25 @@ in <room>* in the player bar and the queue panel. From now on the player is a
 | Volume slider, mute | Room volume (all speakers move together, keeping their balance). |
 | Click a song in the queue | The room jumps to it. |
 | Add to queue, play next | Added to the room's queue. |
+| Remove songs (one, or a selection) | Removed from the room's queue. Removing the song that plays skips to the next one. |
+| Drag to reorder, move a disc, *Shuffle queue*, *Flow*, *Undo* | The room's queue follows; the song that plays is not interrupted. |
+| *Clear queue* | Everything but the playing song is removed (all of it when the room has stopped). |
 | Play an album, playlist, AI DJ set | The new queue is sent to the room. |
+| Auto-DJ on | When the room starts its last song, the browser picks the next one and adds it — see below. |
 
-Changes made elsewhere — a speaker's buttons, another browser — show up in
-the player within a second or two. Reload the page while a room plays and the
-player reconnects as its remote.
+While a room is active the queue panel shows the room's queue. Changes made
+elsewhere — a speaker's buttons, another browser — show up in the player within
+a second or two. If someone else changed the queue at the moment you edited it,
+the player shows *The room's queue was changed elsewhere* and loads the room's
+queue again; repeat your edit on that.
+
+**Auto-DJ in a room.** Auto-DJ keeps choosing songs in the browser, with all
+its settings (similar artists, BPM, genres, …). When the room starts its last
+song, the browser picks the next one and adds it to the room. Two open tabs
+never add twice. This only works **while a browser with that room active is
+open**: close it and the room plays the rest of its queue and stops.
+
+Reload the page while a room plays and the player reconnects as its remote.
 
 **Take it back:** **Play in this browser** (in the player bar or queue panel),
 or pick *Browser* in the output picker. The room stops and the browser
@@ -313,14 +327,11 @@ is capped, so a room never clips. See [replaygain-info.md](replaygain-info.md).
 
 - **No visualizer yet.** Speakers with a light ring or display visualizer get
   nothing to show.
-- **Reordering or removing songs in the browser queue is not sent to the
-  room.** Adding songs and jumping to a song are. To change the order, start
-  the queue again from the browser (click a song after reordering: the whole
-  queue is sent).
-- **Auto-DJ does not top up a room.** When the room's queue ends, it stops.
+- **Auto-DJ tops up a room only while a browser with that room open is
+  running.** Auto-DJ picks songs in the browser. Close the last tab (or switch
+  off the laptop) and the room plays to the end of its queue and stops.
 - **Browser-only audio settings do not apply:** the equaliser and crossfade
   stay in the browser.
-- **Rooms are created and edited on the admin page only.**
 - Discovery is IPv4 only.
 
 ---

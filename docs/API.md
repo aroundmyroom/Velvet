@@ -886,8 +886,11 @@ small local window for instant boot, then lazy-loads the rest from here.
 | `GET` | `/api/v1/rooms/:id/state` | — | Room state; polled ~1 s by the remote UI. |
 | `GET` | `/api/v1/rooms/:id/queue` | — | `{ queueVersion, index, songs[] }`. |
 | `POST` | `/api/v1/rooms/:id/play` | `{ songs[], index?, positionMs?, paused?, rgEnabled?, rgMode?, rgPreamp?, rgClip? }` | Hand a queue to the room (replaces its queue); `skipped` counts unresolvable songs. |
-| `POST` | `/api/v1/rooms/:id/add` | `{ songs[], next?, rgEnabled?, rgMode?, rgPreamp?, rgClip? }` | Append (or insert after current with `next`). |
+| `POST` | `/api/v1/rooms/:id/add` | `{ songs[], next?, queueVersion?, rgEnabled?, rgMode?, rgPreamp?, rgClip? }` | Append (or insert after current with `next`). `queueVersion` → `409 queue_changed` if the queue changed meanwhile. |
 | `POST` | `/api/v1/rooms/:id/jump` | `{ index }` | Play the queue entry at `index`. |
+| `POST` | `/api/v1/rooms/:id/remove` | `{ indexes[], queueVersion? }` | Remove queue entries; removing the current one plays the next. The current track is never interrupted otherwise. |
+| `POST` | `/api/v1/rooms/:id/move` | `{ from, to, queueVersion? }` | Move one queue entry (`to` = its final index). |
+| `POST` | `/api/v1/rooms/:id/reorder` | `{ order[], queueVersion? }` | New queue order as a permutation of the current indexes. |
 | `POST` | `/api/v1/rooms/:id/pause` | — | Pause. |
 | `POST` | `/api/v1/rooms/:id/resume` | — | Resume (an idle room resumes what it last played). |
 | `POST` | `/api/v1/rooms/:id/next` | — | Next track. |

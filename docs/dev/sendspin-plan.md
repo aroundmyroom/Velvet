@@ -714,6 +714,15 @@ second test instance on another port for the owner.
   stale untrusted solo rooms pruned), untrusted clients have their own cap (16) and known devices an LRU cap (256, trusted
   never evicted); mDNS rejects mapped/compatible IPv6, link-local and off-subnet addresses and off-link QU queries; unpair
   idles + closes the lt session, unpair/revoke during a re-handshake are deferred; import restarts Rooms in `finally`.
+
+- 2026-11-12 — Queue edits, Auto-DJ and room editing from the player: `RoomManager.remove/move/reorder` (entries by identity; upcoming
+  edits go through `#editTail`/`replaceUpcoming`, so the current track plays on gapless; removing the current entry = next; a
+  removed already-committed next track restarts at the next survivor; shuffle order kept), `upcoming` in the Room view, REST
+  `POST …/remove|move|reorder` + optional `queueVersion` on edits and `add` (409 `queue_changed`), `meta.bpm` on resolved
+  items. Player: browser queue mirrors the room (`_roomMirror`, identity diff → remove + move/reorder, one request at a time,
+  refetch on conflict) for remove, drag, disc move, clear, shuffle queue, flow/undo, recording delete, jukebox remove; Auto-DJ
+  tops up from the polled state (`upcoming === 0`, once per `queueVersion`, versioned `add`); *Edit rooms* modal from the
+  output picker (rename, move, split up, create). 17 player keys × 12 locales. Tests: rooms +2, REST +1.
 - 2026-11-12 — Opus: ffmpeg libopus → Ogg → own `OggPacketReader` (RFC 3533 CRC, packets across pages) + `OpusDemuxer`
   (drops OpusHead/OpusTags, TOC durations) → one raw packet per 20 ms chunk; timeline moved back by the OpusHead pre-skip
   as aiosendspin does, so decoded audio lands sample-exact (tone onset at 500.02 ms of 500 ms via ffmpeg and aiosendspin's
