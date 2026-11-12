@@ -149,7 +149,7 @@ states (`paired`, `aborted`) stay readable for 60 s after they occur.
 { "supported": true, "allowed": true, "canAllow": true, "needsPairing": false, "roleActive": true, "available": true,
   "signal": "present", "streaming": true, "roomId": "r_8f2c", "autoSwitch": false, "autoRoomId": "r_8f2c", "lastError": null,
   "stats": { "format": { "codec": "flac", "sampleRate": 48000, "channels": 2, "bitDepth": 16 }, "bufferMs": 152, "ppm": 186,
-             "underruns": 0, "chunks": 4210, "rejected": 0, "stale": 0, "ahead": 0, "jumps": 1, "gaps": 0, "delayMs": 9 } }
+             "underruns": 0, "chunks": 4210, "rejected": 0, "stale": 0, "ahead": 0, "jumps": 1, "gaps": 0, "backlog": 0, "delayMs": 9 } }
 ```
 
 | Field | Type | Notes |
@@ -164,8 +164,8 @@ states (`paired`, `aborted`) stay readable for 60 s after they occur.
 | `streaming` | boolean | An input stream is open (`client-stream/start` received). |
 | `roomId` | `string \| null` | The room playing this line-in now. |
 | `autoSwitch` / `autoRoomId` | boolean / `string \| null` | Auto-switch policy (off by default): start `autoRoomId` (the room the line-in last played in) on signal `present`, stop on `absent`. |
-| `lastError` | `'declined' \| null` | The device declined the last start. |
-| `stats` | object \| null | Ingest diagnostics: jitter buffer (`bufferMs`), clock correction (`ppm`), rejected/stale/over-pace chunks, timestamp `jumps`/`gaps`, last input delay. |
+| `lastError` | `'declined' \| 'overloaded' \| null` | `declined`: the device declined the last start. `overloaded`: its decoder stayed more than 3 s behind, so the line-in was stopped. |
+| `stats` | object \| null | Ingest diagnostics: jitter buffer (`bufferMs`), clock correction (`ppm`), rejected/stale/over-pace chunks, chunks dropped while the decoder was behind (`backlog`), timestamp `jumps`/`gaps`, last input delay. |
 
 ### Room
 
@@ -216,7 +216,7 @@ states (`paired`, `aborted`) stay readable for 60 s after they occur.
 | `playable` | boolean | At least one member can play now (online, trusted for playback). |
 | `lineIn` | `{ clientId, name } \| null` | The room plays a source device's input instead of its queue. Then `state` is `playing`, `current` is `{ filepath: null, title: "Line-in — <name>", durationMs: null, … }`, `canSeek` is false and the queue (with `index`/`positionMs`) waits underneath, paused. |
 
-| `sonos` | object[] | Sonos speakers following the room: `{ id: "sonos:<uuid>", uuid, name, delayMs, volume, muted, state, error }`. `state`: `idle` (room not playing), `starting` (Velvet is telling the Sonos to play), `waiting` (told, not listening right now), `streaming` (pulling the stream), `error` (the Sonos did not answer; `error` says why). `volume`/`muted` `null` until read. Use `id` as `clientId` for the per-speaker volume/mute routes. A Sonos counts as `playable`. |
+| `sonos` | object[] | Sonos speakers following the room: `{ id: "sonos:<uuid>", uuid, name, delayMs, volume, muted, state, error }`. `state`: `idle` (room not playing), `starting` (Velvet is telling the Sonos to play), `waiting` (told, not listening right now), `streaming` (pulling the stream), `error` (the Sonos did not answer; `error` says why). `volume`/`muted` `null` until read. Use `id` as `clientId` for the per-speaker volume/mute routes. A Sonos counts as `playable` while Sonos is enabled in Velvet; while it is off the entries stay but are dormant (not driven, no added delay, not `playable`). |
 
 ### QueueEntry
 
@@ -261,9 +261,9 @@ whose approval is revoked or that is unpaired leaves its room.
 | `GET` | `/api/v1/rooms/:id/state` | — | `Room`. **Remote UI polls this ~1 s** while a room is active and the page is visible; back off to ≥ 5 s when hidden or idle. Cheap: no DB access beyond the cached current entry. |
 | `GET` | `/api/v1/rooms/:id/queue` | — | `{ queueVersion, index, songs: QueueEntry[] }` |
 | `POST` | `/api/v1/rooms/:id/play` | `{ songs: string[], index?: integer = 0, positionMs?: integer = 0, paused?: boolean = false, rgEnabled?, rgMode?, rgPreamp?, rgClip? }` | `Room` + `skipped: number`. Replaces the room queue (server-side queue from now on), starts at `index`/`positionMs`. 400 if no entry survives resolution. 409 `not_playable`. |
-| `POST` | `/api/v1/rooms/:id/add` | `{ songs: string[], next?: boolean = false, queueVersion?, rgEnabled?, rgMode?, rgPreamp?, rgClip? }` | `{ ok: true, queueLength, queueVersion, skipped }`. `next: true` inserts after the current track. Starts playback if the room was idle. With `queueVersion`, 409 `queue_changed` when the queue changed meanwhile (checked after the songs are resolved) — Auto-DJ uses this so two tabs never both top up. |
+| `POST` | `/api/v1/rooms/:id/add` | `{ songs: string[], next?: boolean = false, queueVersion?, rgEnabled?, rgMode?, rgPreamp?, rgClip? }` | `{ ok: true, queueLength, queueVersion, skipped }`. `next: true` inserts after the current track. Starts playback if the room was idle (not while a line-in plays: then it only appends). With `queueVersion`, 409 `queue_changed` when the queue changed meanwhile (checked after the songs are resolved) — Auto-DJ uses this so two tabs never both top up. |
 | `POST` | `/api/v1/rooms/:id/jump` | `{ index }` | `Room`. Play the queue entry at `index` from 0 ms. |
-| `POST` | `/api/v1/rooms/:id/remove` | `{ indexes: integer[], queueVersion? }` | `Room`. Removes the entries at `indexes` (queue order). Removing **upcoming** entries while playing never interrupts the current track (the read-ahead is re-spliced as for `add … next`, gapless). Removing the **current** entry behaves like `next` (next surviving entry in play order, from 0 ms; nothing left → `stopped`; on a paused room the cursor moves and it stays paused). Removing every entry → `idle`. The shuffle order of the entries that stay is kept. |
+| `POST` | `/api/v1/rooms/:id/remove` | `{ indexes: integer[], queueVersion? }` | `Room`. Removes the entries at `indexes` (queue order). Removing **upcoming** entries while playing never interrupts the current track (the read-ahead is re-spliced as for `add … next`, gapless). Removing the **current** entry behaves like `next` (next surviving entry in play order, from 0 ms; nothing left → `stopped`; on a paused room the cursor moves and it stays paused). Removing every entry → `idle`. The shuffle order of the entries that stay is kept. While a line-in plays, `remove`/`move`/`reorder` only edit the queue underneath (removing its paused entry moves the cursor); the line-in keeps playing. |
 | `POST` | `/api/v1/rooms/:id/move` | `{ from, to, queueVersion? }` | `Room`. Moves the entry at `from` so it ends up at index `to` (`splice` semantics). Entries keep their identity: moving the current entry, or anything else, never interrupts playback; `index` follows the current entry. Without shuffle the new queue order is the play order; with shuffle the play order is kept. |
 | `POST` | `/api/v1/rooms/:id/reorder` | `{ order: integer[], queueVersion? }` | `Room`. `order[p]` is the current index of the entry that goes to position `p` (a permutation of all indexes). Same playback rules as `move`. For bulk changes (shuffle the queue, flow, block moves). |
 | `POST` | `/api/v1/rooms/:id/pause` | — | `Room` (`paused`; position kept). |
@@ -291,7 +291,7 @@ All routes need the player permission; adding needs Sonos enabled in Velvet (`co
 | `POST` | `/api/v1/rooms/:id/sonos` | `{ uuid, delayMs?: 0–5000 }` | `Room`. The Sonos follows this room (moved out of another room, keeping its delay). Starts it at once if the room plays. 404 unknown room or Sonos (not in discovery); 409 `sonos_disabled`; 400 bad `delayMs` or more than 8 Sonos in the room. |
 | `PATCH` | `/api/v1/rooms/:id/sonos/:uuid` | `{ delayMs: 0–5000 }` | `Room`. Takes effect immediately on a running stream. |
 | `DELETE` | `/api/v1/rooms/:id/sonos/:uuid` | — | `Room`. Ends the stream; the Sonos gets `Stop` only if it still plays this room. |
-| `GET` | `/api/v1/rooms/sonos-stream/:token.mp3` | — | **No login** (registered before auth). The stream the Sonos pulls: `audio/mpeg`, endless, paced in real time; ICY titles when asked (`Icy-MetaData: 1`). `token` = 32 random URL-safe chars, valid only while that Sonos is a member with a running session. 404 otherwise; 403 for peers outside private IPv4 / loopback. |
+| `GET` | `/api/v1/rooms/sonos-stream/:token.mp3` | — | **No login** (registered before auth). The stream the Sonos pulls: `audio/mpeg`, endless, paced in real time; ICY titles when asked (`Icy-MetaData: 1`). `token` = 32 random URL-safe chars, valid only while that Sonos is a member with a running session. 404 otherwise; 403 for peers outside private IPv4 (loopback included: only the test suite, `NODE_ENV=test`, may fetch from loopback). |
 
 Group `volume`/`mute` include the Sonos speakers (UPnP RenderingControl).
 

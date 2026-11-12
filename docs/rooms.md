@@ -367,7 +367,10 @@ connected. The room then plays the input instead of its queue: the player bar
 shows *Line-in — Turntable* with a **Line-in** badge, and *Stop line-in* (or
 pause/stop on the room or on a speaker's buttons) ends it. The queue stays
 where it was, paused; resume it or play something new to leave the line-in.
-One input plays in one room at a time.
+Editing the queue while the line-in plays (remove, move, reorder, add — Auto-DJ
+does not top up during a line-in) only changes the queue; it never ends the
+line-in. One input plays in one room at a time: starting it in another room
+moves it there without interrupting the device's stream.
 
 **Auto-switch.** A device with line sense reports when audio is present (the
 needle drops, the TV goes on). With *Start when signal appears* switched on for
@@ -393,6 +396,10 @@ off for an input with hum on it, which reports a signal all day.
 - Inputs in PCM (16/24/32-bit) and FLAC are accepted, any sample rate up to
   384 kHz and up to 8 channels (the first two are used). Opus input is not
   offered.
+- Input is bounded: a chunk must be 1–150 ms of audio and no larger than that
+  audio uncompressed; a FLAC frame larger than the stream's declared maximum
+  block size closes the device's connection. If the decoder stays more than
+  3 s behind, Velvet stops the line-in and logs why.
 
 ---
 
@@ -434,10 +441,15 @@ What to expect:
 - A Sonos is in one room at a time; adding it to another room moves it. It
   stays in the room across restarts (by its Sonos id; the address is looked up
   again). A room still needs at least one Sendspin speaker.
+- **Sonos switched off** in Velvet (*Admin → Sonos*): the Sonos speakers stay
+  in their rooms but are dormant — not driven, no extra delay on the Sendspin
+  speakers, and a room with only dormant Sonos speakers cannot play. They come
+  back on the room's next play, seek or skip after Sonos is switched on.
 
 The stream URL carries a random token that only works while that Sonos is in
 the room and Velvet has it playing; it never contains a login. Only devices on
-the local network can fetch it. If Velvet runs on HTTPS only, set
+the local network (private LAN addresses) can fetch it; requests from the
+Velvet host itself (loopback, e.g. a local reverse proxy) are refused. If Velvet runs on HTTPS only, set
 `localHttpPort` (as for Sonos cast) so the Sonos gets a plain-HTTP radio URL.
 
 ## ReplayGain

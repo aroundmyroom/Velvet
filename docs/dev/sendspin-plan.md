@@ -852,6 +852,15 @@ second test instance on another port for the owner.
 - 2026-11-12 — Conformance re-run on the final branch (adapter offers all 7 roles, source approved, loopback caps 32):
   aiosendspin 14/14 (opus: its client adapter has no Opus), sendspin-cpp 12/14 + opus (2× client `format` limitation),
   sendspin-js limited by its client adapter; identical to the previous run, no product regressions.
+- 2026-11-12 — Second review fixed: line-in input bounded (FLAC frame headers must agree with STREAMINFO and continue the
+  numbering, a frame above `maxBlock` or a chunk larger than its samples uncompressed closes the connection; chunks 1–150 ms;
+  ffmpeg stdin backlog > 1.5 s of input drops chunks, > 3 s stops the line-in `overloaded`; stale window = monotonic
+  min-deque); source hand-over tracks `wanted`/`pending`/`retired` so a stop→start (room move) takes the superseded
+  stream's `client-stream/end` quietly and discards its audio (ambiguous stop-before-answer → start re-sent); queue edits
+  and `/add` under a line-in only edit the queue, room Auto-DJ skips line-in; visualizer spectrum out of range is omitted,
+  not a protocol error; Sonos disabled → followers dormant (no lead/tap, not playable, wake on next epoch); Sonos stream
+  loopback only under `NODE_ENV=test`. Regression tests per finding (`sendspin-source`, `-rooms`, `-sonos`, `-hostile`,
+  integration `sendspin-api`).
 
 ### Second test instance (owner)
 

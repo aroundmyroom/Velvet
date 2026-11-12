@@ -113,7 +113,7 @@ Velvet Rooms: multi-room playback on Sendspin speakers
   link-local and off-subnet addresses and off-link queries.
 - **Sonos stream.** The stream URL carries a per-session random token, works
   only while that Sonos follows the room, contains no login and answers only
-  LAN and loopback peers.
+  private LAN peers (not the Velvet host itself).
 - **Queue paths** resolve through the user's own folders and stay inside them;
   a room never plays a file the user could not play in the browser.
 
