@@ -320,6 +320,7 @@ Dynamic filter-based playlists that re-evaluate every time you open them:
 | **DLNA / UPnP** | Browse and stream over LAN to Smart TVs, Kodi, BubbleUPnP, AV receivers. [Docs →](docs/dlna.md) |
 | **Subsonic API** | Full 1.16.1 + Open Subsonic compatibility. Works with Symfonium, DSub, Ultrasonic, KSub (Astiga), and more. [Docs →](docs/subsonic.md) |
 | **Music Assistant / Home Assistant** | Use Velvet as an Open Subsonic source in [Music Assistant](https://www.music-assistant.io/) — stream your library to Chromecast, AirPlay, Squeezelite and more, with Home Assistant automations and voice control. [Setup →](docs/subsonic.md#music-assistant) |
+| **Home Assistant (Velvet Rooms)** | Custom integration: every Velvet Room becomes a Home Assistant media player — transport, volume, shuffle/repeat, artwork, the Velvet library in the media browser, and Assist voice ("play … in the kitchen"). Sign in by approving a code in Velvet. [Docs →](docs/home-assistant.md) |
 | **Samsung Smart TV** | Native **Velvet TV** app for Tizen 5.5+ — full remote/D-pad navigation, albums (CUE + multi-disc), A–Z quick-jump, VU meter and visualizer. Side-load the `.wgt` with Apps2Samsung. [Docs →](docs/tizen-tv.md) |
 | **Sharesonic (Android)** | Community Android app for Velvet. [GitHub →](https://github.com/Tiritibambix/Sharesonic) |
 | **Claude / local LLM** | The AI DJ and AI-assist run on Claude (Anthropic) or on any OpenAI-compatible server on your own machine. [Docs →](docs/ai-assist.md) |
