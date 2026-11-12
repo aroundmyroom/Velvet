@@ -1,3 +1,17 @@
+## Unreleased
+
+### Added
+
+- **Equalizer per room.** The player's EQ panel now controls the room when a
+  Velvet Room is the output: same bands, presets and on/off, one EQ per room,
+  stored on the server so it survives restarts and applies whichever browser
+  or speaker plays the room. Changes are heard within about a second without
+  interrupting the song; Sonos followers hear it too. Boosts are given
+  headroom and a safety limiter, so a room never clips; off or flat leaves
+  the audio untouched. The browser's own EQ is unchanged and applies again
+  after *Play in this browser*. A line-in is not equalised. New endpoints
+  `GET`/`PUT /api/v1/rooms/:id/eq`; the room state carries `eq`.
+
 ## v0.9.1 (2026-11-12)
 
 Velvet Rooms: streams with any ffmpeg build

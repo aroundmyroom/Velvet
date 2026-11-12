@@ -270,6 +270,7 @@ in <room>* in the player bar and the queue panel. From now on the player is a
 | Play/pause, next, previous | Sent to the room. *Previous* restarts the song when more than 3 s in. |
 | Seek bar | Seeks in the room. |
 | Volume slider, mute | Room volume (all speakers move together, keeping their balance). |
+| Equalizer (EQ button) | The room's EQ — see [Equalizer per room](#equalizer-per-room). |
 | Click a song in the queue | The room jumps to it. |
 | Add to queue, play next | Added to the room's queue. |
 | Remove songs (one, or a selection) | Removed from the room's queue. Removing the song that plays skips to the next one. |
@@ -469,6 +470,33 @@ the local network (private LAN addresses) can fetch it; requests from the
 Velvet host itself (loopback, e.g. a local reverse proxy) are refused. If Velvet runs on HTTPS only, set
 `localHttpPort` (as for Sonos cast) so the Sonos gets a plain-HTTP radio URL.
 
+## Equalizer per room
+
+Every room has its own 8-band equalizer — one per room, not per speaker. You
+set it with the **same EQ panel** as in the browser: while a room is your
+output, the EQ button opens the panel titled *Equalizer — <room>*, with the
+same bands, presets and on/off switch. Changes go to the room:
+
+- **Instant enough.** While the room plays, a change is heard within about a
+  second, without stopping or restarting the song. With a Sonos following the
+  room it takes as long as that Sonos's delay.
+- **Stored with the room.** The EQ is kept on the server (with the room, in
+  `rooms.json`), so it survives a restart and applies whichever browser — or a
+  speaker's own buttons — plays the room. Two browsers on the same room see the
+  same EQ.
+- **Your browser's EQ stays yours.** The room EQ does not change the EQ the
+  browser uses for its own playback. After *Play in this browser* the panel
+  shows the browser's EQ again and that applies.
+- **Sonos followers hear it too**: they get the room's equalised stream.
+- **Line-in is not equalised.** A line-in plays as it comes in; the room EQ
+  applies again when the room plays its queue.
+
+**It never clips.** With a boost, the room plays a little quieter overall (by
+the highest point of the EQ curve) so the boosted parts fit, and a safety
+limiter catches the rare peak that still would not. Off, or every band at 0,
+leaves the audio exactly as it was. The bands are the browser's: 60 Hz (low
+shelf), 100, 200, 500 Hz, 1, 3, 10 kHz and 14 kHz (high shelf), ±12 dB.
+
 ## ReplayGain
 
 Rooms apply ReplayGain on the server, before the audio is sent: from Velvet's
@@ -488,8 +516,8 @@ is capped, so a room never clips. See [replaygain-info.md](replaygain-info.md).
 - **Auto-DJ tops up a room only while a browser with that room open is
   running.** Auto-DJ picks songs in the browser. Close the last tab (or switch
   off the laptop) and the room plays to the end of its queue and stops.
-- **Browser-only audio settings do not apply:** the equaliser and crossfade
-  stay in the browser.
+- **Crossfade stays in the browser.** Rooms play gapless, without crossfade.
+  (The equaliser does work: see [Equalizer per room](#equalizer-per-room).)
 
 ---
 
