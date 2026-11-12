@@ -1,0 +1,677 @@
+{
+ "generator": "test/fixtures/sendspin/gen_pairing_vectors.py (aiosendspin pairing + cpace-py)",
+ "serverId": "TgU-RIbsUPm5mywyf_WIN0u0S9UpLZ_h5fKhfb7OwB0",
+ "clientId": "DrzFaGdo7mjh-VrNrpvCkVUa-PNvvcYAdAX3HOW4PRs",
+ "pairingPsk": "aa856d0aee72937ee6d4b3b51aaa22ea9635f5f0f5413d7f3326a3d1ae087c80",
+ "tokens": {
+  "specPsk": {
+   "clientKey": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+   "clientId": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",
+   "pairingPsk": "e0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff",
+   "token": "SP:0AAAQEAYEAUDAOCAJBIFQYDIOB4IBCEQTCQKRMFYYDENBWHA5DYP6BYPC4PSOLZXH5DU6V97M5XXO74HR6LZ7J5PW674PT6X37T6757Y"
+  },
+  "specCode": {
+   "code": "e0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7",
+   "token": "SP:14DQ6FY7E4XTOP9HJ5LV6Z3PO57YPD4XT6T97N5Y"
+  },
+  "client": {
+   "clientId": "DrzFaGdo7mjh-VrNrpvCkVUa-PNvvcYAdAX3HOW4PRs",
+   "pairingPsk": "aa856d0aee72937ee6d4b3b51aaa22ea9635f5f0f5413d7f3326a3d1ae087c80",
+   "pairingPskId": "_z3qpIptBkJGLR6WAgb4uWkWL6ggyyf-TrlUGsWb-2Q",
+   "token": "SP:0B96MK9DHNDXGRYPZLLG95G6CSFKRV6HTN664MADUAX3RZZNYHUN9VBLNBLXHFE3643KLHNI9VIROVFRV6XYPKQJ5P4ZSNI6RVYEHZAA"
+  },
+  "lenient": [
+   {
+    "input": "  sp:0b96mk9dhndxgrypzllg95g6csfkrv6htn664maduax3rzznyhun9vblnblxhfe3643klhni9virovfrv6xypkqj5p4zsni6rvyehzaa\n",
+    "clientId": "DrzFaGdo7mjh-VrNrpvCkVUa-PNvvcYAdAX3HOW4PRs",
+    "pairingPsk": "aa856d0aee72937ee6d4b3b51aaa22ea9635f5f0f5413d7f3326a3d1ae087c80"
+   },
+   {
+    "input": "0B96MK9DHNDXGRYPZLLG95G6CSFKRV6HTN664MADUAX3RZZNYHUN9VBLNBLXHFE3643KLHNI9VIROVFRV6XYPKQJ5P4ZSNI6RVYEHZAA",
+    "clientId": "DrzFaGdo7mjh-VrNrpvCkVUa-PNvvcYAdAX3HOW4PRs",
+    "pairingPsk": "aa856d0aee72937ee6d4b3b51aaa22ea9635f5f0f5413d7f3326a3d1ae087c80"
+   },
+   {
+    "input": "SP:0B26MK2DHNDXGRYPZLLG25G6CSFKRV6HTN664MADUAX3RZZNYHUN2VBLNBLXHFE3643KLHNI2VIROVFRV6XYPKQJ5P4ZSNI6RVYEHZAA",
+    "clientId": "DrzFaGdo7mjh-VrNrpvCkVUa-PNvvcYAdAX3HOW4PRs",
+    "pairingPsk": "aa856d0aee72937ee6d4b3b51aaa22ea9635f5f0f5413d7f3326a3d1ae087c80"
+   },
+   {
+    "input": "sp:0b96mk9dhndxgrypzllg95g6csfkrv6htn664maduax3rzznyhun9vblnblxhfe3643klhni9virovfrv6xypkqj5p4zsni6rvyehzaa",
+    "clientId": "DrzFaGdo7mjh-VrNrpvCkVUa-PNvvcYAdAX3HOW4PRs",
+    "pairingPsk": "aa856d0aee72937ee6d4b3b51aaa22ea9635f5f0f5413d7f3326a3d1ae087c80"
+   },
+   {
+    "input": "SP:0B96MK9DHNDXGRYPZLLG95G6CSFKRV6HTN664MADUAX3RZZNYHUN9VBLNBLXHFE3643KLHNI9VIROVFRV6XYPKQJ5P4ZSNI6RVYEHZAAAAAAAAAA",
+    "clientId": "DrzFaGdo7mjh-VrNrpvCkVUa-PNvvcYAdAX3HOW4PRs",
+    "pairingPsk": "aa856d0aee72937ee6d4b3b51aaa22ea9635f5f0f5413d7f3326a3d1ae087c80"
+   }
+  ],
+  "rejected": [
+   {
+    "input": "",
+    "rejected": true,
+    "error": "malformed pairing token"
+   },
+   {
+    "input": "SP:",
+    "rejected": true,
+    "error": "malformed pairing token"
+   },
+   {
+    "input": "SP:1B96MK9DHNDXGRYPZLLG95G6CSFKRV6HTN664MADUAX3RZZNYHUN9VBLNBLXHFE3643KLHNI9VIROVFRV6XYPKQJ5P4ZSNI6RVYEHZAA",
+    "rejected": true,
+    "error": "unsupported pairing token version"
+   },
+   {
+    "input": "SP:0B96MK9DHNDXGRYPZLLG95G6CSFKRV6HTN664MADUAX3RZZNYHUN9VBLNBLXHFE3643KLHNI9VIROVFRV6XYPKQJ5P4ZSN",
+    "rejected": true,
+    "error": "malformed pairing token"
+   },
+   {
+    "input": "SP:0!!!!",
+    "rejected": true,
+    "error": "malformed pairing token"
+   },
+   {
+    "input": "SP:0AAAQEAYEAUDAOCAJBIFQYDIOB4IBCEQTCQKRMFYYDENBWHA5DYP6BYPC4PSOLZXH5DU6V97M5XXO74HR6LZ7J5PW674PT6X37T6757Y1",
+    "rejected": true,
+    "error": "malformed pairing token"
+   },
+   {
+    "input": "SP:0\u00e9",
+    "rejected": true,
+    "error": "malformed pairing token"
+   }
+  ]
+ },
+ "cpace": {
+  "prs": "3132333435363738",
+  "sid": "73656e647370696e2d706169722d70616b652d7631787c2eacbfa2bb97c124cbfb68e30ba9a40518ca958e8b1b62740ffe738138f70000000300000002",
+  "generatorString": "0843506163653235350831323334353637386d00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000003d73656e647370696e2d706169722d70616b652d7631787c2eacbfa2bb97c124cbfb68e30ba9a40518ca958e8b1b62740ffe738138f70000000300000002",
+  "generator": "e6216a1ea6d6007b5a27019bf6675b58670698136b08f6dd9d861c74290f7067",
+  "scalarA": "d111c02b34a0ecd27fd909608ae73bd333d64f1390a6effe7a828800f8660766",
+  "scalarB": "bc40f847c24fecb093b8566155d742b093fccb4af1669ff30dd95543857fccae",
+  "Ya": "95299e4eb8b0de47602ccd1e13957a3c291bb71241c515b03d66728ae89ba00d",
+  "Yb": "ce4cefac55ec7c6365bc2a9005adbdb8616da22b5600d82e943fa96f3725e360",
+  "isk": "5055df5368889e971b3e240334fbec3a51f2d4046c174ad9aeb42652dadf11f492e909b2e93c8602dfcea1730d7424fb2513cfaac232693d8bf6042a4e0cccde",
+  "Ta": "645bc878426893a5cd080c5be42e0c3c7c8d9c04055a8fa4d9baea0dced5c217f6a23036c48ed00d7d12f49af59e94a2cc5ffe3e8ae2621d39f2fa810ea9688f",
+  "Tb": "4305c73d6fc248db5c8cb6fd32bc1827ec08dcbebc80c39cc1d2057a25e900debf66784e81be8ef8ba492ffb4ef663cf2f1bd9659afacfbb3e0b38d997af4fff",
+  "elligator": [
+   {
+    "r": "0xa2ed9e04979618da19f4f344a44c1a115ee217d73f93b74a920c107487141b22",
+    "u": "385cb9a5cc4430cf7d9936e58aab41ac46ef40d2ff923c5b632a6377b03ae92e"
+   },
+   {
+    "r": "0xa7159353c19849eba2db045fa1d3180ba6ee030029104278c9859e280119ae3b",
+    "u": "17bc0800b8b3c3a0a4c2d694bd9a6d11162960e2b0205fa81e6379863ca9241d"
+   },
+   {
+    "r": "0x61f30896e130ebb3b28126067167ccb2ab6c08166043214168a2dcee352525dc",
+    "u": "7e136ccf0838fef5eb216ef91550f13d278ea0529dbb8f666167c08f91c0d957"
+   },
+   {
+    "r": "0x2047136cbdf366fb5b916584f50489583156a3d490185e861a1dae3bf0f1cf3b",
+    "u": "d222c1e0fb7b6ee8e3122d045d061452f4cbf42bbabe228b57a6ee87fbbfed53"
+   },
+   {
+    "r": "0xb5d18b772753dffa4d6bddbf4ae1e6cc0da053a725c54aa2e252db2ba0ce17fa",
+    "u": "a41a1c497645b44f8aca7cbcf493612caa97cf7223d2342a7ed85824bae94306"
+   },
+   {
+    "r": "0xf538036b0435907241429a0cf714ad89b180e15bf5986e2013f878206bf25b4e",
+    "u": "0922b350f2c16c0c38bb47a1f6d129193d28f11873d5f7486a8b0471fde3ad2a"
+   },
+   {
+    "r": "0x42882419ad0bb6e27435610fa54b03c7502857631cfd494b3d8fcbe0f0b73213",
+    "u": "d15d5694f7608ee14dfcaae36a49cd5ce0015597bf1e38738dbaee3580fc1b7b"
+   },
+   {
+    "r": "0xd02ad0e72c949251ca81744590d411ea02558a2fa248b11e0e49a299f88bb4fd",
+    "u": "656b82c72d7cdb914f8e07c5a553037d19f99ba817efdaabcc8e9c4515e90e11"
+   },
+   {
+    "r": "0x0",
+    "u": "0000000000000000000000000000000000000000000000000000000000000000"
+   }
+  ],
+  "lowOrderShareRejected": true
+ },
+ "flows": [
+  {
+   "method": "pairing_psk",
+   "suite": "25519_ChaChaPoly_SHA256",
+   "pairingIndex": 1,
+   "draws": [
+    {
+     "who": "longTermPsk",
+     "hex": "4d80e62ece90eef9c6d1146737f7053c0809785721b0990e229f394d2233821e"
+    }
+   ],
+   "messages": [
+    {
+     "from": "client",
+     "message": {
+      "payload": {
+       "pairing_index": 1
+      },
+      "type": "client/pair-init"
+     }
+    },
+    {
+     "from": "client",
+     "message": {
+      "payload": {
+       "long_term_psk": "TYDmLs6Q7vnG0RRnN_cFPAgJeFchsJkOIp85TSIzgh4"
+      },
+      "type": "client/pair-finalize"
+     }
+    },
+    {
+     "from": "server",
+     "message": {
+      "payload": {},
+      "type": "server/pair-finalize"
+     }
+    }
+   ],
+   "serverRecord": {
+    "clientId": "DrzFaGdo7mjh-VrNrpvCkVUa-PNvvcYAdAX3HOW4PRs",
+    "psk": "4d80e62ece90eef9c6d1146737f7053c0809785721b0990e229f394d2233821e",
+    "pskId": "uGS9JILc0X7tMMFmAAjbQDMFHREXxJ3EC7N_cEqZ084",
+    "pairMethods": [
+     "pairing_psk"
+    ]
+   },
+   "clientRecordPsk": "4d80e62ece90eef9c6d1146737f7053c0809785721b0990e229f394d2233821e",
+   "server": {
+    "ok": true
+   },
+   "client": {
+    "ok": true
+   }
+  },
+  {
+   "method": "dynamic_pairing_code",
+   "format": "digits",
+   "suite": "25519_ChaChaPoly_SHA256",
+   "label": "dyn-digits",
+   "pairingIndex": 1,
+   "handshakeHash": "f00fe3fc20cc4826318a5c964f9cc61b48a0cd668e923ad27435e45f0dd89a80",
+   "entered": [
+    "283221",
+    "283 220"
+   ],
+   "emitted": [
+    "283220",
+    "283220"
+   ],
+   "draws": [
+    {
+     "who": "nonceB",
+     "hex": "d3023934cabfbfd335c6c2327b4dc6c060862093c305296f94b1e63a5b3091f9"
+    },
+    {
+     "who": "nonceA",
+     "hex": "7dccde8755743fa0ef3592af8554083ebfe0b6634e7f376ba6170cbb0b8f1301"
+    },
+    {
+     "who": "clientScalar",
+     "hex": "2d9891dcb0fbad09511fabd4bfbd902c6af748e8156ca8dab639438e38a3f094"
+    },
+    {
+     "who": "serverScalar",
+     "hex": "5765198ea5812824c8a0c121f81853e6fcb6fd15ab716e5dd042001bb4a9ca5e"
+    },
+    {
+     "who": "clientScalar",
+     "hex": "0bcf4d580197f8a3a7c51d0f914445b5221de26432953f1ee449190be25c880d"
+    },
+    {
+     "who": "serverScalar",
+     "hex": "9c96a75554efcbd710799a42643c91523497c0e99e63e19fc13e7f63f836e991"
+    },
+    {
+     "who": "longTermPsk",
+     "hex": "1398bd8645c1fd891b66332c4b5333c79f3ef9c816fdb1152ccbdc8aa6ec1815"
+    }
+   ],
+   "messages": [
+    {
+     "from": "client",
+     "message": {
+      "payload": {
+       "pairing_index": 1,
+       "commit_B": "KSkTbYhXvK1XR7_sV3GXxrGsduC2DErXCUwd1K6JCT8"
+      },
+      "type": "client/pair-init"
+     }
+    },
+    {
+     "from": "server",
+     "message": {
+      "payload": {
+       "nonce_A": "fczeh1V0P6DvNZKvhVQIPr_gtmNOfzdrphcMuwuPEwE"
+      },
+      "type": "server/pair-init"
+     }
+    },
+    {
+     "from": "server",
+     "message": {
+      "payload": {
+       "pake_msg_1": "Os8IMx3JscTclAmpPlKZ3FoHOHklcljwfk1Kw95hpSE"
+      },
+      "type": "server/pair-auth"
+     }
+    },
+    {
+     "from": "client",
+     "message": {
+      "payload": {
+       "pake_msg_2": "OEcEkLwNpKC14jP7QH5jFxTrqow0rLiYGAsC6NSSsCU"
+      },
+      "type": "client/pair-auth"
+     }
+    },
+    {
+     "from": "server",
+     "message": {
+      "payload": {
+       "server_kc": "LDzKTkyeB_J-sQyKPQ-oIGfYifrAfryL5l0kxuhYeUV9CXYgOFdjcfP1Y_SaqolZOuSuh83zzBmy0_bIltQDhQ"
+      },
+      "type": "server/pair-confirm"
+     }
+    },
+    {
+     "from": "client",
+     "message": {
+      "payload": {},
+      "type": "client/pair-retry"
+     }
+    },
+    {
+     "from": "server",
+     "message": {
+      "payload": {},
+      "type": "server/pair-init"
+     }
+    },
+    {
+     "from": "server",
+     "message": {
+      "payload": {
+       "pake_msg_1": "7seHNxGOUnfQod1hs0cCYTts2GVeK-x0dgiWzgbeR0M"
+      },
+      "type": "server/pair-auth"
+     }
+    },
+    {
+     "from": "client",
+     "message": {
+      "payload": {
+       "pake_msg_2": "ktB2cP1dIgwAPNXv8NZma3Cytdv6DzXCyrLoFp94YW8"
+      },
+      "type": "client/pair-auth"
+     }
+    },
+    {
+     "from": "server",
+     "message": {
+      "payload": {
+       "server_kc": "zYO0pyO4fEt0ABvdUYfkKXEQZ5TXEIjDSjudzg6vapyHEvrrPpZem7iRcUovTx-LD8bnfA_R7XBJU18xESlJ9A"
+      },
+      "type": "server/pair-confirm"
+     }
+    },
+    {
+     "from": "client",
+     "message": {
+      "payload": {
+       "client_kc": "RDx-Gh-EfxdSq8F--SmJKFq-FcxprH7BM_7tjZrfhRy-ciEgGQRxP0lRmYfl3GgX8xddU38P2aB3i1L7dLAEBQ",
+       "wrapped_nonce_B": "IDM7zsQRyTZV_sJDbITstsO1IUk1-deIMeT-FgLkWJ0fsEijs7WyBLsGdLvhlXKz"
+      },
+      "type": "client/pair-confirm"
+     }
+    },
+    {
+     "from": "client",
+     "message": {
+      "payload": {
+       "wrapped_psk": "EShPdkShEPhRVMl87lYmDQUc9gf9Am8_Ox9TwoZjjET4E24HdKtkAPZQA5QtgkpN"
+      },
+      "type": "client/pair-finalize"
+     }
+    },
+    {
+     "from": "server",
+     "message": {
+      "payload": {},
+      "type": "server/pair-finalize"
+     }
+    }
+   ],
+   "serverRecord": {
+    "clientId": "DrzFaGdo7mjh-VrNrpvCkVUa-PNvvcYAdAX3HOW4PRs",
+    "psk": "1398bd8645c1fd891b66332c4b5333c79f3ef9c816fdb1152ccbdc8aa6ec1815",
+    "pskId": "rPyvBvcxR7GIUZYHr1uaZZS5USeCcI7RKw4yQ_xHmN4",
+    "pairMethods": [
+     "dynamic_pairing_code"
+    ]
+   },
+   "clientRecordPsk": "1398bd8645c1fd891b66332c4b5333c79f3ef9c816fdb1152ccbdc8aa6ec1815",
+   "server": {
+    "ok": true
+   },
+   "client": {
+    "ok": true
+   }
+  },
+  {
+   "method": "dynamic_pairing_code",
+   "format": "qr_code",
+   "suite": "25519_AESGCM_SHA256",
+   "label": "dyn-qr",
+   "pairingIndex": 2,
+   "handshakeHash": "447d9a60a911d533a50bd070a3866064fbbce1550aad96bd5b22abfd875e498c",
+   "entered": [
+    "  sp:1zwh6mgr6izm3cmnl7wq9rxadyohfa9pz45nksya"
+   ],
+   "emitted": [
+    "SP:1ZWH6MGR6IZM3CMNL7WQ9RXADYOHFA9PZ45NKSYA"
+   ],
+   "draws": [
+    {
+     "who": "nonceB",
+     "hex": "36d1553370b710da3fd298ef0b6d010ac3476913e1e2f3a71fabdb9c0345392b"
+    },
+    {
+     "who": "nonceA",
+     "hex": "c1b68e1a5a9f9d3c3396691e65c016032d64ccf119fac2897ec27121838ac1a5"
+    },
+    {
+     "who": "clientScalar",
+     "hex": "a750bac92d1032be0a3aff25115f54baaa3a61ffddf6db662d4ee8cad544ed5d"
+    },
+    {
+     "who": "serverScalar",
+     "hex": "9806c31d8833709a8c4659b198775861bb40e943bfe037552842d8f62821a727"
+    },
+    {
+     "who": "longTermPsk",
+     "hex": "78f52ecd1e03192277e7abf062abf5d7e7867abe9c55fa86db331f1a1cd3a1ea"
+    }
+   ],
+   "messages": [
+    {
+     "from": "client",
+     "message": {
+      "payload": {
+       "pairing_index": 2,
+       "commit_B": "CABWu9P2F40sG8mv03IeZBCuh7v2rYGY8YFdln9v_BU"
+      },
+      "type": "client/pair-init"
+     }
+    },
+    {
+     "from": "server",
+     "message": {
+      "payload": {
+       "nonce_A": "wbaOGlqfnTwzlmkeZcAWAy1kzPEZ-sKJfsJxIYOKwaU"
+      },
+      "type": "server/pair-init"
+     }
+    },
+    {
+     "from": "server",
+     "message": {
+      "payload": {
+       "pake_msg_1": "r0fH_Mtg2Xz_0aro7Ow3lWWY86JvzNXcxv8P_zzS0Co"
+      },
+      "type": "server/pair-auth"
+     }
+    },
+    {
+     "from": "client",
+     "message": {
+      "payload": {
+       "pake_msg_2": "v1Eoyro873oxw8NOWThAUTiEC8L9ITtCRyamajNjGVI"
+      },
+      "type": "client/pair-auth"
+     }
+    },
+    {
+     "from": "server",
+     "message": {
+      "payload": {
+       "server_kc": "RarEx3bcdCWBTXr8Alnu0p0q0_f8q4IPwHnWo7g9Z7lZ6jzr0ut22rWr7K3FcD86rUHUaFJUvJacb4RZq_MYDg"
+      },
+      "type": "server/pair-confirm"
+     }
+    },
+    {
+     "from": "client",
+     "message": {
+      "payload": {
+       "client_kc": "W9DagYbEDHMKPjvlrHzGZslWysbA8ag9hPA-aCRzaBRpoGmnjAofgML5vzUw2u7dEbYRWYKDhhu0iySf9Qa73A",
+       "wrapped_nonce_B": "Q-2Oy9TlOTNsWUvf2hbV7db38IelMr1EFN5keu8zfy5CZcVU74YAoIkhXh161oIT"
+      },
+      "type": "client/pair-confirm"
+     }
+    },
+    {
+     "from": "client",
+     "message": {
+      "payload": {
+       "wrapped_psk": "hYlA3i9Ih_8PGW_FlRKZ2zaz1Wep_q044uD3bLSAOjCwErbSKEXPOt0cNjx-1T2r"
+      },
+      "type": "client/pair-finalize"
+     }
+    },
+    {
+     "from": "server",
+     "message": {
+      "payload": {},
+      "type": "server/pair-finalize"
+     }
+    }
+   ],
+   "serverRecord": {
+    "clientId": "DrzFaGdo7mjh-VrNrpvCkVUa-PNvvcYAdAX3HOW4PRs",
+    "psk": "78f52ecd1e03192277e7abf062abf5d7e7867abe9c55fa86db331f1a1cd3a1ea",
+    "pskId": "1RDxE3ZKl1r1gvdiRSvJYGURt0to93kK-wob9DhibpE",
+    "pairMethods": [
+     "dynamic_pairing_code"
+    ]
+   },
+   "clientRecordPsk": "78f52ecd1e03192277e7abf062abf5d7e7867abe9c55fa86db331f1a1cd3a1ea",
+   "server": {
+    "ok": true
+   },
+   "client": {
+    "ok": true
+   }
+  },
+  {
+   "method": "static_pairing_code",
+   "suite": "25519_AESGCM_SHA256",
+   "label": "static-ok",
+   "pairingIndex": 1,
+   "handshakeHash": "d7b4f0c6bc9aa8fadf6217ec474c33d7a3f78113d8bb9a2305bf7ad169bed81b",
+   "staticCode": "12345678",
+   "entered": [
+    "1234-5678"
+   ],
+   "draws": [
+    {
+     "who": "clientScalar",
+     "hex": "8a73032cf9c5944e2f6769ee2c47670af30105d8c7b676f82c40cb1484178f29"
+    },
+    {
+     "who": "serverScalar",
+     "hex": "26a1788de64c4817bac1c8050ab2ee55901d8438f3ac251af70da9bd66674ce2"
+    },
+    {
+     "who": "longTermPsk",
+     "hex": "f7df0ccdc805f31918fc7d6d90bc128061cf72643bfa7eddee0b648f7b6cb7f3"
+    }
+   ],
+   "messages": [
+    {
+     "from": "client",
+     "message": {
+      "payload": {
+       "pairing_index": 1
+      },
+      "type": "client/pair-init"
+     }
+    },
+    {
+     "from": "server",
+     "message": {
+      "payload": {
+       "pake_msg_1": "oPiVDoZsf46IL9UJEol_TGxl3xjQuekhUAqQAf2ifgo"
+      },
+      "type": "server/pair-auth"
+     }
+    },
+    {
+     "from": "client",
+     "message": {
+      "payload": {
+       "pake_msg_2": "xYzus4nMEU3wOq6S6ZbwsJXvcNugy3UW--qLbM3hFlA"
+      },
+      "type": "client/pair-auth"
+     }
+    },
+    {
+     "from": "server",
+     "message": {
+      "payload": {
+       "server_kc": "mIEgl2bivCcS6eyOW-Rv-nOuBFgkAUwV1U-Nkp8siiEPQC37TKwAMCf7yMxBThW9oFh7silX0aTZbLiGqcuYTw"
+      },
+      "type": "server/pair-confirm"
+     }
+    },
+    {
+     "from": "client",
+     "message": {
+      "payload": {
+       "client_kc": "DY1qeXhUr09e4ux4z4JIAdEJO5dLDzgDUBoeoO9hg0eKE5MPiXBJ6y10G_5juOpfCwog_D7gwEDYsrRxFPdCrw"
+      },
+      "type": "client/pair-confirm"
+     }
+    },
+    {
+     "from": "client",
+     "message": {
+      "payload": {
+       "wrapped_psk": "XhqxgPu6i5YnWaRz-NVYqj2wCo55gpi0zff3V2S5cQ8VY5zj71gqwlvWGkknc26t"
+      },
+      "type": "client/pair-finalize"
+     }
+    },
+    {
+     "from": "server",
+     "message": {
+      "payload": {},
+      "type": "server/pair-finalize"
+     }
+    }
+   ],
+   "serverRecord": {
+    "clientId": "DrzFaGdo7mjh-VrNrpvCkVUa-PNvvcYAdAX3HOW4PRs",
+    "psk": "f7df0ccdc805f31918fc7d6d90bc128061cf72643bfa7eddee0b648f7b6cb7f3",
+    "pskId": "s6M5mwVbnHBZ9uvUQbsPrPL3-OS1_xtFFgk9a0mSme4",
+    "pairMethods": [
+     "static_pairing_code"
+    ]
+   },
+   "clientRecordPsk": "f7df0ccdc805f31918fc7d6d90bc128061cf72643bfa7eddee0b648f7b6cb7f3",
+   "server": {
+    "ok": true
+   },
+   "client": {
+    "ok": true
+   }
+  },
+  {
+   "method": "static_pairing_code",
+   "suite": "25519_ChaChaPoly_SHA256",
+   "label": "static-wrong",
+   "pairingIndex": 1,
+   "handshakeHash": "d7b4f0c6bc9aa8fadf6217ec474c33d7a3f78113d8bb9a2305bf7ad169bed81b",
+   "staticCode": "12345678",
+   "entered": [
+    "87654321"
+   ],
+   "draws": [
+    {
+     "who": "clientScalar",
+     "hex": "e8dcaea1b318ca13872e3b9234acbf395ec92ff486353545a40b9ac01cae80dd"
+    },
+    {
+     "who": "serverScalar",
+     "hex": "27d40cccc366ac1b8b53be78a92cc55b68520f2d127e92abe63c8ed106634b72"
+    }
+   ],
+   "messages": [
+    {
+     "from": "client",
+     "message": {
+      "payload": {
+       "pairing_index": 1
+      },
+      "type": "client/pair-init"
+     }
+    },
+    {
+     "from": "server",
+     "message": {
+      "payload": {
+       "pake_msg_1": "Iaw7wkD9boTmTAzDgQJwbuL_cQYlBuuWHn6ar6NIc04"
+      },
+      "type": "server/pair-auth"
+     }
+    },
+    {
+     "from": "client",
+     "message": {
+      "payload": {
+       "pake_msg_2": "TPyzj4YARbZLRUQf1tCI6yn4TaPSDCdZ6Ktv1U-w8A4"
+      },
+      "type": "client/pair-auth"
+     }
+    },
+    {
+     "from": "server",
+     "message": {
+      "payload": {
+       "server_kc": "yhjGBOgKQGF4LM4f-AnlEg7N2WI1mVyySruPMnD5wK2EpCO3d-1u5zmx3dDUR_YwHCr3UKMml9-7So6fcdxAAg"
+      },
+      "type": "server/pair-confirm"
+     }
+    },
+    {
+     "from": "client",
+     "message": {
+      "payload": {
+       "reason": "pairing_code_mismatch"
+      },
+      "type": "pair/abort"
+     }
+    }
+   ],
+   "serverRecord": null,
+   "clientRecordPsk": null,
+   "server": {
+    "abort": "pairing_code_mismatch",
+    "local": false
+   },
+   "client": {
+    "abort": "pairing_code_mismatch",
+    "local": true
+   }
+  }
+ ]
+}

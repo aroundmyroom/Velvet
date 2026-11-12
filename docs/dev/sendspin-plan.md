@@ -140,7 +140,96 @@ export function openTrack({ file, startMs, format, chunkMs, baseUs, signal, ffmp
 export class FlacFramer { push(buf) /* -> [{ frame, samples }] */; end(); }   // splits an ffmpeg `-f flac` stream
 export function parseFlacFrameHeader(buf, pos);          // -> { length, blockSize, number, variable } | null | undefined
 export function flacCodecHeader({ sampleRate, channels, bitDepth, blockSize }); // -> Buffer 'fLaC' + STREAMINFO (last-block flag)
+// pairing.js  (Node crypto only; CPace = CPACE-X25519-SHA512, draft-21, byte-exact with cpace-py)
+export const METHODS /*{PAIRING_PSK,DYNAMIC,STATIC}*/, FORMATS /*{DIGITS,QR_CODE}*/, ABORT_REASONS, ROUND_LIMIT /*20*/,
+             PAIRING_MESSAGE_TYPES /*Set of client/pair-* + pair/abort*/, TIMEOUTS /*{firstMessageMs 60s, gestureMs 360s, attemptMs 180s}*/,
+             COOLDOWN /*{initialMs 2s, maxMs 120s}, doubles per failed round*/, PENDING_MESSAGE_MAX_BYTES /*200*/;
+export class PairingProtocolError;   // -> close the WebSocket silently, persist nothing (spec "protocol error")
+export class PairingInputError;      // operator input; .code: malformed_token | unsupported_token_version | wrong_client |
+                                     //   invalid_code | cooldown (.retryAfterMs) | not_ready. Nothing was sent.
+export function decodePskToken(text);        // lenient (trim, upper, optional SP:, 9->2) -> { clientId, clientKey, pairingPsk, pskId }
+export function assertTokenForClient(token, clientId); // throws PairingInputError('wrong_client')
+export function encodePskToken(clientIdOrKey, psk), encodeCodeToken(code24), decodeCodeToken(text) /* -> Buffer(24) */;
+export function parseDigitsCode(input, 6|8), formatCode(code) /* '123-456' / '1234-5678' */;
+export function parseSupportedPairMethods(clientHello.supported_pair_methods); // -> { methods: { pairing_psk?: {locations},
+                                     //   static_pairing_code?: {locations}, dynamic_pairing_code?: {formats, outChannels} }, ignored: [] }
+export function chooseCodeMethod(methods, { canScanQr = false }); // -> { method, format? } | null (dynamic preferred)
+export function pairingActivation({ method, format, playback = false, activeRoles }); // server/activate payload
+export class Cooldown { constructor({ initialMs, maxMs, now }); fail(); remainingMs(); reset(); failures }
+export function createPairingAttempt({ method, format?, suite, handshakeHash /*code methods*/, pairingIndex, clientId,
+                                       pairingPsk /*pairing_psk: the matched pairing PSK*/, cooldown?, random?, now? });
+//  -> PairingAttempt { state, round, deadline /*ms epoch|null*/, pendingMessage, active, method, format, pairingIndex,
+//       activation({ playback, activeRoles }), onMessage(type, payload), submitCode(text), persisted(), cancel(), expire(now?) }
+//  Every call returns a step { send: [{ type, payload }], event } (cancel/expire: step | null). event.kind:
+//    ignored | pending {message} | started | need_code {round} | code_queued | code_sent {round} |
+//    wrong_code {round, retryAfterMs} | confirmed | persist {record: {clientId, psk, pskId, method}} | paired |
+//    aborted {reason, by: 'client'|'server'}   (reason 'timeout' = server's own timeout, nothing sent)
+//  onMessage throws PairingProtocolError; submitCode throws PairingInputError. Never logs codes or PSKs.
+// trust-store.js  (single owner of pairing records, approvals, staged pairing PSKs; <dir>/trust-store.json, 0600, atomic)
+export class TrustStore {
+  static async open(dir, { file?, now? });
+  record(clientId) /* {clientId, psk, pskId, pairMethods, createdAt, updatedAt, name, mismatchAt} | null */; recordByPskId(id);
+  listRecords() /* no psk */; isPaired(id); async storePairing({ clientId, psk, method, name? }) /* drops approval + staged */;
+  async unpair(id); async markCredentialMismatch(id); async clearCredentialMismatch(id); hasCredentialMismatch(id);
+  isApproved(id); approval(id); listApprovals(); async approve(id, { name, roles }) /* false if paired */; async revokeApproval(id);
+  stagedPairingPsk(id) /* 24 h */; async stagePairingPsk(id, psk); async unstagePairingPsk(id);
+  pskForClient(id) /* -> { psk, pskId, category: 'lt' | 'pr' (staged) | 'sn' } = msg1 PSK selection */;
+  trustState(id) /* 'paired' | 'mismatch' | 'approved' | 'unknown' */; async rename(id, name); async flush();
+}
 ```
+
+### Pairing integration contract (connection.js / server.js)
+
+- **Store wiring.** `server.js` opens `TrustStore` on `save/sendspin/` and passes
+  `resolvePsk = (id) => store.pskForClient(id)` and
+  `hasPairingRecord = (id) => store.isPaired(id)`. Approvals move from
+  `devices.json` into the store (`approve`/`revokeApproval`/`isApproved`);
+  migration at boot: if `devices.json` has `approved`, call
+  `store.approve(id, { name })` for each, then rename the file to
+  `devices.json.migrated`. A `lt` handshake that succeeds →
+  `clearCredentialMismatch`; the `credential-mismatch` event →
+  `markCredentialMismatch` (never delete the record on that signal).
+- **pairing_index.** Per connection: reset to 0 after every (re-)handshake;
+  `++` right before sending each pairing `server/activate`; pass the new value
+  to `createPairingAttempt`. One attempt per connection at a time.
+- **Pairing PSK (token).** Admin enters a token → `decodePskToken`. If the
+  client is connected: `assertTokenForClient(token, conn.clientId)`; if the
+  matched PSK is not that pairing PSK, `conn.rehandshake({ psk, category: 'pr',
+  activation: attempt.activation() })` first (the activation after a
+  re-handshake is the pairing one). If not connected (Windows client dials in
+  later): `store.stagePairingPsk(token.clientId, token.pairingPsk)`; the next
+  handshake then uses it (`pskForClient` → `pr`) and the connection starts a
+  `pairing_psk` attempt right after `client/hello` (no `client/pair-pending`
+  in this method). Never put the token or PSK in logs.
+- **Code methods.** Need a Sentinel-keyed session: on a `lt` (or `pr`)
+  connection, re-handshake to `SENTINEL_PSK`/`sn` first (pairing is not an
+  allowed activity under a long-term PSK; a paired connection stops playback
+  first). Pick with `chooseCodeMethod(parseSupportedPairMethods(...).methods)`.
+- **Activation.** `attempt.activation({ playback, activeRoles })`:
+  `['pairing']` with `active_roles: []`, or `['playback','pairing']` keeping
+  roles when the connection is playback-capable (unpaired access approved).
+  `activate()` must accept the `pairing` object (currently throws).
+- **Routing.** Every inbound JSON whose type is in `PAIRING_MESSAGE_TYPES` goes
+  to `attempt.onMessage(type, payload)` while an attempt exists (also after it
+  ended: it returns `ignored`); with no attempt since the handshake, drop it.
+  Send `step.send` in order. Handle `step.event`:
+  - `pending` → UI shows `message` as plain text attributed to the device.
+  - `need_code` / `wrong_code` → UI asks for the code (`wrong_code`: "did not
+    match", honour `retryAfterMs`); REST calls `attempt.submitCode(text)`.
+  - `persist` → `await store.storePairing(record)` **then**
+    `attempt.persisted()` → send `server/pair-finalize` → then
+    `conn.rehandshake({ psk: record.psk, category: 'lt', activation })` with the
+    post-pairing activities (playback only if wanted). If the store write
+    fails: close the connection (nothing acked).
+  - `aborted` → unless `reason === 'concurrent_attempt'` (client closes), send
+    a leave `server/activate` without `pairing` (previous activities minus
+    `pairing`). `cancel()` already put `pair/abort user_cancelled` in `send`.
+  - `PairingProtocolError` thrown → close the WebSocket without any message.
+- **Timers.** The connection arms one timer for `attempt.deadline` (re-read it
+  after every step); on expiry call `attempt.expire()` and handle the
+  `aborted` step (leave activate, no `pair/abort`). Keep one `Cooldown` per
+  `client_id` in the server across attempts (static window failures).
+- **Unpair.** `server/unpair` on the connection, then `store.unpair(id)`.
 
 ### Rules from the implementation guide (binding for this branch)
 
@@ -285,3 +374,8 @@ the existing Sonos cast still works (regression).
   timeline, gapless `decodeQueue`, seek, abort. Lossless round trip verified with ffmpeg
   and aiosendspin's client decoder. ~0.4 % of one core per 44.1k FLAC stream; first chunk
   ~25 ms after open. Opus TODO (phase 4: needs Ogg page parsing or a raw-packet path).
+- 2026-11-12 — `pairing.js` (tokens, Pairing PSK flow, CPace `CPACE-X25519-SHA512` with
+  Elligator2 on BigInt + OpenSSL X25519, dynamic/static code flows, wrapping, rounds,
+  cooldown, timeouts as data) and `trust-store.js` (records, approvals, staged pairing PSKs,
+  mismatch; atomic 0600 JSON). No new dependencies. Byte-exact against aiosendspin + cpace-py
+  transcripts (`test/fixtures/sendspin/gen_pairing_vectors.py`); integration contract above.
