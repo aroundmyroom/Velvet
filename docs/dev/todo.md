@@ -451,7 +451,6 @@ Phase 1 complete (v6.14.17): `audio_features` table, `essentia-bpm-worker.mjs`, 
 
 ### Velvet Rooms — extensions
 
-- [ ] Visualizer role: beat/loudness from the BPM analysis
 - [ ] Source role (line-in from a speaker into a room)
 - [ ] Sonos as a room member
 - [ ] `_velvet_…` vendor roles (e.g. queue, lyrics) for speakers that want them

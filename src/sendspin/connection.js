@@ -12,7 +12,7 @@ export const MAX_CLIENT_HELLO_BYTES = 16384;
 export const MAX_CLIENT_HELLO_DEPTH = 10;
 export const MAX_INBOUND_MESSAGE = 1024 * 1024;
 export const MAX_NAME_BYTES = 64;
-export const IMPLEMENTED_ROLES = Object.freeze(['player@v1', 'controller@v1', 'metadata@v1', 'artwork@v1', 'color@v1']);
+export const IMPLEMENTED_ROLES = Object.freeze(['player@v1', 'controller@v1', 'metadata@v1', 'artwork@v1', 'color@v1', 'visualizer@v1']);
 export const GOODBYE_REASONS = Object.freeze([
   'another_server', 'shutdown', 'restart', 'user_request', 'unauthorized', 'pairing_required', 'concurrent_attempt', 'unpaired',
 ]);
@@ -158,6 +158,11 @@ function parsePlayerSupport(ps) {
   return { supportedFormats: formats.map(parseFormat).filter(Boolean), bufferCapacity: ps.buffer_capacity };
 }
 
+function parseVisualizerSupport(vs) {
+  if (!isInt(vs.buffer_capacity, 1)) helloFail('visualizer@v1_support needs buffer_capacity');
+  return { bufferCapacity: vs.buffer_capacity };
+}
+
 function isRoleList(v) {
   return Array.isArray(v) && v.length <= MAX_ROLES && v.every((r) => typeof r === 'string' && r.length > 0 && r.length <= 64);
 }
@@ -170,12 +175,16 @@ export function parseClientHello(payload) {
   const playerSupport = supportedRoles.includes('player@v1')
     ? optional(payload, 'player@v1_support', isObject, 'player@v1_support must be an object')
     : undefined;
+  const visualizerSupport = supportedRoles.includes('visualizer@v1')
+    ? optional(payload, 'visualizer@v1_support', isObject, 'visualizer@v1_support must be an object')
+    : undefined;
   const unpaired = optional(payload, 'unpaired_access', (v) => isObject(v) && typeof v.enabled === 'boolean', 'unpaired_access.enabled must be a boolean');
   return {
     name: payload.name,
     supportedRoles,
     deviceInfo: deviceInfo ? parseDeviceInfo(deviceInfo) : {},
     player: playerSupport ? parsePlayerSupport(playerSupport) : null,
+    visualizer: visualizerSupport ? parseVisualizerSupport(visualizerSupport) : null,
     supportedPairMethods: optional(payload, 'supported_pair_methods', isObject, 'supported_pair_methods must be an object') ?? {},
     unpairedAccess: unpaired?.enabled ?? false,
     raw: payload,

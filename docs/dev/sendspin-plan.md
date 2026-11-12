@@ -51,6 +51,7 @@ deps). REST glue in `src/api/sendspin.js`. Config under
 | `src/sendspin/audio.js` | Stream engine: ffmpeg decode → PCM; chunker (15–150 ms); FLAC frame encoder; per-format outputs; monotonic µs timeline; gapless track joins; seek | 0 / 1 |
 | `src/sendspin/scheduler.js` | Per-group pacing: common send-ahead, `buffer_capacity` accounting, late join, `stream/start` / `clear` / `end` | 1 / 2 |
 | `src/sendspin/rooms.js` | Groups (rooms), server-side queue (Server Audio model), group volume/mute algorithm, `switch`, controller commands, metadata, artwork (`sharp`), colour | 1 / 2 |
+| `src/sendspin/visualizer.js` | `visualizer@v1`: one analysis per room on the master PCM (FFT, A-weighting, bands, onset curve, beat tracker), per-member types/rate/spectrum, buffer accounting, stream/start/clear/end | 4 |
 | `src/sendspin/pairing.js` | CPace (`CPACE-X25519-SHA512`) + the three pairing methods | 3 |
 | `src/api/sendspin.js` | REST for admin (devices, approve, pair, rooms) and player (room picker, queue control) | 1 |
 
@@ -313,7 +314,24 @@ export class RoomManager extends EventEmitter {
   static async open(dir, { ffmpeg, logger, now, setPlayback(member, on) /* -> true when activated */,
                            artworkFor(item, channelSpec) /* -> Buffer|null sized+encoded for the channel; may be async */,
                            colorFor(item) /* -> { primary?, accent?, background_dark?, ... } | null; may be async */,
+  // master PCM tap (visualizer): 'epoch' { rate } (play: new timeline at sample 0), 'pcm' (item { track, pcm, sample,
+  //   trackStart } — every master sample once, before any member is fed), 'cut' (sample; replaceUpcoming truncated there),
+  //   'pcm-end' (decode done), 'stop'. Audible time of master sample s = t0 + samplesToUs(s, masterRate).
                            idleGraceMs = 10000, initialUnavailableGraceMs = 5000, random, streamOptions });
+// visualizer.js  (no deps; FFT in plain JS)
+export const VIS_TYPES, RATE_MAX_CAP /*60*/, MAX_DISP_BINS /*1024*/, LEAD_MS /*500*/;
+export function streamConfig(clientStateVisualizer); // stream/start object: subset of types, rate_max capped, tracks_downbeats:
+                                                     //   false iff beat, spectrum echoed (omitted when > 1024 bins or f_max <= f_min)
+export function canVisualize(member);  // available, visualizer role, client/state visualizer object, hello buffer_capacity
+export function trackBpm(track);       // track.bpm ?? item.bpm ?? item.meta.bpm (30–300) -> tempo prior, else null
+export class FFT, BeatTracker, Analyser; export function bandEdges(n, scale, fMin, fMax), aWeightDb(f), dbScale(ratio);
+export class RoomVisualizer {          // one per GroupStream (RoomManager creates it with the stream)
+  constructor(stream, { now, logger, leadMs = 500, tickMs = 20, joinMarginMs = 50 });
+  addMember(member) /* idempotent; playing -> stream/start + frames from now + 50 ms */; removeMember(id, { end = true });
+  memberChanged(id) /* new request -> in-place stream/start */; has(id); stats(); close();
+}
+// Member additions: info.visualizer = { bufferCapacity } (hello), state.roles.visualizer = parseVisualizerState(),
+//   sendBinary(visualizer frame) only while activeStreams has 'visualizer'.
                            // <dir>/rooms.json (0600, atomic, debounced 250 ms)
   attach(member) /* -> roomId */; detach(clientId); roomOf(clientId); listRooms(); getRoom(id);
   createRoom(name, clientIds) /* -> id */; renameRoom(id, name); setMembers(id, clientIds); deleteRoom(id);
@@ -760,6 +778,18 @@ kill <pid>     # SIGTERM: Rooms stop cleanly, then Velvet exits
 ```
 
 Open `https://music.aroundtheworld.net:3100` (same users as production). Production
+- 2026-11-12 — Visualizer (`visualizer@v1`, `visualizer.js`): GroupStream master-PCM tap (`epoch`/`pcm`/`cut`/`pcm-end`/`stop`);
+  one lazy analysis per room (only requested types, at the highest requested rate ≤ 60): real FFT 2048 @ 48 kHz (Hann),
+  A-weighting, `loudness`/`f_peak`/`spectrum` (mel/log/lin bands, power sum, ≤ 1024 bars), log-band spectral-flux onset
+  curve (1024/256, 187.5 fps) → `peak` (adaptive threshold, 80 ms gap, strength vs. a decaying max) and `beat` (comb tempo
+  over the onset ACF with a log-Gaussian prior — Velvet's `files.bpm` via `meta.bpm` (σ 0.05 oct) or 120 BPM (σ 0.7 oct)
+  — comb phase, then PLL 0.8 with coasting; `tracks_downbeats: false`). Frames stamped `t0 + samplesToUs(sample)` (the
+  audio's own timeline), sent ≤ send-ahead + 0.5 s ahead, non-decreasing, visualizer `buffer_capacity` accounting, late
+  join from now + 50 ms, seek/jump = `stream/clear`, queue-edit cut = `stream/clear from_timestamp`, pause/stop =
+  `stream/end`; visualizer-only devices get `playback` and join the room. Real music: tempo 108.3/108.9 BPM free vs DB
+  108.3/108.5; DB 137.2 settles a free 68.8. CPU ~0.75 % of one core per room at 30 fps (all types; 1.25 % at 60 fps;
+  loudness/spectrum alone 0.2 %). 16 tests (`sendspin-visualizer`); E2E with an aiosendspin visualizer-only client:
+  stream/start echo, 30 fps per type, beats every 500 ms on a 120 BPM click track, clear on seek, end on pause.
 (`/home/velvet`, port 3000, `music.service`) is never touched.
 
 ### Reference daemon notes (sendspin CLI + aiosendspin client, Nov 2026)

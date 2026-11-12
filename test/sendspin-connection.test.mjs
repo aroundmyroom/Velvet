@@ -195,7 +195,7 @@ for (const suite of SUITES) {
     const conn = server.getClient(client.clientId);
     assert.equal(conn.suite, suite);
     assert.deepEqual(conn.negotiatedRoles, ['player@v1', 'controller@v1']);
-    assert.deepEqual(conn.unimplementedRoles, ['visualizer@v1', 'player@v9']);
+    assert.deepEqual(conn.unimplementedRoles, ['player@v9']);
     assert.equal(conn.info.unpairedAccess, true);
     assert.equal(conn.info.deviceInfo.manufacturer, 'Velvet tests');
   });

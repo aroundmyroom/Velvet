@@ -3,6 +3,7 @@ import { EventEmitter } from 'node:events';
 import fsp from 'node:fs/promises';
 import path from 'node:path';
 import { GroupStream, serverNow } from './scheduler.js';
+import { RoomVisualizer, canVisualize } from './visualizer.js';
 import { encodeArtworkAnnounce, encodeArtworkParts, encodeArtworkCancel } from './wire.js';
 
 export const ROOMS_FILE = 'rooms.json';
@@ -97,14 +98,14 @@ export class RoomManager extends EventEmitter {
   constructor({
     dir, file = ROOMS_FILE, now = serverNow, ffmpeg, logger = null, artworkFor = null, colorFor = null,
     setPlayback = defaultSetPlayback, idleGraceMs = IDLE_GRACE_MS, initialUnavailableGraceMs = INITIAL_UNAVAILABLE_GRACE_MS,
-    random = Math.random, streamOptions = {},
+    random = Math.random, streamOptions = {}, visualizerOptions = {},
   }) {
     super();
     if (!dir) throw new Error('RoomManager needs a dir');
     this.#file = path.join(dir, file);
     this.#now = now;
     this.#log = logger;
-    this.#opts = { ffmpeg, artworkFor, colorFor, setPlayback, idleGraceMs, initialUnavailableGraceMs, random, streamOptions };
+    this.#opts = { ffmpeg, artworkFor, colorFor, setPlayback, idleGraceMs, initialUnavailableGraceMs, random, streamOptions, visualizerOptions };
   }
 
   static async open(dir, opts = {}) {
@@ -198,6 +199,7 @@ export class RoomManager extends EventEmitter {
     c.listeners = [];
     const room = this.#rooms.get(c.roomId);
     room?.stream?.removeMember(clientId, { end: false });
+    room?.vis?.removeMember(clientId, { end: false });
     if (c.art?.inFlight) clearTimeout(c.art.inFlight.timer);
     c.member = null;
     c.art = null;
@@ -370,6 +372,7 @@ export class RoomManager extends EventEmitter {
     if (from) {
       from.members = from.members.filter((x) => x !== clientId);
       from.stream?.removeMember(clientId);
+      from.vis?.removeMember(clientId);
       if (!from.members.length && from.state === 'playing') this.#halt(from, 'paused');
       this.#pushController(from);
       this.#changed(from);
@@ -550,6 +553,7 @@ export class RoomManager extends EventEmitter {
     if (from) {
       from.members = from.members.filter((x) => x !== c.id);
       from.stream?.removeMember(c.id);
+      from.vis?.removeMember(c.id);
       if (from.solo && from.name === null && from.members.length && !from.members.includes(from.solo)) {
         from.name = this.#roomName(from);
       }
@@ -650,7 +654,8 @@ export class RoomManager extends EventEmitter {
     }
     if (room.state === 'playing') {
       if (room.stream?.has(c.id)) room.stream.memberChanged(c.id);
-      else this.#join(room, c);
+      room.vis?.memberChanged(c.id);
+      this.#join(room, c);
     }
     const before = prev ? JSON.stringify(prev.roles?.artwork ?? null) : null;
     if (before !== JSON.stringify(next.roles?.artwork ?? null) || prev?.available === false) this.#syncArtwork(c, room);
@@ -702,6 +707,7 @@ export class RoomManager extends EventEmitter {
     s.on('error', (err) => this.#onStreamError(room, err));
     s.on('member-error', (cid, err) => this.emit('member-error', room.id, cid, err));
     room.stream = s;
+    room.vis = new RoomVisualizer(s, { now: this.#now, logger: this.#log, ...this.#opts.visualizerOptions });
     return s;
   }
 
@@ -716,9 +722,13 @@ export class RoomManager extends EventEmitter {
   }
 
   #join(room, c) {
-    if (!this.#eligible(c) || room.stream?.has(c.id)) return;
-    if (!this.#setPlayback(c, true)) return;
-    if (!this.#stream(room).addMember(c.member)) this.#setPlayback(c, false);
+    const audio = this.#eligible(c) && !room.stream?.has(c.id);
+    const vis = canVisualize(c.member);
+    if ((!audio && !vis) || !this.#setPlayback(c, true)) return;
+    const joined = audio && this.#stream(room).addMember(c.member);
+    if (vis) this.#stream(room);
+    const watching = vis && room.vis.addMember(c.member);
+    if (audio && !joined && !watching) this.#setPlayback(c, false);
   }
 
   #start(room, index, positionMs) {

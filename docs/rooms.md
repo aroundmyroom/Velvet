@@ -306,6 +306,8 @@ What a speaker offers depends on the device. Velvet supports:
   shown read-only.
 
 Audio goes out as FLAC, PCM (up to 24-bit) or Opus, in the format the speaker
+- **Visualizer:** light rings, LED strips and displays get the music as data,
+  see [Lights and visualizers](#lights-and-visualizers).
 prefers. Opus is sent only to a speaker that lists it, ahead of FLAC or PCM;
 it is lossy (about 128 kbit/s stereo, 64 kbit/s mono) and suits speakers on a
 weak Wi-Fi link. Opus is covered by third-party patents for products that are
@@ -313,6 +315,33 @@ sold; Velvet is free software and Opus stays optional, since every speaker
 also takes FLAC and PCM. Tracks join without gaps.
 
 ---
+
+### Lights and visualizers
+
+A device with the Sendspin *visualizer* role (a speaker with a light ring, a
+display, an LED controller, the visualizer in the sendspin-python-cli TUI)
+gets the music as data instead of, or next to, the audio. An LED bridge such
+as one for LedFx or WLED can use it once it implements that role. Velvet
+analyses each room's audio once and sends every device only what it asked for:
+
+| Data | What it is |
+|---|---|
+| `loudness` | Overall loudness, A-weighted (weighted like the ear), −60 to 0 dB |
+| `spectrum` | Up to 1024 bars between the frequencies the device picks, on a mel, log or linear scale |
+| `f_peak` | The loudest frequency and its level (often a harmonic, not the note being played) |
+| `peak` | A hit: drums, a cymbal, any sharp attack, with a strength for the flash |
+| `beat` | The musical beat |
+
+The device chooses the frame rate (up to 60 per second). Every value is
+stamped with the moment its audio is heard, on the same clock as the music, so
+lights flash on the beat and not when the data arrives. A device that only
+shows lights (no speaker) joins a room like any speaker; pause stops its data,
+a seek or skip clears what it had buffered.
+
+Beats come from a live beat tracker on the audio. When Velvet's BPM analysis
+has a tempo for the song it is used as a guide, which settles whether a song
+is felt at 70 or 140 BPM; without it the tracker picks the tempo itself.
+Velvet does not mark the first beat of each bar (downbeats).
 
 ## ReplayGain
 
@@ -327,8 +356,9 @@ is capped, so a room never clips. See [replaygain-info.md](replaygain-info.md).
 
 ## Current limits
 
-- **No visualizer yet.** Speakers with a light ring or display visualizer get
-  nothing to show.
+- **Visualizer beats come from live analysis.** Songs with a free tempo or
+  without a clear pulse get few or no beats (`peak` still fires on every hit),
+  and bar starts (downbeats) are not marked.
 - **Auto-DJ tops up a room only while a browser with that room open is
   running.** Auto-DJ picks songs in the browser. Close the last tab (or switch
   off the laptop) and the room plays to the end of its queue and stops.

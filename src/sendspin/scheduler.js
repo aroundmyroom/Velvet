@@ -202,6 +202,7 @@ export class GroupStream extends EventEmitter {
       m.sentEndUs = 0;
       this.#openFeed(m, 0, 0, 'restart');
     }
+    this.emit('epoch', { rate });
     this.#decode(ep, tracks);
   }
 
@@ -214,6 +215,7 @@ export class GroupStream extends EventEmitter {
       m.bytes = 0;
       if (hasPlayerStream(m.member)) this.#call(m, () => m.member.streamEnd(['player']));
     }
+    this.emit('stop');
     return pos;
   }
 
@@ -391,6 +393,7 @@ export class GroupStream extends EventEmitter {
         return;
       }
       ep.decodeDone = true;
+      this.emit('pcm-end');
       for (const m of this.#members.values()) if (m.live && m.seg) m.seg.encoder.end();
       this.#kick();
     } catch (err) {
@@ -409,6 +412,8 @@ export class GroupStream extends EventEmitter {
     }
     ep.history.push(item);
     ep.decodedEnd = item.sample + item.pcm.length / ep.frameBytes;
+    // Master PCM tap (visualizer): every sample exactly once per timeline, before any member hears it.
+    this.emit('pcm', item);
     if (item.trackStart) this.#boundary(ep, item);
     const live = [...this.#members.values()].filter((m) => m.live && m.seg);
     await Promise.all(live.map((m) => this.#feed(m, m.seg, item)));
@@ -435,6 +440,7 @@ export class GroupStream extends EventEmitter {
     ep.decodeDone = false;
     ep.ended = false;
     for (const m of [...this.#members.values()]) if (m.seg) this.#resplice(m, ep, cut);
+    this.emit('cut', cut);
     this.#decode(ep, tail, cut);
     this.#kick();
   }

@@ -27,6 +27,19 @@ export function decodeArtworkMessage(buf) {
   return { kind: 'part', channel, data: buf.subarray(2) };
 }
 
+export function decodeVisMessage(buf) {
+  const type = ['loudness', 'beat', 'f_peak', 'spectrum', 'peak'][buf[0] - 16];
+  const ts = Number(buf.readBigInt64BE(1));
+  const d = buf.subarray(9);
+  const out = { kind: 'vis', type, ts, size: buf.length };
+  if (type === 'loudness') out.value = d.readUInt16BE(0);
+  else if (type === 'beat') out.downbeat = d[0] === 1;
+  else if (type === 'f_peak') Object.assign(out, { freq: d.readUInt16BE(0), amp: d.readUInt16BE(2) });
+  else if (type === 'spectrum') out.bins = Array.from({ length: d.length / 2 }, (_, i) => d.readUInt16BE(i * 2));
+  else out.strength = d[0];
+  return out;
+}
+
 export const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 export async function until(cond, { timeoutMs = 4000, stepMs = 5 } = {}) {
@@ -47,7 +60,7 @@ export class FakeMember extends EventEmitter {
 
   constructor({
     name, roles = ['player', 'controller', 'metadata'], formats = [PCM48, FLAC44], capacity = 4 * 1024 * 1024,
-    player = {}, available = true, now = serverNow, artwork = null, clientId = null,
+    player = {}, available = true, now = serverNow, artwork = null, clientId = null, visualizer = null, visCapacity = 1 << 20,
   } = {}) {
     super();
     seq++;
@@ -57,6 +70,7 @@ export class FakeMember extends EventEmitter {
     this.info = {
       name: name ?? `Speaker ${seq}`,
       player: roles.includes('player') ? { supportedFormats: formats, bufferCapacity: capacity } : null,
+      visualizer: roles.includes('visualizer') ? { bufferCapacity: visCapacity } : null,
     };
     this.state = {
       available,
@@ -64,7 +78,7 @@ export class FakeMember extends EventEmitter {
         volume: 50, muted: false, outputDelayMs: 0, minBufferMs: 100, requiredLeadTimeMs: 0,
         supportedCommands: ['volume', 'mute'], format: null, ...player,
       } : null,
-      roles: artwork ? { artwork } : {},
+      roles: { ...(artwork ? { artwork } : {}), ...(visualizer ? { visualizer } : {}) },
     };
     this.activities = [];
     this.isOpen = true;
@@ -72,6 +86,7 @@ export class FakeMember extends EventEmitter {
     this.calls = [];
     this.chunks = [];
     this.binary = [];
+    this.vis = [];
     this.failAfterChunks = Infinity;
   }
 
@@ -108,9 +123,9 @@ export class FakeMember extends EventEmitter {
 
   streamStart(payload) {
     if (!this.state.available) throw new Error('stream/start needs available');
-    if (payload.player && !this.activities.includes('playback')) throw new Error('player stream needs playback');
+    if ((payload.player || payload.visualizer) && !this.activities.includes('playback')) throw new Error('stream needs playback');
     this.#rec('stream/start', payload);
-    for (const r of ['player', 'artwork']) if (payload[r]) this.#streams.add(r);
+    for (const r of ['player', 'artwork', 'visualizer']) if (payload[r]) this.#streams.add(r);
     return true;
   }
 
@@ -141,6 +156,12 @@ export class FakeMember extends EventEmitter {
   }
 
   sendBinary(buf) {
+    if (buf[0] >= 16 && buf[0] <= 20) {
+      if (!this.#streams.has('visualizer')) throw new Error('visualizer data outside a visualizer stream');
+      const c = this.#rec('vis', decodeVisMessage(buf));
+      this.vis.push(c);
+      return true;
+    }
     const c = this.#rec('binary', decodeArtworkMessage(buf));
     this.binary.push(c);
     return true;
