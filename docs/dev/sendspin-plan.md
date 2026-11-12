@@ -520,6 +520,13 @@ second test instance on another port for the owner.
   server-initiated and mDNS-discovered dial all handshake with the Sentinel PSK, the daemon
   accepts `stream/start` (PCM 48k/24 and FLAC 48k/24) and plays 400 × 25 ms chunks, stream
   ends cleanly. Our mDNS advert is seen by python-zeroconf, the daemon's advert by us.
+- 2026-11-12 — UI contract-first: `docs/API/rooms.md` (admin `/api/v1/admin/sendspin/*`
+  incl. token + code pairing, player `/api/v1/rooms*` incl. `jump`, `queue`, `queueVersion`,
+  `stop → stoppedAt`) + "Velvet Rooms" rows in `docs/API.md`. Admin page `rooms-view`
+  (settings, eight device states, allow/pair/revoke/unpair/rename/forget/connect, code entry
+  one slot per digit, pairing-token field, rooms editor) and player Rooms output: hands the
+  queue over, pauses local audio, bar + queue act as remote (1 s state poll), "Playing in …"
+  with take-back. 141 i18n keys, 12 locales. Built against the contract, no backend yet.
 
 ### Reference daemon notes (sendspin CLI + aiosendspin client, Nov 2026)
 

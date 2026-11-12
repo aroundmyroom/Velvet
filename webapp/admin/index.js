@@ -4807,6 +4807,578 @@ const sonosView = Vue.component('sonos-view', {
   },
 });
 
+// ── Velvet Rooms Admin View ─────────────────────────────────────────────────
+const VR_ERR_CODES = ['invalid_body', 'forbidden', 'not_found', 'not_connected', 'pairing_in_progress', 'no_pairing', 'not_playable', 'solo_room', 'malformed_token', 'unsupported_token_version', 'wrong_client', 'invalid_code', 'cooldown', 'not_running'];
+const VR_PAIR_TIMEOUT_MS = 360000;
+const roomsView = Vue.component('rooms-view', {
+  data() {
+    return {
+      loaded: false,
+      enabled: false,
+      running: false,
+      serverName: '',
+      port: 8927,
+      serverIdShort: '',
+      serverError: null,
+      devices: [],
+      rooms: [],
+      busy: false,
+      error: null,
+      renamingId: null,
+      renameValue: '',
+      pairing: null,
+      pairStartedAt: 0,
+      codeSlots: [],
+      codeBusy: false,
+      cooldownUntil: 0,
+      pairNotice: '',
+      tokenClientId: '',
+      tokenValue: '',
+      tokenBusy: false,
+      tokenMsg: '',
+      tokenOk: null,
+      tokenOpen: false,
+      newRoomName: '',
+      newRoomMembers: [],
+      roomNames: {},
+      statusTimer: null,
+      pairTimer: null,
+      nowTick: Date.now(),
+    };
+  },
+  computed: {
+    codeDigits() { return this.pairing && this.pairing.digits === 8 ? 8 : 6; },
+    codeComplete() { return this.codeSlots.length > 0 && this.codeSlots.every(d => /^\d$/.test(d)); },
+    cooldownLeft() { return Math.max(0, Math.ceil((this.cooldownUntil - this.nowTick) / 1000)); },
+    pairDevice() { return this.pairing ? this.devices.find(d => d.clientId === this.pairing.clientId) || null : null; },
+    sortedDevices() {
+      const order = { pairing: 0, mismatch: 1, unknown: 2, approved: 3, paired: 4, otherServer: 5, inUse: 6, offline: 7 };
+      return [...this.devices].sort((a, b) => (order[this.deviceState(a)] - order[this.deviceState(b)]) || String(a.name).localeCompare(String(b.name)));
+    },
+  },
+  template: `
+    <div class="container">
+      <div class="row">
+        <div class="col s12">
+          <div class="card">
+            <div class="card-content">
+              <span class="card-title">{{ this.t('admin.rooms.title') }}</span>
+              <p style="color:var(--t2);font-size:.92rem;margin:0 0 18px">{{ this.t('admin.rooms.desc') }}</p>
+              <div v-if="!loaded" style="padding:16px 0;display:flex;justify-content:center">
+                <svg class="spinner" width="48px" height="48px" viewBox="0 0 66 66" xmlns="http://www.w3.org/2000/svg"><circle class="spinner-path" fill="none" stroke-width="6" stroke-linecap="round" cx="33" cy="33" r="30"></circle></svg>
+              </div>
+              <table v-else class="vr-settings">
+                <tbody>
+                  <tr>
+                    <td>
+                      <b>{{ this.t('admin.rooms.labelStatus') }}</b>
+                      <span v-if="enabled && running" class="vr-pill vr-pill-green">{{ this.t('admin.rooms.statusRunning') }}</span>
+                      <span v-else-if="enabled" class="vr-pill vr-pill-orange">{{ this.t('admin.rooms.statusNotRunning') }}</span>
+                      <span v-else class="vr-pill vr-pill-grey">{{ this.t('admin.rooms.statusDisabled') }}</span>
+                      <div class="vr-help">{{ this.t('admin.rooms.helpEnabled') }}</div>
+                      <div v-if="enabled && serverError" class="vr-help" style="color:var(--red)">{{ serverError }}</div>
+                    </td>
+                    <td class="vr-cell-right">
+                      <label class="vr-switch" :title="enabled ? this.t('admin.rooms.btnDisable') : this.t('admin.rooms.btnEnable')">
+                        <span class="vr-switch-track">
+                          <input type="checkbox" :checked="enabled" @change="saveSettings({ enabled: !enabled })" :disabled="busy" :aria-label="this.t('admin.rooms.labelStatus')">
+                          <span class="vr-switch-bg" :class="{ on: enabled }"></span>
+                          <span class="vr-switch-knob" :class="{ on: enabled }"></span>
+                        </span>
+                        <span style="font-size:.85rem;color:var(--t2)">{{ enabled ? this.t('admin.rooms.btnDisable') : this.t('admin.rooms.btnEnable') }}</span>
+                      </label>
+                    </td>
+                  </tr>
+                  <tr>
+                    <td>
+                      <b>{{ this.t('admin.rooms.labelName') }}</b>
+                      <div class="vr-help">{{ this.t('admin.rooms.helpName') }}</div>
+                    </td>
+                    <td class="vr-cell-right">
+                      <input type="text" maxlength="63" :value="serverName" @change="saveSettings({ name: $event.target.value.trim() })" :disabled="busy" :aria-label="this.t('admin.rooms.labelName')" style="width:200px">
+                    </td>
+                  </tr>
+                  <tr>
+                    <td>
+                      <b>{{ this.t('admin.rooms.labelPort') }}</b>
+                      <div class="vr-help">{{ this.t('admin.rooms.helpPort') }}</div>
+                    </td>
+                    <td class="vr-cell-right">
+                      <input type="number" min="1024" max="65535" :value="port" @change="savePort($event.target.value)" :disabled="busy" :aria-label="this.t('admin.rooms.labelPort')" style="width:110px">
+                    </td>
+                  </tr>
+                  <tr v-if="serverIdShort">
+                    <td><b>{{ this.t('admin.rooms.labelServerId') }}</b><div class="vr-help">{{ this.t('admin.rooms.helpServerId') }}</div></td>
+                    <td class="vr-cell-right"><code class="vr-mono">{{ serverIdShort }}</code></td>
+                  </tr>
+                </tbody>
+              </table>
+              <div v-if="error" class="vr-error" role="alert">{{ error }}</div>
+            </div>
+          </div>
+
+          <div v-if="loaded && enabled" class="card">
+            <div class="card-content">
+              <span class="card-title">{{ this.t('admin.rooms.devicesTitle') }}</span>
+              <p class="vr-help" style="margin:0 0 12px">{{ this.t('admin.rooms.devicesDesc') }}</p>
+              <div v-if="!devices.length" class="vr-empty">{{ this.t('admin.rooms.noDevices') }}</div>
+              <div v-for="d in sortedDevices" :key="d.clientId" class="vr-device" :class="'vr-dev-' + deviceState(d)">
+                <div class="vr-device-main">
+                  <span class="vr-state" :class="'vr-state-' + deviceState(d)">{{ stateLabel(deviceState(d)) }}</span>
+                  <span v-if="deviceState(d) !== trustKey(d)" class="vr-trust" :class="'vr-trust-' + trustKey(d)">{{ stateLabel(trustKey(d)) }}</span>
+                  <div class="vr-device-text">
+                    <div v-if="renamingId === d.clientId" class="vr-rename">
+                      <input type="text" maxlength="63" v-model="renameValue" @keyup.enter="saveRename(d)" @keyup.esc="renamingId = null" :aria-label="this.t('admin.rooms.btnRename')">
+                      <button type="button" class="btn-small" @click="saveRename(d)" :disabled="busy || !renameValue.trim()">{{ this.t('admin.rooms.btnSave') }}</button>
+                      <button type="button" class="btn-flat btn-small" @click="renamingId = null">{{ this.t('admin.rooms.btnCancel') }}</button>
+                    </div>
+                    <div v-else class="vr-device-name">{{ d.name || d.clientId }}</div>
+                    <div class="vr-device-meta">
+                      <span v-if="deviceMeta(d)">{{ deviceMeta(d) }}</span>
+                      <span class="vr-mono" :title="d.clientId">{{ this.t('admin.rooms.idLabel') }} {{ shortId(d.clientId) }}</span>
+                      <span v-if="d.roomId && roomName(d.roomId)">· {{ this.t('admin.rooms.inRoom', { room: roomName(d.roomId) }) }}</span>
+                    </div>
+                    <div v-if="sameNameCount(d) > 1" class="vr-warn">{{ this.t('admin.rooms.sameNameWarning') }}</div>
+                    <div v-if="deviceState(d) === 'mismatch'" class="vr-warn">{{ this.t('admin.rooms.mismatchWarning') }}</div>
+                    <div v-else-if="deviceState(d) === 'otherServer'" class="vr-note">{{ d.otherServer && d.otherServer.name ? this.t('admin.rooms.otherServerNamed', { server: d.otherServer.name }) : this.t('admin.rooms.otherServerHelp') }}</div>
+                    <div v-else-if="deviceState(d) === 'inUse'" class="vr-note">{{ this.t('admin.rooms.inUseHelp') }}</div>
+                    <div v-else-if="deviceState(d) === 'offline' && d.lastSeen" class="vr-note">{{ this.t('admin.rooms.lastSeen', { time: new Date(d.lastSeen).toLocaleString() }) }}</div>
+                    <div v-else-if="deviceState(d) === 'unknown' && !d.unpairedAccess" class="vr-note">{{ this.t('admin.rooms.needsPairing') }}</div>
+                  </div>
+                </div>
+                <div class="vr-actions">
+                  <button v-if="deviceState(d) === 'unknown' && d.unpairedAccess" type="button" class="btn-small" @click="act('approve', d)" :disabled="busy">{{ this.t('admin.rooms.btnAllow') }}</button>
+                  <button v-if="canPair(d)" type="button" class="btn-small" :class="{ 'btn-flat': trustKey(d) === 'approved' }" @click="startPair(d)" :disabled="busy">{{ deviceState(d) === 'mismatch' ? this.t('admin.rooms.btnRepair') : this.t('admin.rooms.btnPair') }}</button>
+                  <button v-if="deviceState(d) === 'pairing' && (!pairing || pairing.clientId !== d.clientId)" type="button" class="btn-small" @click="openPair(d)">{{ this.t('admin.rooms.btnShowPairing') }}</button>
+                  <button v-if="deviceState(d) === 'otherServer' || deviceState(d) === 'offline'" type="button" class="btn-small btn-flat" @click="act('connect', d)" :disabled="busy">{{ this.t('admin.rooms.btnConnect') }}</button>
+                  <button v-if="trustKey(d) === 'approved'" type="button" class="btn-small btn-flat" @click="confirmAct('revoke', d)" :disabled="busy">{{ this.t('admin.rooms.btnRevoke') }}</button>
+                  <button v-if="trustKey(d) === 'paired' || trustKey(d) === 'mismatch'" type="button" class="btn-small btn-flat" @click="confirmAct('unpair', d)" :disabled="busy">{{ this.t('admin.rooms.btnUnpair') }}</button>
+                  <button type="button" class="btn-small btn-flat" @click="startRename(d)" :disabled="busy">{{ this.t('admin.rooms.btnRename') }}</button>
+                  <button type="button" class="btn-small red" @click="confirmAct('forget', d)" :disabled="busy">{{ this.t('admin.rooms.btnForget') }}</button>
+                </div>
+
+                <div v-if="pairing && pairing.clientId === d.clientId" class="vr-pair" role="region" :aria-label="this.t('admin.rooms.pairTitle', { name: d.name || d.clientId })">
+                  <div class="vr-pair-title">{{ this.t('admin.rooms.pairTitle', { name: d.name || d.clientId }) }}</div>
+                  <div v-if="pairing.status === 'waiting'" class="vr-pair-status" aria-live="polite">{{ this.t('admin.rooms.pairWaiting') }}</div>
+                  <div v-if="pairing.status === 'pending'" class="vr-pair-status" aria-live="polite">
+                    <div>{{ this.t('admin.rooms.pairPending') }}</div>
+                    <div v-if="pairing.message" class="vr-device-msg"><span class="vr-device-msg-from">{{ this.t('admin.rooms.deviceSays', { name: d.name || d.clientId }) }}</span> <span class="vr-device-msg-text">{{ pairing.message }}</span></div>
+                  </div>
+                  <form v-if="pairing.status === 'need_code' || pairing.status === 'wrong_code'" class="vr-code-form" @submit.prevent="submitCode">
+                    <div class="vr-pair-status" aria-live="polite">
+                      <span v-if="pairing.status === 'wrong_code'" class="vr-wrong">{{ this.t('admin.rooms.pairWrongCode') }}</span>
+                      <span v-else>{{ codeDigits === 8 ? this.t('admin.rooms.pairEnterStatic') : this.t('admin.rooms.pairEnterDynamic') }}</span>
+                    </div>
+                    <div class="vr-code" @paste.prevent="onCodePaste">
+                      <template v-for="n in codeDigits">
+                        <input :key="'s' + n" :ref="'slot' + (n - 1)" class="vr-code-slot" type="text" inputmode="numeric" autocomplete="one-time-code" maxlength="1" pattern="[0-9]"
+                          :value="codeSlots[n - 1]" @input="onSlotInput(n - 1, $event)" @keydown="onSlotKey(n - 1, $event)"
+                          :aria-label="t('admin.rooms.codeDigitLabel', { n: n, total: codeDigits })" :disabled="codeBusy">
+                        <span v-if="n === codeDigits / 2" :key="'g' + n" class="vr-code-sep" aria-hidden="true">-</span>
+                      </template>
+                    </div>
+                    <div class="vr-pair-btns">
+                      <button type="submit" class="btn-small" :disabled="!codeComplete || codeBusy || cooldownLeft > 0">{{ cooldownLeft > 0 ? this.t('admin.rooms.pairRetryIn', { s: cooldownLeft }) : this.t('admin.rooms.btnSubmitCode') }}</button>
+                    </div>
+                  </form>
+                  <div v-if="pairing.status === 'paired'" class="vr-pair-status vr-ok" aria-live="polite">{{ this.t('admin.rooms.pairDone') }}</div>
+                  <div v-if="pairing.status === 'aborted'" class="vr-pair-status vr-wrong" aria-live="polite">{{ abortText(pairing.reason) }}</div>
+                  <div v-if="pairNotice" class="vr-pair-status vr-wrong" aria-live="polite">{{ pairNotice }}</div>
+                  <div class="vr-pair-btns">
+                    <button v-if="isPairActive()" type="button" class="btn-small btn-flat" @click="cancelPair">{{ this.t('admin.rooms.btnCancelPairing') }}</button>
+                    <button v-else type="button" class="btn-small btn-flat" @click="closePair">{{ this.t('admin.rooms.btnClose') }}</button>
+                  </div>
+                </div>
+              </div>
+
+              <details class="vr-advanced" :open="tokenOpen" @toggle="tokenOpen = $event.target.open">
+                <summary>{{ this.t('admin.rooms.tokenTitle') }}</summary>
+                <p class="vr-help">{{ this.t('admin.rooms.tokenDesc') }}</p>
+                <form class="vr-token-form" @submit.prevent="submitToken">
+                  <label class="vr-field">
+                    <span>{{ this.t('admin.rooms.tokenDevice') }}</span>
+                    <select v-model="tokenClientId">
+                      <option value="">{{ this.t('admin.rooms.tokenAnyDevice') }}</option>
+                      <option v-for="d in devices" :key="d.clientId" :value="d.clientId">{{ (d.name || d.clientId) + ' (' + shortId(d.clientId) + ')' }}</option>
+                    </select>
+                  </label>
+                  <label class="vr-field">
+                    <span>{{ this.t('admin.rooms.tokenLabel') }}</span>
+                    <input type="text" v-model="tokenValue" maxlength="256" autocomplete="off" autocapitalize="characters" spellcheck="false" :placeholder="this.t('admin.rooms.tokenPlaceholder')">
+                  </label>
+                  <button type="submit" class="btn-small" :disabled="tokenBusy || !tokenValue.trim()">{{ this.t('admin.rooms.btnPairToken') }}</button>
+                </form>
+                <div v-if="tokenMsg" class="vr-help" :style="{ color: tokenOk ? 'var(--green)' : 'var(--red)' }" role="status">{{ tokenMsg }}</div>
+              </details>
+            </div>
+          </div>
+
+          <div v-if="loaded && enabled" class="card">
+            <div class="card-content">
+              <span class="card-title">{{ this.t('admin.rooms.roomsTitle') }}</span>
+              <p class="vr-help" style="margin:0 0 12px">{{ this.t('admin.rooms.roomsDesc') }}</p>
+              <div v-if="!rooms.length" class="vr-empty">{{ this.t('admin.rooms.noRooms') }}</div>
+              <div v-for="r in rooms" :key="r.id" class="vr-room">
+                <div class="vr-room-head">
+                  <input type="text" maxlength="63" v-model="roomNames[r.id]" @change="renameRoom(r)" :aria-label="this.t('admin.rooms.roomNameLabel')" class="vr-room-name">
+                  <span class="vr-room-state">{{ roomStateLabel(r.state) }}</span>
+                  <button v-if="r.members.length > 1" type="button" class="btn-small red" @click="deleteRoom(r)" :disabled="busy">{{ this.t('admin.rooms.btnDeleteRoom') }}</button>
+                </div>
+                <div class="vr-members">
+                  <div v-for="m in r.members" :key="m.clientId" class="vr-member">
+                    <span class="vr-member-name">{{ m.name || m.clientId }}</span>
+                    <select :aria-label="this.t('admin.rooms.moveLabel', { name: m.name || m.clientId })" @change="moveSpeaker(m.clientId, r, $event)" :disabled="busy">
+                      <option value="">{{ this.t('admin.rooms.moveTo') }}</option>
+                      <option v-for="o in otherRooms(r)" :key="o.id" :value="o.id">{{ o.name }}</option>
+                      <option v-if="r.members.length > 1" value="__solo">{{ this.t('admin.rooms.ownRoom') }}</option>
+                    </select>
+                  </div>
+                </div>
+              </div>
+              <form v-if="devices.length > 1" class="vr-new-room" @submit.prevent="createRoom">
+                <div class="vr-subtitle">{{ this.t('admin.rooms.newRoomTitle') }}</div>
+                <input type="text" maxlength="63" v-model="newRoomName" :placeholder="this.t('admin.rooms.newRoomPlaceholder')" :aria-label="this.t('admin.rooms.roomNameLabel')">
+                <div class="vr-new-members">
+                  <label v-for="d in devices" :key="d.clientId" class="vr-check">
+                    <input type="checkbox" :value="d.clientId" v-model="newRoomMembers">
+                    <span>{{ d.name || d.clientId }}</span>
+                  </label>
+                </div>
+                <button type="submit" class="btn-small" :disabled="busy || !newRoomName.trim() || !newRoomMembers.length">{{ this.t('admin.rooms.btnCreateRoom') }}</button>
+              </form>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>`,
+  async mounted() {
+    await this.load();
+    let ticks = 0;
+    this.statusTimer = setInterval(() => {
+      this.nowTick = Date.now();
+      ticks++;
+      if (ticks % 3 === 0 && document.visibilityState === 'visible' && !this.busy) this.load();
+    }, 1000);
+  },
+  beforeDestroy() {
+    clearInterval(this.statusTimer);
+    this.stopPairPoll();
+  },
+  methods: {
+    errMsg(e) {
+      const d = e?.response?.data || {};
+      if (d.code && VR_ERR_CODES.includes(d.code)) return this.t('admin.rooms.err.' + d.code, { s: Math.ceil((d.retryAfterMs || 0) / 1000) });
+      return d.error || e?.message || this.t('admin.rooms.err.generic');
+    },
+    applyStatus(s) {
+      this.enabled = s.enabled === true;
+      this.running = s.running === true;
+      this.serverName = s.name || '';
+      this.port = s.port || 8927;
+      this.serverIdShort = s.serverIdShort || '';
+      this.serverError = s.error || null;
+      this.devices = Array.isArray(s.devices) ? s.devices : [];
+      this.rooms = Array.isArray(s.rooms) ? s.rooms : [];
+      const names = {};
+      for (const r of this.rooms) {
+        names[r.id] = (this.roomNames[r.id] != null && document.activeElement?.classList?.contains('vr-room-name')) ? this.roomNames[r.id] : r.name;
+      }
+      this.roomNames = names;
+      this.newRoomMembers = this.newRoomMembers.filter(id => this.devices.some(d => d.clientId === id));
+      this.loaded = true;
+    },
+    async load() {
+      try {
+        const r = await API.axios({ method: 'GET', url: `${API.url()}/api/v1/admin/sendspin/status` });
+        this.applyStatus(r.data || {});
+      } catch (e) {
+        this.error = this.errMsg(e);
+        this.loaded = true;
+      }
+    },
+    async saveSettings(patch) {
+      this.busy = true; this.error = null;
+      try {
+        const r = await API.axios({ method: 'POST', url: `${API.url()}/api/v1/admin/sendspin/settings`, data: patch });
+        this.applyStatus(r.data || {});
+        iziToast.success({ title: this.t('admin.rooms.saved'), position: 'topCenter', timeout: 2000 });
+      } catch (e) {
+        this.error = this.errMsg(e);
+      } finally { this.busy = false; }
+    },
+    savePort(v) {
+      const port = Number.parseInt(v, 10);
+      if (!Number.isInteger(port) || port < 1024 || port > 65535) { this.error = this.t('admin.rooms.err.port'); return; }
+      this.saveSettings({ port });
+    },
+    trustKey(d) {
+      return ['approved', 'paired', 'mismatch'].includes(d.trust) ? d.trust : 'unknown';
+    },
+    deviceState(d) {
+      if (d.connection === 'pairing' || d.pairing) return 'pairing';
+      if (d.trust === 'mismatch') return 'mismatch';
+      if (d.connection === 'other-server') return 'otherServer';
+      if (d.connection === 'in-use-elsewhere') return 'inUse';
+      if (d.connection === 'offline') return 'offline';
+      return this.trustKey(d);
+    },
+    stateLabel(k) { return this.t('admin.rooms.state.' + k); },
+    roomStateLabel(s) { return this.t('admin.rooms.roomState.' + (['playing', 'paused', 'stopped', 'buffering'].includes(s) ? s : 'idle')); },
+    shortId(id) { return String(id || '').slice(0, 8); },
+    deviceMeta(d) {
+      const i = d.deviceInfo || {};
+      const parts = [i.manufacturer, i.productName].filter(Boolean);
+      if (i.softwareVersion) parts.push(i.softwareVersion);
+      return parts.join(' · ');
+    },
+    sameNameCount(d) {
+      const n = String(d.name || '').trim().toLowerCase();
+      return n ? this.devices.filter(x => String(x.name || '').trim().toLowerCase() === n).length : 0;
+    },
+    otherRooms(r) { return this.rooms.filter(o => o.id !== r.id); },
+    roomName(id) { return this.rooms.find(r => r.id === id)?.name || ''; },
+    hasCodeMethod(d) {
+      const m = d.pairMethods || [];
+      return m.includes('dynamic_pairing_code') || m.includes('static_pairing_code');
+    },
+    canPair(d) {
+      const s = this.deviceState(d);
+      if (!['unknown', 'approved', 'mismatch'].includes(s)) return false;
+      return d.connection === 'online' || !this.hasCodeMethod(d);
+    },
+    async act(action, d) {
+      this.busy = true; this.error = null;
+      try {
+        await API.axios({ method: 'POST', url: `${API.url()}/api/v1/admin/sendspin/devices/${action}`, data: { clientId: d.clientId } });
+        await this.load();
+      } catch (e) {
+        this.error = this.errMsg(e);
+      } finally { this.busy = false; }
+    },
+    confirmAct(action, d) {
+      const name = _esc(d.name || d.clientId);
+      adminConfirm(
+        this.t('admin.rooms.confirm.' + action + 'Title', { name }),
+        this.t('admin.rooms.confirm.' + action + 'Msg'),
+        this.t('admin.rooms.confirm.' + action + 'Btn'),
+        () => this.act(action, d),
+      );
+    },
+    startRename(d) { this.renamingId = d.clientId; this.renameValue = d.name || ''; },
+    async saveRename(d) {
+      const name = this.renameValue.trim();
+      if (!name) return;
+      this.busy = true; this.error = null;
+      try {
+        await API.axios({ method: 'POST', url: `${API.url()}/api/v1/admin/sendspin/devices/rename`, data: { clientId: d.clientId, name } });
+        this.renamingId = null;
+        await this.load();
+      } catch (e) {
+        this.error = this.errMsg(e);
+      } finally { this.busy = false; }
+    },
+    resetSlots() {
+      this.codeSlots = new Array(this.codeDigits).fill('');
+      this.$nextTick(() => { const el = this.$refs.slot0; (Array.isArray(el) ? el[0] : el)?.focus(); });
+    },
+    applyPair(clientId, st) {
+      const prev = this.pairing || {};
+      this.pairing = { clientId, ...st };
+      if (st.status !== 'waiting') this.codeBusy = false;
+      if (st.status === 'wrong_code' && st.retryAfterMs && (prev.status !== 'wrong_code' || prev.round !== st.round)) this.cooldownUntil = Date.now() + st.retryAfterMs;
+      const asking = st.status === 'need_code' || st.status === 'wrong_code';
+      if (asking && (prev.status !== st.status || prev.round !== st.round || this.codeSlots.length !== this.codeDigits)) this.resetSlots();
+      if (st.status === 'paired' || st.status === 'aborted') {
+        this.stopPairPoll();
+        this.load();
+      }
+    },
+    isPairActive() {
+      return !!this.pairing && !['paired', 'aborted'].includes(this.pairing.status);
+    },
+    async startPair(d) {
+      if (!this.hasCodeMethod(d)) {
+        this.tokenClientId = d.clientId;
+        this.tokenOpen = true;
+        this.tokenMsg = this.t('admin.rooms.tokenOnly');
+        this.tokenOk = null;
+        return;
+      }
+      this.busy = true; this.error = null; this.pairNotice = '';
+      try {
+        const r = await API.axios({ method: 'POST', url: `${API.url()}/api/v1/admin/sendspin/devices/pair-code/start`, data: { clientId: d.clientId } });
+        this.pairStartedAt = Date.now();
+        this.codeSlots = [];
+        this.applyPair(d.clientId, r.data || { status: 'waiting' });
+        this.startPairPoll();
+      } catch (e) {
+        this.error = this.errMsg(e);
+      } finally { this.busy = false; }
+    },
+    openPair(d) {
+      this.pairNotice = '';
+      this.pairStartedAt = Date.now();
+      this.codeSlots = [];
+      this.applyPair(d.clientId, d.pairing || { status: 'waiting' });
+      this.startPairPoll();
+    },
+    startPairPoll() {
+      this.stopPairPoll();
+      this.pairTimer = setInterval(() => this.pollPair(), 1000);
+    },
+    stopPairPoll() {
+      if (this.pairTimer) { clearInterval(this.pairTimer); this.pairTimer = null; }
+    },
+    async pollPair() {
+      if (!this.pairing) { this.stopPairPoll(); return; }
+      const clientId = this.pairing.clientId;
+      if (Date.now() - this.pairStartedAt > VR_PAIR_TIMEOUT_MS && this.isPairActive()) {
+        await this.cancelPair();
+        this.pairNotice = this.t('admin.rooms.pairTimeout');
+        return;
+      }
+      try {
+        const r = await API.axios({ method: 'GET', url: `${API.url()}/api/v1/admin/sendspin/devices/pair-code/status?clientId=${encodeURIComponent(clientId)}` });
+        if (this.pairing?.clientId === clientId) this.applyPair(clientId, r.data || {});
+      } catch (e) {
+        if (e?.response?.data?.code === 'no_pairing') {
+          this.stopPairPoll();
+          if (this.isPairActive()) this.pairing = { clientId, status: 'aborted', reason: 'timeout' };
+        }
+      }
+    },
+    async cancelPair() {
+      if (!this.pairing) return;
+      const clientId = this.pairing.clientId;
+      this.stopPairPoll();
+      try {
+        const r = await API.axios({ method: 'POST', url: `${API.url()}/api/v1/admin/sendspin/devices/pair-code/cancel`, data: { clientId } });
+        this.applyPair(clientId, r.data || { status: 'aborted', reason: 'user_cancelled' });
+      } catch (_e) {
+        this.pairing = { clientId, status: 'aborted', reason: 'user_cancelled' };
+      }
+      this.load();
+    },
+    closePair() {
+      this.stopPairPoll();
+      this.pairing = null;
+      this.pairNotice = '';
+      this.codeSlots = [];
+    },
+    abortText(reason) {
+      const known = ['user_cancelled', 'timeout', 'concurrent_attempt', 'too_many_attempts', 'rejected'];
+      return this.t('admin.rooms.abort.' + (known.includes(reason) ? reason : 'other'));
+    },
+    focusSlot(i) {
+      const el = this.$refs['slot' + i];
+      (Array.isArray(el) ? el[0] : el)?.focus();
+    },
+    onSlotInput(i, ev) {
+      const digits = String(ev.target.value || '').replace(/\D/g, '');
+      if (digits.length > 1) { this.fillCode(digits, i); return; }
+      this.$set(this.codeSlots, i, digits);
+      ev.target.value = digits;
+      if (digits && i < this.codeDigits - 1) this.focusSlot(i + 1);
+    },
+    onSlotKey(i, ev) {
+      if (ev.key === 'Backspace' && !this.codeSlots[i] && i > 0) {
+        this.$set(this.codeSlots, i - 1, '');
+        this.focusSlot(i - 1);
+        ev.preventDefault();
+      } else if (ev.key === 'ArrowLeft' && i > 0) {
+        this.focusSlot(i - 1);
+      } else if (ev.key === 'ArrowRight' && i < this.codeDigits - 1) {
+        this.focusSlot(i + 1);
+      }
+    },
+    onCodePaste(ev) {
+      const text = (ev.clipboardData || window.clipboardData)?.getData('text') || '';
+      this.fillCode(text.replace(/[\s-]/g, '').replace(/\D/g, ''), 0);
+    },
+    fillCode(digits, from) {
+      for (let k = 0; k < digits.length && from + k < this.codeDigits; k++) this.$set(this.codeSlots, from + k, digits[k]);
+      this.focusSlot(Math.min(this.codeDigits - 1, from + digits.length));
+    },
+    async submitCode() {
+      if (!this.pairing || !this.codeComplete || this.cooldownLeft > 0) return;
+      const clientId = this.pairing.clientId;
+      this.codeBusy = true; this.pairNotice = '';
+      try {
+        const r = await API.axios({ method: 'POST', url: `${API.url()}/api/v1/admin/sendspin/devices/pair-code/submit`, data: { clientId, code: this.codeSlots.join('') } });
+        this.applyPair(clientId, r.data || { status: 'waiting' });
+      } catch (e) {
+        const d = e?.response?.data || {};
+        if (d.code === 'cooldown' && d.retryAfterMs) this.cooldownUntil = Date.now() + d.retryAfterMs;
+        this.pairNotice = this.errMsg(e);
+        this.codeBusy = false;
+        this.resetSlots();
+      }
+    },
+    async submitToken() {
+      const token = this.tokenValue.trim();
+      if (!token) return;
+      this.tokenBusy = true; this.tokenMsg = ''; this.tokenOk = null;
+      try {
+        const data = { token };
+        if (this.tokenClientId) data.clientId = this.tokenClientId;
+        const r = await API.axios({ method: 'POST', url: `${API.url()}/api/v1/admin/sendspin/devices/pair-token`, data });
+        this.tokenValue = '';
+        this.tokenOk = true;
+        const res = r.data || {};
+        this.tokenMsg = res.result === 'staged' ? this.t('admin.rooms.tokenStaged') : this.t('admin.rooms.tokenStarted');
+        await this.load();
+        const dev = this.devices.find(x => x.clientId === res.clientId);
+        if (res.result === 'pairing' && dev) this.openPair(dev);
+      } catch (e) {
+        this.tokenOk = false;
+        this.tokenMsg = this.errMsg(e);
+      } finally { this.tokenBusy = false; }
+    },
+    async roomCall(method, path, data) {
+      this.busy = true; this.error = null;
+      try {
+        await API.axios({ method, url: `${API.url()}/api/v1/rooms${path}`, data });
+        await this.load();
+        return true;
+      } catch (e) {
+        this.error = this.errMsg(e);
+        return false;
+      } finally { this.busy = false; }
+    },
+    renameRoom(r) {
+      const name = String(this.roomNames[r.id] || '').trim();
+      if (!name || name === r.name) { this.roomNames[r.id] = r.name; return; }
+      this.roomCall('PATCH', '/' + encodeURIComponent(r.id), { name });
+    },
+    moveSpeaker(clientId, from, ev) {
+      const to = ev.target.value;
+      ev.target.value = '';
+      if (!to) return;
+      if (to === '__solo') {
+        this.roomCall('PATCH', '/' + encodeURIComponent(from.id), { members: from.members.map(m => m.clientId).filter(id => id !== clientId) });
+        return;
+      }
+      const target = this.rooms.find(r => r.id === to);
+      if (!target) return;
+      this.roomCall('PATCH', '/' + encodeURIComponent(target.id), { members: [...target.members.map(m => m.clientId), clientId] });
+    },
+    deleteRoom(r) {
+      adminConfirm(
+        this.t('admin.rooms.confirm.deleteRoomTitle', { name: _esc(r.name) }),
+        this.t('admin.rooms.confirm.deleteRoomMsg'),
+        this.t('admin.rooms.confirm.deleteRoomBtn'),
+        () => this.roomCall('DELETE', '/' + encodeURIComponent(r.id)),
+      );
+    },
+    async createRoom() {
+      const name = this.newRoomName.trim();
+      if (!name || !this.newRoomMembers.length) return;
+      const ok = await this.roomCall('POST', '', { name, members: [...this.newRoomMembers] });
+      if (ok) { this.newRoomName = ''; this.newRoomMembers = []; }
+    },
+  },
+});
+
 // ── Server Audio Admin View ────────────────────────────────────────────────
 const serverAudioView = Vue.component('server-audio-view', {
   data() {
@@ -11980,6 +12552,7 @@ const vm = new Vue({
     'transcode-view': transcodeView,
     'server-audio-view': serverAudioView,
     'sonos-view': sonosView,
+    'rooms-view': roomsView,
     'dlna-view': dlnaView,
     'federation-view': federationView,
     'rpn-view': rpnView,

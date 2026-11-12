@@ -1479,6 +1479,18 @@ body.vu-needle-mode .eq-panel{bottom:calc(var(--player) + 8px);}
 #output-dropdown .out-row .out-dot{width:8px;height:8px;border-radius:50%;border:2px solid var(--t2);flex-shrink:0;}
 #output-dropdown .out-row.out-active .out-dot{background:var(--green);border-color:var(--green);}
 #output-dropdown .out-divider{height:1px;background:var(--border);margin:4px 0;}
+#output-dropdown .out-section-label{padding:6px 16px 2px;font-size:10px;font-weight:700;letter-spacing:1px;text-transform:uppercase;color:var(--t3);}
+#output-dropdown .out-row:focus-visible{outline:2px solid var(--primary);outline-offset:-2px;}
+/* Velvet Rooms: "Playing in <room>" indicator (player bar + queue panel) */
+.room-banner{display:flex;align-items:center;gap:8px;min-width:0;font-size:var(--type-sm,12px);color:var(--green);}
+.room-banner.hidden{display:none;}
+.room-banner-dot{width:7px;height:7px;border-radius:50%;background:var(--green);flex-shrink:0;box-shadow:0 0 6px var(--green);}
+.room-banner-text{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0;font-weight:600;}
+.room-banner-btn{flex-shrink:0;background:none;border:1px solid var(--border);border-radius:999px;color:var(--t2);font-size:11px;padding:1px 9px;cursor:pointer;transition:color .12s,border-color .12s;}
+.room-banner-btn:hover,.room-banner-btn:focus-visible{color:var(--t1);border-color:var(--primary);}
+.player-room{margin-top:3px;}
+.qp-room-banner{margin-bottom:10px;padding:6px 10px;border:1px solid color-mix(in srgb,var(--green) 45%,transparent);border-radius:8px;background:color-mix(in srgb,var(--green) 8%,transparent);}
+body.room-remote #vu-spec-row{opacity:.35;}
 .crossfade-light{position:relative;}
 .crossfade-light.crossfade-inactive{color:var(--t1);opacity:.8;}
 .crossfade-light:not(.crossfade-inactive){color:var(--primary);opacity:1;}

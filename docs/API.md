@@ -860,6 +860,47 @@ small local window for instant boot, then lazy-loads the rest from here.
 
 ---
 
+## Velvet Rooms *(Velvet)*
+
+> Server-side queue played on speakers that implement the Sendspin protocol (works with Sendspin speakers). Full contract — object shapes, limits, error codes, polling — in [API/rooms.md](API/rooms.md). Player routes need `allow-mpv-cast` (or admin) and return `404 { code: "rooms_disabled" }` while the feature is off.
+
+| Method | Endpoint | Body | Description |
+|---|---|---|---|
+| `GET` | `/api/v1/admin/sendspin/status` | — | **Admin.** `{ enabled, running, name, port, serverId, serverIdShort, error, devices[], rooms[] }`. |
+| `POST` | `/api/v1/admin/sendspin/settings` | `{ enabled?, name?, port? }` | **Admin.** Save settings; returns the status. |
+| `POST` | `/api/v1/admin/sendspin/devices/approve` | `{ clientId }` | **Admin.** Allow a device unpaired access. |
+| `POST` | `/api/v1/admin/sendspin/devices/revoke` | `{ clientId }` | **Admin.** Revoke unpaired access. |
+| `POST` | `/api/v1/admin/sendspin/devices/rename` | `{ clientId, name }` | **Admin.** Rename a device (playback continues). |
+| `POST` | `/api/v1/admin/sendspin/devices/forget` | `{ clientId }` | **Admin.** Unpair, revoke and remove a device. |
+| `POST` | `/api/v1/admin/sendspin/devices/connect` | `{ clientId }` | **Admin.** Connect now (also takes a device back from another server). |
+| `POST` | `/api/v1/admin/sendspin/devices/unpair` | `{ clientId }` | **Admin.** `server/unpair` + delete the pairing record. |
+| `POST` | `/api/v1/admin/sendspin/devices/pair-token` | `{ token, clientId? }` | **Admin.** Pair with a pairing token (lenient decoding); `result: 'pairing' \| 'staged'`. |
+| `POST` | `/api/v1/admin/sendspin/devices/pair-code/start` | `{ clientId }` | **Admin.** Start code pairing; returns `PairStatus`. |
+| `GET` | `/api/v1/admin/sendspin/devices/pair-code/status?clientId=` | — | **Admin.** `PairStatus`: `waiting` / `pending {message}` / `need_code` / `wrong_code` / `paired` / `aborted {reason}`. |
+| `POST` | `/api/v1/admin/sendspin/devices/pair-code/submit` | `{ clientId, code }` | **Admin.** Submit the 6- or 8-digit code. |
+| `POST` | `/api/v1/admin/sendspin/devices/pair-code/cancel` | `{ clientId }` | **Admin.** Cancel (`pair/abort user_cancelled`). |
+| `GET` | `/api/v1/rooms` | — | Rooms with members and live state. Also the player's capability check. |
+| `POST` | `/api/v1/rooms` | `{ name, members[] }` | Create a room from speakers (they leave their old rooms). |
+| `PATCH` | `/api/v1/rooms/:id` | `{ name?, members? }` | Rename / set members (moves speakers). |
+| `DELETE` | `/api/v1/rooms/:id` | — | Dissolve a room; members return to solo rooms. |
+| `GET` | `/api/v1/rooms/:id/state` | — | Room state; polled ~1 s by the remote UI. |
+| `GET` | `/api/v1/rooms/:id/queue` | — | `{ queueVersion, index, songs[] }`. |
+| `POST` | `/api/v1/rooms/:id/play` | `{ songs[], index?, positionMs?, paused? }` | Hand a queue to the room (replaces its queue). |
+| `POST` | `/api/v1/rooms/:id/add` | `{ songs[], next? }` | Append (or insert after current with `next`). |
+| `POST` | `/api/v1/rooms/:id/jump` | `{ index }` | Play the queue entry at `index`. |
+| `POST` | `/api/v1/rooms/:id/pause` | — | Pause. |
+| `POST` | `/api/v1/rooms/:id/resume` | — | Resume (an idle room resumes what it last played). |
+| `POST` | `/api/v1/rooms/:id/next` | — | Next track. |
+| `POST` | `/api/v1/rooms/:id/previous` | — | Previous track (restart when > 3 s in). |
+| `POST` | `/api/v1/rooms/:id/seek` | `{ positionMs }` | Seek in the current track. |
+| `POST` | `/api/v1/rooms/:id/volume` | `{ volume, clientId? }` | Group volume, or one speaker with `clientId`. |
+| `POST` | `/api/v1/rooms/:id/mute` | `{ muted, clientId? }` | Group mute, or one speaker. |
+| `POST` | `/api/v1/rooms/:id/stop` | — | Stop; response carries `stoppedAt: { index, positionMs }`. |
+| `POST` | `/api/v1/rooms/:id/repeat` | `{ repeat }` | `'off' \| 'all' \| 'one'`. |
+| `POST` | `/api/v1/rooms/:id/shuffle` | `{ shuffle }` | Shuffle on/off. |
+
+---
+
 ## Admin — Discogs Config
 
 | Method | Endpoint | Body | Description |

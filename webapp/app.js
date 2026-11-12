@@ -77,6 +77,8 @@ const S = {
   allowRadioRecording: false,   // per-user: can record radio streams
   allowYoutubeDownload: false,  // per-user: can download from YouTube
   allowMpvCast: false,          // per-user: can use cast-to-server-speaker button
+  roomsAvailable: false,
+  rooms: [],
   allowServerRemote: true,      // per-user: can access /server-remote
   recordingActive: false,       // is a recording currently in progress?
   recordingId: null,            // active recording id (from server)
@@ -542,6 +544,7 @@ function _isCurrentTrackTranscoded() {
 function _seekCurrentTrack(targetSec) {
   const s = S.queue[S.idx];
   if (!s || s.isRadio || !Number.isFinite(targetSec)) return;
+  if (_room) { _roomSeek(targetSec); return; }
 
   const clamped = Math.max(0, targetSec);
   if (_shouldUseTranscodeForFile(s.filepath) && _isCurrentTrackTranscoded() && !S.castingToSonos && !S.castingToMpv) {
@@ -1194,6 +1197,7 @@ async function _lazyLoadQueueFromDb() {
   } catch (_) {}
 }
 function restoreQueue(silent = false) {
+  if (silent && _room) return;
   const key = _queueKey();
   if (!key) return;
   let data;
@@ -1421,9 +1425,12 @@ async function api(method, path, body, signal) {
       S.token = '';
       try { localStorage.removeItem('ms2_token'); } catch (_) {}
     }
-    let msg = 'HTTP ' + r.status;
-    try { const j = await r.json(); if (j?.error) msg = j.error; } catch (_) {}
-    const e = new Error(msg); e.status = r.status; throw e;
+    let j = null;
+    try { j = await r.json(); } catch (_) {}
+    const e = new Error(j?.error || ('HTTP ' + r.status));
+    e.status = r.status;
+    e.code = typeof j?.code === 'string' ? j.code : undefined;
+    throw e;
   }
   return r.json();
 }
@@ -1616,7 +1623,8 @@ const Player = {
   },
   // Add to queue; if nothing is playing yet, start immediately
   queueAndPlay(song) {
-    if (audioEl.paused || !audioEl.src || audioEl.ended || S.queue.length === 0) {
+    const idle = _room ? !_roomPlaying() : (audioEl.paused || !audioEl.src || audioEl.ended);
+    if (idle || S.queue.length === 0) {
       if (!song.isRadio && !song.isPodcast) _setPlaySource(null);
       this.playSingle(song);
     } else {
@@ -1630,6 +1638,7 @@ const Player = {
     refreshQueueUI();
     persistQueue();
     _syncQueueToDbNow();
+    if (_room) _roomAddSongs([song], false);
   },
   addAll(songs) {
     S.queue.push(...songs); _qvsVersion++;
@@ -1638,6 +1647,7 @@ const Player = {
     refreshQueueUI();
     persistQueue();
     _syncQueueToDbNow();
+    if (_room) _roomAddSongs(songs, false);
   },
   playNext(song) {
     const insertAt = S.idx + 1;
@@ -1647,9 +1657,11 @@ const Player = {
     refreshQueueUI();
     persistQueue();
     _syncQueueToDbNow();
+    if (_room) _roomAddSongs([song], true);
   },
   playAt(idx, opts = {}) {
     if (idx < 0 || idx >= S.queue.length) return;
+    if (_room) { _roomPlayAt(idx); return; }
     // Selecting a local track takes over from a playing Sonos Favourite.
     if (_sonosFav) _exitSonosFavorite({ stopDevice: true });
     // Wrapped: if a song was interrupted (not naturally ended), count it as a skip
@@ -1854,6 +1866,7 @@ const Player = {
     // A Sonos Favourite is playing external content on the device — pressing Play
     // takes control back to the browser (stops the favourite, resumes web audio).
     if (_sonosFav) { _exitSonosFavorite({ stopDevice: true, resumeWeb: true }); return; }
+    if (_room) { _roomToggle(); return; }
     try {
       if (_BOOT_DBG) console.warn('[BOOT] Player.toggle: hasSrc=' + !!audioEl.src + ' qLen=' + S.queue.length + ' paused=' + audioEl.paused + ' readyState=' + audioEl.readyState + ' err=' + (audioEl.error ? audioEl.error.code : 'none') + ' t=' + (audioEl.currentTime||0).toFixed(2) + ' dur=' + (audioEl.duration||0).toFixed(2) + ' audioCtx=' + (typeof audioCtx !== 'undefined' && audioCtx ? audioCtx.state : 'null') + ' sinkId=' + (audioEl.sinkId || '') + ' outDev=' + (S.outputDeviceId || '') + ' muted=' + audioEl.muted + ' vol=' + audioEl.volume + ' castMute=' + (typeof _castMuteGain !== 'undefined' && _castMuteGain ? _castMuteGain.gain.value : 'n/a') + ' castSonos=' + S.castingToSonos + ' castMpv=' + S.castingToMpv + ' bootComplete=' + _bootComplete);
     } catch (_e) { /* diagnostic only */ }
@@ -1952,6 +1965,7 @@ const Player = {
     }
   },
   next() {
+    if (_room) { _roomCmd('next'); return; }
     if (!S.queue.length) return;
     if (_wrappedPodcastEventId) {
       const eid = _wrappedPodcastEventId; _wrappedPodcastEventId = null;
@@ -1986,6 +2000,7 @@ const Player = {
     }
   },
   prev() {
+    if (_room) { _roomCmd('previous'); return; }
     if (audioEl.currentTime > 3) { audioEl.currentTime = 0; return; }
     if (S.idx > 0) this.playAt(S.idx - 1);
     else           audioEl.currentTime = 0;
@@ -19751,10 +19766,487 @@ function _sleepFadeOut() {
   }, stepMs);
 }
 
+// ── VELVET ROOMS (the browser as a remote for a server-side room queue) ──
+// A room owns its queue and outlives this tab, so while one is active the local <audio> stays paused.
+let _room = null;
+let _roomPollTimer = null;
+let _roomPollInFlight = false;
+let _roomPollFails = 0;
+let _roomQueueFetching = false;
+let _roomHandedVersion = -1;
+let _roomQvs = -1;
+let _roomVolTimer = null;
+let _roomVolTouchedAt = 0;
+const _ROOM_MAX_SONGS = 10000;
+
+function _roomActive() { return !!_room; }
+function _roomUrl(id, sub) { return 'api/v1/rooms/' + encodeURIComponent(id) + (sub ? '/' + sub : ''); }
+function _roomIsUrl(fp) { return /^https?:\/\//i.test(fp || ''); }
+function _roomPlaying() { return !!_room && (_room.state === 'playing' || _room.state === 'buffering'); }
+function _roomPosSec() {
+  if (!_room) return 0;
+  let pos = (_room.positionMs || 0) / 1000;
+  if (_room.state === 'playing') pos += (Date.now() - _room.positionAt) / 1000;
+  const dur = _roomDurSec();
+  return dur > 0 ? Math.min(pos, dur) : pos;
+}
+function _roomDurSec() {
+  if (!_room) return 0;
+  if (_room.durationMs) return _room.durationMs / 1000;
+  return S.queue[S.idx]?.duration || 0;
+}
+function _playerDurSec() {
+  if (_room) return _roomDurSec();
+  return Number.isFinite(audioEl.duration) && audioEl.duration > 0 ? audioEl.duration : (S.queue[S.idx]?.duration || 0);
+}
+function _playerPosSec() {
+  if (_room) return _roomPosSec();
+  return Number.isFinite(audioEl.currentTime) ? audioEl.currentTime : 0;
+}
+function _roomQueuePayload(at) {
+  let songs = [];
+  let index = 0;
+  S.queue.forEach((s, i) => {
+    if (!s?.filepath || _roomIsUrl(s.filepath) || s.isRadio) return;
+    if (i === at) index = songs.length;
+    songs.push(s.filepath);
+  });
+  const complete = songs.length === S.queue.length && songs.length <= _ROOM_MAX_SONGS;
+  if (songs.length > _ROOM_MAX_SONGS) {
+    const from = Math.max(0, Math.min(index - 100, songs.length - _ROOM_MAX_SONGS));
+    songs = songs.slice(from, from + _ROOM_MAX_SONGS);
+    index -= from;
+  }
+  return { songs, index, complete };
+}
+
+async function _roomsProbe() {
+  try {
+    const d = await api('GET', 'api/v1/rooms');
+    S.roomsAvailable = true;
+    S.rooms = Array.isArray(d?.rooms) ? d.rooms : [];
+  } catch (e) {
+    if (e.status === 404 || e.status === 403 || e.status === 401) {
+      S.roomsAvailable = false;
+      S.rooms = [];
+      if (_room) _roomFallback(t('player.rooms.unavailable'));
+    }
+  }
+  _updateOutputBtn();
+  return S.rooms;
+}
+
+async function _roomsBoot() {
+  if (!S.token || !S.username) return;
+  await _roomsProbe();
+  let saved = null;
+  try { saved = localStorage.getItem(_uKey('room')); } catch (_) {}
+  if (!saved || _room) return;
+  const r = S.rooms.find(x => x.id === saved);
+  if (!r || !['playing', 'paused', 'buffering'].includes(r.state)) {
+    try { localStorage.removeItem(_uKey('room')); } catch (_) {}
+    return;
+  }
+  _roomEnter(r);
+  _roomFetchQueue();
+}
+
+function _roomEnter(room) {
+  _room = {
+    id: room.id, name: room.name, state: room.state, positionMs: room.positionMs || 0, positionAt: Date.now(),
+    durationMs: room.current?.durationMs ?? null, volume: room.volume, muted: room.muted === true,
+    queueVersion: room.queueVersion, index: room.index, canSeek: room.canSeek !== false,
+  };
+  _roomPollFails = 0;
+  try { localStorage.setItem(_uKey('room'), room.id); } catch (_) {}
+  if (!audioEl.paused) audioEl.pause();
+  document.body.classList.add('room-remote');
+  _roomApply(room);
+  _roomStartPoll();
+  _updateOutputBtn();
+}
+
+function _roomExit({ keepKey = false } = {}) {
+  _roomStopPoll();
+  clearTimeout(_roomVolTimer);
+  _room = null;
+  _roomHandedVersion = -1;
+  _roomQvs = -1;
+  if (!keepKey) { try { localStorage.removeItem(_uKey('room')); } catch (_) {} }
+  document.body.classList.remove('room-remote');
+  _roomRenderIndicator();
+  _roomRestoreLocalVolume();
+  syncPlayIcons();
+  _updateOutputBtn();
+}
+
+function _roomResumeLocal(idx, posMs) {
+  if (idx < 0 || idx >= S.queue.length) return;
+  const s = S.queue[idx];
+  if (!s || s.isRadio) return;
+  if (posMs > 1000 && !s._isCueSplit) _pendingCueSeek = posMs / 1000;
+  Player.playAt(idx);
+}
+
+function _roomLocalIndexOf(fp) {
+  if (!fp) return S.idx;
+  if (S.queue[S.idx]?.filepath === fp) return S.idx;
+  const i = S.queue.findIndex(s => s?.filepath === fp);
+  return i < 0 ? S.idx : i;
+}
+
+function _roomFallback(msg) {
+  if (!_room) return;
+  const wasPlaying = _room.state === 'playing';
+  const idx = _roomLocalIndexOf(_room.filepath);
+  const pos = Math.round(_roomPosSec() * 1000);
+  toastError(msg);
+  _roomExit();
+  if (wasPlaying) _roomResumeLocal(idx, pos);
+}
+
+async function _roomStart(room) {
+  if (_room && _room.id === room.id) return;
+  const cur = S.queue[S.idx];
+  if (!cur || _roomIsUrl(cur.filepath) || cur.isRadio) { toastError(t('player.rooms.nothingToPlay')); return; }
+  let positionMs, wasPlaying;
+  const prev = _room;
+  if (prev) {
+    positionMs = Math.round(_roomPosSec() * 1000);
+    wasPlaying = _roomPlaying();
+  } else {
+    positionMs = Math.round((Number.isFinite(audioEl.currentTime) ? audioEl.currentTime : 0) * 1000);
+    wasPlaying = !audioEl.paused;
+  }
+  const { songs, index, complete } = _roomQueuePayload(S.idx);
+  audioEl.pause();
+  if (S.castingToMpv) _deactivateCast(true);
+  if (S.castingToSonos) _deactivateSonosCast(false);
+  if (_sonosFav) _exitSonosFavorite({ stopDevice: true });
+  try {
+    const st = await api('POST', _roomUrl(room.id, 'play'), { songs, index, positionMs, paused: !wasPlaying });
+    if (prev) {
+      api('POST', _roomUrl(prev.id, 'stop')).catch(() => {});
+      _roomExit();
+    }
+    _roomHandedVersion = st?.queueVersion ?? -1;
+    _roomQvs = complete ? _qvsVersion : -1;
+    _roomEnter(st && st.id ? st : room);
+    toast(t('player.rooms.nowPlayingIn', { room: (st && st.name) || room.name }));
+    if (st?.skipped > 0) toast(t('player.rooms.skipped', { count: st.skipped }));
+  } catch (e) {
+    toastError(_roomErrText(e, 'player.rooms.startFailed'));
+    if (!prev && wasPlaying) audioEl.play().catch(() => {});
+  }
+}
+
+async function _roomTakeBack() {
+  if (!_room) return;
+  const id = _room.id;
+  let fp = _room.filepath;
+  let pos = Math.round(_roomPosSec() * 1000);
+  try {
+    const r = await api('POST', _roomUrl(id, 'stop'));
+    if (r?.stoppedAt) pos = r.stoppedAt.positionMs || 0;
+    if (r?.current?.filepath) fp = r.current.filepath;
+  } catch (_) {
+    toastError(t('player.rooms.stopFailed'));
+  }
+  _roomExit();
+  toast(t('player.rooms.backToBrowser'));
+  _roomResumeLocal(_roomLocalIndexOf(fp), pos);
+}
+
+function _roomErrText(e, key) {
+  const codes = { not_playable: 'player.rooms.err.notPlayable', rooms_disabled: 'player.rooms.unavailable', not_running: 'player.rooms.err.notRunning', empty_queue: 'player.rooms.err.emptyQueue' };
+  if (e?.code && codes[e.code]) return t(codes[e.code]);
+  return t(key, { error: e?.message || '' });
+}
+
+async function _roomCmd(cmd, body) {
+  if (!_room) return null;
+  const id = _room.id;
+  try {
+    const st = await api('POST', _roomUrl(id, cmd), body);
+    if (st && st.id === id) _roomApply(st);
+    return st;
+  } catch (e) {
+    if (e.status === 404 || e.status === 403) { _roomFallback(t('player.rooms.lost')); return null; }
+    toastError(_roomErrText(e, 'player.rooms.cmdFailed'));
+    return null;
+  }
+}
+
+function _roomToggle() {
+  if (!_room) return;
+  if (_roomPlaying()) {
+    _room.positionMs = Math.round(_roomPosSec() * 1000);
+    _room.positionAt = Date.now();
+    _room.state = 'paused';
+    syncPlayIcons();
+    _roomCmd('pause');
+  } else {
+    _room.positionAt = Date.now();
+    _room.state = 'playing';
+    syncPlayIcons();
+    _roomCmd('resume');
+  }
+}
+
+function _roomSeek(sec) {
+  if (!_room || _room.canSeek === false) return;
+  const positionMs = Math.max(0, Math.round(sec * 1000));
+  _room.positionMs = positionMs;
+  _room.positionAt = Date.now();
+  _roomPaintProgress();
+  _roomCmd('seek', { positionMs });
+}
+
+function _roomPlayAt(idx) {
+  const s = S.queue[idx];
+  if (!_room || !s) return;
+  if (_roomIsUrl(s.filepath) || s.isRadio) {
+    api('POST', _roomUrl(_room.id, 'stop')).catch(() => {});
+    _roomExit();
+    toast(t('player.rooms.cantPlayRadio'));
+    Player.playAt(idx);
+    return;
+  }
+  S.idx = idx;
+  Player.updateBar();
+  highlightRow();
+  refreshQueueUI();
+  persistQueue();
+  if (_roomQvs === _qvsVersion && _room.queueVersion === _roomHandedVersion) {
+    _roomCmd('jump', { index: idx });
+    return;
+  }
+  const { songs, index, complete } = _roomQueuePayload(idx);
+  _roomCmd('play', { songs, index, positionMs: 0 }).then(st => {
+    if (!st) return;
+    _roomHandedVersion = st.queueVersion ?? -1;
+    if (_room) _room.queueVersion = _roomHandedVersion;
+    _roomQvs = complete ? _qvsVersion : -1;
+  });
+}
+
+function _roomAddSongs(songs, next) {
+  if (!_room) return;
+  const fps = songs.filter(s => s?.filepath && !_roomIsUrl(s.filepath) && !s.isRadio).map(s => s.filepath);
+  if (!fps.length) return;
+  const id = _room.id;
+  const inSync = _roomQvs !== -1 && _room.queueVersion === _roomHandedVersion;
+  api('POST', _roomUrl(id, 'add'), { songs: fps.slice(0, _ROOM_MAX_SONGS), next: next === true }).then(r => {
+    if (!_room || _room.id !== id) return;
+    _roomHandedVersion = r?.queueVersion ?? -1;
+    _room.queueVersion = _roomHandedVersion;
+    _roomQvs = inSync && fps.length === songs.length ? _qvsVersion : -1;
+  }).catch(e => {
+    if (e.status === 404 || e.status === 403) _roomFallback(t('player.rooms.lost'));
+    else toastError(_roomErrText(e, 'player.rooms.addFailed'));
+  });
+}
+
+async function _roomFetchQueue() {
+  if (!_room || _roomQueueFetching) return;
+  _roomQueueFetching = true;
+  const id = _room.id;
+  try {
+    const d = await api('GET', _roomUrl(id, 'queue'));
+    if (!_room || _room.id !== id || !Array.isArray(d?.songs)) return;
+    S.queue = d.songs.map(e => norm({ filepath: e.filepath, metadata: {
+      title: e.title, artist: e.artist, album: e.album, year: e.year,
+      'album-art': e.aaFile, duration: e.durationMs ? e.durationMs / 1000 : null,
+    } }));
+    _qvsVersion++;
+    _roomQvs = _qvsVersion;
+    _roomHandedVersion = d.queueVersion;
+    _room.queueVersion = d.queueVersion;
+    if (Number.isInteger(d.index) && d.index >= 0 && d.index < S.queue.length) S.idx = d.index;
+    Player.updateBar();
+    highlightRow();
+    refreshQueueUI();
+    persistQueue();
+  } catch (_) {} finally {
+    _roomQueueFetching = false;
+  }
+}
+
+function _roomLocalIndex(st) {
+  const fp = st.current.filepath;
+  for (const i of [st.index, S.idx, S.idx + 1]) {
+    if (S.queue[i]?.filepath === fp) return i;
+  }
+  return S.queue.findIndex(s => s?.filepath === fp);
+}
+
+function _roomAlignIndex(st) {
+  const cur = st.current;
+  if (!cur || !Number.isInteger(st.index) || st.index < 0) return;
+  const idx = _roomLocalIndex(st);
+  if (idx < 0) { _roomFetchQueue(); return; }
+  if (idx !== S.idx) {
+    S.idx = idx;
+    Player.updateBar();
+    highlightRow();
+    refreshQueueUI();
+    persistQueue();
+  }
+  const s = S.queue[S.idx];
+  if (s && cur.durationMs && !s.duration) s.duration = cur.durationMs / 1000;
+}
+
+function _roomApply(st) {
+  if (!_room || !st || st.id !== _room.id) return;
+  Object.assign(_room, {
+    name: st.name || _room.name,
+    state: st.state,
+    positionMs: st.positionMs || 0,
+    positionAt: Date.now(),
+    durationMs: st.current?.durationMs ?? null,
+    filepath: st.current?.filepath || null,
+    index: st.index,
+    canSeek: st.canSeek !== false,
+  });
+  if (Date.now() - _roomVolTouchedAt > 1500) {
+    _room.volume = st.volume;
+    _room.muted = st.muted === true;
+  }
+  if (st.queueVersion != null && st.queueVersion !== _room.queueVersion) {
+    _room.queueVersion = st.queueVersion;
+    if (st.queueVersion !== _roomHandedVersion) _roomFetchQueue();
+  }
+  _roomAlignIndex(st);
+  _roomPaintProgress();
+  _roomPaintVolume();
+  _roomRenderIndicator();
+  syncPlayIcons();
+}
+
+async function _roomPoll() {
+  if (!_room || _roomPollInFlight) return;
+  _roomPollInFlight = true;
+  const id = _room.id;
+  try {
+    const st = await api('GET', _roomUrl(id, 'state'));
+    _roomPollFails = 0;
+    _roomApply(st);
+  } catch (e) {
+    if (e.status === 404 || e.status === 403) _roomFallback(t('player.rooms.lost'));
+    else if (++_roomPollFails >= 5) _roomFallback(t('player.rooms.unreachable'));
+  } finally {
+    _roomPollInFlight = false;
+  }
+}
+
+function _roomStartPoll() {
+  _roomStopPoll();
+  let ticks = 0;
+  _roomPollTimer = setInterval(() => {
+    if (!_room) { _roomStopPoll(); return; }
+    if (!audioEl.paused) audioEl.pause();
+    _roomPaintProgress();
+    if (document.visibilityState !== 'visible') return;
+    ticks++;
+    const every = _room.state === 'playing' || _room.state === 'buffering' ? 2 : 10;
+    if (ticks % every === 0) _roomPoll();
+  }, 500);
+}
+
+function _roomStopPoll() {
+  if (_roomPollTimer) { clearInterval(_roomPollTimer); _roomPollTimer = null; }
+}
+
+document.addEventListener('visibilitychange', () => {
+  if (_room && document.visibilityState === 'visible') _roomPoll();
+});
+
+function _roomPaintProgress() {
+  if (!_room) return;
+  const dur = _roomDurSec();
+  const pos = _roomPosSec();
+  const pct = dur > 0 ? Math.max(0, Math.min(100, (pos / dur) * 100)) : 0;
+  for (const id of ['prog-fill', 'np-prog-fill']) {
+    const el = document.getElementById(id);
+    if (el) el.style.width = pct + '%';
+  }
+  const thumb = document.getElementById('prog-thumb');
+  if (thumb) { thumb.style.display = ''; thumb.style.left = pct + '%'; }
+  const lText = S.timeFlipped ? fmt(dur) : fmt(pos);
+  const rText = S.timeFlipped ? fmt(Math.max(0, dur - pos)) : fmt(dur);
+  for (const [id, txt] of [['time-cur', lText], ['time-total', rText], ['np-time-cur', lText], ['np-time-total', rText]]) {
+    const el = document.getElementById(id);
+    if (el) el.textContent = txt;
+  }
+  _setSeekAria(pos, dur, fmt(pos) + ' / ' + fmt(dur));
+}
+
+function _roomPaintVolume() {
+  if (!_room || _room.volume == null) return;
+  const v = _room.muted ? 0 : Math.round(_room.volume);
+  const slider = document.getElementById('volume');
+  if (slider && document.activeElement !== slider) slider.value = v;
+  _setVolPct(v);
+  document.getElementById('mute-btn')?.classList.toggle('muted', _room.muted);
+  document.getElementById('vol-icon-on')?.classList.toggle('hidden', _room.muted);
+  document.getElementById('vol-icon-off')?.classList.toggle('hidden', !_room.muted);
+}
+
+function _roomRestoreLocalVolume() {
+  const v = Math.round((audioEl.volume || 0) * 100);
+  const slider = document.getElementById('volume');
+  if (slider) slider.value = v;
+  _setVolPct(v);
+  const muted = audioEl.volume === 0;
+  document.getElementById('mute-btn')?.classList.toggle('muted', muted);
+  document.getElementById('vol-icon-on')?.classList.toggle('hidden', muted);
+  document.getElementById('vol-icon-off')?.classList.toggle('hidden', !muted);
+}
+
+function _roomSetVolume(val) {
+  if (!_room) return;
+  const volume = Math.max(0, Math.min(100, Math.round(Number(val) || 0)));
+  _roomVolTouchedAt = Date.now();
+  _room.volume = volume;
+  if (_room.muted && volume > 0) _room.muted = false;
+  _setVolPct(volume);
+  clearTimeout(_roomVolTimer);
+  _roomVolTimer = setTimeout(() => {
+    _roomVolTouchedAt = Date.now();
+    _roomCmd('volume', { volume });
+  }, 150);
+}
+
+function _roomToggleMute() {
+  if (!_room) return;
+  _roomVolTouchedAt = Date.now();
+  _room.muted = !_room.muted;
+  _roomPaintVolume();
+  _roomCmd('mute', { muted: _room.muted });
+}
+
+function _roomRenderIndicator() {
+  const text = _room ? t('player.rooms.playingIn', { room: _room.name || '' }) : '';
+  for (const [boxId, textId] of [['player-room', 'player-room-text'], ['qp-room-banner', 'qp-room-text']]) {
+    const box = document.getElementById(boxId);
+    if (!box) continue;
+    box.classList.toggle('hidden', !_room);
+    const tx = document.getElementById(textId);
+    if (tx) tx.textContent = text;
+  }
+}
+
+for (const id of ['player-room-back', 'qp-room-back']) {
+  document.getElementById(id)?.addEventListener('click', e => {
+    e.stopPropagation();
+    _roomTakeBack();
+  });
+}
+
 // ── OUTPUT PICKER (Browser / Server Speaker / Sonos) ─────────
 function _hasAnyOutput() {
   const hasSonos = S.sonosEnabled && (S.sonosRooms.length > 0 || S.sonosDefaultRoom != null);
-  return (S.serverAudioRunning && S.allowMpvCast) || hasSonos;
+  return (S.serverAudioRunning && S.allowMpvCast) || hasSonos || (S.roomsAvailable && S.rooms.length > 0) || !!_room;
 }
 
 function _updateOutputBtn() {
@@ -19767,9 +20259,11 @@ function _updateOutputBtn() {
     if (S.castingToMpv) _deactivateCast(false);
     if (S.castingToSonos) _deactivateSonosCast(false);
   }
-  const active = S.castingToMpv || S.castingToSonos || !!_sonosFav;
+  const active = S.castingToMpv || S.castingToSonos || !!_sonosFav || !!_room;
   btn.classList.toggle('output-active', active);
-  if (_sonosFav) {
+  if (_room) {
+    btn.title = t('player.rooms.playingIn', { room: _room.name || '' });
+  } else if (_sonosFav) {
     btn.title = _sonosFav.roomName || _sonosFav.service || t('player.output.castTo');
   } else if (S.castingToSonos && S.sonosRoom) {
     btn.title = S.sonosRoom.name;
@@ -19836,7 +20330,8 @@ function _openOutputPicker() {
   const hasSonos = S.sonosEnabled && (S.sonosRooms.length > 0 || S.sonosDefaultRoom);
 
   // Browser row — always present
-  drop.appendChild(row(t('player.output.browser'), !S.castingToMpv && !S.castingToSonos && !_sonosFav, () => {
+  drop.appendChild(row(t('player.output.browser'), !S.castingToMpv && !S.castingToSonos && !_sonosFav && !_room, () => {
+    if (_room)            { _roomTakeBack(); return; }
     if (S.castingToMpv)   { _deactivateCast(true); toast(t('player.output.castStop')); }
     if (S.castingToSonos) { _deactivateSonosCast(true); toast(t('player.output.castStop')); }
     if (_sonosFav)        { _exitSonosFavorite({ stopDevice: true }); toast(t('player.output.castStop')); }
@@ -19844,7 +20339,8 @@ function _openOutputPicker() {
 
   // Server Speaker row
   if (hasMpv) {
-    drop.appendChild(row(t('player.output.serverSpeaker'), S.castingToMpv, () => {
+    drop.appendChild(row(t('player.output.serverSpeaker'), S.castingToMpv, async () => {
+      if (_room) await _roomTakeBack();
       if (S.castingToSonos) _deactivateSonosCast(false);
       toggleMpvCast();
     }));
@@ -19862,6 +20358,8 @@ function _openOutputPicker() {
         if (isActive) {
           _deactivateSonosCast(true);
           toast(t('player.output.castStop'));
+        } else if (_room) {
+          _roomTakeBack().then(() => _activateSonosCast(room));
         } else {
           _activateSonosCast(room);
         }
@@ -19989,6 +20487,33 @@ function _openOutputPicker() {
     }
   }
 
+  if (S.roomsAvailable && S.rooms.length) {
+    if (hasMpv || hasSonos) drop.appendChild(divider());
+    const hdr = document.createElement('div');
+    hdr.className = 'out-section-label';
+    hdr.textContent = t('player.rooms.sectionLabel');
+    drop.appendChild(hdr);
+    for (const room of S.rooms) {
+      const isActive = !!_room && _room.id === room.id;
+      const n = Array.isArray(room.members) ? room.members.length : 0;
+      const label = n > 1 ? t('player.rooms.roomWithCount', { room: room.name, count: n }) : room.name;
+      const rowEl = row(label, isActive, () => {
+        if (isActive) _roomTakeBack();
+        else _roomStart(room);
+      });
+      const dot = document.createElement('span');
+      const ok = room.playable !== false;
+      dot.className = 'out-status-dot ' + (ok ? 'out-status-ready' : 'out-status-offline');
+      dot.title = ok ? t('player.output.statusReady') : t('player.output.statusOffline');
+      rowEl.insertBefore(dot, rowEl.firstChild);
+      if (!ok && !isActive) { rowEl.dataset.disabled = '1'; rowEl.classList.add('out-row-disabled'); }
+      rowEl.setAttribute('role', 'button');
+      rowEl.setAttribute('tabindex', '0');
+      rowEl.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); rowEl.click(); } });
+      drop.appendChild(rowEl);
+    }
+  }
+
   document.body.appendChild(drop);
 
   // Position: anchored above the button
@@ -20019,6 +20544,17 @@ function _openOutputPicker() {
   // Background scan on every user-initiated open — keeps Sonos rooms current after
   // device reboot without requiring a browser refresh.
   // Uses defaultRoom.ip as seed so it's fast (direct HTTP, not SSDP multicast).
+  if (!isFromScan && S.roomsAvailable) {
+    const before = JSON.stringify(S.rooms.map(r => [r.id, r.name, r.playable, (r.members || []).length]));
+    _roomsProbe().then(list => {
+      if (!_outputDropdownEl) return;
+      if (JSON.stringify(list.map(r => [r.id, r.name, r.playable, (r.members || []).length])) !== before) {
+        _outputPickerFromScan = true;
+        _closeOutputDropdown();
+        _openOutputPicker();
+      }
+    });
+  }
   if (!isFromScan) {
     api('POST', 'api/v1/sonos/scan', {}).then(d => {
       if (!d || !_outputDropdownEl) return; // dropdown already closed — discard result
@@ -22705,6 +23241,7 @@ function showApp() {
   // the home-view API calls.  Chrome allows max 6 HTTP/1.1 connections per host;
   // firing the home view first filled all slots and delayed audio by 10+ s.
   restoreQueue(/*silent=*/true);
+  setTimeout(_roomsBoot, 2500);
   // Delay home-view launch by 500 ms — audio GET is in flight by then, so the
   // remaining connection slots are enough for the home-view API calls.
   setTimeout(_launchPinnedViewOrHome, 500);
@@ -23786,6 +24323,7 @@ document.getElementById('qp-clear-btn').addEventListener('click', () => {
 
 // Logout
 document.getElementById('logout-btn').addEventListener('click', () => {
+  if (_room) _roomExit({ keepKey: true });
   if (S.username) localStorage.removeItem(_queueKey());
   // Flush queue to localStorage NOW, before we clear S.username (persistQueue
   // guards on S.username so it must be called while it still has a value).
@@ -24144,7 +24682,7 @@ document.addEventListener('click', e => {
 // Sync play/pause icon state from audioEl.paused — call this any time the
 // icon may be stale (restore, logout, etc.) rather than relying on events.
 function syncPlayIcons() {
-  const playing = !audioEl.paused;
+  const playing = _room ? _roomPlaying() : !audioEl.paused;
   document.getElementById('icon-play').classList.toggle('hidden',  playing);
   document.getElementById('icon-pause').classList.toggle('hidden', !playing);
   document.getElementById('np-icon-play').classList.toggle('hidden',  playing);
@@ -25228,12 +25766,13 @@ function _reloadFromPosition(attempt) {
     if (e.target.closest('.cue-tick')) return;
     if (S.queue[S.idx]?.isRadio) { _radioSpectrumEnabled = !_radioSpectrumEnabled; _drawWaveform(); return; }
     const r = track.getBoundingClientRect();
-    const dur = Number.isFinite(audioEl.duration) && audioEl.duration > 0 ? audioEl.duration : (S.queue[S.idx]?.duration || 0);
+    const dur = _playerDurSec();
     if (dur > 0) _seekCurrentTrack(Math.max(0, Math.min(1, (e.clientX - r.left) / r.width)) * dur);
   });
 }());
 let _volSaveTimer = null;
 document.getElementById('volume').addEventListener('input', e => {
+  if (_room) { _roomSetVolume(e.target.value); return; }
   audioEl.volume = e.target.value / 100;
   _setVolPct(e.target.value);
   // If dragging up from a muted state, clear mute so the server is updated
@@ -25297,6 +25836,7 @@ document.getElementById('bal-center-btn').addEventListener('click', () => {
 
 let _preMuteVol = Number.parseFloat(localStorage.getItem(_uKey('vol')) || '80') / 100;
 document.getElementById('mute-btn').addEventListener('click', () => {
+  if (_room) { _roomToggleMute(); return; }
   if (audioEl.volume > 0) {
     _preMuteVol = audioEl.volume;
     audioEl.volume = 0;
@@ -25680,7 +26220,7 @@ document.getElementById('np-prog-track').addEventListener('click', e => {
     if (e.target.closest('.cue-tick')) return;
     if (S.queue[S.idx]?.isRadio) { _radioSpectrumEnabled = !_radioSpectrumEnabled; _drawWaveform(); return; }
     const r = track.getBoundingClientRect();
-    const dur = Number.isFinite(audioEl.duration) && audioEl.duration > 0 ? audioEl.duration : (S.queue[S.idx]?.duration || 0);
+    const dur = _playerDurSec();
     if (dur > 0) _seekCurrentTrack(Math.max(0, Math.min(1, (e.clientX - r.left) / r.width)) * dur);
   });
 }());
@@ -26639,7 +27179,7 @@ document.addEventListener('keydown', e => {
       e.preventDefault();
       if (e.shiftKey) { Player.next(); }
       else {
-        const cur = Number.isFinite(audioEl.currentTime) ? audioEl.currentTime : 0;
+        const cur = _playerPosSec();
         _seekCurrentTrack(cur + 5);
       }
       break;
@@ -26647,7 +27187,7 @@ document.addEventListener('keydown', e => {
       e.preventDefault();
       if (e.shiftKey) { Player.prev(); }
       else {
-        const cur = Number.isFinite(audioEl.currentTime) ? audioEl.currentTime : 0;
+        const cur = _playerPosSec();
         _seekCurrentTrack(Math.max(0, cur - 5));
       }
       break;
