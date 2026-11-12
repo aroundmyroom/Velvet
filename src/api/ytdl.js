@@ -379,8 +379,11 @@ async function _resolveNonColliding(dir, baseName, ext) {
 
 export function setup(velvet) {
   // Ensure yt-dlp and ffmpeg binaries are present — both non-blocking.
+  // yt-dlp is a PyInstaller one-file binary: each --update run unpacks ~40 MB
+  // into $TMPDIR/_MEI* and leaks it when the process is killed, which the
+  // integration tests (NODE_ENV=test via test/helpers/server.mjs) do constantly.
   _ensureYtdlp()
-    .then(() => _updateYtdlp())
+    .then(() => process.env.NODE_ENV === 'test' ? undefined : _updateYtdlp())
     .catch(e => winston.warn('yt-dlp prefetch/update failed: ' + e.message));
   ensureFfmpeg()
     .catch(e => winston.warn('ffmpeg prefetch failed: ' + e.message));
