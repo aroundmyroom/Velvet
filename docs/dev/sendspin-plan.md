@@ -655,6 +655,15 @@ second test instance on another port for the owner.
   (now: play then pause), `forget(clientId)` (now: the solo room stays in rooms.json, hidden
   because the device is unknown).
 
+- 2026-11-12 — conformance harness: Velvet server adapter (`test/conformance/velvet-adapter/`, plaintext wire
+  trace via CipherState + ws hooks). Row velvet vs aiosendspin / sendspin-cpp / sendspin-js (14 scenarios, Opus
+  and legacy-unencrypted not offered): 8/14, 7/14, 4/14 pass. Every Velvet failure traces to two bugs:
+  `audio.js` `createDecoder` upmixes mono to the stereo master with ffmpeg's −3 dB matrix (all mono PCM/FLAC
+  hashes, every client), and `scheduler.js` `GroupStream` never anchors with no player member (`#ready` /
+  `#needsMore`), so a display-only room "plays" with no track metadata (metadata scenarios). With both fixed in
+  a scratch copy: 14/14 aiosendspin, 12/14 sendspin-cpp (its 2 = client cannot send `format`). sendspin-js
+  failures are peer limits (48/44.1 kHz stereo only, no FLAC/artwork/24-bit/baseline, no raw frames).
+
 ### Second test instance (owner)
 
 Config, DB and Rooms state live outside git in `/home/velvet-work/sendspin-e2e/` (`conf/default.json`
