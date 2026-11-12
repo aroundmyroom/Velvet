@@ -306,17 +306,15 @@ What a speaker offers depends on the device. Velvet supports:
 - **Colours:** a palette from the artwork, checked for readable contrast.
 - **Volume:** a speaker that reports volume but cannot be set from outside is
   shown read-only.
-
-Audio goes out as FLAC, PCM (up to 24-bit) or Opus, in the format the speaker
 - **Visualizer:** light rings, LED strips and displays get the music as data,
   see [Lights and visualizers](#lights-and-visualizers).
+
+Audio goes out as FLAC, PCM (up to 24-bit) or Opus, in the format the speaker
 prefers. Opus is sent only to a speaker that lists it, ahead of FLAC or PCM;
 it is lossy (about 128 kbit/s stereo, 64 kbit/s mono) and suits speakers on a
 weak Wi-Fi link. Opus is covered by third-party patents for products that are
 sold; Velvet is free software and Opus stays optional, since every speaker
 also takes FLAC and PCM. Tracks join without gaps.
-
----
 
 ### Lights and visualizers
 
@@ -395,8 +393,6 @@ off for an input with hum on it, which reports a signal all day.
 - Inputs in PCM (16/24/32-bit) and FLAC are accepted, any sample rate up to
   384 kHz and up to 8 channels (the first two are used). Opus input is not
   offered.
-
-
 
 ---
 

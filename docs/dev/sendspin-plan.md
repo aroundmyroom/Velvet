@@ -306,18 +306,10 @@ export class GroupStream extends EventEmitter {
   playing; t0; masterRate; sendAheadUs; has(id); formatOf(id); stats();
   // events: 'track' { track, timestampUs /*audible*/, first }, 'ended', 'error' (err; already stopped),
   //         'member-error' (clientId, err; that member dropped, the others play on)
-}
-// rooms.js
-export class RoomError;               // .code: 'not_found' | 'invalid' | 'empty'  (REST: 404 / 400 / 409)
-export function groupVolumes(volumes, target); // spec delta/clamp/redistribute loop -> rounded per-player volumes
-export class RoomManager extends EventEmitter {
-  static async open(dir, { ffmpeg, logger, now, setPlayback(member, on) /* -> true when activated */,
-                           artworkFor(item, channelSpec) /* -> Buffer|null sized+encoded for the channel; may be async */,
-                           colorFor(item) /* -> { primary?, accent?, background_dark?, ... } | null; may be async */,
   // master PCM tap (visualizer): 'epoch' { rate } (play: new timeline at sample 0), 'pcm' (item { track, pcm, sample,
   //   trackStart } — every master sample once, before any member is fed), 'cut' (sample; replaceUpcoming truncated there),
   //   'pcm-end' (decode done), 'stop'. Audible time of master sample s = t0 + samplesToUs(s, masterRate).
-                           idleGraceMs = 10000, initialUnavailableGraceMs = 5000, random, streamOptions });
+}
 // visualizer.js  (no deps; FFT in plain JS)
 export const VIS_TYPES, RATE_MAX_CAP /*60*/, MAX_DISP_BINS /*1024*/, LEAD_MS /*500*/;
 export function streamConfig(clientStateVisualizer); // stream/start object: subset of types, rate_max capped, tracks_downbeats:
@@ -332,6 +324,14 @@ export class RoomVisualizer {          // one per GroupStream (RoomManager creat
 }
 // Member additions: info.visualizer = { bufferCapacity } (hello), state.roles.visualizer = parseVisualizerState(),
 //   sendBinary(visualizer frame) only while activeStreams has 'visualizer'.
+// rooms.js
+export class RoomError;               // .code: 'not_found' | 'invalid' | 'empty'  (REST: 404 / 400 / 409)
+export function groupVolumes(volumes, target); // spec delta/clamp/redistribute loop -> rounded per-player volumes
+export class RoomManager extends EventEmitter {
+  static async open(dir, { ffmpeg, logger, now, setPlayback(member, on) /* -> true when activated */,
+                           artworkFor(item, channelSpec) /* -> Buffer|null sized+encoded for the channel; may be async */,
+                           colorFor(item) /* -> { primary?, accent?, background_dark?, ... } | null; may be async */,
+                           idleGraceMs = 10000, initialUnavailableGraceMs = 5000, random, streamOptions });
                            // <dir>/rooms.json (0600, atomic, debounced 250 ms)
   attach(member) /* -> roomId */; detach(clientId); roomOf(clientId); listRooms(); getRoom(id);
   createRoom(name, clientIds) /* -> id */; renameRoom(id, name); setMembers(id, clientIds); deleteRoom(id);
@@ -807,6 +807,21 @@ second test instance on another port for the owner.
   respected, `bit_depth` ignored. ~1 % of one core per stereo stream (FLAC ~0.25 %). `test/sendspin-opus.test.mjs` (8).
   Conformance `server-initiated-opus`: sendspin-cpp passed (8 kHz mono, 251 packets); aiosendspin and sendspin-js client
   adapters do not offer Opus (harness fail-fast).
+- 2026-11-12 — Visualizer (`visualizer@v1`, `visualizer.js`): GroupStream master-PCM tap (`epoch`/`pcm`/`cut`/`pcm-end`/`stop`);
+  one lazy analysis per room (only requested types, at the highest requested rate ≤ 60): real FFT 2048 @ 48 kHz (Hann),
+  A-weighting, `loudness`/`f_peak`/`spectrum` (mel/log/lin bands, power sum, ≤ 1024 bars), log-band spectral-flux onset
+  curve (1024/256, 187.5 fps) → `peak` (adaptive threshold, 80 ms gap, strength vs. a decaying max) and `beat` (comb tempo
+  over the onset ACF with a log-Gaussian prior — Velvet's `files.bpm` via `meta.bpm` (σ 0.05 oct) or 120 BPM (σ 0.7 oct)
+  — comb phase, then PLL 0.8 with coasting; `tracks_downbeats: false`). Frames stamped `t0 + samplesToUs(sample)` (the
+  audio's own timeline), sent ≤ send-ahead + 0.5 s ahead, non-decreasing, visualizer `buffer_capacity` accounting, late
+  join from now + 50 ms, seek/jump = `stream/clear`, queue-edit cut = `stream/clear from_timestamp`, pause/stop =
+  `stream/end`; visualizer-only devices get `playback` and join the room. Real music: tempo 108.3/108.9 BPM free vs DB
+  108.3/108.5; DB 137.2 settles a free 68.8. CPU ~0.75 % of one core per room at 30 fps (all types; 1.25 % at 60 fps;
+  loudness/spectrum alone 0.2 %). 16 tests (`sendspin-visualizer`); E2E with an aiosendspin visualizer-only client:
+  stream/start echo, 30 fps per type, beats every 500 ms on a 120 BPM click track, clear on seek, end on pause.
+- 2026-11-12 — Flaky Rooms tests: the jump test read a stale `rooms.json` (previous test's shuffle, 250 ms debounced
+  save) and waits matched old inbox messages; now keyed on `queueVersion`/new-message counts, clock bounds use measured
+  elapsed time. Test-only; 30/30 under CPU load, `npm test` 3/3.
 - 2026-11-12 — Source role (`source@v1`, line-in, `source.js`): explicit per-device source approval in the trust store (separate
   from playback approval, never implied; survives pairing, dropped with trust); role activated only when paired or allowed;
   `start` only after operator action (or auto-switch), with `playback` declared and the source state received. Ingest: PCM
@@ -831,7 +846,7 @@ second test instance on another port for the owner.
   session 192-bit token in the stream path, public route for LAN/loopback peers only, dead once the Sonos leaves. Group
   volume/mute include the Sonos (RenderingControl). Persisted by UUID + last IP (re-resolved through Sonos discovery).
   REST `GET /rooms/sonos`, `POST|PATCH|DELETE /rooms/:id/sonos[/:uuid]`; admin + player room editor with delay slider and
-  a "follows the room" badge; 17 keys × 12 locales. Tests: `sendspin-sonos` (11, fake SOAP Sonos), REST
+  a "follows the room" badge; 17 keys × 12 locales. Tests: `sendspin-sonos` (10, fake SOAP Sonos), REST
   `sendspin-sonos-api` (3, spawned server + fake Sonos via `VELVET_TEST_SONOS`, NODE_ENV=test only). Not yet heard on a
   real Sonos: default delay, `x-rincon-mp3radio` with a chunked endless stream and ICY titles are to be checked by the owner.
 
@@ -848,21 +863,6 @@ kill <pid>     # SIGTERM: Rooms stop cleanly, then Velvet exits
 ```
 
 Open `https://music.aroundtheworld.net:3100` (same users as production). Production
-- 2026-11-12 — Visualizer (`visualizer@v1`, `visualizer.js`): GroupStream master-PCM tap (`epoch`/`pcm`/`cut`/`pcm-end`/`stop`);
-  one lazy analysis per room (only requested types, at the highest requested rate ≤ 60): real FFT 2048 @ 48 kHz (Hann),
-  A-weighting, `loudness`/`f_peak`/`spectrum` (mel/log/lin bands, power sum, ≤ 1024 bars), log-band spectral-flux onset
-  curve (1024/256, 187.5 fps) → `peak` (adaptive threshold, 80 ms gap, strength vs. a decaying max) and `beat` (comb tempo
-  over the onset ACF with a log-Gaussian prior — Velvet's `files.bpm` via `meta.bpm` (σ 0.05 oct) or 120 BPM (σ 0.7 oct)
-  — comb phase, then PLL 0.8 with coasting; `tracks_downbeats: false`). Frames stamped `t0 + samplesToUs(sample)` (the
-  audio's own timeline), sent ≤ send-ahead + 0.5 s ahead, non-decreasing, visualizer `buffer_capacity` accounting, late
-  join from now + 50 ms, seek/jump = `stream/clear`, queue-edit cut = `stream/clear from_timestamp`, pause/stop =
-  `stream/end`; visualizer-only devices get `playback` and join the room. Real music: tempo 108.3/108.9 BPM free vs DB
-  108.3/108.5; DB 137.2 settles a free 68.8. CPU ~0.75 % of one core per room at 30 fps (all types; 1.25 % at 60 fps;
-  loudness/spectrum alone 0.2 %). 16 tests (`sendspin-visualizer`); E2E with an aiosendspin visualizer-only client:
-  stream/start echo, 30 fps per type, beats every 500 ms on a 120 BPM click track, clear on seek, end on pause.
-- 2026-11-12 — Flaky Rooms tests: the jump test read a stale `rooms.json` (previous test's shuffle, 250 ms debounced
-  save) and waits matched old inbox messages; now keyed on `queueVersion`/new-message counts, clock bounds use measured
-  elapsed time. Test-only; 30/30 under CPU load, `npm test` 3/3.
 (`/home/velvet`, port 3000, `music.service`) is never touched.
 
 ### Reference daemon notes (sendspin CLI + aiosendspin client, Nov 2026)
