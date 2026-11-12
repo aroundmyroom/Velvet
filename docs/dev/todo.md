@@ -449,14 +449,22 @@ Phase 1 complete (v6.14.17): `audio_features` table, `essentia-bpm-worker.mjs`, 
 - [ ] Show connected-user avatars/initials in Jukebox view
 - [ ] Per-track "added by" attribution in queue panel
 
-### Multi-room / Snapcast / Chromecast
+### Velvet Rooms — extensions
 
-**Snapcast sidecar:**
-- [ ] Run snapcast as a sidecar; Velvet writes PCM to snapfifo while playing
-- [ ] Control via snapcast JSON-RPC API over TCP
-- [ ] Admin UI: "Multi-room" panel; player UI: room selector
+- [ ] Opus output (needs Ogg page parsing or a raw-packet path in `src/sendspin/audio.js`)
+- [ ] Visualizer role: beat/loudness from the BPM analysis
+- [ ] Source role (line-in from a speaker into a room)
+- [ ] Sonos as a room member
+- [ ] Send browser-queue reorder/remove to the room (today only add/jump/play)
+- [ ] Auto-DJ top-up for a room's server-side queue
+- [ ] Player repeat/shuffle buttons → room (`/rooms/:id/repeat|shuffle` exist, the player does not call them)
+- [ ] Pass the listener's ReplayGain mode/preamp to `play`/`add` (API accepts `rg*`, the player does not send them)
+- [ ] Room editing in the player (today admin page only)
+- [ ] `_velvet_…` vendor roles (e.g. queue, lyrics) for speakers that want them
+- [ ] IPv6 mDNS discovery
 
-**Chromecast:**
+### Chromecast
+
 - [ ] Cast Web SDK + Cast button in Now Playing bar
 - [ ] Cast receiver app URL that proxies the `/api/v1/music/` stream endpoint
 - [ ] Sync play/pause/seek between Cast session and local player

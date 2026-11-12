@@ -632,6 +632,8 @@ second test instance on another port for the owner.
   `known-devices.json` cache; solo `group/update` at hello removed (rooms own it). 13 tests
   (`sendspin-pairing-integration`, client helper `test/helpers/sendspin-test-client.mjs`). E2E against `sendspin daemon`:
   dynamic code (read from its log), live token and staged token all pair, a daemon restart reconnects under `lt`.
+- 2026-11-12 — user docs: `docs/rooms.md` (Velvet Rooms guide), `docs/docker.md` (host networking / port 8927),
+  `COMMUNITY-SPEC-LICENSE-1.0.md` (verbatim spec licence, CSL 2.1.3.1) + `NOTICE.md`, todo backlog "Velvet Rooms — extensions".
 
 ### Reference daemon notes (sendspin CLI + aiosendspin client, Nov 2026)
 

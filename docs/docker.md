@@ -322,6 +322,33 @@ Your data in the mounted volumes is untouched.
 
 ---
 
+## Velvet Rooms (Sendspin speakers)
+
+[Velvet Rooms](rooms.md) finds speakers over mDNS (UDP 5353 multicast), and
+speakers connect to Velvet on TCP **8927**. Multicast does not reach a
+container on Docker's default bridge network, so for automatic discovery run
+the container with host networking:
+
+```yaml
+services:
+  velvet:
+    network_mode: host   # replaces the ports: section; Velvet listens on 3000 and 8927 directly
+```
+
+Without host networking, publish the port and connect the speakers to the
+server by address instead (`ws://<docker-host>:8927/sendspin`, or
+`<docker-host>:8927` in apps that ask for host and port):
+
+```yaml
+    ports:
+      - "3000:3000"
+      - "8927:8927"
+```
+
+If you change the port in *Admin → Velvet Rooms*, change the mapping too.
+
+---
+
 ## Useful commands
 
 | Command | Effect |
