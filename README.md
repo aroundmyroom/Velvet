@@ -53,7 +53,7 @@ numbered by chart position are understood as charts. Multi-disc albums,
 series and box sets look right.
 
 **Because it plays everywhere you are.** Browser and phone, a native
-**Samsung Smart TV** app, **Sonos**, **DLNA**, any **Subsonic** client
+**Samsung Smart TV** app, **Sonos**, **Sendspin speakers** in sync across rooms, **DLNA**, any **Subsonic** client
 (Symfonium, DSub, Ultrasonic), **Music Assistant / Home Assistant**, shared
 playlist links for friends without an account.
 
@@ -172,7 +172,7 @@ scan runs in the background; Auto-DJ works from the first song. Full guides:
 | **Album library first** | Multi-disc detection, series grouping, category folders, per-disc cover art, CUE sheet support — your classical and box-set collections look right. |
 | **Listening analytics** | Full play history, skip rates, hourly heat charts, personality type, fun facts — all local, no external calls. |
 | **Real audio quality** | EBU R128 loudness normalisation, gapless playback, crossfade, BPM and harmonic mixing, on-demand transcoding. |
-| **Plays everywhere** | Browser, **Samsung Smart TV (Tizen app)**, Sonos, DLNA/UPnP, Subsonic API (Symfonium, DSub, Ultrasonic), **Music Assistant / Home Assistant**, shared playlist links. |
+| **Plays everywhere** | Browser, **Samsung Smart TV (Tizen app)**, Sonos, **Velvet Rooms** — multi-room playback in sync on Sendspin speakers ([docs →](docs/rooms.md)), DLNA/UPnP, Subsonic API (Symfonium, DSub, Ultrasonic), **Music Assistant / Home Assistant**, shared playlist links. |
 | **Twelve languages** | EN, NL, DE, FR, ES, IT, PT, PL, RU, ZH, JA, KO — the whole UI, player and admin. |
 
 ---
