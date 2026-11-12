@@ -176,19 +176,75 @@ export class TrustStore {
   pskForClient(id) /* -> { psk, pskId, category: 'lt' | 'pr' (staged) | 'sn' } = msg1 PSK selection */;
   trustState(id) /* 'paired' | 'mismatch' | 'approved' | 'unknown' */; async rename(id, name); async flush();
 }
+// connection.js  (one WebSocket, inbound or outbound; EventEmitter; protocol errors close silently)
+export const PROTOCOL_VERSION /*1*/, MAX_WS_PAYLOAD /*65535*/, MAX_CLIENT_HELLO_BYTES /*16384*/, IMPLEMENTED_ROLES, GOODBYE_REASONS;
+export class SendspinError;                    // caller broke a spec rule (thrown synchronously, nothing sent)
+export function nowUs();                       // BigInt monotonic µs = process.hrtime.bigint() / 1000n
+export function negotiateRoles(supportedRoles, helloPayload, implemented?); // first implemented version per family,
+                                               //   support object required for player@v1/visualizer@v1; player, controller first
+export function unimplementedRoles(supportedRoles, implemented?), parseClientHello(payload), parsePlayerState(obj, player),
+                sameFormat(a, b), cleanText(peerString, max?) /* for logs */;
+export class SendspinConnection {
+  constructor({ ws, identity /*loadOrCreateServerKey()*/, name, languages, direction: 'inbound'|'outbound', url?, remoteAddress?,
+                resolvePsk(clientId) /*-> {psk, category}*/, hasPairingRecord(clientId), implementedRoles?, logger?, timeouts? });
+  // timeouts: { handshakeMs 30s (per message), helloMs 30s, activateFallbackMs 20s (idle activate if nobody decided), pingMs 30s, pongMs 15s }
+  clientId, suite, pskCategory /*'lt'|'pr'|'sn'*/, credentialMismatch, handshakeHash, info /*parseClientHello*/, negotiatedRoles,
+  unimplementedRoles, activities, activeRoles, state /*{ available, player: {outputDelayMs, minBufferMs, requiredLeadTimeMs,
+  supportedCommands, volume, muted, format}|null, roles }*/, goodbyeReason, direction, url, closed /*Promise*/;
+  isActivated, isOpen, isPaired, playbackAllowed, playerStateReceived, activeStreams, bufferedAmount, hasRole(family);
+  events: 'hello'(info) -> caller MUST activate() promptly | 'activated'({activities, roles, first}) | 'state'(state, prev) |
+          'time'({clientTransmitted, serverReceived, serverTransmitted}) | 'command'({controller}) | 'leave' | 'goodbye'(reason) |
+          'message'(type, payload) /* every other JSON type incl. client/pair-*, pair/abort */ | 'close'({code, goodbye,
+          handshakeCompleted, activated, activities, durationMs});
+  activate({ activities?, roles?, pairing? /*{method, format?}*/ }); // checks the allowed-set table (lt: no pairing; sn/pr:
+          //   playback/roles only with unpaired access, never on credential mismatch), pairing method offered + pairing_psk iff 'pr';
+          //   sends stream/end first for streams the activation removes; omits active_roles when roles is not passed
+  sendJson(type, payload), sendBinary(plaintext) /* -> false while a re-handshake runs */;
+  groupUpdate({ playbackState, groupId /*43 b64url*/, groupName }), serverState(obj), serverCommand({ player?, ...app });
+  streamStart({ player?, artwork?, visualizer?, ...app }), streamClear({ roles?, fromTimestamp? }), streamEnd(roles?);
+          // server_transmitted is stamped immediately before encryption; guards: available, playback, player state, format listed
+  sendAudioChunk(timestampUs, frame) /* -> bytes counted for buffer accounting (13 + frame); send_ahead stamped right before
+          encryption, saturating; all fragments encrypted+sent synchronously (one fragmented message in flight) */;
+  rehandshake({ psk, category, activation }) /* -> Promise; msg1/msg2 as encrypted noise/handshake, old-key app messages dropped,
+          keys swapped after msg2, then activate(activation) is the first message under the new keys */;
+  close(code?, reason?);
+}
+// server.js
+export const DEFAULT_PORT /*8927*/, DEFAULT_PATH /*'/sendspin'*/;
+export function reconnectDecision(closeInfo) /* -> 'now' | 'later' | 'never' | 'backoff' */;
+export class SendspinServer {          // EventEmitter
+  constructor({ dataDir, name, languages, host = '0.0.0.0', port = 8927, path = '/sendspin', roles = ['player@v1'] /*roles we
+                activate when allowed*/, logger, maxClients = 64, maxPending = 32, reconnect: { minMs, maxMs, concurrentMs, stableMs },
+                timeouts, discovery = false | SendspinDiscovery, allowLoopback = false });
+  async start(); async stop();        // stop: stream/end, close 1001 all, goodbye mDNS, flush the store
+  serverId, port, name, clients /*Map copy*/, getClient(id), trustStore;
+  connectTo(wsUrl, { source }) /* ws:// + path-absolute only; redial per reconnectDecision with exponential back-off */;
+  disconnectFrom(wsUrl);
+  isApproved(id), approvals, async approve(id, name?) /* TrustStore.approve, activates roles live */, async revoke(id);
+  canPlay(id), setPlayback(id, on) /* adds/drops 'playback' (stream/end first) */;
+  events: 'client'(conn, info) after the initial activate + solo group/update | 'client-removed'(conn, closeInfo) |
+          'credential-mismatch'(conn) | 'state'|'time'|'command'|'leave'|'goodbye'|'message'(conn, ...) |
+          'discovered'(svc) | 'discovery-lost'(svc);
+}
+// discovery.js  (own mDNS on node:dgram, no dependency; IPv4 multicast; bounded parser)
+export const CLIENT_SERVICE, SERVER_SERVICE, TYPE, MDNS_ADDRESS, MDNS_PORT;
+export function encodePacket({ response, questions, answers, additionals }), decodePacket(buf), parseTxt(strings) /* Map */;
+export function isValidPath(p) /* RFC 3986 path-absolute, <= 256 */, isUsableAddress(addr, { allowLoopback }), buildUrl(addr, port, path);
+export class SendspinDiscovery {     // EventEmitter
+  constructor({ browse = CLIENT_SERVICE | null, transport? /*tests*/, logger, allowLoopback = false, addresses? });
+  async start(); advertise({ instance, port, path, name, service = SERVER_SERVICE }); query(); handlePacket(buf, rinfo); async stop();
+  instances; events: 'found'(svc, prevUrl) /* svc = { instance, fqdn, name, url, path, port } */ | 'lost'(svc);
+}
 ```
 
 ### Pairing integration contract (connection.js / server.js)
 
-- **Store wiring.** `server.js` opens `TrustStore` on `save/sendspin/` and passes
-  `resolvePsk = (id) => store.pskForClient(id)` and
-  `hasPairingRecord = (id) => store.isPaired(id)`. Approvals move from
-  `devices.json` into the store (`approve`/`revokeApproval`/`isApproved`);
-  migration at boot: if `devices.json` has `approved`, call
-  `store.approve(id, { name })` for each, then rename the file to
-  `devices.json.migrated`. A `lt` handshake that succeeds →
-  `clearCredentialMismatch`; the `credential-mismatch` event →
-  `markCredentialMismatch` (never delete the record on that signal).
+- **Store wiring (done in `server.js`).** `SendspinServer` opens `TrustStore` on
+  its `dataDir` and passes `resolvePsk = store.pskForClient` and
+  `hasPairingRecord = store.isPaired` to every connection; approvals live only
+  in the store (`devices.json` was never shipped, no migration). A `lt`
+  handshake → `clearCredentialMismatch`; a mismatch → `markCredentialMismatch`
+  (the record is never deleted on that signal).
 - **pairing_index.** Per connection: reset to 0 after every (re-)handshake;
   `++` right before sending each pairing `server/activate`; pass the new value
   to `createPairingAttempt`. One attempt per connection at a time.
@@ -208,7 +264,9 @@ export class TrustStore {
 - **Activation.** `attempt.activation({ playback, activeRoles })`:
   `['pairing']` with `active_roles: []`, or `['playback','pairing']` keeping
   roles when the connection is playback-capable (unpaired access approved).
-  `activate()` must accept the `pairing` object (currently throws).
+  `activate({ activities, roles, pairing })` accepts and validates the
+  `pairing` object. Pairing messages arrive on the connection's `'message'`
+  event (dropped before the initial activate).
 - **Routing.** Every inbound JSON whose type is in `PAIRING_MESSAGE_TYPES` goes
   to `attempt.onMessage(type, payload)` while an attempt exists (also after it
   ended: it returns `ignored`); with no attempt since the handshake, drop it.
@@ -451,3 +509,37 @@ second test instance on another port for the owner.
   cooldown, timeouts as data) and `trust-store.js` (records, approvals, staged pairing PSKs,
   mismatch; atomic 0600 JSON). No new dependencies. Byte-exact against aiosendspin + cpace-py
   transcripts (`test/fixtures/sendspin/gen_pairing_vectors.py`); integration contract above.
+- 2026-11-12 — `connection.js` (init/handshake/hello/activate state machine, Sentinel
+  fallback + mismatch, time/state/goodbye/leave, ping/pong, re-handshake, stamping at
+  encrypt time, all sends synchronous so fragments never interleave), `server.js`
+  (listener, dialer + reconnect policy, registry with replace-on-duplicate, TrustStore
+  approvals, solo `group/update`), `discovery.js` (own mDNS on `node:dgram`: `npm install`
+  of `bonjour-service` was refused by the sandbox, and a ~550-line bounded codec keeps the
+  dependency tree unchanged). 36 tests (`sendspin-connection`, `sendspin-discovery`).
+  E2E (`test/manual/sendspin-spike.mjs`) against `sendspin daemon`: client-initiated,
+  server-initiated and mDNS-discovered dial all handshake with the Sentinel PSK, the daemon
+  accepts `stream/start` (PCM 48k/24 and FLAC 48k/24) and plays 400 × 25 ms chunks, stream
+  ends cleanly. Our mDNS advert is seen by python-zeroconf, the daemon's advert by us.
+
+### Reference daemon notes (sendspin CLI + aiosendspin client, Nov 2026)
+
+- Needs PortAudio; this host has none installed. Spike recipe: `apt-get download
+  libportaudio2`, `dpkg -x` into a scratch dir, symlink `libportaudio.so`, run with
+  `LIBRARY_PATH`/`LD_LIBRARY_PATH` pointing there. Never let it open the real card (Velvet's
+  Server Audio uses it): give it a private `HOME` whose `.asoundrc` defines
+  `pcm.velvetnull { type null; hint { show on } }` and pass `--audio-device velvetnull`
+  (ALSA's own `null` is hidden from PortAudio). The null sink drains instantly, so its sync
+  statistics are meaningless (initial error = our send-ahead window) — real sync needs real
+  hardware.
+- Server-initiated listener path is `/sendspin` (default port 8928); mDNS instance name
+  is the `client_id`, TXT `path` + `name`, address = the host's LAN IP.
+- It sends `client/state` with `available: false` immediately after activation, then
+  `available: true` once its time filter has a sample (spec: the initial `client/state` of
+  an active player should wait for sync). Servers must wait for `available: true` before
+  `stream/start`.
+- `client/time` is one message every 0.2 s (unsynced) to 3 s (error < 1 ms), not the
+  spec's bursts of ≥ 8 — fine for us, we answer each.
+- Lists FLAC first; with a real device it probes formats (32 incl. 24-bit/48k). Reports
+  `min_buffer_ms` 250, `required_lead_time_ms` 250, `buffer_capacity` 32 000 000, volume
+  25, commands volume/mute/set_output_delay. Starts output after 8 chunks (0.2 s).
+- Its listener does not reject an `Origin` header (spec MUST); our dialer never sends one.
