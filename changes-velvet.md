@@ -1,3 +1,138 @@
+## v0.9.0 (2026-11-12)
+
+Velvet Rooms: multi-room playback on Sendspin speakers
+
+### Added
+
+- **Velvet Rooms.** Velvet implements the Sendspin protocol (version 1) and
+  acts as a Sendspin server: it plays your library on speakers around the
+  house, sample-accurately in sync. Works with Sendspin speakers such as the
+  Home Assistant Voice Preview Edition, the Home Assistant Connect AUX-2 and
+  other ESPHome speakers with the Sendspin media player, the reference players
+  `sendspin-cpp-cli` and `sendspin-python-cli`, and Sendspin for Windows. Off
+  by default. (`docs/rooms.md`.)
+- **Discovery both ways.** Velvet advertises itself as `_sendspin-server._tcp`
+  and finds speakers that advertise `_sendspin._tcp` over mDNS (IPv4 and IPv6;
+  own codec, no new dependency), and connects to them; speakers and apps can
+  also connect to Velvet on TCP 8927 (`ws://host:8927/sendspin`).
+- **Encryption, allow and pair.** Every connection is encrypted (Noise
+  KKpsk2), paired or not. A new speaker plays nothing until the admin
+  **allows** it (encrypted, not authenticated) or **pairs** it (encrypted and
+  authenticated): with a six-digit code the speaker shows or reads out, an
+  eight-digit code printed on the device, or a pairing token (Sendspin for
+  Windows: *Show Pairing Token*). A token for a speaker that is offline is
+  kept and used on its next connection (24 h). Wrong codes back off; the
+  speaker's own messages are shown as plain text. A speaker that was reset
+  shows *Not recognised* — Velvet never falls back silently to unpaired play.
+  Revoke, unpair, rename, connect (take a speaker back from another server)
+  and forget per speaker; idle speakers are released for other servers.
+- **Rooms with a queue on the server.** Every speaker starts as a room of its
+  own; combine speakers into one room, move them, rename or split a room
+  without interrupting the others. Once a room plays, the queue lives on the
+  server: close the browser and the room plays on. Rooms, queues and what each
+  room last played survive a restart.
+- **Playback.** One decode per room, sent to every speaker in the format it
+  prefers — FLAC, PCM up to 24-bit, or Opus (only to a speaker that lists it).
+  Tracks join without gaps. Seek, jump to a song, play next, add, remove,
+  move and reorder never interrupt the song that plays. A speaker that joins a
+  playing room starts in sync at the current position. ReplayGain is applied
+  on the server, capped so a room never clips; the player's Loudness
+  Normalisation settings go along.
+- **Volume and speaker buttons.** Group volume and mute keep the speakers'
+  balance; one speaker can be set on its own. Play/pause, stop, next,
+  previous, volume, mute, repeat and shuffle on the speaker control the room;
+  *play* on an idle room resumes what it last played. A switch button cycles
+  through the rooms that play.
+- **Now playing on the speaker.** Title, artist, album artist, album, year,
+  track number, position and duration; the album art from Velvet's art cache
+  scaled to what the display asks for (never cropped); a colour palette from
+  the artwork, checked for readable contrast.
+- **Lights and visualizers.** Devices with the Sendspin visualizer role (light
+  rings, LED strips, displays) get `loudness`, `spectrum`, `f_peak`, `peak`
+  and `beat` at their own frame rate (up to 60/s), stamped on the music's
+  clock. Beats follow a live beat tracker, guided by Velvet's BPM analysis
+  when the song has one.
+- **Line-in.** Sendspin source devices (turntable preamp, AUX input,
+  Bluetooth receiver) play in any room, in sync. A source needs its own
+  explicit approval (*Allow as source*), separate from playback; a device
+  whose unpaired access is off (a microphone) must be paired first. Optional
+  auto-switch when the device reports a signal (off by default). The device's
+  clock drift is corrected by resampling, never by cutting the audio.
+- **Sonos speakers follow a room.** A Sonos in a room gets the room's audio
+  as a live MP3 radio stream, sent early by an adjustable delay (0–5000 ms,
+  default 2000 ms) to line up with its own buffer. One stream across track
+  changes, seek and pause; room volume and mute include it.
+- **Auto-DJ in a room.** When the room starts its last song, the browser
+  picks the next one with all Auto-DJ settings and adds it; two open tabs
+  never add twice.
+- **Admin → Velvet Rooms.** On/off, server name, port and server ID without
+  a Velvet restart; the speaker list with manufacturer, model, software
+  version, state and room; pairing dialogs; the room editor, line-in sources
+  and Sonos followers.
+- **Player.** The output picker gets a *Velvet Rooms* section. Picking a room
+  hands the browser's queue over (song, position, playing or paused) and turns
+  the player bar and queue panel into a remote: every queue action — drag,
+  remove, clear, shuffle queue, Flow and Undo — goes to the room, and changes
+  made elsewhere show up within a second or two. *Play in this browser* takes
+  it back at the same song and position. Users with the Cast permission edit
+  rooms from the picker (pencil) and start line-in there.
+- **Backup.** Backups include `save/sendspin/`: the server key and the
+  pairings (always both or neither), rooms and known speakers. Losing the
+  server key means pairing every speaker again; restoring a backup brings key
+  and pairings back together. (`docs/backup.md`.)
+- **Config `sendspin`**: `enabled`, `name`, `port` (8927), `bind`, `path`,
+  `discovery`. (`docs/json_config.md`.)
+- **REST:** admin routes under `/api/v1/admin/sendspin/*` (status, settings,
+  approve/revoke/rename/forget/connect/unpair, pair-token, pair-code
+  start/status/submit/cancel, source, source-auto) and player routes under
+  `/api/v1/rooms*` (rooms, state, queue, play, add, jump, remove, move,
+  reorder, transport, seek, volume, mute, repeat, shuffle, line-in, Sonos
+  followers). Queue edits take a `queueVersion` and answer `409
+  queue_changed` when the queue changed meanwhile. Pairing routes are
+  rate-limited; pairing tokens are never logged or echoed.
+  (`docs/API.md`, `docs/API/rooms.md`.)
+- **Docker:** discovery needs `network_mode: host`; without it, publish port
+  8927 and point speakers at the server by address. (`docs/docker.md`.)
+
+### Security
+
+- **Network input from speakers is validated before it is trusted.** Every
+  message from a peer is reduced to the exact shape the protocol allows, text
+  is cleaned and never coerced, and nothing a peer sends can escape its
+  connection handler — a malformed message closes that connection, nothing
+  more.
+- **Trust boundaries.** Only paired or allowed speakers get a room or a
+  stream. Revoke or unpair detaches a speaker at once and closes its session;
+  a revoke during a re-handshake is applied when it ends. Line-in is never
+  implied by playback approval.
+- **Per-address caps.** At most 4 unauthenticated connections and 4 untrusted
+  speakers per network address, 16 untrusted speakers in all, 5 s to
+  introduce itself, and a bounded list of known speakers (trusted ones are
+  never evicted) — one host on the LAN cannot exhaust the listener.
+- **mDNS address rules.** Discovery ignores IPv4-mapped and -compatible IPv6,
+  link-local and off-subnet addresses and off-link queries.
+- **Sonos stream.** The stream URL carries a per-session random token, works
+  only while that Sonos follows the room, contains no login and answers only
+  LAN and loopback peers.
+- **Queue paths** resolve through the user's own folders and stay inside them;
+  a room never plays a file the user could not play in the browser.
+
+### Changed
+
+- **Licensing and naming.** The Sendspin specification is used under the
+  Community Specification License 1.0: `COMMUNITY-SPEC-LICENSE-1.0.md` and
+  `NOTICE.md` in the repository root. Velvet Rooms works with Sendspin
+  speakers; it is not affiliated with, endorsed by or certified by the Open
+  Home Foundation, and uses no Sendspin logo.
+- `README.md` lists Velvet Rooms under *Plays everywhere*.
+
+### Development
+
+- New tests for the protocol, pairing, streaming, rooms, visualizer, line-in,
+  Sonos followers and the REST routes, and a conformance-harness adapter that
+  runs Velvet against the reference Sendspin clients. The boot-time yt-dlp
+  self-update is skipped under `NODE_ENV=test`.
+
 ## v0.8.5 (2026-11-10)
 
 Maintenance: dependency updates
