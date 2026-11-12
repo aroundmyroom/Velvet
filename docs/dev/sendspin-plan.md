@@ -63,26 +63,60 @@ right before encryption.
 ### Interfaces agreed between modules
 
 ```js
-// noise.js
+// noise.js  (Node crypto only; errors are NoiseError)
 export const SUITES = ['25519_ChaChaPoly_SHA256', '25519_AESGCM_SHA256'];
 export function generateStaticKeyPair(); // { publicKey: Buffer(32), privateKey: Buffer(32) }
+export function publicKeyFromPrivate(privateKey); // -> Buffer(32)
 export class NoiseInitiator {
-  constructor({ suite, staticKeyPair, remoteStaticPublicKey, prologue /*Buffer*/, psk /*Buffer(32)*/ });
-  writeMessage1(payload /*Buffer*/); // -> Buffer
-  readMessage2(message /*Buffer*/);   // -> payload Buffer; throws on auth failure
+  constructor({ suite, staticKeyPair, remoteStaticPublicKey, prologue /*Buffer*/, psk /*Buffer(32)*/, ephemeralKeyPair? /*tests only*/ });
+  writeMessage1(payload /*Buffer*/); // -> Buffer (32-byte e || AEAD(payload))
+  readMessage2(message, psk = ctorPsk); // -> payload Buffer; throws NoiseError. A failed read can be
+                                        //    retried with SENTINEL_PSK (Sentinel fallback); the PSK that
+                                        //    succeeded is then `initiator.psk`.
+  handshakeHash;                      // Buffer(32) h, after completion (= prologue of a re-handshake)
   split();                            // -> { send: CipherState, recv: CipherState }
 }
-// CipherState: encrypt(plaintext) -> Buffer, decrypt(ciphertext) -> Buffer (throws)
+export class NoiseResponder {          // client side; tests and future use
+  constructor({ suite, staticKeyPair, remoteStaticPublicKey, prologue, ephemeralKeyPair? });
+  readMessage1(message);              // -> payload
+  writeMessage2(payload, psk);        // -> Buffer
+  handshakeHash; split();             // split -> { send, recv }
+}
+// CipherState: encrypt(plaintext) -> Buffer, decrypt(ciphertext) -> Buffer (throws NoiseError,
+//   nonce not advanced on failure), nonce (Number). Max Noise message 65535 enforced both ways.
+export function encodeMsg1Payload(pskId, pskCategory); // -> Buffer '{"psk_id":"…","psk_category":"sn"}'
+export function parseMsg1Payload(buf);  // -> { pskId, pskCategory } | throws
+export const MSG2_PAYLOAD;               // Buffer '{}'
+export function parseMsg2Payload(buf);  // -> { canonical } | throws (any JSON object accepted)
+export function packHandshake(noiseMsg); // -> '{"payload":{"data":"<b64url>"},"type":"noise/handshake"}'
+export function unpackHandshake(text);   // -> Buffer | throws
 // keys.js
 export function encodeKeyId(publicKey); // base64url, 43 chars, no padding
-export function decodeKeyId(id);        // -> Buffer(32), throws on bad input
+export function decodeKeyId(id);        // -> Buffer(32), throws TypeError on non-canonical input
+export function isKeyId(id);            // -> boolean
 export function pskId(psk);             // base64url(SHA-256("sendspin-psk-id-v1" || psk))
-export const SENTINEL_PSK;              // SHA-256("sendspin-sentinel-psk-v1")
-// wire.js
-export const MSG = { JSON: 0, FRAGMENT: 1, AUDIO: 4, ARTWORK0: 8, SOURCE_AUDIO: 12, VIS_LOUDNESS: 16 /* … */ };
+export const SENTINEL_PSK, SENTINEL_PSK_ID; // SHA-256("sendspin-sentinel-psk-v1"), its psk_id
+export const PSK_CATEGORY = { LONG_TERM: 'lt', PAIRING: 'pr', SENTINEL: 'sn' };
+export function generatePsk();          // -> Buffer(32)
+export async function loadOrCreateServerKey(dir); // -> { publicKey, privateKey, serverId }; <dir>/server-key.json, 0600
+// wire.js  (errors are WireError; µs timestamps are BigInt, Numbers are coerced)
+export const MSG = { JSON: 0, FRAGMENT: 1, AUDIO: 4, ARTWORK0..3: 8..11, SOURCE_AUDIO: 12,
+                     VIS_LOUDNESS: 16, VIS_BEAT: 17, VIS_F_PEAK: 18, VIS_SPECTRUM: 19, VIS_PEAK: 20 };
+export const MAX_PLAINTEXT /*65519*/, MAX_PAYLOAD /*65518*/;
+export function frame(type, payload);                      // -> Buffer [type][payload]
+export function fragment(plaintext);                       // -> [Buffer] (one entry if it fits); encrypt
+                                                           //    and send ALL entries back to back before any
+                                                           //    other binary message (one-in-flight rule)
 export function encodeJson(obj);                           // -> [Buffer] (fragmented if needed)
-export function encodeAudioChunk(timestampUs, sendAheadUs, frame); // -> Buffer (13-byte header)
-export class Reassembler { push(buf) /* -> { type, payload } | null */ }
+export function decodeJson(payload);                       // -> object with type string + payload object | throws
+export function encodeAudioChunk(timestampUs, sendAheadUs, frame); // -> Buffer (13-byte header; NOT fragmented,
+                                                           //    pass through fragment()); sendAhead <0 -> 0, >2^32-1 -> 2^32-1
+export function decodeAudioChunk(buf), decodeSourceAudio(buf);
+export function encodeArtworkAnnounce(channel, timestampUs, totalSize), encodeArtworkPart(channel, data),
+                encodeArtworkParts(channel, image, partSize?) /* -> [Buffer], each <= 65519 */, encodeArtworkCancel(channel);
+export function encodeVisLoudness(ts, v), encodeVisBeat(ts, downbeat), encodeVisFPeak(ts, hz, amp),
+                encodeVisSpectrum(ts, bins), encodeVisPeak(ts, strength);
+export class Reassembler { constructor({ maxBytes = 64 MiB }); push(plaintext) /* -> { type, payload } | null; throws WireError -> close */; inFlight }
 // audio.js
 export function openTrack({ file, startMs, format /*{codec,sample_rate,channels,bit_depth}*/ });
 //  -> async iterator of { frame: Buffer, durationUs, samples } + codecHeader (FLAC)
@@ -222,3 +256,6 @@ the existing Sonos cast still works (regression).
 
 - 2026-11-12 — branch, worktree, reference repos, Python 3.13 venv with
   `aiosendspin` + `sendspin` CLI set up. Plan written.
+- 2026-11-12 — phase 0 crypto/framing: `noise.js` (KKpsk2, both suites, Sentinel
+  retry, re-handshake via prologue = prior `h`), `wire.js`, `keys.js`; byte-exact
+  against aiosendspin vectors (`test/fixtures/sendspin/gen_vectors.py`).
