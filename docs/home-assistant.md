@@ -5,9 +5,10 @@ into a Home Assistant media player and lets you play your Velvet library into
 it: from the media browser, from automations and scripts, and with Assist
 ("play *Rooms* in the kitchen").
 
-It is a custom integration, installed through HACS (as a custom repository) or
-by copying a folder. It talks to Velvet's normal REST API; Velvet needs no
-extra setting for it.
+It is a custom integration that lives in the Velvet repository itself
+(`custom_components/velvet/`), so it is versioned and released together with
+Velvet. Install it through HACS or by copying a folder. It talks to Velvet's
+normal REST API; Velvet needs no extra setting for it.
 
 ## Velvet Rooms or Music Assistant?
 
@@ -33,12 +34,29 @@ Assistant to control it. Both can run side by side.
 
 ## Installing
 
-- **HACS:** *HACS, Custom repositories*, add the integration's repository as
-  category *Integration*, install **Velvet**, restart Home Assistant.
-- **Manually:** copy `custom_components/velvet` from the integration's
-  repository into Home Assistant's `custom_components` folder and restart.
+- **HACS:** *HACS, ⋮, Custom repositories*, add
+  `https://github.com/aroundmyroom/Velvet` with category *Integration*,
+  install **Velvet**, restart Home Assistant. HACS offers each Velvet release
+  as an update; keep the integration on the same version as your Velvet
+  server.
+- **Manually:** copy the folder `custom_components/velvet` from the Velvet
+  repository (or the source archive of a Velvet release) into Home
+  Assistant's `custom_components` folder and restart.
 
-Tested with Home Assistant 2026.2; declared minimum 2025.2.
+Requires Home Assistant 2026.2 or newer.
+
+### For developers
+
+The integration's tests live in `test/home_assistant/` (pytest with
+`pytest-homeassistant-custom-component`, Python 3.13):
+
+```bash
+python3.13 -m venv .venv-ha && .venv-ha/bin/pip install -r test/home_assistant/requirements_test.txt
+cd test/home_assistant && ../../.venv-ha/bin/python -m pytest -q
+```
+
+`npm run sync-version` stamps the Velvet version into
+`custom_components/velvet/manifest.json`.
 
 ## Adding Velvet
 

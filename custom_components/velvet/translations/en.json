@@ -1,0 +1,79 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Connect to Velvet",
+        "description": "Enter the address of your Velvet server, for example {example}.",
+        "data": {
+          "url": "Server address",
+          "verify_ssl": "Verify the SSL certificate"
+        },
+        "data_description": {
+          "url": "Use the address you open Velvet with in a browser, including the scheme (https) and the port.",
+          "verify_ssl": "Turn this off only when Velvet uses a self-signed certificate."
+        }
+      },
+      "auth": {
+        "title": "Sign in to Velvet",
+        "description": "How do you want to sign in?",
+        "menu_options": {
+          "pair": "Approve a code in Velvet (no password needed)",
+          "password": "Username and password"
+        }
+      },
+      "password": {
+        "title": "Sign in with a password",
+        "description": "The password is only used once to get a token; Home Assistant does not store it.",
+        "data": {
+          "username": "Username",
+          "password": "Password"
+        }
+      },
+      "pair_expired": {
+        "title": "Code expired",
+        "description": "Nobody approved the code within 5 minutes. Submit to get a new code."
+      },
+      "reauth_confirm": {
+        "title": "Sign in to Velvet again",
+        "description": "Velvet at {url} no longer accepts the stored sign-in (the user was removed, or the server secret changed). Submit to sign in again."
+      }
+    },
+    "progress": {
+      "wait_for_approval": "Open Velvet ({url}) as the user Home Assistant should act as, open **User Settings**, find **Pair a Device** and enter this code:\n\n**{code}**\n\nThe code is valid for 5 minutes. This page continues by itself once you approve it."
+    },
+    "error": {
+      "cannot_connect": "Could not reach a Velvet server at this address.",
+      "invalid_url": "Enter a full address that starts with the scheme (http or https).",
+      "ssl_error": "The server's SSL certificate is not trusted. If Velvet uses a self-signed certificate, turn off \"Verify the SSL certificate\".",
+      "invalid_auth": "Wrong username or password.",
+      "no_rooms_permission": "This Velvet user may not use Velvet Rooms. An admin can allow it in Velvet (admin page, Users, the \"Cast\" permission).",
+      "rooms_disabled": "Velvet Rooms is turned off on this server. Turn it on in Velvet's admin page first.",
+      "unknown": "Unexpected error."
+    },
+    "abort": {
+      "already_configured": "This Velvet server is already set up.",
+      "reauth_successful": "Signed in again.",
+      "cannot_connect": "Could not reach the Velvet server.",
+      "no_rooms_permission": "This Velvet user may not use Velvet Rooms. An admin can allow it in Velvet (admin page, Users, the \"Cast\" permission).",
+      "rooms_disabled": "Velvet Rooms is turned off on this server. Turn it on in Velvet's admin page first.",
+      "wrong_server": "This address belongs to a different Velvet server."
+    }
+  },
+  "exceptions": {
+    "auth_failed": {
+      "message": "Velvet no longer accepts the stored sign-in. Re-authenticate the Velvet integration."
+    },
+    "command_failed": {
+      "message": "Velvet refused the command: {error}"
+    },
+    "unreachable": {
+      "message": "Velvet is unreachable: {error}"
+    },
+    "library_only": {
+      "message": "Velvet Rooms play the Velvet library only; pick something from the Velvet media browser."
+    },
+    "nothing_to_play": {
+      "message": "Nothing playable was found for this item."
+    }
+  }
+}

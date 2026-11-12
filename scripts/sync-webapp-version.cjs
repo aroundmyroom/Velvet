@@ -59,6 +59,9 @@ const TARGETS = [
   ['webapp/package.json', [
     [/("version":\s*")[^"]+/, `$1${VERSION}`],
   ]],
+  ['custom_components/velvet/manifest.json', [
+    [/("version":\s*")[^"]+/, `$1${VERSION}`],
+  ]],
 ];
 
 function syncWebappVersion() {

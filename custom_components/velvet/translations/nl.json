@@ -1,0 +1,79 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Verbinden met Velvet",
+        "description": "Vul het adres van je Velvet-server in, bijvoorbeeld {example}.",
+        "data": {
+          "url": "Serveradres",
+          "verify_ssl": "SSL-certificaat controleren"
+        },
+        "data_description": {
+          "url": "Het adres waarmee je Velvet in een browser opent, inclusief het schema (https) en de poort.",
+          "verify_ssl": "Zet dit alleen uit als Velvet een zelfondertekend certificaat gebruikt."
+        }
+      },
+      "auth": {
+        "title": "Aanmelden bij Velvet",
+        "description": "Hoe wil je je aanmelden?",
+        "menu_options": {
+          "pair": "Een code goedkeuren in Velvet (geen wachtwoord nodig)",
+          "password": "Gebruikersnaam en wachtwoord"
+        }
+      },
+      "password": {
+        "title": "Aanmelden met een wachtwoord",
+        "description": "Het wachtwoord wordt één keer gebruikt om een token op te halen; Home Assistant bewaart het niet.",
+        "data": {
+          "username": "Gebruikersnaam",
+          "password": "Wachtwoord"
+        }
+      },
+      "pair_expired": {
+        "title": "Code verlopen",
+        "description": "Niemand heeft de code binnen 5 minuten goedgekeurd. Verstuur om een nieuwe code te krijgen."
+      },
+      "reauth_confirm": {
+        "title": "Opnieuw aanmelden bij Velvet",
+        "description": "Velvet op {url} accepteert de opgeslagen aanmelding niet meer (de gebruiker is verwijderd of het servergeheim is gewijzigd). Verstuur om opnieuw aan te melden."
+      }
+    },
+    "progress": {
+      "wait_for_approval": "Open Velvet ({url}) als de gebruiker namens wie Home Assistant werkt, open **Gebruikersinstellingen**, zoek **Apparaat koppelen** en vul deze code in:\n\n**{code}**\n\nDe code is 5 minuten geldig. Deze pagina gaat vanzelf verder zodra je hem goedkeurt."
+    },
+    "error": {
+      "cannot_connect": "Op dit adres is geen Velvet-server bereikbaar.",
+      "invalid_url": "Vul een volledig adres in dat begint met het schema (http of https).",
+      "ssl_error": "Het SSL-certificaat van de server wordt niet vertrouwd. Gebruikt Velvet een zelfondertekend certificaat, zet dan \"SSL-certificaat controleren\" uit.",
+      "invalid_auth": "Onjuiste gebruikersnaam of wachtwoord.",
+      "no_rooms_permission": "Deze Velvet-gebruiker mag Velvet Rooms niet gebruiken. Een beheerder kan dit toestaan in Velvet (beheerpagina, Gebruikers, het recht \"Cast\").",
+      "rooms_disabled": "Velvet Rooms staat uit op deze server. Zet het eerst aan op de beheerpagina van Velvet.",
+      "unknown": "Onverwachte fout."
+    },
+    "abort": {
+      "already_configured": "Deze Velvet-server is al ingesteld.",
+      "reauth_successful": "Opnieuw aangemeld.",
+      "cannot_connect": "De Velvet-server is niet bereikbaar.",
+      "no_rooms_permission": "Deze Velvet-gebruiker mag Velvet Rooms niet gebruiken. Een beheerder kan dit toestaan in Velvet (beheerpagina, Gebruikers, het recht \"Cast\").",
+      "rooms_disabled": "Velvet Rooms staat uit op deze server. Zet het eerst aan op de beheerpagina van Velvet.",
+      "wrong_server": "Dit adres hoort bij een andere Velvet-server."
+    }
+  },
+  "exceptions": {
+    "auth_failed": {
+      "message": "Velvet accepteert de opgeslagen aanmelding niet meer. Meld de Velvet-integratie opnieuw aan."
+    },
+    "command_failed": {
+      "message": "Velvet weigerde de opdracht: {error}"
+    },
+    "unreachable": {
+      "message": "Velvet is niet bereikbaar: {error}"
+    },
+    "library_only": {
+      "message": "Velvet Rooms spelen alleen de Velvet-bibliotheek af; kies iets uit de Velvet-mediabrowser."
+    },
+    "nothing_to_play": {
+      "message": "Er is niets afspeelbaars gevonden voor dit item."
+    }
+  }
+}

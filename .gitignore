@@ -108,3 +108,10 @@ dev-app-update.yml
 docs/dev/philosophy.md
 
 save/sendspin/
+
+# Home Assistant integration (Python)
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+.venv-ha/

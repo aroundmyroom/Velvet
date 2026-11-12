@@ -62,6 +62,20 @@ jobs:
       - name: Assert cache-busters match package.json
         run: git diff --exit-code || (echo "::error::Webapp version is unsynced — run 'npm run sync-version' and commit." && exit 1)
 
+  home-assistant:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+      - run: pip install -r test/home_assistant/requirements_test.txt
+      - name: Integration tests
+        working-directory: test/home_assistant
+        run: python -m pytest -q
+      - name: Ruff
+        run: ruff check --config test/home_assistant/pyproject.toml custom_components test/home_assistant && ruff format --check --config test/home_assistant/pyproject.toml custom_components test/home_assistant
+
   secrets:
     runs-on: ubuntu-latest
     steps:

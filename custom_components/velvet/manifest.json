@@ -1,0 +1,15 @@
+{
+  "domain": "velvet",
+  "name": "Velvet",
+  "codeowners": [
+    "@aroundmyroom"
+  ],
+  "config_flow": true,
+  "dependencies": [],
+  "documentation": "https://github.com/aroundmyroom/Velvet/blob/main/docs/home-assistant.md",
+  "integration_type": "hub",
+  "iot_class": "local_polling",
+  "issue_tracker": "https://github.com/aroundmyroom/Velvet/issues",
+  "requirements": [],
+  "version": "0.9.1"
+}
