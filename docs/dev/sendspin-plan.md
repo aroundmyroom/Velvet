@@ -117,9 +117,29 @@ export function encodeArtworkAnnounce(channel, timestampUs, totalSize), encodeAr
 export function encodeVisLoudness(ts, v), encodeVisBeat(ts, downbeat), encodeVisFPeak(ts, hz, amp),
                 encodeVisSpectrum(ts, bins), encodeVisPeak(ts, strength);
 export class Reassembler { constructor({ maxBytes = 64 MiB }); push(plaintext) /* -> { type, payload } | null; throws WireError -> close */; inFlight }
-// audio.js
-export function openTrack({ file, startMs, format /*{codec,sample_rate,channels,bit_depth}*/ });
-//  -> async iterator of { frame: Buffer, durationUs, samples } + codecHeader (FLAC)
+// audio.js  (decode once to a "master" PCM = s32le interleaved at the group's master rate/channels,
+//            then one encoder per distinct player format; every function takes ffmpeg? = ffmpegBin())
+// format = { codec: 'pcm'|'flac', sample_rate, channels, bit_depth: 16|24 }   (opus: not yet, see phase 4)
+// chunk  = { frame: Buffer, samples, startUs, durationUs }   startUs = baseUs + exact µs of the chunk's first
+//          sample on the encoder's own sample counter; consecutive chunks are contiguous (no drift, no gaps)
+export const MASTER_BYTES_PER_SAMPLE /*4*/, MIN_CHUNK_MS /*15*/, MAX_CHUNK_MS /*150*/, DEFAULT_CHUNK_MS /*{pcm:25,flac:50}*/;
+export function samplesToUs(samples, sampleRate);       // exact integer floor, safe for days of audio
+export class Timeline { constructor(sampleRate, baseUs = 0); usAt(sample); nowUs; sample; advance(n) /* -> { startUs, durationUs } */ }
+export function createDecoder({ file, startMs = 0, sampleRate, channels, signal, ffmpeg });
+//  -> { pid, exited /*Promise*/, close(), [Symbol.asyncIterator] }  yields master PCM Buffers (whole frames);
+//     pull-based (backpressure = stop iterating); throws 'ffmpeg decode failed (…): <stderr>'; abort/close kills ffmpeg
+export async function* decodeQueue(tracks /*(async) iterable of { file, startMs? }*/, { sampleRate, channels, signal, ffmpeg });
+//  -> yields { track, pcm, sample /*master index of pcm[0]*/, trackStart /*first buffer of a track*/ } — gapless join
+export function createEncoder({ format, inputRate, inputChannels, chunkMs?, baseUs = 0, signal, ffmpeg });
+//  -> Encoder { format, chunkSamples, codecHeader /*base64|null, sync*/, samples, endUs, pid? exited?,
+//               write(masterPcm) /*Promise, backpressure*/, end(), close(reason?), read() /*-> chunk|null*/, [asyncIterator] }
+//     pcm at master rate/channels = in-process repack (no process); otherwise one ffmpeg per encoder
+//     (resample + bit depth + FLAC). Output is read eagerly into an in-memory queue, so write() never deadlocks.
+export async function pump(pcmSource, encoders);        // feeds a decoder/decodeQueue into N encoders, end()s them; errors close them
+export function openTrack({ file, startMs, format, chunkMs, baseUs, signal, ffmpeg }); // -> Encoder (decode at format rate)
+export class FlacFramer { push(buf) /* -> [{ frame, samples }] */; end(); }   // splits an ffmpeg `-f flac` stream
+export function parseFlacFrameHeader(buf, pos);          // -> { length, blockSize, number, variable } | null | undefined
+export function flacCodecHeader({ sampleRate, channels, bitDepth, blockSize }); // -> Buffer 'fLaC' + STREAMINFO (last-block flag)
 ```
 
 ### Rules from the implementation guide (binding for this branch)
@@ -259,3 +279,9 @@ the existing Sonos cast still works (regression).
 - 2026-11-12 — phase 0 crypto/framing: `noise.js` (KKpsk2, both suites, Sentinel
   retry, re-handshake via prologue = prior `h`), `wire.js`, `keys.js`; byte-exact
   against aiosendspin vectors (`test/fixtures/sendspin/gen_vectors.py`).
+- 2026-11-12 — `audio.js` stream engine: ffmpeg decode → s32le master PCM, per-format
+  encoders (PCM 16/24 repack in-process, resample/FLAC via one ffmpeg each; FLAC split
+  into whole frames by CRC-8 header + CRC-16 footer + frame-number check), exact µs
+  timeline, gapless `decodeQueue`, seek, abort. Lossless round trip verified with ffmpeg
+  and aiosendspin's client decoder. ~0.4 % of one core per 44.1k FLAC stream; first chunk
+  ~25 ms after open. Opus TODO (phase 4: needs Ogg page parsing or a raw-packet path).
