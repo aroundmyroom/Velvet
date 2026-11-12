@@ -255,6 +255,7 @@ export class RoomsService extends EventEmitter {
       canSeek: view.supportedCommands.includes('seek'),
       playable: this.playable(view),
       lineIn: view.live ? { clientId: view.live.sourceId, name: view.live.name } : null,
+      eq: view.eq,
     };
   }
 

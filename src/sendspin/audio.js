@@ -1,6 +1,7 @@
 import { spawn } from 'node:child_process';
 import path from 'node:path';
 import { ffmpegBin, ffprobeBin } from '../util/ffmpeg-bootstrap.js';
+import { eqFilterChain } from './eq.js';
 
 export const MASTER_BYTES_PER_SAMPLE = 4;
 export const MIN_CHUNK_MS = 15;
@@ -126,14 +127,16 @@ function channelFilter(inputChannels, channels) {
 }
 
 export function createDecoder({
-  file, startMs = 0, gainDb = 0, sampleRate, channels, inputChannels = null, signal, ffmpeg = ffmpegBin(),
+  file, startMs = 0, gainDb = 0, eq = null, sampleRate, channels, inputChannels = null, signal, ffmpeg = ffmpegBin(),
 }) {
   const args = ['-hide_banner', '-nostdin', '-loglevel', 'error', '-protocol_whitelist', 'file'];
-  if (startMs > 0) args.push('-ss', (startMs / 1000).toFixed(3));
+  if (startMs > 0) args.push('-ss', (startMs / 1000).toFixed(6));
   args.push(
     '-i', inputUrl(file), '-map', '0:a:0', '-vn', '-sn', '-dn',
   );
-  const filters = [channelFilter(inputChannels, channels), gainDb ? `volume=${Number(gainDb).toFixed(2)}dB` : null]
+  const eqChain = eqFilterChain(eq, sampleRate);
+  const volumeDb = (Number(gainDb) || 0) - eqChain.headroomDb;
+  const filters = [channelFilter(inputChannels, channels), volumeDb ? `volume=${volumeDb.toFixed(2)}dB` : null, ...eqChain.filters]
     .filter(Boolean);
   if (filters.length) args.push('-af', filters.join(','));
   args.push(
@@ -189,10 +192,11 @@ export async function* decodeQueue(tracks, { sampleRate, channels, signal, ffmpe
   const frameBytes = MASTER_BYTES_PER_SAMPLE * channels;
   for await (const track of tracks) {
     const decoder = await openDecoder({
-      file: track.file, startMs: track.startMs, gainDb: track.gainDb, inputChannels: track.channels,
+      file: track.file, startMs: track.startMs, gainDb: track.gainDb, eq: track.eq, inputChannels: track.channels,
       sampleRate, channels, signal, ffmpeg,
     });
-    let first = true;
+    // A resumed track (re-rendered mid-way, see GroupStream.rerender) continues the boundary already announced.
+    let first = !track.resume;
     for await (const pcm of decoder) {
       yield { track, pcm, sample, trackStart: first };
       first = false;

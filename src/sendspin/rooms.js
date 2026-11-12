@@ -5,6 +5,7 @@ import path from 'node:path';
 import { GroupStream, serverNow } from './scheduler.js';
 import { RoomVisualizer, canVisualize } from './visualizer.js';
 import { encodeArtworkAnnounce, encodeArtworkParts, encodeArtworkCancel } from './wire.js';
+import { defaultEq, normalizeEq, isDefaultEq } from './eq.js';
 import {
   RoomSonos, SONOS_ID_PREFIX, MAX_SONOS_PER_ROOM, MAX_SONOS_DELAY_MS, DEFAULT_SONOS_DELAY_MS, isSonosUuid,
 } from './sonos.js';
@@ -147,6 +148,7 @@ export class RoomManager extends EventEmitter {
       repeat: REPEAT_MODES.includes(r.repeat) ? r.repeat : 'off', shuffle: Boolean(r.shuffle),
       lastPlayedAt: r.lastPlayedAt ?? null, queueVersion: Number.isInteger(r.queueVersion) ? r.queueVersion : 1,
       state: r.state === 'playing' || r.state === 'paused' ? 'paused' : 'stopped',
+      eq: normalizeEq(r.eq ?? defaultEq()),
     });
     room.order = Array.isArray(r.order) && r.order.length === room.queue.length ? r.order : room.queue.map((_, i) => i);
     for (const x of Array.isArray(r.sonos) ? r.sonos : []) {
@@ -546,6 +548,23 @@ export class RoomManager extends EventEmitter {
     this.#changed(room);
   }
 
+  // One EQ per room, for whatever plays from its queue (a line-in stays unequalised). A change while playing
+  // re-renders from the earliest sample the speakers can still take back; the song plays on at its position.
+  setEq(id, eq) {
+    const room = this.#room(id);
+    room.eq = normalizeEq(eq);
+    if (room.state === 'playing' && !room.live && room.stream?.playing) {
+      const done = room.stream.rerender((track, offsetMs, atUs) => {
+        this.#dropScheduledFrom(room, atUs);
+        return this.#tracksResuming(room, track, offsetMs);
+      });
+      if (!done) this.#start(room, this.#currentIndex(room), this.#currentPosition(room));
+    }
+    this.#save();
+    this.#changed(room);
+    return { ...room.eq, gains: room.eq.gains.slice() };
+  }
+
   setShuffle(id, on) {
     const room = this.#room(id);
     if (room.shuffle === Boolean(on)) return;
@@ -656,7 +675,7 @@ export class RoomManager extends EventEmitter {
     const room = {
       id, name, solo, members: [], queue: [], order: [], index: 0, positionMs: 0, state: 'stopped',
       repeat: 'off', shuffle: false, lastPlayedAt: null, stream: null, timers: [], idleTimer: null,
-      current: null, scheduled: null, token: 0, queueVersion: 1, live: null,
+      current: null, scheduled: null, token: 0, queueVersion: 1, live: null, eq: defaultEq(),
     };
     this.#rooms.set(room.id, room);
     return room;
@@ -1100,9 +1119,16 @@ export class RoomManager extends EventEmitter {
   // Tracks follow queue entries by identity, so an insert while playing never shifts what is decoded.
   #track(room, item, startMs) {
     return {
-      file: item.file, startMs, gainDb: item.gainDb ?? 0, item,
+      file: item.file, startMs, gainDb: item.gainDb ?? 0, eq: room.eq, item,
       get index() { return room.queue.indexOf(item); },
     };
+  }
+
+  *#tracksResuming(room, track, offsetMs) {
+    const t = this.#track(room, track.item, (track.startMs ?? 0) + offsetMs);
+    if (offsetMs > 0) t.resume = true;
+    yield t;
+    yield* this.#tracksAfter(room, track.item);
   }
 
   #after(room, item) {
@@ -1516,6 +1542,7 @@ export class RoomManager extends EventEmitter {
       live: room.live ? { sourceId: room.live.sourceId, name: room.live.name } : null,
       members: room.members.map((cid) => this.#memberView(room, this.#clients.get(cid))),
       sonos: room.sonos?.view() ?? [],
+      eq: { ...room.eq, gains: room.eq.gains.slice() },
     };
     if (queue) {
       view.queue = room.queue.map((q) => ({ filepath: q.filepath, meta: q.meta ?? {} }));
@@ -1559,6 +1586,7 @@ export class RoomManager extends EventEmitter {
       return {
         id: r.id, name: r.name, solo: r.solo, members: r.members, queue: r.queue, order: r.order,
         ...(r.sonos?.size ? { sonos: r.sonos.toJSON() } : {}),
+        ...(isDefaultEq(r.eq) ? {} : { eq: r.eq }),
         index: pos?.track.index ?? r.index, positionMs: pos?.positionMs ?? r.positionMs,
         repeat: r.repeat, shuffle: r.shuffle, state: r.live ? 'paused' : r.state, lastPlayedAt: r.lastPlayedAt, queueVersion: r.queueVersion,
       };

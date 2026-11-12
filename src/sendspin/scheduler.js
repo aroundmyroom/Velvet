@@ -261,6 +261,24 @@ export class GroupStream extends EventEmitter {
     return true;
   }
 
+  // Re-decodes everything from the earliest sample still changeable (a room EQ change): the audible audio plays
+  // on, the rest is withdrawn the same way as a queue edit. makeTail(track, offsetMs, atUs) gets the track the cut
+  // falls in and how far into it, and returns the tracks to decode from there. -> false when only a restart can do it.
+  rerender(makeTail) {
+    const ep = this.#epoch;
+    if (!ep || ep.live || ep.t0 === null || !ep.boundaries.length) return false;
+    const minUs = this.#now() + this.sendAheadUs + SPLICE_MARGIN_MS * 1000 - ep.t0;
+    // On a decoded item's first sample (items are shared with the taps, never split); past the decode is always free.
+    const want = Math.max(1, usToSamples(minUs, ep.rate));
+    const cut = ep.history.find((it) => it.sample >= want)?.sample ?? ep.decodedEnd;
+    if (ep.decodeDone && cut >= ep.decodedEnd) return true;
+    let b = ep.boundaries[0];
+    for (const x of ep.boundaries) if (x.sample <= cut) b = x;
+    const offsetMs = samplesToUs(cut - b.sample, ep.rate) / 1000;
+    this.#cut(ep, cut, makeTail(b.track, offsetMs, ep.t0 + samplesToUs(cut, ep.rate)));
+    return true;
+  }
+
   close() {
     this.stop();
     for (const id of [...this.#members.keys()]) this.removeMember(id, { end: false });
