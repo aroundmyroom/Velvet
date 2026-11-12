@@ -21019,7 +21019,15 @@ function _openOutputPicker() {
       rowEl.setAttribute('role', 'button');
       rowEl.setAttribute('tabindex', '0');
       rowEl.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); rowEl.click(); } });
+      if (room.lineIn) {
+        const badge = document.createElement('span');
+        badge.className = 'room-live-badge';
+        badge.textContent = t('player.rooms.lineIn.badge');
+        badge.title = t('player.rooms.lineIn.banner', { name: room.lineIn.name || '', room: room.name });
+        rowEl.appendChild(badge);
+      }
       drop.appendChild(rowEl);
+      for (const el of _roomLineInRows(room, row)) drop.appendChild(el);
     }
   }
 
@@ -21054,10 +21062,12 @@ function _openOutputPicker() {
   // device reboot without requiring a browser refresh.
   // Uses defaultRoom.ip as seed so it's fast (direct HTTP, not SSDP multicast).
   if (!isFromScan && S.roomsAvailable) {
-    const before = JSON.stringify(S.rooms.map(r => [r.id, r.name, r.playable, (r.members || []).length]));
+    const sig = (list) => JSON.stringify([list.map(r => [r.id, r.name, r.playable, (r.members || []).length, r.lineIn?.clientId]),
+      (S.roomSources || []).map(x => [x.clientId, x.available, x.signal])]);
+    const before = sig(S.rooms);
     _roomsProbe().then(list => {
       if (!_outputDropdownEl) return;
-      if (JSON.stringify(list.map(r => [r.id, r.name, r.playable, (r.members || []).length])) !== before) {
+      if (sig(list) !== before) {
         _outputPickerFromScan = true;
         _closeOutputDropdown();
         _openOutputPicker();
