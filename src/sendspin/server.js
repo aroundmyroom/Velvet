@@ -20,7 +20,8 @@ export const DEFAULT_PATH = '/sendspin';
 const DEFAULT_RECONNECT = Object.freeze({ minMs: 1000, maxMs: 300_000, concurrentMs: 60_000, stableMs: 60_000 });
 export const KNOWN_DEVICES_FILE = 'known-devices.json';
 export const PAIRING_STATUS_TTL_MS = 60_000;
-const MAX_KNOWN_DEVICES = 256;
+export const MAX_KNOWN_DEVICES = 256;
+export const MAX_UNTRUSTED_CLIENTS = 16;
 export const CLOSE_GRACE_MS = 1_500;
 const OTHER_SERVER_GOODBYES = new Set(['another_server', 'concurrent_attempt']);
 const STATUS_BY_EVENT = Object.freeze({
@@ -104,14 +105,14 @@ export class SendspinServer extends EventEmitter {
 
   constructor({
     dataDir, name = 'Velvet', languages = ['en'], host = '0.0.0.0', port = DEFAULT_PORT, path: wsPath = DEFAULT_PATH,
-    roles = ['player@v1'], logger = winston, maxClients = 64, maxPending = 32, reconnect = {}, timeouts = {},
-    discovery = false, allowLoopback = false, cooldown = {},
+    roles = ['player@v1'], logger = winston, maxClients = 64, maxUntrusted = MAX_UNTRUSTED_CLIENTS, maxPending = 32, maxKnown = MAX_KNOWN_DEVICES,
+    reconnect = {}, timeouts = {}, discovery = false, allowLoopback = false, cooldown = {},
   }) {
     super();
     if (!dataDir) throw new Error('SendspinServer needs a dataDir');
     if (!isValidPath(wsPath)) throw new Error('path must be an absolute path');
     this.#opts = {
-      dataDir, name, languages, host, port, path: wsPath, roles, maxClients, maxPending,
+      dataDir, name, languages, host, port, path: wsPath, roles, maxClients, maxUntrusted, maxPending, maxKnown,
       reconnect: { ...DEFAULT_RECONNECT, ...reconnect }, timeouts, discovery, allowLoopback, cooldown,
     };
     this.#log = logger;
@@ -155,6 +156,7 @@ export class SendspinServer extends EventEmitter {
         resolve();
       });
     });
+    this.#http.on('error', (err) => this.#log.warn(`[sendspin] listener error: ${err.message}`));
     this.#log.info(`[sendspin] listening on ws://${this.#opts.host}:${this.port}${this.#opts.path} as ${this.serverId.slice(0, 8)}`);
     if (this.#opts.discovery) await this.#startDiscovery();
   }
@@ -164,17 +166,17 @@ export class SendspinServer extends EventEmitter {
       ? this.#opts.discovery
       : new SendspinDiscovery({ logger: this.#log, allowLoopback: this.#opts.allowLoopback });
     this.#discovery = d;
-    d.on('found', (svc, prevUrl) => {
+    d.on('found', this.#guard('mDNS found', (svc, prevUrl) => {
       if (prevUrl) this.disconnectFrom(prevUrl);
       this.emit('discovered', svc);
       this.connectTo(svc.url, { source: 'mdns' });
-    });
-    d.on('lost', (svc) => {
+    }));
+    d.on('lost', this.#guard('mDNS lost', (svc) => {
       this.emit('discovery-lost', svc);
       const dial = this.#dials.get(svc.url);
       if (dial && !dial.conn) this.disconnectFrom(svc.url);
       else if (dial) dial.wanted = false;
-    });
+    }));
     try {
       await d.start();
       d.advertise({ instance: this.serverId, port: this.port, path: this.#opts.path, name: this.#opts.name });
@@ -183,12 +185,26 @@ export class SendspinServer extends EventEmitter {
     }
   }
 
+  // Socket and discovery events run outside any request: an error escaping one would end the process.
+  #guard(what, fn, onError = null) {
+    return (...args) => {
+      try {
+        fn(...args);
+      } catch (err) {
+        this.#log.warn(`[sendspin] ${what} failed: ${cleanText(err?.message, 160)}`);
+        onError?.(...args);
+      }
+    };
+  }
+
   #onInbound(ws, req) {
-    if (this.#stopping || this.#pending.size >= this.#opts.maxPending) {
-      ws.terminate();
-      return;
-    }
-    this.#attach(ws, { direction: 'inbound', remoteAddress: req.socket.remoteAddress });
+    this.#guard('inbound connection', () => {
+      if (this.#stopping || this.#pending.size >= this.#opts.maxPending) {
+        ws.terminate();
+        return;
+      }
+      this.#attach(ws, { direction: 'inbound', remoteAddress: req.socket.remoteAddress });
+    }, () => ws.terminate())();
   }
 
   #attach(ws, { direction, url = null, remoteAddress = null }) {
@@ -217,12 +233,26 @@ export class SendspinServer extends EventEmitter {
     return conn;
   }
 
+  // Trusted (paired, approved or with a staged token) and untrusted clients have separate limits,
+  // so a flood of throwaway keys cannot lock out a real speaker.
+  #admitted(conn) {
+    return this.#trusted(conn) || Boolean(this.#store.stagedPairingPsk(conn.clientId));
+  }
+
+  #full(conn) {
+    const admitted = this.#admitted(conn);
+    const peers = [...this.#clients.values()].filter((c) => this.#admitted(c) === admitted).length;
+    if (peers < (admitted ? this.#opts.maxClients : this.#opts.maxUntrusted)) return false;
+    if (admitted) this.#log.warn(`[sendspin] client limit reached; refusing ${conn.clientId.slice(0, 8)}`);
+    else this.#log.debug(`[sendspin] untrusted client limit reached; refusing ${conn.clientId.slice(0, 8)}`);
+    return true;
+  }
+
   #onHello(conn, info) {
     this.#pending.delete(conn);
     const id = conn.clientId;
     const existing = this.#clients.get(id);
-    if (!existing && this.#clients.size >= this.#opts.maxClients) {
-      this.#log.warn(`[sendspin] client limit reached; refusing ${id.slice(0, 8)}`);
+    if (!existing && this.#full(conn)) {
       conn.close(1013, 'server full');
       return;
     }
@@ -259,15 +289,29 @@ export class SendspinServer extends EventEmitter {
     update?.catch((err) => this.#log.warn(`[sendspin] trust store update failed: ${err.message}`));
   }
 
+  // An lt-keyed session stays lt after unpair(), so the trust store decides, not the session alone.
+  #trusted(conn) {
+    return (conn.isPaired && this.#store.isPaired(conn.clientId)) || this.isApproved(conn.clientId);
+  }
+
+  isTrusted(clientId) {
+    const conn = this.#clients.get(clientId);
+    if (conn) return this.#trusted(conn);
+    return this.#store.isPaired(clientId) || this.isApproved(clientId);
+  }
+
+  trustedIds() {
+    return new Set([...this.#store.listRecords().map((r) => r.clientId), ...this.#store.listApprovals().map((a) => a.clientId)]);
+  }
+
   #allowedRoles(conn) {
-    if (!conn.playbackAllowed) return [];
-    if (!conn.isPaired && !this.isApproved(conn.clientId)) return [];
+    if (!conn.playbackAllowed || !this.#trusted(conn)) return [];
     return conn.negotiatedRoles.filter((r) => this.#opts.roles.includes(r));
   }
 
   canPlay(clientId) {
     const conn = this.#clients.get(clientId);
-    return Boolean(conn?.isActivated && conn.playbackAllowed && (conn.isPaired || this.isApproved(clientId)));
+    return Boolean(conn?.isActivated && conn.playbackAllowed && this.#trusted(conn));
   }
 
   setPlayback(clientId, on) {
@@ -325,18 +369,18 @@ export class SendspinServer extends EventEmitter {
     if (this.#stopping || !dial.wanted) return;
     const ws = new WebSocket(dial.url, { maxPayload: MAX_WS_PAYLOAD, perMessageDeflate: false, handshakeTimeout: 10_000, followRedirects: false });
     dial.socket = ws;
-    ws.once('open', () => {
+    ws.once('open', this.#guard('outbound connection', () => {
       dial.conn = this.#attach(ws, { direction: 'outbound', url: dial.url });
-    });
-    ws.once('error', (err) => {
+    }, () => ws.terminate()));
+    ws.on('error', (err) => {
       if (dial.conn) return;
-      this.#log.debug(`[sendspin] dial ${dial.url} failed: ${err.message}`);
+      this.#log.debug(`[sendspin] dial ${dial.url} failed: ${cleanText(err?.message)}`);
     });
-    ws.once('close', () => {
+    ws.once('close', this.#guard('dial close', () => {
       if (dial.conn) return;
       dial.socket = null;
       this.#scheduleRedial(dial, 'backoff');
-    });
+    }));
   }
 
   #afterDialClose(conn, info) {
@@ -364,7 +408,7 @@ export class SendspinServer extends EventEmitter {
     const delay = decision === 'later' ? Math.max(concurrentMs, dial.backoff) : dial.backoff;
     dial.backoff = Math.min(dial.backoff * 2, maxMs);
     this.#log.debug(`[sendspin] redialing ${dial.url} in ${delay} ms`);
-    dial.timer = setTimeout(() => this.#dial(dial), delay);
+    dial.timer = setTimeout(this.#guard('redial', () => this.#dial(dial)), delay);
     dial.timer.unref?.();
   }
 
@@ -384,14 +428,35 @@ export class SendspinServer extends EventEmitter {
     if (!isKeyId(clientId)) throw new Error('invalid client id');
     const conn = this.#clients.get(clientId);
     const approved = await this.#store.approve(clientId, { name: name ?? conn?.info?.name ?? null });
-    if (approved && conn?.isActivated && !conn.activeRoles.length && conn.playbackAllowed) conn.activate({ roles: this.#allowedRoles(conn) });
+    if (approved) this.#trustChanged(clientId);
     return approved;
   }
 
   async revoke(clientId) {
     if (!(await this.#store.revokeApproval(clientId))) return;
+    this.#trustChanged(clientId);
+  }
+
+  #trustChanged(clientId) {
     const conn = this.#clients.get(clientId);
-    if (conn?.isActivated && !conn.isPaired) conn.activate({ activities: conn.activities.filter((a) => a !== 'playback'), roles: [] });
+    if (conn) this.#syncTrust(conn);
+    this.emit('trust', clientId);
+  }
+
+  // Grants or withdraws roles to match the trust store. A running re-handshake or pairing attempt
+  // finishes first: the re-activation it ends with (or #leavePairing) applies the new trust.
+  #syncTrust(conn) {
+    if (!conn.isOpen || !conn.isActivated || this.#clients.get(conn.clientId) !== conn) return;
+    if (conn.rehandshaking) {
+      conn.afterRehandshake(() => this.#syncTrust(conn));
+      return;
+    }
+    if (conn.activities.includes('pairing')) return;
+    if (this.#trusted(conn)) {
+      if (!conn.activeRoles.length && conn.playbackAllowed) conn.activate({ roles: this.#allowedRoles(conn) });
+    } else if (conn.activeRoles.length || conn.activities.includes('playback')) {
+      conn.activate({ activities: conn.activities.filter((a) => a !== 'playback'), roles: [] });
+    }
   }
 
   async stop() {
@@ -684,7 +749,10 @@ export class SendspinServer extends EventEmitter {
         const playback = entry.playback && conn.activities.includes('playback');
         const roles = conn.negotiatedRoles.filter((r) => this.#opts.roles.includes(r));
         return conn.rehandshake({ psk: record.psk, category: PSK_CATEGORY.LONG_TERM, activation: { activities: playback ? ['playback'] : [], roles } })
-          .then(() => this.#remember(conn));
+          .then(() => {
+            this.#remember(conn);
+            this.#trustChanged(conn.clientId);
+          });
       })
       .catch((err) => {
         this.#log.warn(`[sendspin] ${conn.clientId.slice(0, 8)} pairing not completed: ${err.message}`);
@@ -705,7 +773,8 @@ export class SendspinServer extends EventEmitter {
         .catch((err) => this.#log.debug(`[sendspin] return to the long-term PSK failed: ${err.message}`));
       return;
     }
-    conn.activate({ activities, roles: this.#allowedRoles(conn) });
+    const roles = this.#allowedRoles(conn);
+    conn.activate({ activities: roles.length || this.#trusted(conn) ? activities : activities.filter((a) => a !== 'playback'), roles });
   }
 
   #pairingClosed(conn) {
@@ -720,15 +789,33 @@ export class SendspinServer extends EventEmitter {
   }
 
   async unpair(clientId) {
-    const conn = this.#clients.get(clientId);
-    if (conn?.isActivated && conn.isPaired && !conn.rehandshaking) conn.sendJson('server/unpair', {});
     const removed = await this.#store.unpair(clientId);
-    if (conn && !conn.isPaired) conn.credentialMismatch = false;
+    const conn = this.#clients.get(clientId);
+    if (conn) this.#afterUnpair(conn);
     if (removed) {
       this.#log.info(`[sendspin] ${clientId.slice(0, 8)} unpaired`);
       this.emit('unpaired', clientId);
+      this.emit('trust', clientId);
     }
     return removed;
+  }
+
+  // The lt-keyed session outlives its record: idle it, tell the device, and close it if the device does not.
+  #afterUnpair(conn) {
+    if (!conn.isOpen || !conn.isActivated) return;
+    if (conn.rehandshaking) {
+      conn.afterRehandshake(() => this.#afterUnpair(conn));
+      return;
+    }
+    if (!conn.isPaired) {
+      conn.credentialMismatch = false;
+      this.#syncTrust(conn);
+      return;
+    }
+    if (conn.activeRoles.length || conn.activities.length) conn.activate({ activities: [], roles: [] });
+    conn.sendJson('server/unpair', {});
+    const t = setTimeout(() => conn.close(1000, 'unpaired'), CLOSE_GRACE_MS);
+    t.unref?.();
   }
 
   async forget(clientId) {
@@ -741,6 +828,7 @@ export class SendspinServer extends EventEmitter {
     this.#cooldowns.delete(clientId);
     this.#known.delete(clientId);
     this.#scheduleKnownSave();
+    this.#trustChanged(clientId);
   }
 
   // ---- device listing ----
@@ -779,12 +867,26 @@ export class SendspinServer extends EventEmitter {
 
   #remember(conn) {
     const prev = this.#known.get(conn.clientId);
+    this.#known.delete(conn.clientId);
     this.#known.set(conn.clientId, {
       clientId: conn.clientId, name: conn.info.name, deviceInfo: publicDeviceInfo(conn.info.deviceInfo),
       pairMethods: Object.keys(parseSupportedPairMethods(conn.info.supportedPairMethods).methods), unpairedAccess: conn.info.unpairedAccess,
       address: connAddress(conn), url: conn.url ?? prev?.url ?? null, lastSeen: Date.now(), lastGoodbye: null,
     });
+    this.#capKnown();
     this.#scheduleKnownSave();
+  }
+
+  // Least recently seen untrusted devices go first; paired and approved ones are never evicted.
+  #capKnown() {
+    for (const id of this.#known.keys()) {
+      if (this.#known.size <= this.#opts.maxKnown) return;
+      if (!this.#clients.has(id) && !this.isTrusted(id)) this.#known.delete(id);
+    }
+  }
+
+  get knownCount() {
+    return this.#known.size;
   }
 
   #forgetLive(conn, info) {
@@ -804,9 +906,10 @@ export class SendspinServer extends EventEmitter {
       if (err.code !== 'ENOENT') this.#log.warn(`[sendspin] ignoring ${KNOWN_DEVICES_FILE}: ${err.message}`);
       return;
     }
-    for (const d of Array.isArray(data.devices) ? data.devices : []) {
-      if (isKeyId(d?.clientId)) this.#known.set(d.clientId, parseKnown(d));
-    }
+    const devices = (Array.isArray(data.devices) ? data.devices : []).filter((d) => isKeyId(d?.clientId)).map(parseKnown);
+    devices.sort((a, b) => (a.lastSeen ?? 0) - (b.lastSeen ?? 0));
+    for (const d of devices) this.#known.set(d.clientId, d);
+    this.#capKnown();
   }
 
   #scheduleKnownSave() {

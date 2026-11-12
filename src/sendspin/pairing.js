@@ -379,6 +379,8 @@ export class CPace {
 const LOCATIONS = new Set(['device', 'leaflet', 'operator']);
 const OUT_CHANNELS = new Set(['display', 'speaker']);
 
+const showValue = (x) => (typeof x === 'string' ? x.slice(0, 40) : `[${typeof x}]`);
+
 export function parseSupportedPairMethods(value) {
   const methods = {};
   const ignored = [];
@@ -387,7 +389,7 @@ export function parseSupportedPairMethods(value) {
     const d = desc && typeof desc === 'object' && !Array.isArray(desc) ? desc : {};
     const list = (v, allowed) => {
       if (!Array.isArray(v)) return [];
-      for (const x of v) if (!allowed.has(x)) ignored.push(`${key}:${String(x).slice(0, 40)}`);
+      for (const x of v) if (!allowed.has(x)) ignored.push(`${key.slice(0, 64)}:${showValue(x)}`);
       return [...new Set(v.filter((x) => allowed.has(x)))];
     };
     if (key === METHODS.PAIRING_PSK || key === METHODS.STATIC) {

@@ -158,6 +158,11 @@ describe('Velvet Rooms REST', async () => {
     assert.equal(dev.unpairedAccess, true);
     assert.equal(dev.name, 'Kitchen');
     assert.equal(dev.url, undefined);
+    assert.equal(dev.roomId, null, 'an unapproved speaker gets no room');
+    assert.deepEqual((await call('caster', 'GET', '/api/v1/rooms')).body.rooms, []);
+    const seat = await call('caster', 'POST', '/api/v1/rooms', { name: 'Sneaky', members: [speaker.clientId] });
+    assert.equal(seat.status, 404, 'untrusted speakers cannot be seated');
+    assert.deepEqual((await call('caster', 'GET', '/api/v1/rooms')).body.rooms, []);
 
     assert.equal((await call('admin', 'POST', '/api/v1/admin/sendspin/devices/approve', { clientId: 'nope' })).status, 404);
     const ap = await call('admin', 'POST', '/api/v1/admin/sendspin/devices/approve', { clientId: speaker.clientId });
@@ -357,6 +362,7 @@ describe('Velvet Rooms REST', async () => {
     assert.equal(rn.body.device.name, 'Kitchen left');
     const rv = await call('admin', 'POST', '/api/v1/admin/sendspin/devices/revoke', { clientId: speaker.clientId });
     assert.equal(rv.body.device.trust, 'unknown');
+    assert.deepEqual((await call('caster', 'GET', '/api/v1/rooms')).body.rooms, [], 'a revoked speaker leaves the room list');
   });
 
   it('forgets a device together with its solo room', async () => {

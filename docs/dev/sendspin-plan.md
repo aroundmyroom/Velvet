@@ -695,6 +695,12 @@ second test instance on another port for the owner.
   `buffer_capacity` while the socket's `bufferedAmount` holds it (max of both, 10 ms re-check). yt-dlp `--update` skipped
   under `NODE_ENV=test` (leaked ~43 MB `_MEI*` per boot). Matrix velvet → aiosendspin 14/14, sendspin-cpp 12/14 (client
   cannot send `format`), sendspin-js 4/14 (peer limits).
+- 2026-11-12 — Security review fixed: no peer input can escape a socket handler or promise chain (every phase handled,
+  catch-all → close 1011); peer JSON is never coerced (`cleanText`, pair-method locations) and `client/state`/`client/command`
+  are reduced to strict spec shapes; only paired/approved speakers get rooms (attach on trust, detach on revoke/unpair,
+  stale untrusted solo rooms pruned), untrusted clients have their own cap (16) and known devices an LRU cap (256, trusted
+  never evicted); mDNS rejects mapped/compatible IPv6, link-local and off-subnet addresses and off-link QU queries; unpair
+  idles + closes the lt session, unpair/revoke during a re-handshake are deferred; import restarts Rooms in `finally`.
 
 ### Second test instance (owner)
 

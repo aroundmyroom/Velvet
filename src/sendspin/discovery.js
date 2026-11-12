@@ -261,25 +261,91 @@ export function isValidPath(path) {
   return typeof path === 'string' && path.length <= MAX_PATH_LENGTH && PATH_ABSOLUTE.test(path);
 }
 
-export function isUsableAddress(address, { allowLoopback = false } = {}) {
-  const v = net.isIP(address);
-  if (v === 4) {
-    const a = Number(address.split('.')[0]);
-    if (a === 0 || a >= 224) return false;
-    return a !== 127 || allowLoopback;
+function ipv6Words(address) {
+  let addr = address;
+  const words = [];
+  const dotted = addr.match(/:(\d+\.\d+\.\d+\.\d+)$/);
+  if (dotted) {
+    const o = dotted[1].split('.').map(Number);
+    addr = `${addr.slice(0, dotted.index + 1)}${((o[0] << 8) | o[1]).toString(16)}:${((o[2] << 8) | o[3]).toString(16)}`;
   }
-  if (v === 6) {
-    const lower = address.toLowerCase();
-    if (lower === '::' || lower.startsWith('ff') || lower.includes('%')) return false;
-    if (lower === '::1') return allowLoopback;
-    return !lower.startsWith('fe80');
+  const [head, tail = ''] = addr.split('::');
+  const h = head ? head.split(':') : [];
+  const t = tail ? tail.split(':') : [];
+  const groups = addr.includes('::') ? [...h, ...Array(8 - h.length - t.length).fill('0'), ...t] : h;
+  for (const g of groups) words.push(parseInt(g, 16));
+  return words;
+}
+
+function ipv4Octets(address) {
+  return address.split('.').map(Number);
+}
+
+// IPv4-mapped (::ffff:a.b.c.d) and IPv4-compatible (::a.b.c.d) addresses are judged as the IPv4 address they carry.
+export function normalizeAddress(address) {
+  if (typeof address !== 'string') return null;
+  const v = net.isIP(address);
+  if (v === 4) return address;
+  if (v !== 6 || address.includes('%')) return null;
+  const w = ipv6Words(address);
+  const zeroHead = w.slice(0, 5).every((x) => x === 0);
+  const embedsV4 = zeroHead && (w[5] === 0xffff || (w[5] === 0 && w[6] !== 0));
+  if (!embedsV4) return address.toLowerCase();
+  return [w[6] >> 8, w[6] & 0xff, w[7] >> 8, w[7] & 0xff].join('.');
+}
+
+export function isLoopbackAddress(address) {
+  const a = normalizeAddress(address);
+  if (!a) return false;
+  return net.isIP(a) === 4 ? ipv4Octets(a)[0] === 127 : ipv6Words(a).every((x, i) => x === (i === 7 ? 1 : 0));
+}
+
+export function isUsableAddress(address, { allowLoopback = false } = {}) {
+  const a = normalizeAddress(address);
+  if (!a) return false;
+  if (isLoopbackAddress(a)) return allowLoopback;
+  if (net.isIP(a) === 4) {
+    const [o0, o1] = ipv4Octets(a);
+    return o0 !== 0 && o0 < 224 && !(o0 === 169 && o1 === 254);
+  }
+  const w = ipv6Words(a);
+  if (w.every((x) => x === 0)) return false;
+  return (w[0] & 0xff00) !== 0xff00 && (w[0] & 0xffc0) !== 0xfe80;
+}
+
+function maskedEqual(a, b, mask) {
+  return a.every((x, i) => (x & mask[i]) === (b[i] & mask[i]));
+}
+
+// subnets: [{ address, netmask }] as os.networkInterfaces() reports them.
+export function onLocalSubnet(address, subnets) {
+  const a = normalizeAddress(address);
+  if (!a) return false;
+  const v = net.isIP(a);
+  for (const s of subnets ?? []) {
+    if (net.isIP(s?.address) !== v || net.isIP(s?.netmask) !== v) continue;
+    const ok = v === 4
+      ? maskedEqual(ipv4Octets(a), ipv4Octets(s.address), ipv4Octets(s.netmask))
+      : maskedEqual(ipv6Words(a), ipv6Words(s.address), ipv6Words(s.netmask));
+    if (ok) return true;
   }
   return false;
 }
 
+export function localSubnets() {
+  const out = [];
+  for (const list of Object.values(os.networkInterfaces())) {
+    for (const a of list ?? []) {
+      if (!a.internal) out.push({ address: a.address.split('%')[0], netmask: a.netmask });
+    }
+  }
+  return out;
+}
+
 export function buildUrl(address, port, path, opts = {}) {
-  if (!isUsableAddress(address, opts) || !Number.isInteger(port) || port < 1 || port > 65535 || !isValidPath(path)) return null;
-  const host = net.isIP(address) === 6 ? `[${address}]` : address;
+  const a = normalizeAddress(address);
+  if (!a || !isUsableAddress(a, opts) || !Number.isInteger(port) || port < 1 || port > 65535 || !isValidPath(path)) return null;
+  const host = net.isIP(a) === 6 ? `[${a}]` : a;
   return `ws://${host}:${port}${path}`;
 }
 
@@ -316,15 +382,25 @@ export class SendspinDiscovery extends EventEmitter {
   #expiryTimer = null;
   #allowLoopback;
   #addresses;
+  #subnets;
   #lastQuery = new Map();
 
-  constructor({ browse = CLIENT_SERVICE, transport = null, logger = winston, allowLoopback = false, addresses = localAddresses } = {}) {
+  constructor({
+    browse = CLIENT_SERVICE, transport = null, logger = winston, allowLoopback = false, addresses = localAddresses, subnets = localSubnets,
+  } = {}) {
     super();
     this.#browseType = browse;
     this.#transport = transport;
     this.#log = logger;
     this.#allowLoopback = allowLoopback;
     this.#addresses = addresses;
+    this.#subnets = subnets;
+  }
+
+  // RFC 6762 §11: only talk to (and dial) peers on a link we are attached to.
+  #onLink(address) {
+    if (isLoopbackAddress(address)) return this.#allowLoopback;
+    return onLocalSubnet(address, this.#subnets());
   }
 
   get instances() {
@@ -340,7 +416,13 @@ export class SendspinDiscovery extends EventEmitter {
 
   async #openSocket() {
     const socket = dgram.createSocket({ type: 'udp4', reuseAddr: true });
-    socket.on('message', (msg, rinfo) => this.handlePacket(msg, rinfo));
+    socket.on('message', (msg, rinfo) => {
+      try {
+        this.handlePacket(msg, rinfo);
+      } catch (err) {
+        this.#log.warn(`[sendspin] mDNS packet handling failed: ${err?.message}`);
+      }
+    });
     socket.on('error', (err) => this.#log.warn(`[sendspin] mDNS socket error: ${err.message}`));
     await new Promise((resolve, reject) => {
       socket.once('error', reject);
@@ -443,6 +525,7 @@ export class SendspinDiscovery extends EventEmitter {
       unicast ||= q.unicast;
     }
     if (!answers.size) return;
+    if (unicast && rinfo.address && !this.#onLink(rinfo.address)) return;
     const out = encodePacket({ response: true, answers: [...answers], additionals: [...additionals].filter((x) => !answers.has(x)) });
     if (unicast && rinfo.address) this.#send(out, rinfo.address, rinfo.port);
     else this.#send(out);
@@ -506,7 +589,7 @@ export class SendspinDiscovery extends EventEmitter {
   #pickAddress(target) {
     const host = this.#hosts.get(nameKey(target));
     if (!host) return null;
-    const addrs = [...host.keys()].filter((a) => isUsableAddress(a, { allowLoopback: this.#allowLoopback }));
+    const addrs = [...host.keys()].filter((a) => isUsableAddress(a, { allowLoopback: this.#allowLoopback }) && this.#onLink(a)).map(normalizeAddress);
     return addrs.find((a) => net.isIP(a) === 4) ?? addrs[0] ?? null;
   }
 

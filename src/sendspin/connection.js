@@ -36,9 +36,14 @@ export function nowUs() {
   return process.hrtime.bigint() / 1000n;
 }
 
+// Peer JSON can carry objects whose toString is not a function; never coerce them.
 export function cleanText(value, max = MAX_LOGGED) {
+  let text;
+  if (typeof value === 'string') text = value;
+  else if (typeof value === 'number' || typeof value === 'boolean' || value === null || value === undefined) text = `${value}`;
+  else text = `[${Array.isArray(value) ? 'array' : typeof value}]`;
   // eslint-disable-next-line no-control-regex
-  const s = String(value).replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/g, '?');
+  const s = text.replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/g, '?');
   return s.length > max ? `${s.slice(0, max)}…` : s;
 }
 
@@ -208,6 +213,59 @@ export function parsePlayerState(obj, player) {
   };
 }
 
+const ARTWORK_SOURCES = ['album', 'artist'];
+const ARTWORK_FORMATS = ['jpeg', 'png'];
+const MAX_ARTWORK_CHANNELS = 4;
+const MAX_ARTWORK_SIDE = 4096;
+const VISUALIZER_TYPES = ['beat', 'loudness', 'f_peak', 'peak', 'spectrum'];
+const SPECTRUM_SCALES = ['mel', 'log', 'lin'];
+const SOURCE_SIGNALS = ['present', 'absent'];
+const MAX_SEEK_OFFSET_MS = 86_400_000;
+
+function parseArtworkChannel(ch) {
+  if (!isObject(ch) || !ARTWORK_SOURCES.includes(ch.source) || !ARTWORK_FORMATS.includes(ch.format)
+    || !isInt(ch.width, 1, MAX_ARTWORK_SIDE) || !isInt(ch.height, 1, MAX_ARTWORK_SIDE)) return { source: 'none' };
+  return { source: ch.source, format: ch.format, width: ch.width, height: ch.height };
+}
+
+export function parseArtworkState(obj) {
+  if (!isObject(obj) || !Array.isArray(obj.channels) || !obj.channels.length || obj.channels.length > MAX_ARTWORK_CHANNELS) return null;
+  return { channels: obj.channels.map(parseArtworkChannel) };
+}
+
+export function parseVisualizerState(obj) {
+  if (!isObject(obj) || !Array.isArray(obj.types) || obj.types.length > 16 || !isInt(obj.rate_max, 1, 1000)) return null;
+  const types = VISUALIZER_TYPES.filter((t) => obj.types.includes(t));
+  const out = { types, rate_max: obj.rate_max };
+  if (types.includes('spectrum')) {
+    const sp = obj.spectrum;
+    if (!isObject(sp) || !isInt(sp.n_disp_bins, 1, 4096) || !SPECTRUM_SCALES.includes(sp.scale)
+      || !isInt(sp.f_min, 0, 192_000) || !isInt(sp.f_max, 1, 192_000)) {
+      throw new ProtocolError('client/state visualizer: spectrum requested without a valid spectrum object');
+    }
+    out.spectrum = { n_disp_bins: sp.n_disp_bins, scale: sp.scale, f_min: sp.f_min, f_max: sp.f_max };
+  }
+  return out;
+}
+
+export function parseSourceState(obj) {
+  return isObject(obj) && SOURCE_SIGNALS.includes(obj.signal) ? { signal: obj.signal } : null;
+}
+
+const ROLE_STATE_PARSERS = Object.freeze({ artwork: parseArtworkState, visualizer: parseVisualizerState, source: parseSourceState });
+
+export function parseControllerCommand(c) {
+  if (!isObject(c) || typeof c.command !== 'string' || c.command.length > 64) return null;
+  const out = { command: c.command };
+  if (isInt(c.volume, 0, 100)) out.volume = c.volume;
+  if (typeof c.mute === 'boolean') out.mute = c.mute;
+  if (isInt(c.position_ms, 0, Number.MAX_SAFE_INTEGER)) out.position_ms = c.position_ms;
+  if (isInt(c.offset_ms, -MAX_SEEK_OFFSET_MS, MAX_SEEK_OFFSET_MS)) out.offset_ms = c.offset_ms;
+  return out;
+}
+
+const TRANSPORT_PHASES = new Set(['hello', 'activate', 'active']);
+
 export class SendspinConnection extends EventEmitter {
   #ws;
   #identity;
@@ -227,6 +285,7 @@ export class SendspinConnection extends EventEmitter {
   #pongTimer = null;
   #rehandshake = null;
   #activated = false;
+  #closing = false;
   #closed = false;
   #mismatchCheck = Promise.resolve();
   #streams = new Set();
@@ -267,9 +326,9 @@ export class SendspinConnection extends EventEmitter {
     this.closed.catch(() => {});
 
     ws.on('message', (data, isBinary) => this.#onMessage(data, isBinary));
-    ws.on('close', (code, reason) => this.#onClose(code, reason));
-    ws.on('error', (err) => this.#debug(`websocket error: ${cleanText(err.message)}`));
-    ws.on('pong', () => this.#onPong());
+    ws.on('close', this.#guard('close', (code) => this.#onClose(code)));
+    ws.on('error', this.#guard('error', (err) => this.#debug(`websocket error: ${cleanText(err?.message)}`)));
+    ws.on('pong', this.#guard('pong', () => this.#onPong()));
     this.#arm(this.#timeouts.handshakeMs, 'client/init');
   }
 
@@ -319,6 +378,31 @@ export class SendspinConnection extends EventEmitter {
     return this.activeRoles.some((r) => roleFamily(r) === family);
   }
 
+  // No error may escape a socket event or timer: an uncaught one takes the whole Velvet process down.
+  #guard(what, fn) {
+    return (...args) => {
+      try {
+        fn(...args);
+      } catch (err) {
+        this.#fail(err, what);
+      }
+    };
+  }
+
+  #fail(err, what) {
+    if (err instanceof NoiseError || err instanceof WireError || err instanceof ProtocolError) {
+      this.#debug(`closing: ${cleanText(err.message, 160)}`);
+      this.#abort(1002);
+      return;
+    }
+    try {
+      this.#log.warn(`[sendspin] ${this.#tag()} ${what} failed; closing: ${cleanText(err?.message, 160)}`);
+    } catch {
+      // a broken logger must not turn this into an uncaught exception either
+    }
+    this.#abort(1011);
+  }
+
   #debug(msg) {
     this.#log.debug(`[sendspin] ${this.#tag()} ${msg}`);
   }
@@ -329,10 +413,10 @@ export class SendspinConnection extends EventEmitter {
 
   #arm(ms, what) {
     clearTimeout(this.#timer);
-    this.#timer = setTimeout(() => {
+    this.#timer = setTimeout(this.#guard('timer', () => {
       this.#debug(`timed out waiting for ${what}`);
       this.#abort(1002);
-    }, ms);
+    }), ms);
     this.#timer.unref?.();
   }
 
@@ -342,21 +426,17 @@ export class SendspinConnection extends EventEmitter {
   }
 
   #onMessage(data, isBinary) {
-    if (this.#closed) return;
-    const recvUs = nowUs();
-    const buf = Array.isArray(data) ? Buffer.concat(data) : Buffer.from(data);
+    if (this.#closed || this.#closing) return;
     try {
+      const recvUs = nowUs();
+      const buf = Array.isArray(data) ? Buffer.concat(data) : Buffer.from(data);
       if (this.#phase === 'init') this.#onClientInit(buf, isBinary);
       else if (this.#phase === 'msg2') this.#onMessage2(buf, isBinary);
+      else if (!TRANSPORT_PHASES.has(this.#phase) || !this.#rx) throw new ProtocolError(`message while ${this.#phase}`);
       else if (isBinary) this.#onTransport(buf, recvUs);
       else throw new ProtocolError('cleartext message in transport mode');
     } catch (err) {
-      if (err instanceof NoiseError || err instanceof WireError || err instanceof ProtocolError) {
-        this.#debug(`closing: ${cleanText(err.message, 160)}`);
-        this.#abort(1002);
-        return;
-      }
-      throw err;
+      this.#fail(err, 'message handling');
     }
   }
 
@@ -393,14 +473,11 @@ export class SendspinConnection extends EventEmitter {
     Promise.resolve()
       .then(() => this.#resolvePsk(clientId))
       .then((resolved) => this.#startHandshake(resolved))
-      .catch((err) => {
-        this.#debug(`handshake setup failed: ${cleanText(err.message)}`);
-        this.#abort(1011);
-      });
+      .catch((err) => this.#fail(err, 'handshake setup'));
   }
 
   #startHandshake(resolved) {
-    if (this.#closed) return;
+    if (this.#closed || this.#closing) return;
     if (!resolved) {
       this.#debug('no PSK admits this client');
       this.#abort(1008);
@@ -451,7 +528,7 @@ export class SendspinConnection extends EventEmitter {
       this.#mismatchCheck = Promise.resolve(this.#hasPairingRecord(this.clientId)).then((has) => {
         this.credentialMismatch = Boolean(has);
         if (has) this.#log.warn(`[sendspin] ${this.#tag()} could not use its pairing record (credential mismatch); re-pair it`);
-      }, () => { this.credentialMismatch = true; });
+      }).catch(() => { this.credentialMismatch = true; });
     }
     this.#debug(`handshake complete (${this.suite}, psk ${this.pskCategory}${mismatch ? ', sentinel fallback' : ''})`);
     this.#sendJsonNow('server/hello', this.languages ? { name: this.serverName, languages: this.languages } : { name: this.serverName });
@@ -508,16 +585,18 @@ export class SendspinConnection extends EventEmitter {
       this.#log.info(`[sendspin] ${this.#tag()} offers roles we do not implement: ${cleanText(this.unimplementedRoles.join(', '), 160)}`);
     }
     this.#debug(`client/hello from "${cleanText(this.info.name)}" roles=${cleanText(this.info.supportedRoles.join(','), 160)} unpaired_access=${this.info.unpairedAccess}`);
-    this.#timer = setTimeout(() => {
-      if (!this.#activated && !this.#closed) {
+    this.#timer = setTimeout(this.#guard('activation fallback', () => {
+      if (!this.#activated && !this.#closed && !this.#closing) {
         this.#log.warn(`[sendspin] ${this.#tag()} no activation decided in time; activating idle`);
         this.activate({ activities: [], roles: [] });
       }
-    }, this.#timeouts.activateFallbackMs);
+    }), this.#timeouts.activateFallbackMs);
     this.#timer.unref?.();
-    this.#mismatchCheck.then(() => {
-      if (!this.#closed) this.emit('hello', this.info);
-    });
+    this.#mismatchCheck
+      .then(() => {
+        if (!this.#closed && !this.#closing) this.emit('hello', this.info);
+      })
+      .catch((err) => this.#fail(err, 'client/hello'));
   }
 
   #onGoodbye(payload) {
@@ -548,15 +627,19 @@ export class SendspinConnection extends EventEmitter {
       next.player = parsePlayerState(payload.player, this.info.player);
       this.#playerStateReceived = true;
     }
-    for (const family of ['artwork', 'visualizer', 'source']) {
-      if (this.hasRole(family) && isObject(payload[family])) next.roles[family] = payload[family];
+    for (const [family, parse] of Object.entries(ROLE_STATE_PARSERS)) {
+      if (!this.hasRole(family) || payload[family] === undefined) continue;
+      const parsed = parse(payload[family]);
+      if (parsed) next.roles[family] = parsed;
     }
     this.state = next;
     this.emit('state', next, prev);
   }
 
   #onCommand(payload) {
-    if (this.hasRole('controller') && isObject(payload.controller)) this.emit('command', { controller: payload.controller });
+    if (!this.hasRole('controller')) return;
+    const controller = parseControllerCommand(payload.controller);
+    if (controller) this.emit('command', { controller });
   }
 
   #canSendApp() {
@@ -746,6 +829,16 @@ export class SendspinConnection extends EventEmitter {
     return state.promise;
   }
 
+  // Runs fn now, or once the running re-handshake has re-activated; dropped if the connection closes first.
+  afterRehandshake(fn) {
+    const rh = this.#rehandshake;
+    if (!rh || rh.done) {
+      fn();
+      return;
+    }
+    rh.promise.then(() => fn(), () => {}).catch((err) => this.#fail(err, 'deferred activation'));
+  }
+
   #onRehandshakeMessage(raw) {
     const plaintext = this.#rx.decrypt(raw);
     const msg = this.#reassembler.push(plaintext);
@@ -774,16 +867,16 @@ export class SendspinConnection extends EventEmitter {
   }
 
   #startPing() {
-    this.#pingTimer = setInterval(() => {
+    this.#pingTimer = setInterval(this.#guard('ping', () => {
       if (!this.isOpen) return;
       this.#ws.ping();
       if (this.#pongTimer) return;
-      this.#pongTimer = setTimeout(() => {
+      this.#pongTimer = setTimeout(this.#guard('pong timeout', () => {
         this.#debug('no pong; dropping connection');
         this.#ws.terminate();
-      }, this.#timeouts.pongMs);
+      }), this.#timeouts.pongMs);
       this.#pongTimer.unref?.();
-    }, this.#timeouts.pingMs);
+    }), this.#timeouts.pingMs);
     this.#pingTimer.unref?.();
   }
 
@@ -793,9 +886,14 @@ export class SendspinConnection extends EventEmitter {
   }
 
   #abort(code) {
-    if (this.#closed) return;
-    if (this.#ws.readyState === 0 || this.#ws.readyState === 1) this.#ws.close(code);
-    else this.#ws.terminate();
+    if (this.#closed || this.#closing) return;
+    this.#closing = true;
+    try {
+      if (this.#ws.readyState === 1) this.#ws.close(code);
+      else this.#ws.terminate();
+    } catch {
+      this.#ws.terminate();
+    }
     const t = setTimeout(() => this.#ws.terminate(), 2000);
     t.unref?.();
   }
@@ -806,7 +904,8 @@ export class SendspinConnection extends EventEmitter {
 
   close(code = 1000, reason = '') {
     if (this.#closed) return;
-    if (this.#ws.readyState === 1) this.#ws.close(code, String(reason).slice(0, 120));
+    this.#closing = true;
+    if (this.#ws.readyState === 1) this.#ws.close(code, typeof reason === 'string' ? reason.slice(0, 120) : '');
     else this.#ws.terminate();
     const t = setTimeout(() => this.#ws.terminate(), 2000);
     t.unref?.();

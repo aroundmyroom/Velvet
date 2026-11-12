@@ -208,6 +208,23 @@ export class RoomManager extends EventEmitter {
     }
   }
 
+  isAttached(clientId) {
+    return Boolean(this.#clients.get(clientId)?.member);
+  }
+
+  // Drops detached clients that keep() rejects when all they own is their own unnamed solo room.
+  pruneClients(keep) {
+    let dropped = 0;
+    for (const c of [...this.#clients.values()]) {
+      if (c.member || keep(c.id)) continue;
+      const room = this.#rooms.get(c.roomId);
+      if (room && (room.solo !== c.id || room.name !== null || room.members.length !== 1)) continue;
+      this.forget(c.id);
+      dropped++;
+    }
+    return dropped;
+  }
+
   listRooms() {
     return [...this.#rooms.values()]
       .filter((r) => r.members.length || r.name !== null)

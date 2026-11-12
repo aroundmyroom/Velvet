@@ -210,6 +210,10 @@ export function stop() {
   return service?.stop();
 }
 
+export function settingsChanged() {
+  return JSON.stringify(service?.settings ?? null) !== JSON.stringify(settingsFromConfig());
+}
+
 export function setTestOptions(opts) {
   serviceOpts = opts;
 }
@@ -355,7 +359,9 @@ export async function resolveSongs(songs, user, rg = {}) {
       skipped++;
       continue;
     }
-    items.push({ filepath: c.l.fp, file: c.l.file, meta: metaOf(c.row), gainDb: gainFor(c.row, rg) });
+    const item = { filepath: c.l.fp, file: c.l.file, meta: metaOf(c.row), gainDb: gainFor(c.row, rg) };
+    if (Number.isInteger(c.row.channels) && c.row.channels > 0) item.channels = c.row.channels;
+    items.push(item);
   }
   return { items, skipped };
 }
@@ -372,8 +378,9 @@ function checkPlayable(sv, id) {
   if (!sv.playable(lightView(sv, id))) fail(409, 'not_playable', 'no speaker in this room can play now');
 }
 
+// Only paired or approved speakers can be seated in a room.
 function checkMembers(sv, members) {
-  const known = sv.knownIds();
+  const known = sv.trustedIds();
   for (const m of members) if (!known.has(m)) fail(404, 'not_found', 'unknown speaker');
 }
 

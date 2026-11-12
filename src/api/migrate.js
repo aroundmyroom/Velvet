@@ -10,6 +10,7 @@ import * as dbManager from '../db/manager.js';
 import { resolvePathWithinRoot } from '../util/path-security.js';
 import { sendspinBackupFiles, restoreSendspinFiles } from './backup.js';
 import * as sendspinApi from './sendspin.js';
+import { restoreRoomsFromImport } from './rooms-import.js';
 
 const TMP_DIR = os.tmpdir();
 const IMPORT_ID_RE = /^velvet-import-\d+$/;
@@ -240,14 +241,7 @@ async function applyImportData(extractId, options = {}) {
     winston.warn(`[migrate] Artist images restore failed: ${e.message}`);
   }
   
-  try {
-    // Stop first: a running server would flush its old trust store over the restored one.
-    await sendspinApi.stop();
-    await restoreSendspinFiles(path.join(extractDir, 'sendspin'));
-    await sendspinApi.applySettings();
-  } catch (e) {
-    winston.warn(`[migrate] Velvet Rooms restore failed: ${e.message}`);
-  }
+  await restoreRoomsFromImport(path.join(extractDir, 'sendspin'), { rooms: sendspinApi, restore: restoreSendspinFiles });
 
   // Clean up temp directory
   await fsp.rm(extractDir, { recursive: true, force: true }).catch(() => {});

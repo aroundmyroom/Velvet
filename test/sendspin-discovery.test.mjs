@@ -3,12 +3,13 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   SendspinDiscovery, encodePacket, decodePacket, parseTxt, isValidPath, isUsableAddress, buildUrl, TYPE,
-  CLIENT_SERVICE, SERVER_SERVICE, MdnsError,
+  CLIENT_SERVICE, SERVER_SERVICE, MdnsError, normalizeAddress, onLocalSubnet,
 } from '../src/sendspin/discovery.js';
 
 const quiet = { debug() {}, info() {}, warn() {}, error() {} };
 const LAN = '192.168.1.40';
 const RINFO = { address: LAN, port: 5353 };
+const SUBNETS = () => [{ address: LAN, netmask: '255.255.255.0' }];
 
 function fakeBus() {
   const endpoints = [];
@@ -46,7 +47,7 @@ function clientResponse({ instance = 'abc', path = '/sendspin', name = 'Kitchen'
 
 function browser(opts = {}) {
   const sent = [];
-  const d = new SendspinDiscovery({ logger: quiet, transport: { send: (b) => sent.push(b), close() {} }, addresses: () => [LAN], ...opts });
+  const d = new SendspinDiscovery({ logger: quiet, transport: { send: (b) => sent.push(b), close() {} }, addresses: () => [LAN], subnets: SUBNETS, ...opts });
   d.sent = sent;
   return d;
 }
@@ -154,8 +155,8 @@ test('advertiser answers PTR queries; a browser on the same bus finds it', async
   const bus = fakeBus();
   const advEp = bus.endpoint('192.168.1.10');
   const brEp = bus.endpoint(LAN);
-  const advD = new SendspinDiscovery({ logger: quiet, browse: null, transport: advEp.transport, addresses: () => ['192.168.1.10'] });
-  const brD = new SendspinDiscovery({ logger: quiet, browse: SERVER_SERVICE, transport: brEp.transport, addresses: () => [LAN] });
+  const advD = new SendspinDiscovery({ logger: quiet, browse: null, transport: advEp.transport, addresses: () => ['192.168.1.10'], subnets: SUBNETS });
+  const brD = new SendspinDiscovery({ logger: quiet, browse: SERVER_SERVICE, transport: brEp.transport, addresses: () => [LAN], subnets: SUBNETS });
   advEp.node = advD;
   brEp.node = brD;
   await brD.start();
@@ -179,4 +180,71 @@ test('advertiser answers PTR queries; a browser on the same bus finds it', async
 test('advertise rejects an invalid path', () => {
   const d = browser({ browse: null });
   assert.throws(() => d.advertise({ instance: 'x', port: 1, path: 'relative' }), MdnsError);
+});
+
+test('addresses: IPv4-mapped/compatible IPv6 is judged as IPv4; link-local, loopback, multicast, broadcast refused', () => {
+  assert.equal(normalizeAddress('::ffff:7f00:1'), '127.0.0.1');
+  assert.equal(normalizeAddress('::ffff:127.0.0.1'), '127.0.0.1');
+  assert.equal(normalizeAddress('::7f00:1'), '127.0.0.1');
+  assert.equal(normalizeAddress('::ffff:c0a8:0128'), LAN);
+  assert.equal(normalizeAddress('fe80::1%eth0'), null);
+  for (const a of ['::ffff:7f00:1', '::ffff:127.0.0.1', '::7f00:1', '::127.0.0.1', '::ffff:a9fe:101', '169.254.10.20', '0.1.2.3',
+    '255.255.255.255', '239.1.1.1', '240.0.0.1', '::', '::1', 'fe80::1', 'febf::1', 'ff02::fb', 'fe80::1%eth0']) {
+    assert.equal(isUsableAddress(a), false, a);
+    assert.equal(buildUrl(a, 8928, '/s'), null, a);
+  }
+  assert.equal(buildUrl('::ffff:c0a8:128', 8928, '/s'), `ws://${LAN}:8928/s`);
+  assert.equal(isUsableAddress('::ffff:7f00:1', { allowLoopback: true }), true);
+  const subnets = [{ address: LAN, netmask: '255.255.255.0' }, { address: 'fd00::1', netmask: 'ffff:ffff:ffff:ffff::' }];
+  assert.equal(onLocalSubnet('192.168.1.200', subnets), true);
+  assert.equal(onLocalSubnet('::ffff:192.168.1.200', subnets), true);
+  assert.equal(onLocalSubnet('192.168.2.1', subnets), false);
+  assert.equal(onLocalSubnet('fd00::abcd', subnets), true);
+  assert.equal(onLocalSubnet('fd01::1', subnets), false);
+  assert.equal(onLocalSubnet('8.8.8.8', []), false);
+});
+
+test('browser refuses mapped-loopback, link-local and off-subnet addresses', async () => {
+  const d = browser();
+  await d.start();
+  const found = [];
+  d.on('found', (s) => found.push(s.url));
+  d.handlePacket(clientResponse({ instance: 'm' }), RINFO);
+  const aaaa = (instance, address) => encodePacket({
+    response: true,
+    answers: [{ name: CLIENT_SERVICE, type: TYPE.PTR, ttl: 120, data: `${instance}.${CLIENT_SERVICE}` }],
+    additionals: [
+      { name: `${instance}.${CLIENT_SERVICE}`, type: TYPE.SRV, ttl: 120, flush: true, data: { port: 8928, target: `${instance}.local` } },
+      { name: `${instance}.${CLIENT_SERVICE}`, type: TYPE.TXT, ttl: 120, flush: true, data: ['path=/sendspin'] },
+      { name: `${instance}.local`, type: TYPE.AAAA, ttl: 120, flush: true, data: address },
+    ],
+  });
+  d.handlePacket(aaaa('mapped', '::ffff:7f00:1'), RINFO);
+  d.handlePacket(aaaa('compat', '::7f00:1'), RINFO);
+  d.handlePacket(clientResponse({ instance: 'll', address: '169.254.3.4' }), RINFO);
+  d.handlePacket(clientResponse({ instance: 'far', address: '10.9.8.7' }), RINFO);
+  assert.deepEqual(found, [`ws://${LAN}:8928/sendspin`]);
+  d.handlePacket(aaaa('lanmapped', '::ffff:c0a8:12d'), RINFO);
+  assert.equal(found.at(-1), 'ws://192.168.1.45:8928/sendspin');
+  await d.stop();
+});
+
+test('advertiser ignores unicast-response (QU) queries from off-subnet sources', async () => {
+  const sent = [];
+  const d = new SendspinDiscovery({
+    logger: quiet, browse: null, subnets: SUBNETS, addresses: () => [LAN],
+    transport: { send: (b, address, port) => sent.push({ address, port }), close() {} },
+  });
+  await d.start();
+  d.advertise({ instance: 'srv', port: 8927, path: '/sendspin', name: 'Velvet' });
+  sent.length = 0;
+  const qu = encodePacket({ questions: [{ name: SERVER_SERVICE, type: TYPE.PTR, unicast: true }] });
+  d.handlePacket(qu, { address: '203.0.113.9', port: 40000 });
+  d.handlePacket(qu, { address: '::ffff:cb00:7109', port: 40000 });
+  assert.equal(sent.length, 0, 'no answer to an off-link unicast query');
+  d.handlePacket(qu, { address: '192.168.1.77', port: 40000 });
+  assert.deepEqual(sent, [{ address: '192.168.1.77', port: 40000 }]);
+  d.handlePacket(encodePacket({ questions: [{ name: SERVER_SERVICE, type: TYPE.PTR }] }), { address: '203.0.113.9', port: 5353 });
+  assert.equal(sent.at(-1).address, undefined, 'multicast queries are still answered on the group');
+  await d.stop();
 });

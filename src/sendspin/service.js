@@ -83,9 +83,14 @@ export class RoomsService extends EventEmitter {
       });
       rooms.on('error', (err) => this.#log.warn(`[rooms] ${err.message}`));
       rooms.on('member-error', (roomId, clientId, err) => this.#log.debug(`[rooms] ${String(clientId).slice(0, 8)} dropped: ${err.message}`));
-      server.on('client', (conn) => rooms.attach(conn));
+      const pruned = rooms.pruneClients((id) => server.isTrusted(id));
+      if (pruned) this.#log.info(`[rooms] dropped ${pruned} untrusted speaker(s) from rooms.json`);
+      // Only paired or approved speakers get a room: an unknown key must not create state or pass for a known device.
+      const sync = (id) => this.#syncMember(server, rooms, id);
+      server.on('client', (conn) => sync(conn.clientId));
+      server.on('trust', sync);
       server.on('client-removed', (conn) => rooms.detach(conn.clientId));
-      for (const conn of server.clients.values()) if (conn.isActivated) rooms.attach(conn);
+      for (const conn of server.clients.values()) sync(conn.clientId);
       this.#server = server;
       this.#rooms = rooms;
     } catch (err) {
@@ -108,6 +113,7 @@ export class RoomsService extends EventEmitter {
       }
       if (server) {
         server.removeAllListeners('client');
+        server.removeAllListeners('trust');
         server.removeAllListeners('client-removed');
         await server.stop().catch((err) => this.#log.warn(`[rooms] Sendspin stop failed: ${err.message}`));
       }
@@ -118,6 +124,17 @@ export class RoomsService extends EventEmitter {
       this.#log.warn(`[rooms] ${err.message}; closing everything now`);
       server?.destroy();
     }
+  }
+
+  #syncMember(server, rooms, clientId) {
+    const conn = server.getClient(clientId);
+    const wanted = Boolean(conn?.isActivated && conn.isOpen && server.isTrusted(clientId));
+    if (wanted && !rooms.isAttached(clientId)) rooms.attach(conn);
+    else if (!wanted && rooms.isAttached(clientId)) rooms.detach(clientId);
+  }
+
+  trustedIds() {
+    return this.#server ? this.#server.trustedIds() : new Set();
   }
 
   setName(clientId, name) {
@@ -206,7 +223,7 @@ export class RoomsService extends EventEmitter {
 
   listRooms() {
     if (!this.#rooms) return [];
-    const known = this.knownIds();
+    const known = this.trustedIds();
     return this.#rooms.listRooms()
       .filter((r) => r.members.some((m) => known.has(m.clientId)))
       .map((r) => this.roomView(r))
