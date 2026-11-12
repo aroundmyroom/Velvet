@@ -208,9 +208,14 @@ states (`paired`, `aborted`) stay readable for 60 s after they occur.
 
 ## Player routes (`allow-mpv-cast` or admin)
 
+Only **trusted** speakers (paired, or allowed by the admin) take part in rooms:
+a speaker that is neither never appears in `GET /api/v1/rooms`, and naming it
+in `members` answers `404 not_found`, the same as an unknown id. A speaker
+whose approval is revoked or that is unpaired leaves its room.
+
 | Method | Endpoint | Body | Response |
 |---|---|---|---|
-| `GET` | `/api/v1/rooms` | — | `{ enabled: true, rooms: Room[] }` (rooms with at least one known member; sorted by name). |
+| `GET` | `/api/v1/rooms` | — | `{ enabled: true, rooms: Room[] }` (rooms with at least one trusted member; sorted by name). |
 | `POST` | `/api/v1/rooms` | `{ name, members: string[] (clientIds, 1–32) }` | `201 Room`. Members leave their current rooms (a solo room left empty disappears; playback in the room they leave continues for the others). |
 | `PATCH` | `/api/v1/rooms/:id` | `{ name?, members? }` | `Room`. `members` is the full new list. A speaker belongs to exactly one room: listing it here moves it out of its old room; a speaker dropped from the list returns to a solo room named after it. An empty `members` → 400. |
 | `DELETE` | `/api/v1/rooms/:id` | — | `{ ok: true }`. Stops the room; every member returns to its own solo room. 409 `solo_room` for a one-member room. |
