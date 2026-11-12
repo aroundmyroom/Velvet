@@ -321,6 +321,12 @@ export class TrustStore {
   (reference player; build or installer, to add), aiosendspin's client
   scripted from Python for loops (connect, pair, regroup, disconnect),
   `sendspin-js` in a browser and an ESPHome device (owner).
+- Owner's test peers: two Windows PCs with **Sendspin for Windows 3.0.0**
+  (github.com/Sendspin/sendspin-windows, MIT, Sendspin 1.0). It connects
+  client-initiated (browses `_sendspin-server._tcp` or manual `host:8927`)
+  and pairs via **"Show Pairing Token"** → the pairing-PSK flow. So the
+  pairing-PSK method (token entry in the admin, lenient decoding) moves
+  forward to phase 1/2; CPace code pairing stays in phase 3.
 - Multi-server: run `sendspin serve` (python-cli) as a second server on the
   LAN to exercise `another_server` hand-over and "pairing is never
   interrupted".
@@ -347,6 +353,72 @@ export class TrustStore {
 
 Sonos does not speak Sendspin; the one Sonos device is used only to check that
 the existing Sonos cast still works (regression).
+
+## Phase 1 design (orchestrator decisions)
+
+**Product model.** A *room* is a Sendspin group with a name and a
+server-side queue. Every known speaker starts in its own room (solo group,
+named after the device). Rooms with several speakers are created by the user.
+Sending music to a room hands the queue over to the server (like Sonos / Music
+Assistant): the room keeps playing when the browser closes, and the browser
+becomes a remote for that room. This differs from Server Audio and Sonos cast,
+where the browser queue stays authoritative — Sendspin needs a server-side
+queue because speakers send `next`/`previous`/`play` themselves.
+
+**Modules.**
+- `src/sendspin/scheduler.js` — `GroupStream`: one master decode
+  (`decodeQueue` over the room queue from index + position) at a fixed master
+  rate per stream (48 kHz, or 44.1 kHz when every member prefers it), one
+  encoder per member in the member's negotiated format, pacing loop that
+  fills each member toward `buffer_capacity` (header + payload accounting per
+  spec) with timestamps `T0 + chunk.startUs`, where `T0 = now + sendAhead`
+  and `sendAhead` = max over members of `min_buffer_ms + output_delay_ms`,
+  extended toward `required_lead_time_ms` (library content). Late joiner:
+  encoder created at the current master position, future timestamps only.
+  Seek / jump: `stream/clear` + new decode. Pause: stop + clear, keep
+  position; resume = new timeline. Track boundaries emit events used for
+  metadata/artwork scheduled updates (≤ 20 s ahead). Format preference change
+  → new encoder + `stream/start` at the boundary (`baseUs = old.endUs`).
+- `src/sendspin/rooms.js` — `RoomManager`: rooms (id, name, members,
+  queue `[{ filepath, meta }]`, index, positionMs, state, repeat, shuffle),
+  persisted in `save/sendspin/rooms.json` incl. "last played" so `play` on an
+  idle room resumes after a restart; solo-group parking on
+  `available:false` / `client/leave`; `switch` cycle; group volume/mute
+  algorithm; controller state + commands; `group/update`; metadata/artwork/
+  colour state. Activities: `playback` only on members of a playing room.
+- `src/api/sendspin.js` — REST (all behind auth; player routes need
+  `allow-mpv-cast`, admin routes need admin):
+  - admin: `GET /api/v1/admin/sendspin/status` (enabled, server id, port,
+    devices with state: unknown/approved/paired/pairing/mismatch/
+    other-server/in-use-elsewhere/offline), `POST …/devices/approve|revoke|
+    rename|forget|connect`, `POST …/devices/pair-token` (pairing PSK),
+    later `…/pair-code`; `POST …/settings` (enable, name, port).
+  - player: `GET /api/v1/rooms` (rooms + members + live state),
+    `POST /api/v1/rooms` (create from speakers), `PATCH /api/v1/rooms/:id`
+    (rename, members), `DELETE /api/v1/rooms/:id`,
+    `POST /api/v1/rooms/:id/play` `{ songs: [filepath], index, positionMs }`,
+    `…/add`, `…/pause`, `…/resume`, `…/next`, `…/previous`, `…/seek`,
+    `…/volume` (group or per speaker), `…/mute`, `…/stop`, `…/repeat`,
+    `…/shuffle`, `GET /api/v1/rooms/:id/state` (polled by the remote UI, ~1 s).
+- Velvet glue: `config.program.sendspin` (`enabled` false by default, `name`,
+  `port` 8927, `bind`), boot/stop in `src/server.js`, server key + trust store
+  in the backup set (`src/api/backup.js`), file paths resolved through the
+  user's vpaths (`src/util/vpath.js`, same rules as Server Audio — never a
+  raw join), ReplayGain applied in the master decode (`resolveTrackGain`),
+  metadata from the DB, artwork from the album-art cache resized with `sharp`
+  (fit inside, black padding, never crop), colour from the artwork palette
+  (WCAG 4.5:1 checked).
+- UI: admin page **Velvet Rooms** (`webapp/admin/`) with the device list and
+  its eight states, approve/pair/revoke/rename, rooms editor; player output
+  picker gets **Rooms** next to This browser / Server speaker / Sonos; while
+  a room is active the player bar and queue panel act as its remote. All
+  strings i18n, 12 locales. Docs: `docs/rooms.md` (user), `docs/API.md`,
+  `docs/json_config.md`, `docs/docker.md` (host networking for mDNS, port
+  8927).
+
+**Order.** (a) scheduler + rooms core with fake-client tests and a daemon e2e;
+(b) Velvet glue + REST + backup; (c) admin + player UI; (d) docs, locales,
+second test instance on another port for the owner.
 
 ## Rules for everyone working on this branch
 
