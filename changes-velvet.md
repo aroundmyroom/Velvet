@@ -1,3 +1,17 @@
+## v0.9.1 (2026-11-12)
+
+Velvet Rooms: streams with any ffmpeg build
+
+### Fixed
+
+- **Velvet Rooms played nothing with some ffmpeg builds.** ffmpeg versions
+  before 7.1 read 5 MB of a raw audio pipe before they produce any output —
+  more than ten seconds of a live room stream, further ahead than Velvet ever
+  sends — so a room stayed silent. Velvet's own ffmpeg download was not
+  affected; an older ffmpeg (for example a static build supplied by a
+  packaging tool) was. The room encoder and the Sonos follower stream now tell
+  ffmpeg not to probe the pipe, the way line-in already did.
+
 ## v0.9.0 (2026-11-12)
 
 Velvet Rooms: multi-room playback on Sendspin speakers
