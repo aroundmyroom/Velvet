@@ -70,8 +70,8 @@ kitchen"*. [Rooms](docs/rooms.md) · [Home Assistant](docs/home-assistant.md)
 
 **It sounds right.** Gapless playback, crossfade, EBU R128 loudness
 normalisation with true-peak limiting, transcoding when you need it, an 8-band
-EQ, BPM and key analysis of your whole library in the background, and a
-full-screen Milkdrop visualizer for when the lights go down.
+EQ, BPM and key analysis of your whole library in the background, and
+full-screen visualizers (Milkdrop and VoltViz) for when the lights go down.
 
 **It's yours.** One Docker container, one SQLite file, and your music files
 stay untouched. HTTPS built in, passkeys, folders per user, listening
@@ -204,7 +204,7 @@ scan runs in the background and Auto-DJ works from the first song. Full guides:
 - The queue is kept across page loads and devices
 - Keyboard shortcuts for all controls ([list](docs/keyboard-shortcuts.md))
 - Command palette (Ctrl+K) to jump to any view or action
-- Milkdrop visualizer, full screen and reacting to the music ([credits](#credits))
+- Full-screen visualizer: Milkdrop, Spectrum, AudioMotion, Lyrics, and VoltViz with more than 40 modern styles ([guide](docs/visualizer.md), [credits](#credits))
 
 ### Velvet Rooms (multi-room)
 
@@ -369,7 +369,7 @@ Playlists built from filters, updated every time you open them:
 | **DLNA / UPnP** | Browse and stream on your network to smart TVs, Kodi, BubbleUPnP and AV receivers. [Docs](docs/dlna.md) |
 | **Subsonic API** | Subsonic 1.16.1 and OpenSubsonic. Works with Symfonium, DSub, Ultrasonic, KSub (Astiga) and more. [Docs](docs/subsonic.md) |
 | **Home Assistant** | Velvet's own integration, in this repository. Every Velvet Room becomes a media player: play/pause, next, seek, volume, shuffle and repeat, artwork, your library (artists, albums, playlists, smart playlists) in the media browser, and voice with Assist ("play ... in the kitchen"). In **HACS**, open *Custom repositories* and add `https://github.com/aroundmyroom/Velvet` as an *Integration*. Connect by approving a code under *User Settings, Pair a Device*. Needs Home Assistant 2026.2 or newer. [Docs](docs/home-assistant.md) |
-| **Music Assistant** | Add Velvet as an OpenSubsonic source in [Music Assistant](https://www.music-assistant.io/) and play your library on Chromecast, AirPlay, Squeezelite and more. [Setup](docs/subsonic.md#music-assistant) |
+| **Music Assistant** | Add Velvet as an OpenSubsonic source in [Music Assistant](https://www.music-assistant.io/) and play your library on Chromecast, AirPlay, Squeezelite and more. Velvet does the thinking: Music Assistant's radio is picked by Velvet's Auto-DJ, and you get top tracks, smart playlists, loudness values, synced lyrics, BPM and MusicBrainz IDs. [Setup](docs/subsonic.md#music-assistant) |
 | **Sendspin** | Velvet Rooms is a Sendspin server: multi-room playback in sync on Sendspin speakers and apps, found automatically or added by IP address. [Docs](docs/rooms.md) |
 | **Samsung Smart TV** | The **Velvet TV** app for Tizen 5.5 and newer: works with the remote, albums (CUE and multi-disc), A–Z jump, VU meter and visualizer. Install the `.wgt` with Apps2Samsung. [Docs](docs/tizen-tv.md) |
 | **Sharesonic (Android)** | A community Android app for Velvet. [GitHub](https://github.com/Tiritibambix/Sharesonic) |
@@ -502,6 +502,8 @@ yours are how Velvet gets better.
 ## Credits
 
 **Milkdrop visualizer:** the full-screen visualizer uses [**Butterchurn**](https://github.com/jberg/butterchurn) by Jordan Berg, a WebGL port of [**MilkDrop**](https://www.geisswerks.com/milkdrop/), the Winamp plugin by **Ryan Geiss**. Thousands of MilkDrop presets work with it. Many thanks to both for keeping it alive in the browser.
+
+**VoltViz:** the VoltViz visualizer styles are by Sander de Wildt, MIT licence ([sanderdw/voltviz](https://github.com/sanderdw/voltviz), see [NOTICE.md](NOTICE.md)).
 
 **Sendspin:** Velvet Rooms implements the [Sendspin](https://www.sendspin-audio.com/) protocol (version 1), based on the specification published by the Open Home Foundation under the Community Specification License 1.0 (see [NOTICE.md](NOTICE.md)). Velvet works with Sendspin speakers but is not affiliated with, endorsed by or certified by the Open Home Foundation.
 

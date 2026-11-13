@@ -1,0 +1,1 @@
+var e=new URL(`../assets/dummycover-CmtmOHvo.jpg`,import.meta.url).href;export{e as t};

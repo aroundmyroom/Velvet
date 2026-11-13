@@ -1,0 +1,1 @@
+function e(e,t,n){let r=Math.max(0,t),i=Math.min(e.length,n);if(i<=r)return 0;let a=0;for(let t=r;t<i;t++)a+=e[t];return a/(i-r)}function t(e){return e.beat.isBeat||e.beat.accent>0}function n(e){return e.beat.isBeat?e.beat.strength:e.beat.accent}var r=.5;export{n as i,e as n,t as r,r as t};
