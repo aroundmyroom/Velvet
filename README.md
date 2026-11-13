@@ -222,8 +222,9 @@ house, perfectly in sync. [Guide](docs/rooms.md)
 - **Equalizer per room.** The player's EQ panel controls the room. Settings
   are stored on the server, you hear changes within a second, and it never
   clips.
-- **Sonos can join.** Add a Sonos to a room and it plays along, with an
-  adjustable delay (close, but not sample-exact).
+- **Sonos can join.** Add a Sonos to a room and it plays along. Velvet
+  measures where the Sonos is and keeps it in line (close, but not
+  sample-exact).
 - **Line-in.** A Sendspin source such as a turntable preamp, AUX or Bluetooth
   receiver can play in any room.
 - **Lights.** Loudness, spectrum and beats for light rings and LED strips, in

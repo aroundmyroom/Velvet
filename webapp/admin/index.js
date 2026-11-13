@@ -4846,7 +4846,7 @@ const roomsView = Vue.component('rooms-view', {
       newRoomName: '',
       newRoomMembers: [],
       roomNames: {},
-      sonos: { enabled: false, devices: [], maxDelayMs: 5000 },
+      sonos: { enabled: false, devices: [], maxTrimMs: 1000 },
       statusTimer: null,
       pairTimer: null,
       nowTick: Date.now(),
@@ -5086,9 +5086,10 @@ const roomsView = Vue.component('rooms-view', {
                     <span class="vr-pill vr-pill-grey" :title="this.t('admin.rooms.sonos.followsHint')">{{ this.t('admin.rooms.sonos.follows') }}</span>
                     <span class="vr-sonos-delay" :title="this.t('admin.rooms.sonos.delayHint')">
                       <span>{{ this.t('admin.rooms.sonos.delay') }}</span>
-                      <input type="range" min="0" :max="sonos.maxDelayMs" step="10" :value="s.delayMs" @input="s.delayMs = Number($event.target.value)" @change="sonosDelay(r, s, $event)" :disabled="busy" :aria-label="this.t('admin.rooms.sonos.delayLabel', { name: s.name })">
-                      <input type="number" class="vr-delay-num" min="0" :max="sonos.maxDelayMs" step="10" :value="s.delayMs" @change="sonosDelay(r, s, $event)" :disabled="busy" :aria-label="this.t('admin.rooms.sonos.delayLabel', { name: s.name })">
+                      <input type="range" :min="-sonos.maxTrimMs" :max="sonos.maxTrimMs" step="10" :value="s.trimMs" @input="s.trimMs = Number($event.target.value)" @change="sonosDelay(r, s, $event)" :disabled="busy" :aria-label="this.t('admin.rooms.sonos.delayLabel', { name: s.name })">
+                      <input type="number" class="vr-delay-num" :min="-sonos.maxTrimMs" :max="sonos.maxTrimMs" step="10" :value="s.trimMs" @change="sonosDelay(r, s, $event)" :disabled="busy" :aria-label="this.t('admin.rooms.sonos.delayLabel', { name: s.name })">
                       <span>{{ this.t('admin.rooms.sonos.unitMs') }}</span>
+                      <span class="vr-mono">{{ s.leadMs != null ? this.t('admin.rooms.sonos.measured', { ms: s.leadMs }) : this.t('admin.rooms.sonos.measuring') }}</span>
                     </span>
                     <span class="vr-sonos-hint">{{ this.t('admin.rooms.sonos.delayHint') }}</span>
                     <span v-if="s.state === 'error'" class="vr-warn">{{ this.t('admin.rooms.sonos.error') }}</span>
@@ -5208,8 +5209,8 @@ const roomsView = Vue.component('rooms-view', {
       if (!this.enabled || !this.running) return;
       try {
         const r = await API.axios({ method: 'GET', url: `${API.url()}/api/v1/rooms/sonos` });
-        this.sonos = { enabled: r.data.enabled === true, devices: r.data.devices || [], maxDelayMs: r.data.maxDelayMs || 5000 };
-      } catch { this.sonos = { enabled: false, devices: [], maxDelayMs: 5000 }; }
+        this.sonos = { enabled: r.data.enabled === true, devices: r.data.devices || [], maxTrimMs: r.data.maxTrimMs || 1000 };
+      } catch { this.sonos = { enabled: false, devices: [], maxTrimMs: 1000 }; }
     },
     async sonosAdd(r, ev) {
       const uuid = ev.target.value;
@@ -5218,10 +5219,11 @@ const roomsView = Vue.component('rooms-view', {
     },
     sonosDelay(r, s, ev) {
       const v = Math.round(Number(ev.target.value));
-      const ms = Number.isFinite(v) && ev.target.value !== '' ? Math.max(0, Math.min(this.sonos.maxDelayMs, v)) : s.delayMs;
-      s.delayMs = ms;
+      const max = this.sonos.maxTrimMs;
+      const ms = Number.isFinite(v) && ev.target.value !== '' ? Math.max(-max, Math.min(max, v)) : s.trimMs;
+      s.trimMs = ms;
       ev.target.value = String(ms);
-      this.roomCall('PATCH', '/' + encodeURIComponent(r.id) + '/sonos/' + encodeURIComponent(s.uuid), { delayMs: ms });
+      this.roomCall('PATCH', '/' + encodeURIComponent(r.id) + '/sonos/' + encodeURIComponent(s.uuid), { trimMs: ms });
     },
     roomName(id) { return this.rooms.find(r => r.id === id)?.name || ''; },
     hasCodeMethod(d) {

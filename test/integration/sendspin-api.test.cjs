@@ -406,6 +406,31 @@ describe('Velvet Rooms REST', async () => {
     await speaker.until(() => inboxCount('stream/end') > ends);
   });
 
+  it('room Auto-DJ: switched per room, with the user who switched it', async () => {
+    const id = (await call('caster', 'GET', '/api/v1/rooms')).body.rooms[0].id;
+    assert.equal((await call('caster', 'GET', `/api/v1/rooms/${id}/state`)).body.autoDj, false);
+    assert.equal((await call('caster', 'PUT', `/api/v1/rooms/${id}/autodj`, {})).status, 400);
+    assert.equal((await call('plain', 'PUT', `/api/v1/rooms/${id}/autodj`, { on: true })).status, 403);
+    const on = await call('caster', 'PUT', `/api/v1/rooms/${id}/autodj`, { on: true, rgMode: 'track' });
+    assert.equal(on.status, 200, JSON.stringify(on.body));
+    assert.equal(on.body.autoDj, true);
+    const full = await call('caster', 'PUT', `/api/v1/rooms/${id}/autodj`, {
+      on: true,
+      settings: { similar: true, bpmContinuity: true, bpmTolerance: 6, filterWords: ['live'], genreFilter: { mode: 'blacklist', genres: ['Schlager'] },
+        scope: { minRating: 3, ignoreVPaths: ['Audiobooks'], minDuration: 120, maxDuration: 600, allowUnknownDuration: false } },
+      state: { artistHistory: ['Elton John'], bpmHistory: [124], lastPickFree: false },
+    });
+    assert.equal(full.status, 200, JSON.stringify(full.body));
+    assert.deepEqual((await call('caster', 'GET', `/api/v1/rooms/${id}/autodj`)).body.state.artistHistory, ['Elton John']);
+    assert.equal((await call('caster', 'PUT', `/api/v1/rooms/${id}/autodj`, { on: true, settings: { genreFilter: { mode: 'sometimes', genres: [] } } })).status, 400);
+    assert.equal((await call('caster', 'PUT', `/api/v1/rooms/${id}/autodj`, { on: true, state: { artistHistory: 'Elton John' } })).status, 400);
+    const keep = await call('caster', 'PUT', `/api/v1/rooms/${id}/autodj`, { on: true, settings: { similar: false } });
+    assert.equal(keep.status, 200);
+    assert.deepEqual((await call('caster', 'GET', `/api/v1/rooms/${id}/autodj`)).body.state.artistHistory, ['Elton John'], 'a settings change keeps the state');
+    const off = await call('caster', 'PUT', `/api/v1/rooms/${id}/autodj`, { on: false });
+    assert.equal(off.body.autoDj, false);
+  });
+
   it('room EQ: state, validation, permissions, live change without restart, rooms.json', async () => {
     const id = (await call('caster', 'GET', '/api/v1/rooms')).body.rooms[0].id;
     const flat = await call('caster', 'GET', `/api/v1/rooms/${id}/eq`);

@@ -828,3 +828,51 @@ test('queue edits under a line-in only edit the queue: remove, move, reorder and
   assert.equal(r.current.meta.title, 'A');
   await rm.close();
 });
+
+test('Auto-DJ on the server: when the last song starts the room adds the next pick itself, and retries a miss', async () => {
+  const picks = [];
+  let answer = null;
+  const rm = await manager({
+    autoDjRetryMs: 100,
+    autoDjPick: async ({ seed, history, queue, autoDj }) => {
+      picks.push({ seed: seed.meta.title, history: history.length, queue: queue.length, user: autoDj.user, state: autoDj.state });
+      return answer ? { item: answer, state: { artistHistory: ['Tester'] } } : null;
+    },
+  });
+  const a = new FakeMember();
+  const id = rm.attach(a);
+  rm.setAutoDj(id, { on: true, user: 'dj', settings: { similar: false }, state: { artistHistory: ['Elton John'] } });
+  assert.equal(rm.getRoom(id).autoDj, true);
+  rm.play(id, { items: [item(F.mid, 'M', 1500)] });
+  await until(() => picks.length >= 1);
+  assert.deepEqual(picks[0], { seed: 'M', history: 0, queue: 1, user: 'dj', state: { artistHistory: ['Elton John'] } }, 'the web player\'s DJ state reaches the pick');
+  answer = item(F.b, 'B', 500);
+  await until(() => rm.getRoom(id).queue.length === 2, { timeoutMs: 3000 });
+  assert.ok(picks.length >= 2, 'a miss is tried again');
+  answer = null;
+  const ended = new Promise((res) => rm.once('ended', res));
+  await ended;
+  assert.deepEqual(dedupe(titles(a)).slice(0, 2), ['M', 'B'], 'the picked song plays after M');
+  assert.equal(rm.getRoom(id).queue[1].dj, true, 'marked as an Auto-DJ pick in the queue');
+  assert.deepEqual(rm.getAutoDj(id).state, { artistHistory: ['Tester'] }, 'the state carries on from pick to pick');
+  await rm.close();
+});
+
+test('Auto-DJ off: nothing is picked; the setting is kept with the room', async () => {
+  const d = path.join(dir, 'autodj-keep');
+  let picked = 0;
+  const pick = async () => { picked++; return null; };
+  const rm = await manager({ dir: d, autoDjPick: pick });
+  const a = new FakeMember();
+  const id = rm.attach(a);
+  rm.play(id, { items: [item(F.b, 'B', 500)] });
+  await new Promise((res) => rm.once('ended', res));
+  assert.equal(picked, 0);
+  rm.setAutoDj(id, { on: true, user: 'dj', rg: { rgMode: 'album' } });
+  await rm.close();
+  const again = await manager({ dir: d, autoDjPick: pick });
+  assert.equal(again.getRoom(id).autoDj, true, 'kept across a restart');
+  again.setAutoDj(id, { on: false });
+  assert.equal(again.getRoom(id).autoDj, false);
+  await again.close();
+});

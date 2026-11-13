@@ -82,7 +82,15 @@ function keywordBlocked(song, words) {
  * settings:    { similar, bpmContinuity, bpmBase, bpmTolerance, genreFilter, filterWords }
  * Returns { songs, trace } — songs in play order, seed excluded.
  */
-export async function buildRadio({ seed, count, fetchRows, similarFor, scope = {}, settings = {}, toSong = r => r, rng = Math.random }) {
+// state: the browser's Auto-DJ state to continue from (a Velvet Room carries it on from the web player and from
+// pick to pick): artistHistory, bpmHistory, yearHistory, genreHistory, familyHistory, seedFamily, lastPickFree,
+// similarFor/similarArtists/rankMap/similarSource. seedIsDj: the seed itself was an Auto-DJ pick, so its start counts
+// like the browser's Player.playAt for a DJ track. history: songs played before the seed (no repeats of those).
+// The returned state is where the chain left off.
+export async function buildRadio({
+  seed, count, fetchRows, similarFor, scope = {}, settings = {}, toSong = r => r, rng = Math.random,
+  state = null, seedIsDj = false, history = [],
+}) {
   const cfg = { similar: true, bpmContinuity: true, bpmBase: null, bpmTolerance: 8, genreFilter: null, filterWords: [], ...settings };
   const st = {
     similarFor: '', similarArtists: [], rankMap: {}, similarSource: '',
@@ -90,11 +98,21 @@ export async function buildRadio({ seed, count, fetchRows, similarFor, scope = {
     seedFamily: genreFamilyOf(seed), familyHistory: [], genreHistory: [],
     artistHistory: seed.artist ? [seed.artist.trim()] : [],
   };
-  const played = [seed];
-  const usedIds = new Set([seed.id]);
-  const usedHashes = new Set([seed.hash].filter(Boolean));
+  if (state) {
+    for (const k of ['artistHistory', 'bpmHistory', 'yearHistory', 'genreHistory', 'familyHistory', 'similarArtists']) {
+      if (Array.isArray(state[k])) st[k] = state[k].slice();
+    }
+    if (state.rankMap && typeof state.rankMap === 'object') st.rankMap = { ...state.rankMap };
+    for (const k of ['similarFor', 'similarSource']) if (typeof state[k] === 'string') st[k] = state[k];
+    st.lastPickFree = state.lastPickFree === true;
+    // A manually started song re-seeds the genre anchor; a DJ pick keeps the session's.
+    st.seedFamily = seedIsDj && state.seedFamily !== undefined ? state.seedFamily : genreFamilyOf(seed);
+  }
+  const played = [...history, seed];
+  const usedIds = new Set(played.map(s => s.id).filter(id => id != null));
+  const usedHashes = new Set(played.map(s => s.hash).filter(Boolean));
   const usedTitles = createSongIndex();
-  usedTitles.add(seed);
+  for (const s of played) usedTitles.add(s);
   const trace = [];
 
   const pushArtist = artist => {
@@ -204,7 +222,7 @@ export async function buildRadio({ seed, count, fetchRows, similarFor, scope = {
 
   for (let i = 0; i < count; i++) {
     const cur = played.at(-1);
-    const isDj = i > 0;
+    const isDj = i > 0 || seedIsDj;
     // What the browser does when a track starts playing (Player.playAt).
     if (isDj) {
       if (cfg.bpmContinuity && cfg.bpmBase == null && cur.bpm != null && !st.lastPickFree) {
@@ -245,5 +263,10 @@ export async function buildRadio({ seed, count, fetchRows, similarFor, scope = {
       escape: escaped, note: chosen.note,
     });
   }
-  return { songs: played.slice(1), trace };
+  const out = {
+    artistHistory: st.artistHistory.slice(-500), bpmHistory: st.bpmHistory, yearHistory: st.yearHistory,
+    genreHistory: st.genreHistory, familyHistory: st.familyHistory, seedFamily: st.seedFamily, lastPickFree: st.lastPickFree,
+    similarFor: st.similarFor, similarArtists: st.similarArtists, rankMap: st.rankMap, similarSource: st.similarSource,
+  };
+  return { songs: played.slice(history.length + 1), trace, state: out };
 }

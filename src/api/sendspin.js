@@ -63,11 +63,12 @@ import { resolveTrackGain } from './db.js';
 import { RoomsService, RoomError, SourceError, STOP_TIMEOUT_MS } from '../sendspin/service.js';
 import { createArtwork } from '../sendspin/artwork.js';
 import {
-  createSonosSoap, streamUrlFor, artUrlFor, isSonosUuid, sonosStreamPeerAllowed, STREAM_PATH, MAX_SONOS_DELAY_MS, DEFAULT_SONOS_DELAY_MS,
+  createSonosSoap, streamUrlFor, isSonosUuid, sonosStreamPeerAllowed, STREAM_PATH, MAX_SONOS_TRIM_MS,
 } from '../sendspin/sonos.js';
 import * as sonosApi from './sonos.js';
 import { PairingInputError, decodePskToken } from '../sendspin/pairing.js';
 import { EQ_BANDS, EQ_MIN_DB, EQ_MAX_DB, MAX_PRESET_LENGTH } from '../sendspin/eq.js';
+import { nextForRoom } from '../autodj/library.js';
 
 const MAX_SONGS = 10_000;
 const MAX_FILEPATH = 4096;
@@ -128,6 +129,7 @@ const SCHEMAS = {
   createRoom: Joi.object({ name: name63.required(), members: Joi.array().items(Joi.string().min(1).max(128)).min(1).max(32).required() }),
   patchRoom: Joi.object({ name: name63, members: Joi.array().items(Joi.string().min(1).max(128)).min(1).max(32) }),
   songs: Joi.array().items(Joi.string().max(MAX_FILEPATH)).min(1).max(MAX_SONGS).required(),
+  djs: Joi.array().items(Joi.boolean()).max(MAX_SONGS),
   rg: {
     rgEnabled: Joi.boolean(), rgMode: Joi.string().valid('track', 'album'),
     rgPreamp: Joi.number().min(-15).max(15), rgClip: Joi.boolean(),
@@ -140,8 +142,8 @@ const SCHEMAS = {
   repeat: Joi.object({ repeat: Joi.string().valid('off', 'all', 'one').required() }),
   shuffle: Joi.object({ shuffle: Joi.boolean().required() }),
   empty: Joi.object({}),
-  sonosAdd: Joi.object({ uuid: Joi.string().max(64).required(), delayMs: Joi.number().integer().min(0).max(MAX_SONOS_DELAY_MS) }),
-  sonosPatch: Joi.object({ delayMs: Joi.number().integer().min(0).max(MAX_SONOS_DELAY_MS).required() }),
+  sonosAdd: Joi.object({ uuid: Joi.string().max(64).required(), trimMs: Joi.number().integer().min(-MAX_SONOS_TRIM_MS).max(MAX_SONOS_TRIM_MS) }),
+  sonosPatch: Joi.object({ trimMs: Joi.number().integer().min(-MAX_SONOS_TRIM_MS).max(MAX_SONOS_TRIM_MS).required() }),
   source: Joi.object({ clientId, allowed: Joi.boolean().required() }),
   sourceAuto: Joi.object({ clientId, autoSwitch: Joi.boolean().required(), roomId: Joi.string().min(1).max(64) }),
   lineIn: Joi.object({ clientId }),
@@ -153,10 +155,46 @@ const SCHEMAS = {
   }),
 };
 SCHEMAS.play = Joi.object({
-  songs: SCHEMAS.songs, index: Joi.number().integer().min(0).default(0), positionMs: Joi.number().integer().min(0).default(0),
+  songs: SCHEMAS.songs, djs: SCHEMAS.djs, index: Joi.number().integer().min(0).default(0), positionMs: Joi.number().integer().min(0).default(0),
   paused: Joi.boolean().default(false), ...SCHEMAS.rg,
 });
-SCHEMAS.add = Joi.object({ songs: SCHEMAS.songs, next: Joi.boolean().default(false), queueVersion: SCHEMAS.queueVersion, ...SCHEMAS.rg });
+// The web player's Auto-DJ settings and DJ state (see autodj/library.js nextForRoom). Bounded, typed, nothing more.
+const djStrings = (n, len = 200) => Joi.array().items(Joi.string().max(len)).max(n);
+SCHEMAS.autoDj = Joi.object({
+  on: Joi.boolean().required(),
+  ...SCHEMAS.rg,
+  settings: Joi.object({
+    similar: Joi.boolean(),
+    bpmContinuity: Joi.boolean(),
+    bpmBase: Joi.number().min(20).max(300).allow(null),
+    bpmTolerance: Joi.number().min(0).max(100),
+    filterWords: djStrings(200),
+    genreFilter: Joi.object({ mode: Joi.string().valid('whitelist', 'blacklist').required(), genres: djStrings(2000) }).allow(null),
+    scope: Joi.object({
+      ignoreVPaths: djStrings(100, 256),
+      filepathPrefix: Joi.string().max(MAX_FILEPATH).allow(null),
+      excludeFilepathPrefixes: Joi.array().items(Joi.object({ vpath: Joi.string().max(256).required(), prefix: Joi.string().max(MAX_FILEPATH).required() })).max(100),
+      minRating: Joi.number().integer().min(0).max(10),
+      minDuration: Joi.number().min(0).max(86400),
+      maxDuration: Joi.number().min(0).max(86400),
+      allowUnknownDuration: Joi.boolean(),
+    }),
+  }),
+  state: Joi.object({
+    artistHistory: djStrings(500),
+    bpmHistory: Joi.array().items(Joi.number()).max(50),
+    yearHistory: Joi.array().items(Joi.number()).max(50),
+    genreHistory: djStrings(50),
+    familyHistory: djStrings(50),
+    seedFamily: Joi.string().max(200).allow(null),
+    lastPickFree: Joi.boolean(),
+    similarFor: Joi.string().max(500).allow(''),
+    similarArtists: djStrings(500),
+    rankMap: Joi.object().pattern(Joi.string().max(500), Joi.number()).max(1000),
+    similarSource: Joi.string().max(500).allow(''),
+  }),
+});
+SCHEMAS.add = Joi.object({ songs: SCHEMAS.songs, djs: SCHEMAS.djs, next: Joi.boolean().default(false), queueVersion: SCHEMAS.queueVersion, ...SCHEMAS.rg });
 const queueIndexes = Joi.array().items(Joi.number().integer().min(0)).min(1).max(MAX_SONGS).unique().required();
 SCHEMAS.remove = Joi.object({ indexes: queueIndexes, queueVersion: SCHEMAS.queueVersion });
 SCHEMAS.move = Joi.object({
@@ -249,7 +287,6 @@ function settingsFromConfig() {
 // ── Sonos followers ────────────────────────────────────────────────────────
 
 const sonosEnabled = () => config.program.sonos?.enabled !== false;
-let sonosArtBase = null;
 
 // Tests point Velvet at a fake Sonos on loopback; never honoured outside NODE_ENV=test.
 function sonosTestSetup() {
@@ -273,20 +310,18 @@ function sonosBridge() {
     soap: (...args) => (sonosEnabled() ? soap(...args) : Promise.reject(new Error('Sonos is disabled in Velvet'))),
     resolve: (uuid) => sonosDevicesNow().find((d) => d.uuid === uuid) ?? null,
     streamUrl: streamUrlFor,
-    artUrl: (base, aaFile) => artUrlFor(sonosArtBase ?? base, aaFile),
     enabled: sonosEnabled,
   };
 }
 
 function sonosBases(req) {
-  sonosArtBase = sonosApi.buildArtBaseUrl(req);
   return sonosApi.buildBaseUrl(req);
 }
 
 function svc() {
   if (!service) {
     const art = createArtwork({ artDir: config.program.storage.albumArtDirectory });
-    const roomOptions = { sonos: sonosBridge(), ...serviceOpts.roomOptions };
+    const roomOptions = { sonos: sonosBridge(), autoDjPick, ...serviceOpts.roomOptions };
     service = new RoomsService({ dataDir: sendspinDataDir(), logger: winston, ...art, ...serviceOpts, roomOptions });
   }
   return service;
@@ -437,7 +472,8 @@ async function isFile(file) {
   }
 }
 
-export async function resolveSongs(songs, user, rg = {}) {
+// djs: per song, whether it was an Auto-DJ pick in the web player (kept as the queue's DJ marker).
+export async function resolveSongs(songs, user, rg = {}, djs = null) {
   const located = songs.map((fp) => locate(fp, user));
   const byVpath = new Map();
   for (const l of located) {
@@ -460,16 +496,57 @@ export async function resolveSongs(songs, user, rg = {}) {
   }
   const items = [];
   let skipped = 0;
-  for (const c of candidates) {
+  for (const [i, c] of candidates.entries()) {
     if (!c?.row || !exists.get(c.l.file)) {
       skipped++;
       continue;
     }
     const item = { filepath: c.l.fp, file: c.l.file, meta: metaOf(c.row), gainDb: gainFor(c.row, rg) };
+    if (djs?.[i] === true) item.dj = true;
     if (Number.isInteger(c.row.channels) && c.row.channels > 0) item.channels = c.row.channels;
     items.push(item);
   }
   return { items, skipped };
+}
+
+// ── Auto-DJ for rooms ──────────────────────────────────────────────────────
+
+// The DB (root) vpaths behind a user's folders: a child folder is indexed under its parent root.
+function rootVpathsFor(user) {
+  const folders = config.program.folders || {};
+  const withSlash = (r) => r.replace(/\/?$/, '/');
+  const out = new Set();
+  for (const v of user.vpaths || []) {
+    const root = folders[v]?.root;
+    if (!root) continue;
+    const parent = Object.entries(folders).find(([o, f]) => o !== v && f.root && withSlash(root).startsWith(withSlash(f.root)) && withSlash(root) !== withSlash(f.root));
+    out.add(parent ? parent[0] : v);
+  }
+  return [...out];
+}
+
+// The next Auto-DJ song after `seed` for a room, picked like the web player picks it (autodj/library.js nextForRoom)
+// with the switched-on user's settings, DJ state and folder access. -> { item, state } or null.
+async function autoDjPick({ seed, history, queue, autoDj }) {
+  const base = config.program.users?.[autoDj.user];
+  if (!base) return null;
+  const user = { ...base, username: autoDj.user };
+  const rowOf = (fp) => {
+    const l = locate(fp, user);
+    return l ? db.getFilesWithMetadataByPaths([l.dbRel], l.dbVpath, user.username).get(l.dbRel) ?? null : null;
+  };
+  const seedRow = rowOf(seed.filepath);
+  if (!seedRow) return null;
+  const inQueue = new Set(queue);
+  const picked = await nextForRoom({
+    seedRow, seedIsDj: seed.dj === true, historyRows: history.map((h) => rowOf(h.filepath)).filter(Boolean),
+    username: user.username, vpaths: rootVpathsFor(user), settings: autoDj.settings ?? {}, state: autoDj.state ?? null,
+  });
+  if (!picked) return null;
+  const fp = `${picked.row.vpath}/${picked.row.filepath}`;
+  if (inQueue.has(fp)) return null;
+  const { items } = await resolveSongs([fp], user, autoDj.rg ?? {});
+  return items.length ? { item: items[0], state: picked.state } : null;
 }
 
 // ── Room helpers ───────────────────────────────────────────────────────────
@@ -506,10 +583,17 @@ export function setupPublic(velvet) {
   velvet.get(`${STREAM_PATH}:file`, (req, res) => {
     // Loopback is every local process and any reverse proxy on this host: only the test suite's fake Sonos.
     if (!sonosStreamPeerAllowed(req.socket?.remoteAddress, { loopback: process.env.NODE_ENV === 'test' })) return res.status(403).end();
-    const token = /^([A-Za-z0-9_-]{32})\.mp3$/.exec(req.params.file)?.[1];
+    const [, token, ext] = /^([A-Za-z0-9_-]{32})\.(mp3|jpg)$/.exec(req.params.file) ?? [];
     const stream = token && service?.running ? service.rooms.sonosStream(token) : null;
     if (!stream) return res.status(404).end();
-    stream.serve(req, res);
+    if (ext === 'mp3') return stream.serve(req, res);
+    // The cover of the song the room plays now, from the album-art folder only.
+    const aaFile = stream.aaFile();
+    const artDir = config.program.storage?.albumArtDirectory;
+    if (!aaFile || !artDir) return res.status(404).end();
+    res.sendFile(aaFile, { root: artDir, dotfiles: 'deny', headers: { 'Cache-Control': 'no-cache, no-store' } }, (err) => {
+      if (err && !res.headersSent) res.status(404).end();
+    });
   });
 }
 
@@ -703,6 +787,7 @@ export function setup(velvet) {
         year: q.meta?.year ?? null,
         aaFile: q.meta?.aaFile ?? null,
         durationMs: q.meta?.durationMs ?? null,
+        ...(q.dj ? { dj: true } : {}),
       })),
     };
   });
@@ -711,7 +796,7 @@ export function setup(velvet) {
     const body = validate(SCHEMAS.play, req.body);
     const { id } = req.params;
     lightView(service, id);
-    const { items, skipped } = await resolveSongs(body.songs, req.user, body);
+    const { items, skipped } = await resolveSongs(body.songs, req.user, body, body.djs);
     if (!items.length) fail(400, 'invalid_body', 'no playable song in songs', { skipped });
     checkPlayable(service, id);
     const index = Math.min(body.index, items.length - 1);
@@ -723,7 +808,7 @@ export function setup(velvet) {
     const body = validate(SCHEMAS.add, req.body);
     const { id } = req.params;
     lightView(service, id);
-    const { items, skipped } = await resolveSongs(body.songs, req.user, body);
+    const { items, skipped } = await resolveSongs(body.songs, req.user, body, body.djs);
     if (!items.length) fail(400, 'invalid_body', 'no playable song in songs', { skipped });
     const before = lightView(service, id);
     checkVersion(before, body.queueVersion);
@@ -811,26 +896,26 @@ export function setup(velvet) {
     if (!sonosEnabled()) return { enabled: false, devices: [] };
     const devices = (await sonosDevices()).filter((d) => isSonosUuid(d.uuid));
     return {
-      enabled: true, defaultDelayMs: DEFAULT_SONOS_DELAY_MS, maxDelayMs: MAX_SONOS_DELAY_MS,
+      enabled: true, maxTrimMs: MAX_SONOS_TRIM_MS,
       devices: devices.map((d) => ({ uuid: d.uuid, name: d.name, model: d.model ?? null, roomId: service.rooms.sonosRoomOf(d.uuid) })),
     };
   });
 
   player('post', '/:id/sonos', (req) => {
-    const { uuid, delayMs } = validate(SCHEMAS.sonosAdd, req.body);
+    const { uuid, trimMs } = validate(SCHEMAS.sonosAdd, req.body);
     const { id } = req.params;
     lightView(service, id);
     if (!sonosEnabled()) fail(409, 'sonos_disabled', 'Sonos is disabled in Velvet');
     const d = sonosDevicesNow().find((x) => x.uuid === uuid);
     if (!d || !isSonosUuid(uuid)) fail(404, 'not_found', 'unknown Sonos speaker');
-    service.rooms.addSonos(id, { uuid, name: d.name, ip: d.ip, base: sonosBases(req), delayMs });
+    service.rooms.addSonos(id, { uuid, name: d.name, ip: d.ip, base: sonosBases(req), trimMs });
     return service.room(id);
   });
 
   player('patch', '/:id/sonos/:uuid', (req) => {
-    const { delayMs } = validate(SCHEMAS.sonosPatch, req.body);
+    const { trimMs } = validate(SCHEMAS.sonosPatch, req.body);
     lightView(service, req.params.id);
-    service.rooms.setSonosDelay(req.params.id, req.params.uuid, delayMs);
+    service.rooms.setSonosTrim(req.params.id, req.params.uuid, trimMs);
     return service.room(req.params.id);
   });
 
@@ -860,6 +945,15 @@ export function setup(velvet) {
     const { muted, clientId: id } = validate(SCHEMAS.mute, req.body);
     if (id) service.rooms.setMemberMute(req.params.id, id, muted);
     else service.rooms.mute(req.params.id, muted);
+    return service.room(req.params.id);
+  });
+
+  player('get', '/:id/autodj', (req) => service.rooms.getAutoDj(req.params.id));
+
+  player('put', '/:id/autodj', (req) => {
+    const { on, settings, state, ...rg } = validate(SCHEMAS.autoDj, req.body);
+    lightView(service, req.params.id);
+    service.rooms.setAutoDj(req.params.id, { on, user: req.user.username, rg, settings: settings ?? {}, state });
     return service.room(req.params.id);
   });
 

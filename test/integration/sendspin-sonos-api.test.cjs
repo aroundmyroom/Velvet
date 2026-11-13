@@ -42,7 +42,10 @@ function fakeSonos() {
       const tag = t => new RegExp(`<${t}>([^<]*)</${t}>`).exec(body)?.[1];
       calls.push(action);
       let out = '';
-      if (action === 'SetAVTransportURI') state.uri = tag('CurrentURI');
+      if (action === 'SetAVTransportURI') {
+        state.uri = tag('CurrentURI');
+        state.meta = tag('CurrentURIMetaData');
+      }
       if (action === 'SetVolume') state.volume = Number(tag('DesiredVolume'));
       if (action === 'Stop') state.uri = '';
       if (action === 'GetVolume') out = `<CurrentVolume>${state.volume}</CurrentVolume>`;
@@ -143,27 +146,27 @@ describe('Velvet Rooms REST: Sonos followers', async () => {
     const r = await call('caster', 'GET', '/api/v1/rooms/sonos');
     assert.equal(r.status, 200);
     assert.equal(r.body.enabled, true);
-    assert.equal(r.body.defaultDelayMs, 2000);
-    assert.equal(r.body.maxDelayMs, 5000);
+    assert.equal(r.body.maxTrimMs, 1000);
     assert.deepEqual(r.body.devices, [{ uuid: UUID, name: 'Living Sonos', model: 'Era 100', roomId: null }]);
   });
 
-  it('validates add, delay and remove', async () => {
+  it('validates add, fine-tune and remove', async () => {
     assert.equal((await call('plain', 'POST', `/api/v1/rooms/${roomId}/sonos`, { uuid: UUID })).status, 403);
     assert.equal((await call('caster', 'POST', `/api/v1/rooms/${roomId}/sonos`, {})).status, 400);
-    assert.equal((await call('caster', 'POST', `/api/v1/rooms/${roomId}/sonos`, { uuid: UUID, delayMs: 5001 })).status, 400);
+    assert.equal((await call('caster', 'POST', `/api/v1/rooms/${roomId}/sonos`, { uuid: UUID, trimMs: 1001 })).status, 400);
     assert.equal((await call('caster', 'POST', `/api/v1/rooms/${roomId}/sonos`, { uuid: 'RINCON_FFFFFFFFFFFF01400' })).status, 404);
     assert.equal((await call('caster', 'POST', '/api/v1/rooms/nope/sonos', { uuid: UUID })).status, 404);
-    assert.equal((await call('caster', 'PATCH', `/api/v1/rooms/${roomId}/sonos/${UUID}`, { delayMs: 100 })).status, 404);
+    assert.equal((await call('caster', 'PATCH', `/api/v1/rooms/${roomId}/sonos/${UUID}`, { trimMs: 100 })).status, 404);
     assert.equal((await call('caster', 'DELETE', `/api/v1/rooms/${roomId}/sonos/${UUID}`)).status, 404);
   });
 
-  it('a Sonos follows the room: stream with token only, delay, volume, removal stops it', async () => {
-    const add = await call('caster', 'POST', `/api/v1/rooms/${roomId}/sonos`, { uuid: UUID, delayMs: 300 });
+  it('a Sonos follows the room: stream with token only, fine-tune, volume, removal stops it', async () => {
+    const add = await call('caster', 'POST', `/api/v1/rooms/${roomId}/sonos`, { uuid: UUID, trimMs: -300 });
     assert.equal(add.status, 200, JSON.stringify(add.body));
     assert.equal(add.body.sonos.length, 1);
     assert.equal(add.body.sonos[0].id, `sonos:${UUID}`);
-    assert.equal(add.body.sonos[0].delayMs, 300);
+    assert.equal(add.body.sonos[0].trimMs, -300);
+    assert.equal(add.body.sonos[0].leadMs, null, 'not measured before it plays');
     assert.ok(!sonos.calls.includes('SetAVTransportURI'), 'nothing plays while the room is idle');
     assert.equal((await call('caster', 'GET', '/api/v1/rooms/sonos')).body.devices[0].roomId, roomId);
 
@@ -179,11 +182,16 @@ describe('Velvet Rooms REST: Sonos followers', async () => {
     assert.equal(ok.type, 'audio/mpeg');
     assert.ok(ok.bytes > 10_000, `mp3 bytes flowed (${ok.bytes})`);
     assert.equal((await get(url.replace(/[A-Za-z0-9_-]{32}\.mp3$/, `${'x'.repeat(32)}.mp3`), 300)).status, 404);
+    const meta = sonos.state.meta.replaceAll('&lt;', '<').replaceAll('&gt;', '>').replaceAll('&amp;', '&');
+    const art = url.replace(/\.mp3$/, '.jpg');
+    assert.ok(meta.includes(`<upnp:albumArtURI>${art}</upnp:albumArtURI>`), 'the cover follows the session, not one song');
+    assert.equal((await get(art, 300)).status, 404, 'no cover for the test tones: nothing rather than a wrong one');
+    assert.equal((await get(art.replace(/[A-Za-z0-9_-]{32}\.jpg$/, `${'x'.repeat(32)}.jpg`), 300)).status, 404);
     assert.equal((await get(url.replace(/\.mp3$/, ''), 300)).status, 404);
 
-    const patch = await call('caster', 'PATCH', `/api/v1/rooms/${roomId}/sonos/${UUID}`, { delayMs: 1500 });
-    assert.equal(patch.body.sonos[0].delayMs, 1500);
-    assert.equal((await call('caster', 'PATCH', `/api/v1/rooms/${roomId}/sonos/${UUID}`, { delayMs: -5 })).status, 400);
+    const patch = await call('caster', 'PATCH', `/api/v1/rooms/${roomId}/sonos/${UUID}`, { trimMs: 150 });
+    assert.equal(patch.body.sonos[0].trimMs, 150);
+    assert.equal((await call('caster', 'PATCH', `/api/v1/rooms/${roomId}/sonos/${UUID}`, { trimMs: -1001 })).status, 400);
 
     await until(async () => (await call('caster', 'GET', `/api/v1/rooms/${roomId}/state`)).body.sonos[0].volume === 35);
     const vol = await call('caster', 'POST', `/api/v1/rooms/${roomId}/volume`, { volume: 40, clientId: `sonos:${UUID}` });

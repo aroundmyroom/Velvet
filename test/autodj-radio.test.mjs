@@ -151,3 +151,32 @@ describe('Auto-DJ candidate pool', () => {
     assert.equal(batchCandidatePool(source(rows), {}).songs.length, RANDOM_SONGS_BATCH_CAP);
   });
 });
+
+describe('Radio chain carrying a Velvet Room\'s DJ state', () => {
+  it('keeps an artist from the carried cooldown out, and continues the state', async () => {
+    const seed = row({ artist: 'Kiki Dee', title: 'Seed', bpm: 120 });
+    const lib = [
+      row({ artist: 'Elton John', title: 'Perfect Match', bpm: 120 }),
+      row({ artist: 'Other', title: 'o', bpm: 140 }),
+    ];
+    const state = { artistHistory: ['Elton John', 'Kiki Dee'], bpmHistory: [120], yearHistory: [], genreHistory: [], familyHistory: [] };
+    const { songs, state: next } = await buildRadio({
+      seed: songFromRow(seed), count: 1, fetchRows: source(lib), similarFor: noSimilar, toSong: r => songFromRow(r), rng: rng0,
+      state, seedIsDj: true,
+    });
+    assert.deepEqual(songs.map(s => s.artist), ['Other'], 'Elton John is in the cooldown the web player handed over');
+    assert.equal(next.artistHistory.at(-1), 'Other');
+    assert.ok(next.artistHistory.includes('Elton John'));
+  });
+
+  it('skips what the room already played', async () => {
+    const seed = row({ artist: 'A', title: 'Seed', bpm: 120 });
+    const before = row({ artist: 'B', title: 'Played', bpm: 120 });
+    const lib = [before, row({ artist: 'C', title: 'New', bpm: 120 })];
+    const { songs } = await buildRadio({
+      seed: songFromRow(seed), count: 1, fetchRows: source(lib), similarFor: noSimilar, toSong: r => songFromRow(r), rng: rng0,
+      state: { artistHistory: [] }, history: [songFromRow(before)],
+    });
+    assert.deepEqual(songs.map(s => s.title), ['New']);
+  });
+});

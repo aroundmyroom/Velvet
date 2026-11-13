@@ -277,7 +277,7 @@ in <room>* in the player bar and the queue panel. From now on the player is a
 | Drag to reorder, move a disc, *Shuffle queue*, *Flow*, *Undo* | The room's queue follows; the song that plays is not interrupted. |
 | *Clear queue* | Everything but the playing song is removed (all of it when the room has stopped). |
 | Play an album, playlist, AI DJ set | The new queue is sent to the room. |
-| Auto-DJ on | When the room starts its last song, the browser picks the next one and adds it — see below. |
+| Auto-DJ on | Switches the room's own Auto-DJ on: when the room starts its last song, Velvet picks the next one and adds it — see below. |
 
 While a room is active the queue panel shows the room's queue. Changes made
 elsewhere — a speaker's buttons, another browser — show up in the player within
@@ -285,11 +285,26 @@ a second or two. If someone else changed the queue at the moment you edited it,
 the player shows *The room's queue was changed elsewhere* and loads the room's
 queue again; repeat your edit on that.
 
-**Auto-DJ in a room.** Auto-DJ keeps choosing songs in the browser, with all
-its settings (similar artists, BPM, genres, …). When the room starts its last
-song, the browser picks the next one and adds it to the room. Two open tabs
-never add twice. This only works **while a browser with that room active is
-open**: close it and the room plays the rest of its queue and stops.
+**Auto-DJ in a room.** A room has its own Auto-DJ, on the server, and it
+plays exactly like Auto-DJ in the web player. When the room starts its last
+song, Velvet picks the next one the same way: the same candidate pool and
+scoring, **all your Auto-DJ settings** (similar artists on/off, the
+collections you picked, minimum rating, track length, keyword filter, genre
+whitelist/blacklist, BPM continuity, tolerance and base BPM) and the **same DJ
+state**: the artist cooldown (no artist again within 15 songs), the BPM, year
+and genre history and the last similar-artist list. Songs it adds carry the
+*Auto DJ* tag in the queue. It does not need a browser: the tab can be in
+the background or closed, and it works the same whether the music was
+started from the browser, Home Assistant or a speaker's own buttons.
+
+- Switching Auto-DJ on in the player while a room is your output, or
+  starting music in a room with Auto-DJ on, hands the room your settings and
+  your DJ state; it carries on from there, pick after pick.
+- Changing an Auto-DJ setting while the room plays applies from its next pick.
+- Taking playback back to the browser continues with the state the room
+  built up, so the cooldown holds across outputs.
+- The setting stays with the room across restarts. A pick that finds nothing
+  is tried again after 30 seconds.
 
 Reload the page while a room plays and the player reconnects as its remote.
 
@@ -430,27 +445,48 @@ admin page or in the player's room editor (*Add a Sonos…*). The list shows the
 Sonos speakers Velvet found on the network (the same discovery as
 [Sonos cast](sonos.md)); it only appears while Sonos is enabled in Velvet.
 
-**It follows the room, it is not sample-accurate.** A Sonos keeps a few
-seconds of buffer of its own. Velvet therefore sends it the room's audio
-early, and the Sendspin speakers in the room wait that long before they play.
-How early is the **Sonos head start** (0–5000 ms, default 2000 ms): drag the
-slider or type the milliseconds in the box next to it. Play something with a
-clear beat, listen to a Sendspin speaker and the Sonos together, and adjust
-until they line up:
+**It follows the room, and Velvet keeps it in line.** A Sonos keeps a few
+seconds of buffer of its own, and how long it takes to start varies: right
+after a Velvet restart, on a busy server or on Wi-Fi it can be a second or
+more. Velvet therefore sends it the room's audio early and **measures** where
+the Sonos really is: the Sonos reports how many seconds of the stream it has
+played, and the moment that counter ticks over tells Velvet, to within a few
+hundredths of a second, which part of the stream it plays right then. Velvet
+then shifts the stream so the Sonos plays on the room's timeline.
 
-- **The Sonos plays late** → raise the head start.
-- **The Sonos plays early** → lower it.
-
-Fine-tune in steps of 100–200 ms. A change takes effect at once (the Sonos
-skips ahead or falls back a moment). Expect it to stay roughly in line, not
-perfectly: the Sonos runs on its own clock.
+- **When.** A few seconds after the Sonos starts the stream, then every 5
+  seconds for the first three minutes (a Sonos shrinks its start-up buffer in
+  jumps of about 0.7 s during that time), then every 30 seconds. A correction
+  is heard as one short skip on the Sonos; under 60 ms nothing is changed.
+- **Song changes.** A Sonos restarts its position counter when the song title
+  in the stream changes. Velvet writes those titles itself and knows exactly
+  where each one starts, so it keeps measuring across songs. Where exactly a
+  Sonos restarts its counter at a title change is a few hundredths of a
+  second off from that spot, so Velvet takes over from the measurement just
+  before the change instead of correcting at the change: one fine-tune value
+  fits every song.
+- **Automatic lead.** The room editor and the admin page show the lead Velvet
+  measured (*automatic: 3210 ms ahead*), or *automatic: measuring…* until the
+  first measurement. Velvet changes it by itself; it can drop well below a
+  second once the Sonos has shrunk its buffer. The Sendspin speakers start that much later on every play,
+  seek or skip, so the Sonos hears the beginning too.
+- **Your fine-tune** (−1000 to +1000 ms, default 0) is a correction on top of
+  the automatic lead, not the lead itself: leave it at 0 unless you still hear
+  a difference. The network cannot see the
+  Sonos's own sound processing, so set this once by ear: play something with a
+  clear beat, listen to a Sendspin speaker and the Sonos together, then type
+  the milliseconds or drag the slider. The Sonos still plays late → higher;
+  still early → lower. It stays right across restarts because the rest is
+  measured.
+- If a Sonos does not report its position, Velvet keeps its first guess of
+  2 seconds plus the fine-tune and says so in the log.
 
 What to expect:
 
 - **Start.** The Sonos starts when the room starts playing. With a Sonos in
-  the room, every play, seek or skip starts *head start* later on all speakers, so
-  the Sonos hears it from the beginning too; the Sonos itself may still miss
-  the first moment while it connects.
+  the room, every play, seek or skip starts the measured lead later on all
+  speakers, so the Sonos hears it from the beginning too; the Sonos itself may
+  still miss the first moment while it connects.
 - **One continuous stream.** Track changes, seek, skip, pause and resume keep
   the same stream: the Sonos never re-buffers for them. While the room is
   paused or stopped the Sonos gets silence; after 30 s Velvet stops it.
@@ -459,9 +495,12 @@ What to expect:
   Removing the Sonos from the room stops it — only if it still plays the room.
 - **Volume and mute** of the room include the Sonos (Sonos volume via its
   own volume control); the editor sets one Sonos's volume like any speaker.
-- **Line-in** also reaches the Sonos, a *head start* later on every speaker.
-- **Title.** The Sonos shows "*room* · Velvet Rooms" and the current artist
-  and title (internet-radio style metadata).
+- **Line-in** also reaches the Sonos, the measured lead later on every speaker.
+- **Title and cover.** The Sonos shows "*room* · Velvet Rooms" and the current
+  artist and title (internet-radio style metadata). A Sonos reads a radio
+  stream's cover once, when the stream starts; Velvet gives it an address that
+  always answers with the cover of the song playing now, so it shows the
+  current cover whenever the Sonos (or its app) loads the cover again.
 - A Sonos is in one room at a time; adding it to another room moves it. It
   stays in the room across restarts (by its Sonos id; the address is looked up
   again). A room still needs at least one Sendspin speaker.
@@ -485,7 +524,7 @@ same bands, presets and on/off switch. Changes go to the room:
 
 - **Instant enough.** While the room plays, a change is heard within about a
   second, without stopping or restarting the song. With a Sonos following the
-  room it takes as long as that Sonos's head start.
+  room it takes as long as that Sonos's measured lead.
 - **Stored with the room.** The EQ is kept on the server (with the room, in
   `rooms.json`), so it survives a restart and applies whichever browser — or a
   speaker's own buttons — plays the room. Two browsers on the same room see the
@@ -519,9 +558,6 @@ is capped, so a room never clips. See [replaygain-info.md](replaygain-info.md).
 - **Visualizer beats come from live analysis.** Songs with a free tempo or
   without a clear pulse get few or no beats (`peak` still fires on every hit),
   and bar starts (downbeats) are not marked.
-- **Auto-DJ tops up a room only while a browser with that room open is
-  running.** Auto-DJ picks songs in the browser. Close the last tab (or switch
-  off the laptop) and the room plays to the end of its queue and stops.
 - **Crossfade stays in the browser.** Rooms play gapless, without crossfade.
   (The equaliser does work: see [Equalizer per room](#equalizer-per-room).)
 

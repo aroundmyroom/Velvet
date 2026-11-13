@@ -138,8 +138,9 @@ in *room*": it plays the first match into the room you named.
 
 - Rooms play the **Velvet library only**; radio, text-to-speech or media from
   other Home Assistant sources cannot be sent to a room.
-- **Auto-DJ** tops up a room only while a Velvet browser tab with that room
-  active is open. A queue started from Home Assistant ends at its last track.
+- **Auto-DJ** is a setting of the room (switched in the Velvet player). With
+  it on, a queue started from Home Assistant keeps going after its last
+  track, without a browser.
 - Velvet's Server Audio output and Sonos as a separate output are not part of
   the integration (Sonos has its own Home Assistant integration).
 - Speakers are grouped into rooms in Velvet, not with Home Assistant's

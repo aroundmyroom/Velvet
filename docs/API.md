@@ -906,11 +906,13 @@ small local window for instant boot, then lazy-loads the rest from here.
 | `POST` | `/api/v1/rooms/:id/shuffle` | `{ shuffle }` | Shuffle on/off. |
 | `GET` | `/api/v1/rooms/:id/eq` | — | The room's 8-band EQ `{ enabled, gains[8], preset }` (also in the room state as `eq`). |
 | `PUT` | `/api/v1/rooms/:id/eq` | `{ enabled, gains[8], preset? }` | Set the room EQ (gains −12…12 dB, same bands as the web player). Takes effect within about a second while playing, without stopping the song. |
+| `GET` | `/api/v1/rooms/:id/autodj` | — | `{ on, state }`: the room's Auto-DJ and its DJ state (artist cooldown, BPM/year/genre history). |
+| `PUT` | `/api/v1/rooms/:id/autodj` | `{ on, settings?, state?, rg…? }` | Switch the room's server-side Auto-DJ, with the web player's Auto-DJ settings and DJ state so it picks exactly the same way; also in the room state as `autoDj`. |
 | `POST` | `/api/v1/rooms/:id/line-in` | `{ clientId }` | Play a source device's input (line-in) in the room; the queue pauses underneath. |
 | `POST` | `/api/v1/rooms/:id/line-in/stop` | — | Stop the line-in; the room returns to its paused queue. |
-| `GET` | `/api/v1/rooms/sonos` | — | Sonos speakers that can follow a room: `{ enabled, defaultDelayMs, maxDelayMs, devices[] }`. |
-| `POST` | `/api/v1/rooms/:id/sonos` | `{ uuid, delayMs? }` | A Sonos follows the room (live stream, delayed; not sample-accurate). |
-| `PATCH` | `/api/v1/rooms/:id/sonos/:uuid` | `{ delayMs }` | Change its delay (0–5000 ms). |
+| `GET` | `/api/v1/rooms/sonos` | — | Sonos speakers that can follow a room: `{ enabled, maxTrimMs, devices[] }`. |
+| `POST` | `/api/v1/rooms/:id/sonos` | `{ uuid, trimMs? }` | A Sonos follows the room (live stream; Velvet measures and corrects its lead). |
+| `PATCH` | `/api/v1/rooms/:id/sonos/:uuid` | `{ trimMs }` | Change its fine-tune (−1000 to 1000 ms). |
 | `DELETE` | `/api/v1/rooms/:id/sonos/:uuid` | — | It stops following (and is stopped if it still plays the room). |
 | `GET` | `/api/v1/rooms/sonos-stream/:token.mp3` | — | **No auth** — the live stream a following Sonos pulls; per-session token, LAN peers only. |
 

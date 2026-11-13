@@ -175,3 +175,45 @@ export async function radioForUser({ seedRow, count, username, vpaths }) {
   console.log(`[autodj] radio user=${username} seed="${seed.artist || '?'} — ${seed.title || '?'}" → ${rows.length}/${count} tracks in ${Date.now() - t0}ms${sources.length ? ` (similar to ${sources.slice(0, 4).map(s => `"${s}"`).join(', ')})` : ' (no similar artists)'}`);
   return { rows, songs, trace };
 }
+
+/**
+ * The next Auto-DJ song for a Velvet Room, picked exactly as the web player
+ * picks it: the same candidate pool call as POST /api/v1/db/random-songs
+ * (the browser's own scope: folders, minimum rating, length window), the same
+ * scoring, the browser's settings (similar artists, BPM, genre filter,
+ * keywords) and its DJ state (artist cooldown, BPM/year/genre history), which
+ * the room carries on from pick to pick. historyRows: what the room played
+ * before the seed, oldest first. Returns { row, state } or null.
+ */
+export async function nextForRoom({ seedRow, seedIsDj, historyRows = [], username, vpaths, settings = {}, state = null }) {
+  const t0 = Date.now();
+  const families = genreFamilyResolver();
+  const toSong = row => songFromRow(row, families);
+  const scope = { ...nonMusicScope(vpaths), ...(settings.scope || {}) };
+  const fetchRows = opts => db.getAllFilesWithMetadata(vpaths, username, opts);
+  const { songs, trace, state: next } = await buildRadio({
+    seed: toSong(seedRow),
+    count: 1,
+    fetchRows,
+    similarFor: createSimilarSource(vpaths),
+    scope,
+    settings: {
+      similar: settings.similar === true,
+      bpmContinuity: settings.bpmContinuity === true,
+      bpmBase: Number.isFinite(settings.bpmBase) ? settings.bpmBase : null,
+      bpmTolerance: Number.isFinite(settings.bpmTolerance) ? settings.bpmTolerance : 8,
+      genreFilter: settings.genreFilter?.genres?.length ? settings.genreFilter : null,
+      filterWords: Array.isArray(settings.filterWords) ? settings.filterWords : [],
+    },
+    toSong,
+    state,
+    seedIsDj,
+    history: historyRows.map(toSong),
+  });
+  if (!songs.length) return null;
+  const row = db.getSongsByRowids([songs[0].id], username).get(songs[0].id);
+  if (!row) return null;
+  const t = trace[0] || {};
+  console.log(`[autodj] room pick user=${username} after "${seedRow.artist || '?'} — ${seedRow.title || '?'}" → "${row.artist || '?'} — ${row.title || '?'}" in ${Date.now() - t0}ms (${[].concat(t.note || []).join('; ')}${t.similarSource ? `, similar to "${t.similarSource}"` : ''})`);
+  return { row, state: next };
+}

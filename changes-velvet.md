@@ -70,9 +70,46 @@ VoltViz visualizer and Velvet's brain in Music Assistant
   disconnected or unpaired on purpose; the wait between retries is capped at
   30 seconds instead of 5 minutes. Disconnects and the reconnect decision
   are now in the log.
-- The Sonos **Delay** setting is now called **Sonos head start**, with a
-  hint (Sonos late → higher, early → lower) and a box to type the
-  milliseconds next to the slider, in the admin page and the player.
+- **A Sonos in a Velvet Room now stays in sync by itself.** How long a Sonos
+  buffers before it plays varies (after a Velvet restart, on a busy server or
+  on Wi-Fi), so a fixed delay was off by a different amount each time. Velvet
+  now measures where the Sonos is in the stream (the moment its position
+  counter ticks over), sets the lead from that, and keeps checking: every 5
+  seconds for the first three minutes, when a Sonos shrinks its start-up
+  buffer in jumps, then every 30 seconds, also across song changes (where a
+  Sonos restarts its counter). At a song change Velvet carries
+  the measurement over instead of correcting (a Sonos restarts its counter a
+  few hundredths of a second off from the title change), so one fine-tune
+  value fits every song. The old *Delay* setting (0–5000 ms) is replaced by a **fine-tune**
+  (−1000 to +1000 ms, default 0) for the Sonos's own sound delay, with a box
+  to type the milliseconds and a hint (still late → higher, still early →
+  lower); the measured lead is shown next to it. API: `trimMs` replaces
+  `delayMs`, rooms show `leadMs`. Existing delay values are not carried over.
+- The VU meters and every visualizer stood still while a Velvet Room played:
+  the browser is only a remote then, so its analysers got no audio. The
+  player now plays the room's song silently in the background, at the room's
+  position, just to feed the meters and visualizers (as it already did for
+  Sonos). Line-in rooms stay without visualization.
+- **Auto-DJ in a Velvet Room now runs on the server.** It used to be the
+  browser that added the next song, and only while its tab was visible, so a
+  room in the background or started from Home Assistant played its last song
+  and stopped. A room now has its own Auto-DJ: when its last song starts,
+  Velvet picks the next one with the same scoring as the browser and the
+  switched-on user's Auto-DJ settings and folders, and adds it. Switching
+  Auto-DJ in the player while a room is the output switches the room; the
+  setting is kept with the room. It picks exactly like the web player: the
+  same pool and scoring, all Auto-DJ settings (similar artists, collections,
+  rating, length, keyword and genre filters, BPM) and the same DJ state
+  (artist cooldown, BPM/year/genre history), handed over from the player and
+  back; its picks carry the *Auto DJ* tag in the queue. New `GET`/`PUT
+  /api/v1/rooms/:id/autodj`; rooms show `autoDj`, queue entries `dj`. A hidden tab also keeps updating the room's state (every
+  10 seconds).
+- A Sonos following a room kept the cover of the song that was playing when
+  it joined. Its cover address now always answers with the cover of the
+  song playing now (the stream itself cannot change it without a gap).
+- Switching from a Velvet Room to a Sonos or to the server speaker started
+  the song paused at the beginning, so there was no sound. The room's
+  position and playing state are now handed over.
 
 ## v0.9.2 (2026-11-12)
 

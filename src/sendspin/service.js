@@ -230,7 +230,7 @@ export class RoomsService extends EventEmitter {
         };
       }),
       sonos: (view.sonos ?? []).map((s) => ({
-        id: s.id, uuid: s.uuid, name: s.name, delayMs: s.delayMs, volume: s.volume, muted: s.muted, state: s.state, error: s.error,
+        id: s.id, uuid: s.uuid, name: s.name, trimMs: s.trimMs, leadMs: s.leadMs, volume: s.volume, muted: s.muted, state: s.state, error: s.error,
       })),
       state: idle ? 'idle' : view.state,
       current: view.current && !idle ? {
@@ -256,6 +256,7 @@ export class RoomsService extends EventEmitter {
       playable: this.playable(view),
       lineIn: view.live ? { clientId: view.live.sourceId, name: view.live.name } : null,
       eq: view.eq,
+      autoDj: view.autoDj === true,
     };
   }
 

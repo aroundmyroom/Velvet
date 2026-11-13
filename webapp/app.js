@@ -2588,22 +2588,47 @@ function _djNoSimilarFor(currentArtist, lookupFailed) {
 // minRating, the similar-artist list (when available), and artist cooldown.
 // It returns many songs, not one; _djPickSong scores every one and keeps the
 // best.
-async function _djFetchBatch(escapeOpts = {}) {
+// The hard scope of an Auto-DJ pool request (selected collections, minimum
+// rating, track-length window, audiobook exclusions) — the same for the
+// browser's own picks and for a Velvet Room's Auto-DJ on the server.
+function _djScopeBody() {
   const selected = S.djVpaths.length > 0 ? S.djVpaths : S.vpaths;
-
   // Child-vpath optimisation: if every selected vpath is a child of the
   // same parent (stored under the parent vpath in the DB), use a
   // filepathPrefix filter on the parent instead of ignoreVPaths.
   const meta = S.vpathMeta || {};
   const abEx = _audioBookExclusions();
-  const _epParam = abEx.excludeFilepathPrefixes.length > 0 ? { excludeFilepathPrefixes: abEx.excludeFilepathPrefixes } : {};
-  // Warm the genre-groups cache so _djGenreFilterScore can expand GROUP:
-  // entries synchronously once scoring runs.
-  if (S.djGenreEnabled && S.djGenres.some(g => g.startsWith('GROUP:'))) await _ensureDjGenreGroupsCache();
+  const scope = { minRating: S.djMinRating || undefined };
+  if (abEx.excludeFilepathPrefixes.length > 0) scope.excludeFilepathPrefixes = abEx.excludeFilepathPrefixes;
+  // Track-length window — a hard scope filter like minRating, sent only when
+  // the toggle is on AND at least one bound is real (>0). allowUnknownDuration
+  // rides along only then — on its own it constrains nothing server-side.
+  if (S.djDurationEnabled && (S.djMinDuration > 0 || S.djMaxDuration > 0)) {
+    if (S.djMinDuration > 0) scope.minDuration = S.djMinDuration;
+    if (S.djMaxDuration > 0) scope.maxDuration = S.djMaxDuration;
+    scope.allowUnknownDuration = !!S.djAllowUnknownDuration;
+  }
   const allChildSameParent =
     selected.length > 0 &&
     selected.every(v => meta[v]?.parentVpath) &&
     new Set(selected.map(v => meta[v].parentVpath)).size === 1;
+  if (allChildSameParent) {
+    const parentVpath = meta[selected[0]].parentVpath;
+    const filepathPrefix = selected.length === 1 ? meta[selected[0]].filepathPrefix : null;
+    const ignoreVPaths = S.vpaths.filter(v => v !== parentVpath && !meta[v]?.parentVpath);
+    if (ignoreVPaths.length > 0) scope.ignoreVPaths = ignoreVPaths;
+    if (filepathPrefix) scope.filepathPrefix = filepathPrefix;
+    return scope;
+  }
+  const ignoreVPaths = S.vpaths.filter(v => !selected.includes(v));
+  if (ignoreVPaths.length > 0) scope.ignoreVPaths = ignoreVPaths;
+  return scope;
+}
+
+async function _djFetchBatch(escapeOpts = {}) {
+  // Warm the genre-groups cache so _djGenreFilterScore can expand GROUP:
+  // entries synchronously once scoring runs.
+  if (S.djGenreEnabled && S.djGenres.some(g => g.startsWith('GROUP:'))) await _ensureDjGenreGroupsCache();
 
   // Similar-artists mode: bias towards artists similar to the current track.
   // Cache the Last.fm result per artist so repeated picks for the same
@@ -2638,37 +2663,67 @@ async function _djFetchBatch(escapeOpts = {}) {
   // Hard escape: drop similar-artist filter entirely to break out of a deeply locked genre cluster
   if (escapeOpts.dropArtistFilter) artistFilter = undefined;
 
-  const base = {
+  return api('POST', 'api/v1/db/random-songs', {
+    ..._djScopeBody(),
     ignoreList:    S.djIgnore,
-    minRating:     S.djMinRating || undefined,
     artists:       artistFilter,
     ignoreArtists: _djCooldownList(),
     returnAll:     true,
-    ..._epParam,
-  };
-  // Track-length window — a hard scope filter like minRating, sent only when
-  // the toggle is on AND at least one bound is real (>0). allowUnknownDuration
-  // rides along only then — on its own it constrains nothing server-side.
-  if (S.djDurationEnabled && (S.djMinDuration > 0 || S.djMaxDuration > 0)) {
-    if (S.djMinDuration > 0) base.minDuration = S.djMinDuration;
-    if (S.djMaxDuration > 0) base.maxDuration = S.djMaxDuration;
-    base.allowUnknownDuration = !!S.djAllowUnknownDuration;
-  }
-  if (allChildSameParent) {
-    const parentVpath = meta[selected[0]].parentVpath;
-    const filepathPrefix = selected.length === 1 ? meta[selected[0]].filepathPrefix : null;
-    const ignoreVPaths = S.vpaths.filter(v => v !== parentVpath && !meta[v]?.parentVpath);
-    return api('POST', 'api/v1/db/random-songs', {
-      ...base,
-      ignoreVPaths:   ignoreVPaths.length > 0 ? ignoreVPaths : undefined,
-      filepathPrefix: filepathPrefix || undefined,
-    });
-  }
-  const ignoreVPaths = S.vpaths.filter(v => !selected.includes(v));
-  return api('POST', 'api/v1/db/random-songs', {
-    ...base,
-    ignoreVPaths: ignoreVPaths.length > 0 ? ignoreVPaths : undefined,
   });
+}
+
+// What a Velvet Room's Auto-DJ needs to pick exactly like this player: the
+// settings that steer _djPickSong/_djScoreSong, and the DJ state to carry on.
+async function _djRoomSettings() {
+  if (S.djGenreEnabled && S.djGenres.some(g => g.startsWith('GROUP:'))) await _ensureDjGenreGroupsCache();
+  const genres = S.djGenreEnabled ? _expandDjGenres(S.djGenres) : [];
+  return {
+    scope: _djScopeBody(),
+    similar: !!S.djSimilar,
+    bpmContinuity: !!S.djBpmContinuity,
+    bpmBase: S.djBpmBase ?? null,
+    bpmTolerance: S.djBpmTolerance,
+    filterWords: S.djFilterEnabled ? S.djFilterWords.slice(0, 200) : [],
+    genreFilter: genres.length ? { mode: S.djGenreMode, genres: genres.slice(0, 2000) } : null,
+  };
+}
+
+function _djExportState() {
+  return {
+    artistHistory: S.djArtistHistory.slice(-500),
+    bpmHistory: _bpmHistory.slice(-50),
+    yearHistory: _yearHistory.slice(-50),
+    genreHistory: _djGenreHistory.slice(-50),
+    familyHistory: _djFamilyHistory.slice(-50),
+    seedFamily: _djSeedFamily ?? null,
+    lastPickFree: !!_djLastPickFree,
+    similarFor: _djSimilarFor || '',
+    similarArtists: (_djSimilarArtists || []).slice(0, 500),
+    rankMap: _djVariantRankMap || {},
+    similarSource: _djSimilarSource || '',
+  };
+}
+
+// Back from a room: continue with the state its Auto-DJ built up.
+function _djImportState(st) {
+  if (!st) return;
+  if (Array.isArray(st.artistHistory)) {
+    S.djArtistHistory = st.artistHistory.slice(-500);
+    try { localStorage.setItem(_djKey('artist_history'), JSON.stringify(S.djArtistHistory)); } catch (_) {}
+  }
+  if (Array.isArray(st.bpmHistory)) { _bpmHistoryClear(); for (const b of st.bpmHistory) _bpmHistoryPush(b); }
+  if (Array.isArray(st.yearHistory)) { _yearHistoryClear(); for (const y of st.yearHistory) _yearHistoryPush(y); }
+  if (Array.isArray(st.genreHistory)) {
+    _djGenreHistory = st.genreHistory.slice(-DJ_GENRE_WINDOW);
+    try { localStorage.setItem(_djKey('genre_hist'), JSON.stringify(_djGenreHistory)); } catch (_) {}
+  }
+  if (Array.isArray(st.familyHistory)) _djFamilyHistory = st.familyHistory.slice(-8);
+  if (st.seedFamily !== undefined) _djSeedFamily = st.seedFamily;
+  _djLastPickFree = st.lastPickFree === true;
+  if (typeof st.similarFor === 'string') _djSimilarFor = st.similarFor;
+  if (Array.isArray(st.similarArtists)) _djSimilarArtists = st.similarArtists;
+  if (st.rankMap && typeof st.rankMap === 'object') _djVariantRankMap = st.rankMap;
+  if (typeof st.similarSource === 'string') _djSimilarSource = st.similarSource;
 }
 
 // Fetch a batch of candidates, drop keyword-blocked and just-played tracks,
@@ -2913,7 +2968,7 @@ async function _djNextPick() {
 }
 
 async function autoDJPrefetch() {
-  if (S._djPrefetching || _room) return;  // in-flight, or a room is topped up by _roomDjTopUp
+  if (S._djPrefetching || _room) return;  // in-flight, or a room tops itself up on the server
   if (S.queue.length > S.idx + 1) return; // already pre-queued
   S._djPrefetching = true;
   try {
@@ -2989,10 +3044,9 @@ function setAutoDJ(on, skipAutoStart) {
   if (btn) { btn.classList.toggle('on', on); btn.textContent = on ? t('player.autodj.btnStop') : t('player.autodj.btnStart'); }
   const status = document.querySelector('.autodj-status');
   if (status) { status.classList.toggle('on', on); status.textContent = on ? t('player.autodj.statusOn') : t('player.autodj.statusOff'); }
-  if (on && _room) {
-    // A room is topped up from its polled state (_roomDjTopUp), never by the paused local <audio>.
-    _roomDjVersion = -1;
-    _roomPoll();
+  if (_room) {
+    // The room's own Auto-DJ (on the server) tops it up, also with this tab in the background or closed.
+    _roomAutoDjSet(on);
   } else if (on && !skipAutoStart) {
     if (!audioEl.src || audioEl.ended || S.queue.length === 0) {
       // Nothing playing and nothing queued — fetch a new song and play it
@@ -6719,6 +6773,42 @@ const VIZ = (() => {
     }
   }
 
+  // While a Velvet Room plays, audioEl is paused and the speakers make the sound. A silent shadow element plays the
+  // same song at the room's position into the analyser chain so the VU meters and visualizers keep moving.
+  let _shadowEl = null;
+  let _shadowFp = null;
+  let _shadowBase = 0;
+  function _roomShadow(fp, posSec, playing) {
+    if (!fp || /^https?:\/\//i.test(fp)) { _roomShadowStop(); return; }
+    if (!audioCtx || !_rgGainNode) return;
+    if (!_shadowEl) {
+      _shadowEl = new Audio();
+      _shadowEl.preload = 'auto';
+      audioCtx.createMediaElementSource(_shadowEl).connect(_rgGainNode);
+    }
+    _setCastMute(true);
+    const transcoded = _shouldUseTranscodeForFile(fp);
+    const at = () => _shadowBase + (_shadowEl.currentTime || 0);
+    if (_shadowFp !== fp || (transcoded && Math.abs(at() - posSec) > 1.5)) {
+      _shadowFp = fp;
+      _shadowBase = transcoded ? Math.max(0, Math.floor(posSec)) : 0;
+      _shadowEl.src = mediaUrl(fp, transcoded ? { offset: _shadowBase } : {});
+      if (!transcoded && posSec > 0) _shadowEl.currentTime = posSec;
+    } else if (!transcoded && Math.abs(at() - posSec) > 1) {
+      _shadowEl.currentTime = posSec;
+    }
+    if (playing && _shadowEl.paused) _shadowEl.play().catch(() => {});
+    else if (!playing && !_shadowEl.paused) _shadowEl.pause();
+  }
+  function _roomShadowStop() {
+    if (!_shadowEl || !_shadowFp) return;
+    _shadowEl.pause();
+    _shadowEl.removeAttribute('src');
+    _shadowEl.load();
+    _shadowFp = null;
+    if (!S.castingToMpv && !S.castingToSonos) _setCastMute(false);
+  }
+
   function setPresetLabel() {
     const el = document.getElementById('viz-preset-name');
     if (!el || vizTopMode !== 0) return;
@@ -7960,6 +8050,8 @@ const VIZ = (() => {
     // so VU meters show nothing even though the audio plays.
     resumeAudio() { return audioCtx?.resume() ?? Promise.resolve(); },
     setCastMute(muted) { _setCastMute(muted); },
+    roomShadow(fp, posSec, playing) { _roomShadow(fp, posSec, playing); },
+    roomShadowStop() { _roomShadowStop(); },
   };
 })();
 
@@ -19964,7 +20056,6 @@ let _roomHandedVersion = -1;
 let _roomMirror = null;
 let _roomOps = Promise.resolve();
 let _roomOpsPending = 0;
-let _roomDjVersion = -1;
 let _roomVolTimer = null;
 let _roomVolTouchedAt = 0;
 let _roomEqTouchedAt = 0;
@@ -20005,19 +20096,22 @@ function _roomRgFields() {
 }
 function _roomQueuePayload(at) {
   let songs = [];
+  let djs = [];
   let index = 0;
   S.queue.forEach((s, i) => {
     if (!s?.filepath || _roomIsUrl(s.filepath) || s.isRadio) return;
     if (i === at) index = songs.length;
     songs.push(s.filepath);
+    djs.push(!!s._dj);
   });
   const complete = songs.length === S.queue.length && songs.length <= _ROOM_MAX_SONGS;
   if (songs.length > _ROOM_MAX_SONGS) {
     const from = Math.max(0, Math.min(index - 100, songs.length - _ROOM_MAX_SONGS));
     songs = songs.slice(from, from + _ROOM_MAX_SONGS);
+    djs = djs.slice(from, from + _ROOM_MAX_SONGS);
     index -= from;
   }
-  return { songs, index, complete };
+  return { songs, djs, index, complete };
 }
 
 function _roomsOff() {
@@ -20078,15 +20172,21 @@ function _roomEnter(room) {
   _updateOutputBtn();
 }
 
+function _roomShadowSync() {
+  if (!_room || _room.lineIn) { VIZ.roomShadowStop(); return; }
+  VIZ.initAudio();
+  VIZ.roomShadow(_room.filepath, _roomPosSec(), _room.state === 'playing');
+}
+
 function _roomExit({ keepKey = false } = {}) {
   _roomStopPoll();
+  VIZ.roomShadowStop();
   clearTimeout(_roomVolTimer);
   const wasLive = !!_room?.lineIn;
   _room = null;
   if (wasLive) Player.updateBar();
   _roomHandedVersion = -1;
   _roomMirror = null;
-  _roomDjVersion = -1;
   if (!keepKey) { try { localStorage.removeItem(_uKey('room')); } catch (_) {} }
   document.body.classList.remove('room-remote');
   _roomRenderIndicator();
@@ -20099,11 +20199,12 @@ function _roomExit({ keepKey = false } = {}) {
 }
 
 function _roomResumeLocal(idx, posMs) {
-  if (idx < 0 || idx >= S.queue.length) return;
+  if (idx < 0 || idx >= S.queue.length) return false;
   const s = S.queue[idx];
-  if (!s || s.isRadio) return;
+  if (!s || s.isRadio) return false;
   if (posMs > 1000 && !s._isCueSplit) _pendingCueSeek = posMs / 1000;
   Player.playAt(idx);
+  return true;
 }
 
 function _roomLocalIndexOf(fp) {
@@ -20136,18 +20237,19 @@ async function _roomStart(room) {
     positionMs = Math.round((Number.isFinite(audioEl.currentTime) ? audioEl.currentTime : 0) * 1000);
     wasPlaying = !audioEl.paused;
   }
-  const { songs, index, complete } = _roomQueuePayload(S.idx);
+  const { songs, djs, index, complete } = _roomQueuePayload(S.idx);
   audioEl.pause();
   if (S.castingToMpv) _deactivateCast(true);
   if (S.castingToSonos) _deactivateSonosCast(false);
   if (_sonosFav) _exitSonosFavorite({ stopDevice: true });
   try {
-    const st = await api('POST', _roomUrl(room.id, 'play'), { songs, index, positionMs, paused: !wasPlaying, ..._roomRgFields() });
+    const st = await api('POST', _roomUrl(room.id, 'play'), { songs, djs, index, positionMs, paused: !wasPlaying, ..._roomRgFields() });
     if (prev) {
       api('POST', _roomUrl(prev.id, 'stop')).catch(() => {});
       _roomExit();
     }
     _roomEnter(st && st.id ? st : room);
+    if (S.autoDJ || st?.autoDj) _roomAutoDjSet(S.autoDJ);
     if (complete && !st?.skipped && st?.queueVersion != null) _roomMirrorSet(st.queueVersion);
     else _roomFetchQueue();
     toast(t('player.rooms.nowPlayingIn', { room: (st && st.name) || room.name }));
@@ -20217,6 +20319,11 @@ async function _roomTakeBack() {
   const id = _room.id;
   let fp = _room.filepath;
   let pos = Math.round(_roomPosSec() * 1000);
+  // Continue Auto-DJ in the browser where the room's Auto-DJ left off (artist cooldown, BPM/genre history).
+  try {
+    const dj = await api('GET', _roomUrl(id, 'autodj'));
+    if (dj?.on && dj.state) _djImportState(dj.state);
+  } catch (_) {}
   try {
     const r = await api('POST', _roomUrl(id, 'stop'));
     if (r?.stoppedAt) pos = r.stoppedAt.positionMs || 0;
@@ -20226,7 +20333,8 @@ async function _roomTakeBack() {
   }
   _roomExit();
   toast(t('player.rooms.backToBrowser'));
-  _roomResumeLocal(_roomLocalIndexOf(fp), pos);
+  const resumed = _roomResumeLocal(_roomLocalIndexOf(fp), pos);
+  return { posMs: pos, resumed };
 }
 
 function _roomErrText(e, key) {
@@ -20301,8 +20409,8 @@ function _roomPlayAt(idx) {
     _roomCmd('jump', { index: idx });
     return;
   }
-  const { songs, index, complete } = _roomQueuePayload(idx);
-  _roomCmd('play', { songs, index, positionMs: 0, ..._roomRgFields() }, st => {
+  const { songs, djs, index, complete } = _roomQueuePayload(idx);
+  _roomCmd('play', { songs, djs, index, positionMs: 0, ..._roomRgFields() }, st => {
     if (complete && !st.skipped) _roomMirrorSet(st.queueVersion);
     else _roomMirror = null;
   });
@@ -20319,7 +20427,7 @@ function _roomAddSongs(songs, next) {
     const version = _roomHandedVersion;
     const anchor = next ? base?.indexOf(S.queue[S.idx]) ?? -1 : -1;
     try {
-      const r = await api('POST', _roomUrl(id, 'add'), { songs: valid.map(s => s.filepath), next: next === true, ..._roomRgFields() });
+      const r = await api('POST', _roomUrl(id, 'add'), { songs: valid.map(s => s.filepath), djs: valid.map(s => !!s._dj), next: next === true, ..._roomRgFields() });
       if (!_room || _room.id !== id) return;
       if (base && _roomMirror === base && r?.queueVersion === version + 1 && !r.skipped && (!next || anchor >= 0)) {
         const mirror = base.slice();
@@ -20432,37 +20540,25 @@ function _roomQueueEdited() {
 
 // Auto-DJ for a room: the browser picks exactly as it does locally and appends when the room plays its last
 // entry. queueVersion makes a second open tab (or a stale view) fail with queue_changed instead of adding twice.
-function _roomDjTopUp(st) {
-  if (!S.autoDJ || !_room || S._djPrefetching || st.lineIn || _roomDjVersion === st.queueVersion) return;
-  if (!(st.state === 'playing' || st.state === 'buffering') || st.repeat === 'one' || st.upcoming !== 0 || !st.current) return;
-  if (!_isMusicSong(S.queue[S.idx] || st.current)) return;
+// Switches the room's server-side Auto-DJ with this player's Auto-DJ settings, DJ state and ReplayGain settings,
+// so the room picks exactly like this player. withState: hand over the DJ state too (switching on, starting a room);
+// a settings change alone keeps the state the room built up.
+let _roomDjSettingsSent = '';
+async function _roomAutoDjSet(on, { withState = true } = {}) {
+  if (!_room) return;
   const id = _room.id;
-  const version = st.queueVersion;
-  _roomDjVersion = version;
-  S._djPrefetching = true;
-  _roomQueueOp(async () => {
-    try {
-      if (!_room || _room.id !== id || _room.queueVersion !== version) return;
-      const song = await _djNextPick();
-      if (!song || !_room || _room.id !== id) return;
-      song._dj = true;
-      const r = await api('POST', _roomUrl(id, 'add'), { songs: [song.filepath], queueVersion: version, ..._roomRgFields() });
-      if (!_room || _room.id !== id) return;
-      if (_roomMirrorMatches() && _roomHandedVersion === version && !r?.skipped) {
-        S.queue.push(song); _qvsVersion++;
-        _roomMirrorSet(r.queueVersion);
-        refreshQueueUI();
-        persistQueue();
-      } else {
-        _roomFetchQueue();
-      }
-      _showDJStrip(song);
-    } catch (e) {
-      if (e?.code !== 'queue_changed') console.warn('[rooms] Auto-DJ top-up failed:', e);
-    } finally {
-      S._djPrefetching = false;
-    }
-  });
+  const settings = await _djRoomSettings();
+  const body = { on: !!on, ..._roomRgFields(), settings };
+  if (on && withState) body.state = _djExportState();
+  _roomDjSettingsSent = JSON.stringify(settings);
+  api('PUT', _roomUrl(id, 'autodj'), body).catch(e => console.warn('[rooms] Auto-DJ switch failed:', e));
+}
+
+// A changed Auto-DJ setting while a room plays with Auto-DJ: the room picks with it from its next song on.
+async function _roomAutoDjFollowSettings(st) {
+  if (!_room || !S.autoDJ || !st.autoDj) return;
+  const now = JSON.stringify(await _djRoomSettings());
+  if (now !== _roomDjSettingsSent) _roomAutoDjSet(true, { withState: false });
 }
 
 async function _roomFetchQueue() {
@@ -20472,10 +20568,14 @@ async function _roomFetchQueue() {
   try {
     const d = await api('GET', _roomUrl(id, 'queue'));
     if (!_room || _room.id !== id || !Array.isArray(d?.songs)) return;
-    S.queue = d.songs.map(e => norm({ filepath: e.filepath, metadata: {
-      title: e.title, artist: e.artist, album: e.album, year: e.year,
-      'album-art': e.aaFile, duration: e.durationMs ? e.durationMs / 1000 : null,
-    } }));
+    S.queue = d.songs.map(e => {
+      const song = norm({ filepath: e.filepath, metadata: {
+        title: e.title, artist: e.artist, album: e.album, year: e.year,
+        'album-art': e.aaFile, duration: e.durationMs ? e.durationMs / 1000 : null,
+      } });
+      if (e.dj) song._dj = true;
+      return song;
+    });
     _qvsVersion++;
     _roomMirrorSet(d.queueVersion);
     if (Number.isInteger(d.index) && d.index >= 0 && d.index < S.queue.length) S.idx = d.index;
@@ -20547,7 +20647,8 @@ function _roomApply(st) {
     if (st.queueVersion !== _roomHandedVersion && !_roomOpsPending) _roomFetchQueue();
   }
   _roomAlignIndex(st);
-  _roomDjTopUp(st);
+  _roomAutoDjFollowSettings(st);
+  _roomShadowSync();
   _roomPaintProgress();
   _roomPaintVolume();
   _roomRenderIndicator();
@@ -20572,15 +20673,16 @@ async function _roomPoll() {
 
 function _roomStartPoll() {
   _roomStopPoll();
-  let ticks = 0;
+  let lastPoll = Date.now();
   _roomPollTimer = setInterval(() => {
     if (!_room) { _roomStopPoll(); return; }
     if (!audioEl.paused) audioEl.pause();
     _roomPaintProgress();
-    if (document.visibilityState !== 'visible') return;
-    ticks++;
-    const every = _room.state === 'playing' || _room.state === 'buffering' ? 2 : 10;
-    if (ticks % every === 0) _roomPoll();
+    // A hidden tab still polls (slower, and the browser may throttle this timer to once a minute): Auto-DJ tops up
+    // the room from here, so it must keep running in the background.
+    const playing = _room.state === 'playing' || _room.state === 'buffering';
+    const everyMs = document.visibilityState !== 'visible' ? 10_000 : playing ? 1000 : 5000;
+    if (Date.now() - lastPoll >= everyMs) { lastPoll = Date.now(); _roomPoll(); }
   }, 500);
 }
 
@@ -20851,14 +20953,14 @@ function _roomsEditRender() {
 }
 
 // Sonos speakers follow a room (an HTTP stream of the room's timeline, delayed to roughly line up).
-let _roomsSonos = { enabled: false, devices: [], maxDelayMs: 5000 };
+let _roomsSonos = { enabled: false, devices: [], maxTrimMs: 1000 };
 
 async function _roomsSonosLoad() {
   try {
     const d = await api('GET', 'api/v1/rooms/sonos');
-    _roomsSonos = { enabled: d.enabled === true, devices: Array.isArray(d.devices) ? d.devices : [], maxDelayMs: d.maxDelayMs || 5000 };
+    _roomsSonos = { enabled: d.enabled === true, devices: Array.isArray(d.devices) ? d.devices : [], maxTrimMs: d.maxTrimMs || 1000 };
   } catch (_) {
-    _roomsSonos = { enabled: false, devices: [], maxDelayMs: 5000 };
+    _roomsSonos = { enabled: false, devices: [], maxTrimMs: 1000 };
   }
   _roomsEditRender();
 }
@@ -20886,33 +20988,37 @@ function _roomsEditSonos(card, r) {
     delayName.title = t('player.rooms.sonos.delayHint');
     const range = document.createElement('input');
     range.type = 'range';
-    range.min = '0';
-    range.max = String(_roomsSonos.maxDelayMs);
+    const maxTrim = _roomsSonos.maxTrimMs || 1000;
+    range.min = String(-maxTrim);
+    range.max = String(maxTrim);
     range.step = '10';
-    range.value = String(s.delayMs);
+    range.value = String(s.trimMs ?? 0);
     range.className = 'rooms-edit-delay';
     range.title = t('player.rooms.sonos.delayHint');
     range.setAttribute('aria-label', t('player.rooms.sonos.delayLabel', { name: s.name }));
     const num = document.createElement('input');
     num.type = 'number';
-    num.min = '0';
-    num.max = String(_roomsSonos.maxDelayMs);
+    num.min = String(-maxTrim);
+    num.max = String(maxTrim);
     num.step = '10';
-    num.value = String(s.delayMs);
+    num.value = String(s.trimMs ?? 0);
     num.className = 'rooms-edit-delay-num';
     num.setAttribute('aria-label', t('player.rooms.sonos.delayLabel', { name: s.name }));
     const unit = document.createElement('span');
     unit.className = 'rooms-edit-delay-val';
     unit.textContent = t('player.rooms.sonos.unitMs');
-    let current = s.delayMs;
+    let current = s.trimMs ?? 0;
     const commit = (raw) => {
       const v = Math.round(Number(raw));
-      const ms = raw !== '' && Number.isFinite(v) ? Math.max(0, Math.min(_roomsSonos.maxDelayMs, v)) : current;
+      const ms = raw !== '' && Number.isFinite(v) ? Math.max(-maxTrim, Math.min(maxTrim, v)) : current;
       range.value = num.value = String(ms);
       if (ms === current) return;
       current = ms;
-      _roomsEditCall('PATCH', base + '/' + encodeURIComponent(s.uuid), { delayMs: ms });
+      _roomsEditCall('PATCH', base + '/' + encodeURIComponent(s.uuid), { trimMs: ms });
     };
+    const measured = document.createElement('span');
+    measured.className = 'rooms-edit-delay-val';
+    measured.textContent = s.leadMs != null ? t('player.rooms.sonos.measured', { ms: s.leadMs }) : t('player.rooms.sonos.measuring');
     range.addEventListener('input', () => { num.value = range.value; });
     range.addEventListener('change', () => commit(range.value));
     num.addEventListener('change', () => commit(num.value));
@@ -20923,7 +21029,7 @@ function _roomsEditSonos(card, r) {
     rm.addEventListener('click', async () => {
       if (await _roomsEditCall('DELETE', base + '/' + encodeURIComponent(s.uuid))) _roomsSonosLoad();
     });
-    row.append(label, badge, delayName, range, num, unit);
+    row.append(label, badge, delayName, range, num, unit, measured);
     if (s.state === 'error') {
       const err = document.createElement('span');
       err.className = 'rooms-edit-sonos-err';
@@ -21076,9 +21182,10 @@ function _openOutputPicker() {
   // Server Speaker row
   if (hasMpv) {
     drop.appendChild(row(t('player.output.serverSpeaker'), S.castingToMpv, async () => {
-      if (_room) await _roomTakeBack();
+      let back = null;
+      if (_room) { VIZ.setCastMute(true); back = await _roomTakeBack(); }
       if (S.castingToSonos) _deactivateSonosCast(false);
-      toggleMpvCast();
+      toggleMpvCast(back?.resumed ? { seekTo: back.posMs / 1000, paused: false } : null);
     }));
   }
 
@@ -21095,7 +21202,8 @@ function _openOutputPicker() {
           _deactivateSonosCast(true);
           toast(t('player.output.castStop'));
         } else if (_room) {
-          _roomTakeBack().then(() => _activateSonosCast(room));
+          VIZ.setCastMute(true);
+          _roomTakeBack().then((back) => _activateSonosCast(room, back?.resumed ? { seekTo: back.posMs / 1000, paused: false } : null));
         } else {
           _activateSonosCast(room);
         }
@@ -21416,7 +21524,7 @@ function _handleCastResponse(r) {
   }
 }
 
-async function _activateSonosCast(room) {
+async function _activateSonosCast(room, from = null) {
   const s = S.queue[S.idx];
   if (!s || s.isRadio) {
     toast(t('player.output.cantCastRadio'));
@@ -21434,8 +21542,9 @@ async function _activateSonosCast(room) {
     _syncCrossfadeButton();
   }
   // Capture position + pause state before the async call
-  const seekTo = audioEl.currentTime || 0;
-  const paused = audioEl.paused;
+  // Coming from a Velvet Room, local playback is still starting: take the room's position, not the element's.
+  const seekTo = from ? from.seekTo : (audioEl.currentTime || 0);
+  const paused = from ? from.paused : audioEl.paused;
   try {
     const tracks = [{ filepath: s.filepath, title: s.title || '', artist: s.artist || '', album: s.album || '', aaFile: s['album-art'] || null, duration: s.duration ?? null }];
     const castResp = await api('POST', 'api/v1/sonos/cast-queue', {
@@ -21877,7 +21986,7 @@ function _deactivateCast(clearMpv = true) {
   _updateCastBtn();
 }
 
-async function toggleMpvCast() {
+async function toggleMpvCast(from = null) {
   if (S.castingToMpv) {
     _deactivateCast(true);
     toast(t('player.toast.castingToBrowser'));
@@ -21904,10 +22013,10 @@ async function toggleMpvCast() {
     localStorage.setItem(_uKey('casting_mpv'), '1');
     _updateCastBtn();
     // Load current song into MPV, seek to current position
-    await _mpvLoadSong(s.filepath, audioEl.currentTime);
+    await _mpvLoadSong(s.filepath, from ? from.seekTo : audioEl.currentTime);
     _startMpvHeartbeat(); // keep server watchdog alive
     // If browser is currently paused, pause MPV too
-    if (audioEl.paused) {
+    if (from ? from.paused : audioEl.paused) {
       setTimeout(() => {
         api('POST', 'api/v1/server-playback/set-pause', { paused: true }).catch(() => {});
       }, 2600);

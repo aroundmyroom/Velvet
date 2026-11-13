@@ -6,12 +6,27 @@ import { ffmpegBin } from '../util/ffmpeg-bootstrap.js';
 import { MASTER_BYTES_PER_SAMPLE } from './audio.js';
 
 // A Sonos speaker cannot speak Sendspin and cannot be sample-synced. It follows a room instead: Velvet serves the
-// room's master timeline as an endless MP3 radio stream, paced in real time, `delayMs` ahead of what the room plays,
-// so the Sonos's own start-up buffer lands its audio roughly on the room's timeline.
+// room's master timeline as an endless MP3 radio stream, paced in real time, some lead ahead of what the room plays.
+// How long the Sonos buffers before it plays varies (boot load, Wi-Fi), so Velvet measures it: GetPositionInfo's
+// RelTime counts the seconds the Sonos has played of the stream, and the moment it ticks over pins down which frame
+// it plays right then. The lead is then set so that frame sounds on the room's timeline; `trimMs` covers the
+// Sonos's own output latency, which the network cannot see.
 
 export const SONOS_RATE = 48_000;
-export const DEFAULT_SONOS_DELAY_MS = 2_000;
-export const MAX_SONOS_DELAY_MS = 5_000;
+export const SONOS_START_LEAD_MS = 2_000;
+export const MAX_SONOS_LEAD_MS = 8_000;
+export const MAX_SONOS_TRIM_MS = 1_000;
+export const SONOS_CAL_FIRST_MS = 3_000;
+export const SONOS_CAL_RETRY_MS = 2_000;
+// A Sonos trims its start-up buffer in jumps during the first minutes: measure often then, rarely after.
+export const SONOS_CAL_EARLY_MS = 5_000;
+export const SONOS_CAL_EARLY_FOR_MS = 180_000;
+export const SONOS_CAL_EVERY_MS = 30_000;
+const CAL_PRE_EDGE_US = 120_000;
+const CAL_WINDOW_US = 2_500_000;
+const CAL_MAX_GAP_US = 80_000;
+const CAL_TOLERANCE_US = 60_000;
+const CAL_MAX_TRIES = 15;
 export const SONOS_IDLE_MS = 30_000;
 export const SONOS_TICK_MS = 20;
 export const MAX_SONOS_PER_ROOM = 8;
@@ -81,19 +96,21 @@ export function createSonosSoap({ port = 1400, allowHost = isPrivateLan, timeout
 }
 
 export function mp3Encoder({ ffmpeg = ffmpegBin(), bitrate = '320k' } = {}) {
+  // CBR at 48 kHz: one MP3 frame is 1152 samples and exactly 144 * bitrate / rate bytes (no padding at 48 kHz).
+  const frameBytes = 144 * Number.parseInt(bitrate, 10) * 1000 / SONOS_RATE;
   const proc = spawn(ffmpeg, [
     '-hide_banner', '-loglevel', 'error', '-probesize', '32', '-analyzeduration', '0', '-f', 's16le', '-ar', String(SONOS_RATE), '-ac', '2', '-i', 'pipe:0',
     '-c:a', 'libmp3lame', '-b:a', bitrate, '-id3v2_version', '0', '-write_xing', '0', '-flush_packets', '1', '-f', 'mp3', 'pipe:1',
   ], { stdio: ['pipe', 'pipe', 'ignore'] });
   proc.stdin.on('error', () => {});
   proc.on('error', () => {});
-  return { input: proc.stdin, output: proc.stdout, close: () => proc.kill('SIGKILL') };
+  return { input: proc.stdin, output: proc.stdout, close: () => proc.kill('SIGKILL'), samplesAt: (bytes) => Math.floor(bytes / frameBytes) * 1152 };
 }
 
 // The PCM itself (s16le, 48 kHz stereo): what tests listen to.
 export function rawEncoder() {
   const pass = new PassThrough();
-  return { input: pass, output: pass, close: () => pass.destroy() };
+  return { input: pass, output: pass, close: () => pass.destroy(), samplesAt: (bytes) => Math.floor(bytes / OUT_FRAME_BYTES) };
 }
 
 export function radioDidl({ title, artUrl = null }) {
@@ -121,13 +138,17 @@ export function icyBlock(text) {
 }
 
 // Interleaves ICY metadata every ICY_METAINT bytes; the title block is sent once per change.
+// onChange(audioBytes) reports where in the audio a changed title takes effect: a Sonos restarts its RelTime there.
 class IcyWriter {
   #left = ICY_METAINT;
   #sent = null;
+  #audio = 0;
   #title;
+  #onChange;
 
-  constructor(title) {
+  constructor(title, onChange = null) {
     this.#title = title;
+    this.#onChange = onChange;
   }
 
   wrap(chunk) {
@@ -136,12 +157,15 @@ class IcyWriter {
     while (chunk.length - at >= this.#left) {
       parts.push(chunk.subarray(at, at + this.#left));
       at += this.#left;
+      this.#audio += this.#left;
       this.#left = ICY_METAINT;
       const t = this.#title();
+      if (t !== this.#sent && this.#sent !== null) this.#onChange?.(this.#audio);
       parts.push(t === this.#sent ? Buffer.alloc(1) : icyBlock(t));
       this.#sent = t;
     }
     parts.push(chunk.subarray(at));
+    this.#audio += chunk.length - at;
     this.#left -= chunk.length - at;
     return Buffer.concat(parts);
   }
@@ -260,7 +284,8 @@ export class PcmTap {
 }
 
 // One HTTP connection from the Sonos: real-time paced, stream frame n carries the room's audio for
-// shiftUs + n / SONOS_RATE. A delay change moves shiftUs, so the next frames skip ahead or fall back.
+// shiftUs + n / SONOS_RATE. A lead change moves shiftUs, so the next frames skip ahead or fall back. `#marks` maps
+// the frames actually sent (what the Sonos counts) to the timeline, across shifts and catch-up skips.
 class Feed {
   #tap;
   #now;
@@ -270,8 +295,15 @@ class Feed {
   #startUs;
   #shiftUs;
   #written = 0;
+  #sent = 0;
+  #marks;
+  // Where RelTime may count from: the stream start (the absolute reference) and each title change. Where exactly a
+  // Sonos restarts its counter at a title change varies by a few MP3 frames, so a change's bias is learned once,
+  // from the measurement just before it.
+  #origins = [{ at: 0, biasUs: 0 }];
   #onClose;
   closed = false;
+  closeReason = null;
   bytes = 0;
 
   constructor({ tap, now, encoder, res, delayUs, icyTitle, onClose }) {
@@ -282,7 +314,11 @@ class Feed {
     this.#onClose = onClose;
     this.#startUs = now();
     this.#shiftUs = this.#startUs + delayUs;
-    const icy = icyTitle ? new IcyWriter(icyTitle) : null;
+    this.#marks = [{ sent: 0, written: 0, shiftUs: this.#shiftUs }];
+    const icy = icyTitle ? new IcyWriter(icyTitle, (bytes) => {
+      this.#origins.push({ at: encoder.samplesAt?.(bytes) ?? 0, biasUs: null });
+      if (this.#origins.length > 32) this.#origins.splice(1, 1);
+    }) : null;
     encoder.output.on('data', (chunk) => {
       if (this.closed) return;
       this.bytes += chunk.length;
@@ -299,26 +335,64 @@ class Feed {
 
   shift(deltaUs) {
     this.#shiftUs += deltaUs;
+    this.#mark();
+  }
+
+  get leadUs() {
+    return this.#shiftUs - this.#startUs;
+  }
+
+  get sentFrames() {
+    return this.#sent;
+  }
+
+  get ageUs() {
+    return this.#now() - this.#startUs;
+  }
+
+  // Where the Sonos's RelTime may start counting: [{ at: samples, biasUs }], the stream start first.
+  get origins() {
+    return this.#origins;
+  }
+
+  // The room time carried by the n-th frame sent on this connection.
+  timelineUs(n) {
+    let m = this.#marks[0];
+    for (const x of this.#marks) if (x.sent <= n) m = x;
+    return m.shiftUs + (m.written + n - m.sent) * 1_000_000 / SONOS_RATE;
+  }
+
+  #mark() {
+    const last = this.#marks.at(-1);
+    const m = { sent: this.#sent, written: this.#written, shiftUs: this.#shiftUs };
+    if (last.sent === m.sent) this.#marks[this.#marks.length - 1] = m;
+    else this.#marks.push(m);
+    if (this.#marks.length > 64) this.#marks.splice(1, 1);
   }
 
   #tick() {
     if (this.closed) return;
     const target = Math.floor((this.#now() - this.#startUs) * SONOS_RATE / 1_000_000);
-    if (target - this.#written > MAX_CATCHUP_FRAMES) this.#written = target - MAX_CATCHUP_FRAMES;
+    if (target - this.#written > MAX_CATCHUP_FRAMES) {
+      this.#written = target - MAX_CATCHUP_FRAMES;
+      this.#mark();
+    }
     const frames = target - this.#written;
     if (frames <= 0) return;
     const startUs = this.#shiftUs + this.#written * 1_000_000 / SONOS_RATE;
     this.#written = target;
+    this.#sent += frames;
     if (this.#enc.input.writableLength > MAX_BACKLOG_BYTES) {
-      this.close();
+      this.close('encoder backlog');
       return;
     }
     this.#enc.input.write(this.#tap.read(startUs, frames));
   }
 
-  close() {
+  close(reason = null) {
     if (this.closed) return;
     this.closed = true;
+    this.closeReason = reason;
     clearInterval(this.#timer);
     this.#enc.close();
     this.#res.destroy();
@@ -328,8 +402,14 @@ class Feed {
 
 export const sonosId = (uuid) => SONOS_ID_PREFIX + uuid;
 
+// GetPositionInfo's RelTime ("H:MM:SS") in whole seconds; null when absent or NOT_IMPLEMENTED.
+export function parseRelTime(body) {
+  const m = /<RelTime>(\d+):(\d{2}):(\d{2})<\/RelTime>/.exec(body ?? '');
+  return m ? Number(m[1]) * 3600 + Number(m[2]) * 60 + Number(m[3]) : null;
+}
+
 // The Sonos followers of one room. bridge: { soap(ip, service, action, inner), resolve(uuid, ip) -> {ip,name}|null,
-// streamUrl(base, token), artUrl(base, aaFile), enabled() }; null, or enabled() false (Sonos switched off in
+// streamUrl(base, token), enabled() }; null, or enabled() false (Sonos switched off in
 // Velvet), keeps the entries (persisted) dormant: no speaker driven, no tap, no lead, not playable.
 export class RoomSonos {
   #bridge;
@@ -346,11 +426,15 @@ export class RoomSonos {
   #onEpoch = () => this.#roomPlaying();
   #onStop = () => this.#roomHalted();
 
-  constructor({ bridge, now, logger = null, ffmpeg, encoder = null, idleMs = SONOS_IDLE_MS, info, onChange }) {
+  constructor({
+    bridge, now, logger = null, ffmpeg, encoder = null, idleMs = SONOS_IDLE_MS, info, onChange,
+    calFirstMs = SONOS_CAL_FIRST_MS, calRetryMs = SONOS_CAL_RETRY_MS, calEveryMs = SONOS_CAL_EVERY_MS,
+    calEarlyMs = SONOS_CAL_EARLY_MS, calEarlyForMs = SONOS_CAL_EARLY_FOR_MS,
+  }) {
     this.#bridge = bridge;
     this.#now = now;
     this.#log = logger;
-    this.#opts = { ffmpeg, encoder, idleMs };
+    this.#opts = { ffmpeg, encoder, idleMs, calFirstMs, calRetryMs, calEveryMs, calEarlyMs, calEarlyForMs };
     this.#info = info;
     this.#onChange = onChange;
     this.#tap = new PcmTap({ now });
@@ -364,9 +448,9 @@ export class RoomSonos {
     return Boolean(this.#bridge) && this.#bridge.enabled?.() !== false;
   }
 
-  get maxDelayMs() {
+  get maxLeadMs() {
     let max = 0;
-    for (const f of this.#followers.values()) max = Math.max(max, f.delayMs);
+    for (const f of this.#followers.values()) max = Math.max(max, f.leadMs);
     return max;
   }
 
@@ -384,14 +468,17 @@ export class RoomSonos {
     if (stream.playing) this.#onEpoch();
   }
 
-  add({ uuid, name, ip, base, delayMs = DEFAULT_SONOS_DELAY_MS }) {
+  add({ uuid, name, ip, base, trimMs = 0 }) {
     let f = this.#followers.get(uuid);
     if (!f) {
-      f = { uuid, name, ip, base, delayMs, volume: null, muted: null, session: null, state: 'idle', error: null };
+      f = {
+        uuid, name, ip, base, trimMs, leadMs: SONOS_START_LEAD_MS + trimMs, measured: false, lateMs: null,
+        volume: null, muted: null, session: null, state: 'idle', error: null,
+      };
       this.#followers.set(uuid, f);
     } else {
       Object.assign(f, { name: name ?? f.name, ip: ip ?? f.ip, base: base ?? f.base });
-      if (delayMs !== f.delayMs) this.setDelay(uuid, delayMs);
+      if (trimMs !== f.trimMs) this.setTrim(uuid, trimMs);
     }
     this.#sync();
     if (this.active) {
@@ -410,14 +497,118 @@ export class RoomSonos {
     return true;
   }
 
-  setDelay(uuid, delayMs) {
+  setTrim(uuid, trimMs) {
     const f = this.#followers.get(uuid);
     if (!f) return false;
-    const delta = (delayMs - f.delayMs) * 1000;
-    f.delayMs = delayMs;
-    for (const feed of f.session?.feeds ?? []) feed.shift(delta);
+    this.#moveLead(f, (trimMs - f.trimMs) * 1000);
+    f.trimMs = trimMs;
     this.#sync();
     return true;
+  }
+
+  #moveLead(f, deltaUs) {
+    const lead = Math.max(0, Math.min(MAX_SONOS_LEAD_MS * 1000, f.leadMs * 1000 + deltaUs));
+    const d = lead - f.leadMs * 1000;
+    f.leadMs = Math.round(lead / 1000);
+    for (const feed of f.session?.feeds ?? []) feed.shift(d);
+  }
+
+  #calLater(f, s, ms) {
+    clearTimeout(s.calTimer);
+    s.calTimer = setTimeout(() => this.#calibrate(f, s), ms);
+    s.calTimer.unref?.();
+  }
+
+  // The next regular measurement, timed to start just before RelTime is expected to tick over again.
+  #calNext(f, s, feed) {
+    const ms = feed.ageUs < this.#opts.calEarlyForMs * 1000 ? this.#opts.calEarlyMs : this.#opts.calEveryMs;
+    let at = this.#now() + ms * 1000;
+    if (s.lastEdgeUs != null) at = s.lastEdgeUs + Math.ceil((at - s.lastEdgeUs) / 1_000_000) * 1_000_000 - CAL_PRE_EDGE_US;
+    this.#calLater(f, s, Math.max(0, (at - this.#now()) / 1000));
+  }
+
+  // RelTime counts from the stream start or from the last title change the Sonos has played past. An origin it
+  // cannot have reached yet would put it beyond what was sent; of the rest, the one nearest to in sync is it
+  // (its own jumps are under a second, a wrong origin is off by a whole song).
+  #lateness(f, feed, edge) {
+    const origins = feed.origins;
+    let best = null;
+    for (let i = 0; i < origins.length; i++) {
+      const pos = origins[i].at + edge.relSec * SONOS_RATE;
+      if (pos > feed.sentFrames) continue;
+      const rawUs = edge.atUs - feed.timelineUs(pos) + f.trimMs * 1000;
+      const lateUs = rawUs + (origins[i].biasUs ?? 0);
+      if (Math.abs(lateUs) <= MAX_SONOS_LEAD_MS * 1000 && (!best || Math.abs(lateUs) < Math.abs(best.lateUs))) best = { lateUs, rawUs, origin: i };
+    }
+    // First time on a title change: it continues where the last measurement left off (the Sonos did not jump
+    // because a title changed); from then on it is measured like the stream start.
+    if (best && origins[best.origin].biasUs === null) {
+      const before = f.session?.lastLateUs;
+      origins[best.origin].biasUs = before == null ? 0 : before - best.rawUs;
+      best.lateUs = best.rawUs + origins[best.origin].biasUs;
+    }
+    return best;
+  }
+
+  async #calibrate(f, s) {
+    if (f.session !== s || !this.active) return;
+    const feed = [...s.feeds].at(-1);
+    if (!feed || feed.closed) return;
+    const edge = await this.#findEdge(f, s);
+    if (f.session !== s || feed.closed) return;
+    if (!edge) {
+      s.calTries = (s.calTries ?? 0) + 1;
+      if (s.calTries < CAL_MAX_TRIES) this.#calLater(f, s, this.#opts.calRetryMs);
+      else this.#log?.info?.(`[rooms] Sonos ${f.name}: no position to measure; keeping a ${f.leadMs} ms lead`);
+      return;
+    }
+    s.calTries = 0;
+    s.lastEdgeUs = edge.atUs;
+    // The Sonos plays stream position origin + relSec at edge.atUs; it should sound trimMs later at that frame's room time.
+    const found = this.#lateness(f, feed, edge);
+    if (!found) {
+      this.#log?.info?.(`[rooms] Sonos ${f.name}: no plausible position (RelTime ${edge.relSec} s); measuring again`);
+      s.lastEdgeUs = null;
+      this.#calLater(f, s, this.#opts.calRetryMs);
+      return;
+    }
+    const { lateUs } = found;
+    const since = found.origin ? `title change ${found.origin}` : 'stream start';
+    s.lastLateUs = lateUs;
+    f.lateMs = Math.round(lateUs / 1000);
+    f.measured = true;
+    if (Math.abs(lateUs) >= CAL_TOLERANCE_US) {
+      const before = f.leadMs;
+      this.#moveLead(f, lateUs);
+      s.lastLateUs = 0;
+      this.#log?.info?.(`[rooms] Sonos ${f.name} was ${Math.abs(f.lateMs)} ms ${lateUs > 0 ? 'late' : 'early'}; lead ${before} → ${f.leadMs} ms (RelTime ${edge.relSec} s since ${since})`);
+      this.#sync();
+      this.#onChange();
+      s.lastEdgeUs = null;
+      this.#calLater(f, s, f.leadMs + this.#opts.calFirstMs);
+      return;
+    }
+    this.#log?.debug?.(`[rooms] Sonos ${f.name} in sync (${f.lateMs} ms), lead ${f.leadMs} ms, RelTime ${edge.relSec} s since ${since}`);
+    this.#onChange();
+    this.#calNext(f, s, feed);
+  }
+
+  // Polls RelTime back to back until it ticks over; the tick lies between the two polls' midpoints.
+  async #findEdge(f, s) {
+    const end = this.#now() + CAL_WINDOW_US;
+    let prev = null;
+    let prevMid = 0;
+    while (this.#now() < end && f.session === s) {
+      const sent = this.#now();
+      const body = await this.#soap(f, AVT, 'GetPositionInfo');
+      const mid = (sent + this.#now()) / 2;
+      const rel = parseRelTime(body);
+      if (rel === null) return null;
+      if (prev !== null && rel === prev + 1 && mid - prevMid <= CAL_MAX_GAP_US) return { relSec: rel, atUs: (prevMid + mid) / 2 };
+      prev = rel;
+      prevMid = mid;
+    }
+    return null;
   }
 
   #roomPlaying() {
@@ -479,9 +670,10 @@ export class RoomSonos {
     }
     const make = this.#opts.encoder ?? (() => mp3Encoder({ ffmpeg: this.#opts.ffmpeg }));
     const feed = new Feed({
-      tap: this.#tap, now: this.#now, encoder: make(), res, delayUs: f.delayMs * 1000,
+      tap: this.#tap, now: this.#now, encoder: make(), res, delayUs: f.leadMs * 1000,
       icyTitle: req.headers['icy-metadata'] === '1' ? () => this.#title() : null,
       onClose: (x) => {
+        this.#log?.info?.(`[rooms] Sonos ${f.name} stream connection closed after ${Math.round(x.bytes / 1024)} KiB (${x.closeReason ?? 'peer'})`);
         s.feeds.delete(x);
         if (f.session === s && !s.feeds.size && f.state === 'streaming') {
           f.state = 'waiting';
@@ -490,7 +682,12 @@ export class RoomSonos {
       },
     });
     s.feeds.add(feed);
-    if (s.feeds.size > MAX_FEEDS) [...s.feeds][0].close();
+    this.#log?.info?.(`[rooms] Sonos ${f.name} opened a stream connection (${s.feeds.size} open), lead ${f.leadMs} ms`);
+    if (s.feeds.size > MAX_FEEDS) [...s.feeds][0].close('replaced');
+    s.calTries = 0;
+    s.lastEdgeUs = null;
+    s.lastLateUs = null;
+    this.#calLater(f, s, this.#opts.calFirstMs);
     f.state = 'streaming';
     f.error = null;
     this.#onChange();
@@ -517,19 +714,20 @@ export class RoomSonos {
   view() {
     const dormant = !this.active;
     return [...this.#followers.values()].map((f) => ({
-      id: sonosId(f.uuid), uuid: f.uuid, name: f.name, ip: f.ip, delayMs: f.delayMs, volume: f.volume, muted: f.muted,
+      id: sonosId(f.uuid), uuid: f.uuid, name: f.name, ip: f.ip, trimMs: f.trimMs, leadMs: f.measured ? f.leadMs : null,
+      volume: f.volume, muted: f.muted,
       state: f.state, error: f.error, dormant,
     }));
   }
 
   toJSON() {
-    return [...this.#followers.values()].map((f) => ({ uuid: f.uuid, name: f.name, ip: f.ip, base: f.base, delayMs: f.delayMs }));
+    return [...this.#followers.values()].map((f) => ({ uuid: f.uuid, name: f.name, ip: f.ip, base: f.base, trimMs: f.trimMs }));
   }
 
   #sync() {
     const active = this.active;
     const on = active && this.#followers.size > 0;
-    if (this.#stream) this.#stream.tapLeadUs = on ? this.maxDelayMs * 1000 : 0;
+    if (this.#stream) this.#stream.tapLeadUs = on ? this.maxLeadMs * 1000 : 0;
     if (this.#stream && on) this.#tap.attach(this.#stream);
     else this.#tap.detach();
     const woke = active && this.#dormant;
@@ -565,7 +763,7 @@ export class RoomSonos {
     const prev = f.session;
     if (prev) this.#end(f, { stop: false });
     const token = crypto.randomBytes(24).toString('base64url');
-    const s = { token, feeds: new Set(), idleTimer: null };
+    const s = { token, feeds: new Set(), idleTimer: null, calTimer: null, calTries: 0, lastEdgeUs: null, lastLateUs: null };
     f.session = s;
     f.state = 'starting';
     f.error = null;
@@ -575,7 +773,9 @@ export class RoomSonos {
     this.#onChange();
     const i = this.#info();
     const url = this.#bridge.streamUrl(f.base, token);
-    const didl = radioDidl({ title: [i.roomName, 'Velvet Rooms'].join(' · '), artUrl: i.aaFile ? this.#bridge.artUrl(f.base, i.aaFile) : null });
+    // A radio stream's cover is read once, when it is set: point it at the session's art URL, which always answers
+    // with the cover of the song playing now (the Sonos picks it up whenever it loads the cover again).
+    const didl = radioDidl({ title: [i.roomName, 'Velvet Rooms'].join(' · '), artUrl: url.replace(/\.mp3$/, '.jpg') });
     try {
       await this.#bridge.soap(f.ip, AVT, 'SetAVTransportURI',
         `<CurrentURI>${xmlEsc(transportUri(url))}</CurrentURI><CurrentURIMetaData>${xmlEsc(didl)}</CurrentURIMetaData>`);
@@ -601,7 +801,8 @@ export class RoomSonos {
     f.session = null;
     f.state = 'idle';
     clearTimeout(s.idleTimer);
-    for (const feed of [...s.feeds]) feed.close();
+    clearTimeout(s.calTimer);
+    for (const feed of [...s.feeds]) feed.close('session ended');
     if (stop && this.active) {
       this.#soap(f, AVT, 'GetMediaInfo').then((info) => {
         if (info?.includes(s.token)) this.#soap(f, AVT, 'Stop');
@@ -619,8 +820,4 @@ const trimSlash = (s) => {
 
 export function streamUrlFor(base, token) {
   return `${trimSlash(String(base))}${STREAM_PATH}${token}.mp3`;
-}
-
-export function artUrlFor(base, aaFile) {
-  return `${trimSlash(String(base))}/album-art/${encodeURIComponent(aaFile)}`;
 }

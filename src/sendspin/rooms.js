@@ -7,7 +7,7 @@ import { RoomVisualizer, canVisualize } from './visualizer.js';
 import { encodeArtworkAnnounce, encodeArtworkParts, encodeArtworkCancel } from './wire.js';
 import { defaultEq, normalizeEq, isDefaultEq } from './eq.js';
 import {
-  RoomSonos, SONOS_ID_PREFIX, MAX_SONOS_PER_ROOM, MAX_SONOS_DELAY_MS, DEFAULT_SONOS_DELAY_MS, isSonosUuid,
+  RoomSonos, SONOS_ID_PREFIX, MAX_SONOS_PER_ROOM, MAX_SONOS_TRIM_MS, isSonosUuid,
 } from './sonos.js';
 
 export const ROOMS_FILE = 'rooms.json';
@@ -25,6 +25,9 @@ const BASE_COMMANDS = Object.freeze([
 ]);
 const TEXT_FIELDS = ['title', 'artist', 'album_artist', 'album'];
 const LIVE_COMMANDS = Object.freeze(['play', 'pause', 'stop', 'switch']);
+
+export const AUTO_DJ_RETRY_MS = 30_000;
+const validTrim = (ms) => Number.isInteger(ms) && Math.abs(ms) <= MAX_SONOS_TRIM_MS;
 
 export class RoomError extends Error {
   constructor(code, message) {
@@ -105,14 +108,17 @@ export class RoomManager extends EventEmitter {
     dir, file = ROOMS_FILE, now = serverNow, ffmpeg, logger = null, artworkFor = null, colorFor = null,
     setPlayback = defaultSetPlayback, idleGraceMs = IDLE_GRACE_MS, initialUnavailableGraceMs = INITIAL_UNAVAILABLE_GRACE_MS,
     random = Math.random, streamOptions = {}, visualizerOptions = {},
-    sonos = null, sonosOptions = {},
+    sonos = null, sonosOptions = {}, autoDjPick = null, autoDjRetryMs = AUTO_DJ_RETRY_MS,
   }) {
     super();
     if (!dir) throw new Error('RoomManager needs a dir');
     this.#file = path.join(dir, file);
     this.#now = now;
     this.#log = logger;
-    this.#opts = { ffmpeg, artworkFor, colorFor, setPlayback, idleGraceMs, initialUnavailableGraceMs, random, streamOptions, visualizerOptions };
+    this.#opts = {
+      ffmpeg, artworkFor, colorFor, setPlayback, idleGraceMs, initialUnavailableGraceMs, random, streamOptions, visualizerOptions,
+      autoDjPick, autoDjRetryMs,
+    };
     this.#sonos = { bridge: sonos, ...sonosOptions };
   }
 
@@ -149,12 +155,15 @@ export class RoomManager extends EventEmitter {
       lastPlayedAt: r.lastPlayedAt ?? null, queueVersion: Number.isInteger(r.queueVersion) ? r.queueVersion : 1,
       state: r.state === 'playing' || r.state === 'paused' ? 'paused' : 'stopped',
       eq: normalizeEq(r.eq ?? defaultEq()),
+      autoDj: r.autoDj?.on === true && typeof r.autoDj.user === 'string'
+        ? { on: true, user: r.autoDj.user, rg: r.autoDj.rg ?? {}, settings: r.autoDj.settings ?? {}, state: r.autoDj.state ?? null }
+        : null,
     });
     room.order = Array.isArray(r.order) && r.order.length === room.queue.length ? r.order : room.queue.map((_, i) => i);
     for (const x of Array.isArray(r.sonos) ? r.sonos : []) {
       if (!isSonosUuid(x?.uuid) || this.#sonosRoom(x.uuid)) continue;
-      const delayMs = Number.isInteger(x.delayMs) ? Math.max(0, Math.min(MAX_SONOS_DELAY_MS, x.delayMs)) : DEFAULT_SONOS_DELAY_MS;
-      this.#sonosGroup(room).add({ uuid: x.uuid, name: String(x.name ?? x.uuid), ip: x.ip ?? null, base: x.base ?? null, delayMs });
+      const trimMs = Number.isInteger(x.trimMs) ? Math.max(-MAX_SONOS_TRIM_MS, Math.min(MAX_SONOS_TRIM_MS, x.trimMs)) : 0;
+      this.#sonosGroup(room).add({ uuid: x.uuid, name: String(x.name ?? x.uuid), ip: x.ip ?? null, base: x.base ?? null, trimMs });
     }
   }
 
@@ -171,6 +180,7 @@ export class RoomManager extends EventEmitter {
     for (const room of this.#rooms.values()) {
       if (room.state === 'playing') this.#halt(room, 'paused');
       clearTimeout(room.idleTimer);
+      clearTimeout(room.djTimer);
       room.sonos?.close();
       room.stream?.close();
     }
@@ -329,6 +339,7 @@ export class RoomManager extends EventEmitter {
       return this.getRoom(id);
     }
     if (!room.queue.length) throw new RoomError('empty', 'nothing to play');
+    this.#note(room, `play index ${room.index} of ${room.queue.length}${items ? ' (new queue)' : ''}${paused ? ', paused' : ''}`);
     if (paused) this.#load(room, room.index, room.positionMs);
     else this.#start(room, room.index, room.positionMs);
     return this.getRoom(id);
@@ -337,7 +348,8 @@ export class RoomManager extends EventEmitter {
   add(id, items, { next = false } = {}) {
     const room = this.#room(id);
     const fresh = items.map((it) => ({ ...it }));
-    this.#editTail(room, (anchor) => (next && room.queue.length ? this.#insertAfter(room, anchor, fresh) : this.#append(room, anchor, fresh)));
+    const how = this.#editTail(room, (anchor) => (next && room.queue.length ? this.#insertAfter(room, anchor, fresh) : this.#append(room, anchor, fresh)));
+    this.#note(room, `add ${fresh.length}${next ? ' next' : ''} → queue ${room.queue.length}, index ${room.index}, ${how}`);
     room.queueVersion++;
     this.#pushController(room);
     this.#save();
@@ -383,6 +395,7 @@ export class RoomManager extends EventEmitter {
     const room = this.#room(id);
     if (!room.queue.length) throw new RoomError('empty', 'nothing to play');
     if (!Number.isInteger(index) || index < 0 || index >= room.queue.length) throw new RoomError('invalid', 'index is out of range');
+    this.#note(room, `jump to index ${index} of ${room.queue.length}`);
     this.#start(room, index, 0);
     return this.getRoom(id);
   }
@@ -580,20 +593,20 @@ export class RoomManager extends EventEmitter {
   }
 
   // Sonos followers (sonos.js): a Sonos is in at most one room; adding it elsewhere moves it.
-  addSonos(id, { uuid, name, ip = null, base = null, delayMs }) {
+  addSonos(id, { uuid, name, ip = null, base = null, trimMs }) {
     if (!this.#sonos.bridge) throw new RoomError('invalid', 'Sonos is not enabled');
     const room = this.#room(id);
     if (!isSonosUuid(uuid)) throw new RoomError('invalid', 'not a Sonos device id');
     const from = this.#sonosRoom(uuid);
     const keep = from?.sonos.toJSON().find((s) => s.uuid === uuid);
-    const delay = delayMs ?? keep?.delayMs ?? DEFAULT_SONOS_DELAY_MS;
-    if (!Number.isInteger(delay) || delay < 0 || delay > MAX_SONOS_DELAY_MS) throw new RoomError('invalid', 'delayMs is out of range');
+    const trim = trimMs ?? keep?.trimMs ?? 0;
+    if (!validTrim(trim)) throw new RoomError('invalid', 'trimMs is out of range');
     if (from !== room && (room.sonos?.size ?? 0) >= MAX_SONOS_PER_ROOM) throw new RoomError('invalid', 'too many Sonos speakers in this room');
     if (from && from !== room) {
       from.sonos.remove(uuid);
       this.#sonosChanged(from);
     }
-    this.#sonosGroup(room).add({ uuid, name: String(name ?? keep?.name ?? uuid), ip: ip ?? keep?.ip ?? null, base: base ?? keep?.base ?? null, delayMs: delay });
+    this.#sonosGroup(room).add({ uuid, name: String(name ?? keep?.name ?? uuid), ip: ip ?? keep?.ip ?? null, base: base ?? keep?.base ?? null, trimMs: trim });
     this.#sonosChanged(room);
   }
 
@@ -603,10 +616,10 @@ export class RoomManager extends EventEmitter {
     this.#sonosChanged(room);
   }
 
-  setSonosDelay(id, uuid, delayMs) {
+  setSonosTrim(id, uuid, trimMs) {
     const room = this.#room(id);
-    if (!Number.isInteger(delayMs) || delayMs < 0 || delayMs > MAX_SONOS_DELAY_MS) throw new RoomError('invalid', 'delayMs is out of range');
-    if (!room.sonos?.setDelay(uuid, delayMs)) throw new RoomError('not_found', 'this Sonos is not in the room');
+    if (!validTrim(trimMs)) throw new RoomError('invalid', 'trimMs is out of range');
+    if (!room.sonos?.setTrim(uuid, trimMs)) throw new RoomError('not_found', 'this Sonos is not in the room');
     this.#sonosChanged(room);
   }
 
@@ -618,7 +631,7 @@ export class RoomManager extends EventEmitter {
   sonosStream(token) {
     for (const room of this.#rooms.values()) {
       const f = room.sonos?.sessionFor(token);
-      if (f) return { roomId: room.id, serve: (req, res) => room.sonos.serve(f, req, res) };
+      if (f) return { roomId: room.id, serve: (req, res) => room.sonos.serve(f, req, res), aaFile: () => this.#sonosInfo(room).aaFile };
     }
     return null;
   }
@@ -676,6 +689,7 @@ export class RoomManager extends EventEmitter {
       id, name, solo, members: [], queue: [], order: [], index: 0, positionMs: 0, state: 'stopped',
       repeat: 'off', shuffle: false, lastPlayedAt: null, stream: null, timers: [], idleTimer: null,
       current: null, scheduled: null, token: 0, queueVersion: 1, live: null, eq: defaultEq(),
+      autoDj: null, djBusy: false, djFor: -1, djTimer: null,
     };
     this.#rooms.set(room.id, room);
     return room;
@@ -944,17 +958,24 @@ export class RoomManager extends EventEmitter {
   #editTail(room, edit) {
     if (room.state !== 'playing' || !room.stream?.playing || room.live) {
       edit(this.#currentIndex(room));
-      return;
+      return `not spliced (${room.state}${room.live ? ', line-in' : ''})`;
     }
+    let anchorIndex = null;
     const spliced = room.stream.replaceUpcoming((anchor, atUs) => {
+      anchorIndex = anchor.index;
       edit(anchor.index);
       this.#dropScheduledFrom(room, atUs);
       return this.#tracksAfter(room, anchor.item);
     });
-    if (spliced) return;
+    if (spliced) return `spliced after index ${anchorIndex}`;
     const pos = this.#currentPosition(room);
     edit(this.#currentIndex(room));
     this.#start(room, this.#currentIndex(room), pos);
+    return 'restarted';
+  }
+
+  #note(room, msg) {
+    this.#log?.info?.(`[rooms] "${room.name ?? room.id}" ${msg}`);
   }
 
   #insertAfter(room, anchor, items) {
@@ -1100,6 +1121,7 @@ export class RoomManager extends EventEmitter {
   }
 
   #onEnded(room) {
+    this.#note(room, `end of queue at index ${room.index} of ${room.queue.length}${room.live ? ' (line-in)' : ''}`);
     if (room.live) {
       this.#halt(room, room.queue.length ? 'paused' : 'stopped');
       return;
@@ -1183,6 +1205,7 @@ export class RoomManager extends EventEmitter {
   #onTrack(room, { track, timestampUs, first }) {
     const token = room.token;
     const { item } = track;
+    this.#note(room, `track index ${room.queue.indexOf(item)} of ${room.queue.length}${first ? ' (first)' : ''}: ${item.meta?.title ?? item.filepath}`);
     const entry = {
       item, startMs: track.startMs ?? 0, timestampUs,
       get index() { return item.live ? room.index : room.queue.indexOf(item); },
@@ -1214,6 +1237,73 @@ export class RoomManager extends EventEmitter {
     this.#pushController(room);
     this.#save();
     this.#changed(room);
+    this.#autoDjCheck(room);
+  }
+
+  // Auto-DJ on the server: whoever started the room (browser, Home Assistant, a speaker's own buttons), when its
+  // last song starts the next one is picked with the switched-on user's Auto-DJ settings and appended.
+  // settings/state: the web player's Auto-DJ settings and DJ state (see autodj/library.js nextForRoom); a state
+  // given replaces the room's, settings alone keep the state the room built up.
+  setAutoDj(id, { on, user = null, rg = {}, settings = {}, state = undefined }) {
+    const room = this.#room(id);
+    const was = room.autoDj;
+    room.autoDj = on && user ? { on: true, user, rg, settings, state: state === undefined ? (was?.state ?? null) : state } : null;
+    if (Boolean(was) !== Boolean(room.autoDj) || was?.user !== room.autoDj?.user) this.#note(room, `Auto-DJ ${room.autoDj ? `on (${user})` : 'off'}`);
+    this.#save();
+    this.#changed(room);
+    this.#autoDjCheck(room);
+    return this.getRoom(id);
+  }
+
+  // The songs the room played before `item`, oldest first (play order, the last 30).
+  #playedBefore(room, item) {
+    const pos = room.order.indexOf(room.queue.indexOf(item));
+    return room.order.slice(Math.max(0, pos - 30), Math.max(0, pos)).map((i) => room.queue[i]).filter(Boolean);
+  }
+
+  getAutoDj(id) {
+    const room = this.#room(id);
+    return { on: Boolean(room.autoDj?.on), state: room.autoDj?.state ?? null };
+  }
+
+  #autoDjCheck(room) {
+    if (!room.autoDj?.on || !this.#opts.autoDjPick || room.live || room.state !== 'playing' || room.djBusy) return;
+    const cur = room.queue[this.#currentIndex(room)];
+    if (!cur || this.#after(room, cur) || room.djFor === room.queueVersion) return;
+    room.djFor = room.queueVersion;
+    room.djBusy = true;
+    clearTimeout(room.djTimer);
+    const token = room.token;
+    const retry = () => {
+      room.djFor = -1;
+      room.djTimer = setTimeout(() => this.#autoDjCheck(room), this.#opts.autoDjRetryMs);
+      room.djTimer.unref?.();
+    };
+    Promise.resolve()
+      .then(() => this.#opts.autoDjPick({ seed: cur, history: this.#playedBefore(room, cur), queue: room.queue.map((q) => q.filepath), autoDj: room.autoDj }))
+      .then((picked) => {
+        const item = picked?.item ?? null;
+        room.djBusy = false;
+        if (!this.#rooms.has(room.id) || !room.autoDj?.on) return;
+        if (room.token !== token) {
+          room.djFor = -1;
+          this.#autoDjCheck(room);
+          return;
+        }
+        if (!item) {
+          this.#note(room, 'Auto-DJ found nothing to add; trying again later');
+          retry();
+          return;
+        }
+        if (this.#after(room, room.queue[this.#currentIndex(room)])) return;
+        if (picked.state) room.autoDj.state = picked.state;
+        this.add(room.id, [{ ...item, dj: true }]);
+        this.#note(room, `Auto-DJ added: ${item.meta?.artist ?? '?'} — ${item.meta?.title ?? item.filepath}`);
+      }, (err) => {
+        room.djBusy = false;
+        this.#log?.warn?.(`[rooms] Auto-DJ pick failed: ${err?.message ?? err}`);
+        retry();
+      });
   }
 
   #later(room, atUs, forUs, fn) {
@@ -1543,9 +1633,10 @@ export class RoomManager extends EventEmitter {
       members: room.members.map((cid) => this.#memberView(room, this.#clients.get(cid))),
       sonos: room.sonos?.view() ?? [],
       eq: { ...room.eq, gains: room.eq.gains.slice() },
+      autoDj: Boolean(room.autoDj?.on),
     };
     if (queue) {
-      view.queue = room.queue.map((q) => ({ filepath: q.filepath, meta: q.meta ?? {} }));
+      view.queue = room.queue.map((q) => ({ filepath: q.filepath, meta: q.meta ?? {}, ...(q.dj ? { dj: true } : {}) }));
       view.order = room.order.slice();
     }
     return view;
@@ -1587,6 +1678,7 @@ export class RoomManager extends EventEmitter {
         id: r.id, name: r.name, solo: r.solo, members: r.members, queue: r.queue, order: r.order,
         ...(r.sonos?.size ? { sonos: r.sonos.toJSON() } : {}),
         ...(isDefaultEq(r.eq) ? {} : { eq: r.eq }),
+        ...(r.autoDj ? { autoDj: r.autoDj } : {}),
         index: pos?.track.index ?? r.index, positionMs: pos?.positionMs ?? r.positionMs,
         repeat: r.repeat, shuffle: r.shuffle, state: r.live ? 'paused' : r.state, lastPlayedAt: r.lastPlayedAt, queueVersion: r.queueVersion,
       };
