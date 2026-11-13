@@ -17231,16 +17231,11 @@ async function viewUserSettings() {
             <div class="playback-section-desc">${t('player.pair.desc')}</div>
           </div>
         </div>
-        <div class="playback-row">
-          <label class="playback-row-label" for="pair-code-input">
-            <div class="playback-row-name">${t('player.pair.codeLabel')}</div>
-          </label>
-          <div style="display:flex;align-items:center;gap:8px;">
-            <input id="pair-code-input" type="text" class="settings-input" placeholder="${t('player.pair.codePlaceholder')}" maxlength="8" style="max-width:220px;text-transform:uppercase;letter-spacing:.15em" autocomplete="off" autocapitalize="characters">
-            <button class="btn-primary" id="pair-approve-btn">${t('player.pair.approveBtn')}</button>
-          </div>
+        <div style="display:flex;gap:.5rem;align-items:center;flex-wrap:wrap">
+          <input id="pair-code-input" type="text" placeholder="${t('player.pair.codePlaceholder')}" aria-label="${t('player.pair.codeLabel')}" maxlength="8" style="flex:1;min-width:140px;padding:4px 8px;font-size:.82rem" autocomplete="off" autocapitalize="characters" spellcheck="false" />
+          <button id="pair-approve-btn" style="padding:4px 12px;font-size:.82rem;white-space:nowrap">${t('player.pair.approveBtn')}</button>
         </div>
-        <div id="pair-status" style="padding:0 0 .25rem .5rem;font-size:.82rem;color:var(--t2)"></div>
+        <div id="pair-status" style="margin-top:.4rem;font-size:.78rem;color:var(--t2)"></div>
       </div>`;
 
     const codeInput  = document.getElementById('pair-code-input');
