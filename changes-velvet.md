@@ -1,3 +1,48 @@
+## Unreleased
+
+Velvet's brain in Music Assistant
+
+### Added
+
+- **Music Assistant radio picked by Velvet's Auto-DJ.** Subsonic
+  `getSimilarSongs`/`getSimilarSongs2` — what Music Assistant's radio and
+  "Don't stop the music" ask for — now answer with a chain chosen by the
+  Auto-DJ on the server: each next track against the one before it (similar
+  artists of the current artist, BPM corridor, Camelot key, genre family,
+  era, artist cooldown), no seed, no repeats or second versions of a song.
+  Works without a Last.fm key too. Before, these returned nothing without a
+  Last.fm key and often nothing with one. The scoring is shared code with
+  the browser Auto-DJ's candidate pool, and a test runs both scorers side by
+  side so they stay identical (`docs/autodj-scoring.md`).
+- **Top tracks** (`getTopSongs`) rank an artist's songs by Velvet's own play
+  counts, blended with Last.fm's top tracks when a key is set.
+- **Smart playlists in Subsonic clients**: listed as read-only playlists and
+  evaluated when opened.
+- **Loudness for Music Assistant**: every song carries the full OpenSubsonic
+  `replayGain` (track and album gain and peak) from Velvet's rsgain / EBU R128
+  measurements; Music Assistant uses it as the track loudness.
+- **Synced lyrics over Subsonic**: sidecar `.lrc` files, synced lyrics in the
+  file's tags and lyrics the web player already fetched are returned as
+  synced structured lyrics; `getLyrics` (v1) now answers too.
+- **More track detail for Subsonic clients**: BPM, genre list, MusicBrainz
+  ids (track, album, artist), real sample rate / bit depth / channels /
+  bitrate, artist biography.
+
+### Changed
+
+- Subsonic album lists `newest`, `recent`, `frequent`, `highest`, `byYear`
+  and `byGenre` list albums directly (a page of 10 used to hold as few as one
+  album, `offset` returned empty pages, `byYear`/`byGenre` were random).
+- Auto-DJ (browser and server) treats `04. Clean Bandit Fe. Mabel` as Clean
+  Bandit, and `A1. Donna Summer` as Donna Summer, for the artist cooldown.
+- Similar-artist lookups resolve Last.fm names to library artists from an
+  in-memory index and cache the result, instead of one table scan per name.
+
+### Fixed
+
+- Embedded lyrics over Subsonic came back as `[object Object]` with the
+  current tag reader.
+
 ## v0.9.2 (2026-11-12)
 
 Equalizer per room and a Home Assistant integration

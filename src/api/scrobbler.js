@@ -13,6 +13,113 @@ import { artistLookupCandidates } from '../util/artist-credit.js';
 
 const Scrobbler = new Scribble();
 
+const SIMILAR_TTL_MS = 6 * 60 * 60 * 1000;
+const SIMILAR_CACHE_MAX = 2000;
+const LASTFM_TIMEOUT_MS = 4000;
+const _similarCache = new Map();
+// Resolved to library variants; shorter-lived so newly scanned artists show up.
+const RESOLVED_TTL_MS = 30 * 60 * 1000;
+const _resolvedCache = new Map();
+
+function _lastfmCall(start) {
+  return new Promise(resolve => {
+    const timer = setTimeout(() => resolve(null), LASTFM_TIMEOUT_MS);
+    start(data => { clearTimeout(timer); resolve(data); });
+  });
+}
+
+function _lastfmCached(key, load) {
+  const hit = _similarCache.get(key);
+  if (hit && Date.now() - hit.at < SIMILAR_TTL_MS) return hit.value;
+  const value = load().then(v => {
+    if (v == null) _similarCache.delete(key);
+    return v;
+  });
+  if (_similarCache.size >= SIMILAR_CACHE_MAX) _similarCache.delete(_similarCache.keys().next().value);
+  _similarCache.set(key, { at: Date.now(), value });
+  return value;
+}
+
+function _similarArtistNames(artistName) {
+  return _lastfmCached('sa\0' + artistName.toLowerCase(), () =>
+    _lastfmCall(cb => Scrobbler.GetSimilarArtists(artistName, cb, 50)).then(data => data == null ? null :
+      (data?.similarartists?.artist || []).slice(0, 50).map(a => a.name).filter(Boolean)));
+}
+
+/**
+ * Last.fm similar artists for a credited artist, resolved to library artist
+ * variants. Tries the exact credit, then collaboration halves, then duo parts
+ * (util/artist-credit.js) and moves on when Last.fm knows nothing or none of
+ * the names are in the library. variantRankMap: library variant → 1-based
+ * Last.fm rank (lower = more similar). Used by the browser Auto-DJ (route
+ * below) and the server-side radio (src/autodj/radio.js).
+ */
+export function similarArtistsFor(originalArtist, vpaths) {
+  if (!Scrobbler.apiKey || !originalArtist) return Promise.resolve(_emptySimilar());
+  const key = `res\0${(vpaths || []).join('\0')}\0${String(originalArtist).trim().toLowerCase()}`;
+  const hit = _resolvedCache.get(key);
+  if (hit && Date.now() - hit.at < RESOLVED_TTL_MS) return hit.value;
+  const value = _resolveSimilarArtists(originalArtist, vpaths).then(r => {
+    if (r.failed) _resolvedCache.delete(key);
+    return r.result;
+  });
+  if (_resolvedCache.size >= SIMILAR_CACHE_MAX) _resolvedCache.delete(_resolvedCache.keys().next().value);
+  _resolvedCache.set(key, { at: Date.now(), value });
+  return value;
+}
+
+function _emptySimilar() {
+  return { artists: [], displayArtists: [], displayVariantMap: {}, variantRankMap: {}, via: null };
+}
+
+async function _resolveSimilarArtists(originalArtist, vpaths) {
+  const parts = artistLookupCandidates(String(originalArtist).trim());
+  let failed = false;
+  for (const artistName of parts) {
+    const rawNames = await _similarArtistNames(artistName);
+    if (rawNames == null) failed = true;
+    if (!rawNames?.length) continue;
+    const nameVariantsMap = new Map();
+    const allVariantsSet = new Set();
+    for (const name of rawNames) {
+      const variants = db.resolveArtistNamesForDJ([name]);
+      if (variants.length > 0) {
+        nameVariantsMap.set(name, variants);
+        for (const v of variants) allVariantsSet.add(v);
+      }
+    }
+    console.log(`[autodj] similar-artists "${originalArtist}" → ${rawNames.length} from Last.fm${artistName === originalArtist ? '' : ` via "${artistName}"`}, ${nameVariantsMap.size} in library`);
+    if (allVariantsSet.size === 0) continue;
+    const hasAlbumsSet = db.artistsWithAlbums([...allVariantsSet], vpaths);
+    const displayArtists = [];
+    const displayVariantMap = {};
+    const variantRankMap = {};
+    for (const [i, name] of rawNames.entries()) {
+      const variants = nameVariantsMap.get(name);
+      if (!variants) continue;
+      for (const v of variants) variantRankMap[v] = i + 1;
+      if (variants.some(v => hasAlbumsSet.has(v))) {
+        displayArtists.push(name);
+        displayVariantMap[name] = variants;
+      }
+    }
+    return { failed, result: { artists: [...allVariantsSet], displayArtists, displayVariantMap, variantRankMap, via: artistName } };
+  }
+  console.log(`[autodj] similar-artists "${originalArtist}" → 0 (tried: ${parts.map(p => `"${p}"`).join(', ')}) — pick falls back to bpm/key/genre/year`);
+  return { failed, result: _emptySimilar() };
+}
+
+/** Last.fm top tracks for an artist as [{ title, artist, rank }], [] when unknown. */
+export async function artistTopTracks(artistName, limit = 50) {
+  if (!Scrobbler.apiKey || !artistName) return [];
+  const list = await _lastfmCached(`tt\0${limit}\0${String(artistName).toLowerCase()}`, () =>
+    _lastfmCall(cb => Scrobbler.GetArtistTopTracks(String(artistName), cb, limit)).then(data => data == null ? null :
+      (data?.toptracks?.track || [])
+        .filter(t => t?.name && t.artist?.name)
+        .map((t, i) => ({ title: t.name, artist: t.artist.name, rank: i + 1 }))));
+  return list || [];
+}
+
 export function setup(velvet) {
   Scrobbler.setKeys(config.program.lastFM.apiKey, config.program.lastFM.apiSecret)
 
@@ -78,72 +185,18 @@ export function setup(velvet) {
     }
   });
 
-  velvet.get('/api/v1/lastfm/similar-artists', (req, res) => {
+  velvet.get('/api/v1/lastfm/similar-artists', async (req, res) => {
     if (!req.query.artist) return res.json({ artists: [] });
     if (!Scrobbler.apiKey) {
       console.warn('[lastfm] similar-artists: no API key configured — set lastFM.apiKey in config');
       return res.json({ artists: [] });
     }
-    // Query exact first, then collaboration halves, then individual duo parts
-    // (see util/artist-credit.js for the separators and why).
-    const originalArtist = String(req.query.artist).trim();
-    const parts = artistLookupCandidates(originalArtist);
-
-    function _queryAndRespond(artistName, fallbackParts) {
-      Scrobbler.GetSimilarArtists(
-        artistName,
-        (data) => {
-          const rawNames = (data?.similarartists?.artist || [])
-            .slice(0, 50)
-            .map(a => a.name)
-            .filter(Boolean);
-
-          // No results from this part — try the next individual artist
-          if (rawNames.length === 0 && fallbackParts.length > 0) {
-            return _queryAndRespond(fallbackParts[0], fallbackParts.slice(1));
-          }
-          if (rawNames.length === 0) {
-            console.log(`[autodj] similar-artists "${originalArtist}" → 0 (tried: ${parts.map(p => `"${p}"`).join(', ')}) — pick falls back to bpm/key/genre/year`);
-            return res.json({ artists: [], displayArtists: [], displayVariantMap: {}, variantRankMap: {} });
-          }
-
-          try {
-            const nameVariantsMap = new Map(); // name → variants[]
-            const allVariantsSet = new Set();
-            const displayVariantMap = {};
-            for (const name of rawNames) {
-              const variants = db.resolveArtistNamesForDJ([name]);
-              if (variants.length > 0) {
-                nameVariantsMap.set(name, variants);
-                for (const v of variants) allVariantsSet.add(v);
-              }
-            }
-            const hasAlbumsSet = db.artistsWithAlbums([...allVariantsSet], req.user.vpaths);
-            console.log(`[autodj] similar-artists "${originalArtist}" → ${rawNames.length} from Last.fm${artistName !== originalArtist ? ` via "${artistName}"` : ''}, ${nameVariantsMap.size} in library`);
-            const displayArtists = [];
-            // variantRankMap: DB artist variant → 1-indexed rank (lower = more similar)
-            const variantRankMap = {};
-            if (allVariantsSet.size === 0 && fallbackParts.length > 0) {
-              return _queryAndRespond(fallbackParts[0], fallbackParts.slice(1));
-            }
-            for (const [i, name] of rawNames.entries()) {
-              const variants = nameVariantsMap.get(name);
-              if (!variants) continue;
-              for (const v of variants) variantRankMap[v] = i + 1;
-              if (variants.some(v => hasAlbumsSet.has(v))) {
-                displayArtists.push(name);
-                displayVariantMap[name] = variants;
-              }
-            }
-            res.json({ artists: [...allVariantsSet], displayArtists, displayVariantMap, variantRankMap });
-          } catch {
-            res.json({ artists: [], displayArtists: [], displayVariantMap: {}, variantRankMap: {} });
-          }
-        },
-        50
-      );
+    try {
+      const { via: _via, ...body } = await similarArtistsFor(String(req.query.artist), req.user.vpaths);
+      res.json(body);
+    } catch {
+      res.json({ artists: [], displayArtists: [], displayVariantMap: {}, variantRankMap: {} });
     }
-    _queryAndRespond(parts[0], parts.slice(1));
   });
 
   velvet.get('/api/v1/lastfm/artist-info', (req, res) => {

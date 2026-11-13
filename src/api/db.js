@@ -16,6 +16,7 @@ import { indexFileOnDemand } from '../util/on-demand-index.js';
 import { ffprobeBin } from '../util/ffmpeg-bootstrap.js';
 import { resolveChildPath, resolvePathWithinRoot } from '../util/path-security.js';
 import { parseFile } from 'music-metadata';
+import { batchCandidatePool } from '../autodj/pool.js';
 
 function dbFilepath(vpath, filepath) {
   const left = String(vpath ?? '').replaceAll('\\', '/').replace(/^\/+|\/+$/g, '');
@@ -1373,24 +1374,6 @@ function _logSingleRandomPick(req, songMeta) {
   winston.info(`[random-songs] single pick user=${req.user.username} ip=${req.ip} ua="${req.headers['user-agent'] || 'unknown'}" filtered=${hasFilters} -> "${m.artist || '?'} - ${m.title || '?'}"`);
 }
 
-// Batch mode result cap — Auto-DJ scores every candidate client-side, so this
-// just bounds the response payload/shuffle cost on very large similar-artist
-// pools; it is not a quality filter.
-const RANDOM_SONGS_BATCH_CAP = 500;
-// Per-artist sample cap when a similar-artist list is active. Without this, an
-// artist with a large catalogue in the library (e.g. 80 tracks) statistically
-// crowds out artists with only a handful of tracks once the combined pool is
-// randomly cut down to RANDOM_SONGS_BATCH_CAP — so a well-tagged song from a
-// thinly-represented similar artist may never even reach the scoring stage.
-// Sampling per-artist first guarantees every similar artist gets a fair shot
-// at being scored, matching "10 random songs per artist, highest score wins".
-const PER_ARTIST_SAMPLE_CAP = 10;
-
-function _sampleUpTo(arr, n) {
-  if (arr.length <= n) return arr;
-  return [...arr].sort(() => Math.random() - 0.5).slice(0, n); // NOSONAR: non-security shuffle
-}
-
 // Clamps a track-length bound (SECONDS) to (0, 86400] — mirrors the client's
 // DJ_DURATION_MAX_SECONDS cap. Non-numeric, negative, zero, or absent all
 // collapse to undefined, meaning "no bound on this side" (0 is the sentinel
@@ -1401,72 +1384,9 @@ function _clampDurationBound(v) {
   return Math.min(86400, n);
 }
 
-/**
- * Batch candidate pool for Auto-DJ soft scoring (req.body.returnAll). Returns
- * many songs scoped to collections/rating/artists/cooldown — no BPM/key/genre
- * filtering, since those are soft client-side signals. When a similar-artist
- * list is active, samples up to PER_ARTIST_SAMPLE_CAP songs from EACH artist
- * so every similar artist is represented in the scored pool, not just
- * whichever artist happens to have the most tracks in the library.
- * Falls back progressively (drop cooldown, then drop artist scope) so a
- * non-empty artist-similar pool is never abandoned just because it's small,
- * and an empty one still yields a broader same-scope pool for the client to
- * score by BPM/genre/harmonic instead. Returns null only when the selected
- * collections have no songs at all.
- */
 function _batchRandomSongs(db, user, body) {
-  const hasArtistFilter = Array.isArray(body.artists) && body.artists.length > 0;
-  const baseOpts = {
-    ignoreVPaths: body.ignoreVPaths,
-    minRating: body.minRating,
-    filepathPrefix: body.filepathPrefix || null,
-    excludeFilepathPrefixes: body.excludeFilepathPrefixes,
-    // Track-length window — a hard scope filter like minRating, so it rides
-    // along on every fallback tier below (never relaxed, same as upstream's
-    // always-on contract for this filter).
-    minDuration: body.minDuration,
-    maxDuration: body.maxDuration,
-    allowUnknownDuration: !!body.allowUnknownDuration,
-  };
-  const ignoreArtists = Array.isArray(body.ignoreArtists) ? body.ignoreArtists : undefined;
   const vpaths = userDbVpaths(user);
-
-  let batch = db.getAllFilesWithMetadata(vpaths, user.username, {
-    ...baseOpts,
-    artists: hasArtistFilter ? body.artists : undefined,
-    ignoreArtists,
-  });
-  let balanceByArtist = hasArtistFilter;
-  // `note` is the one-line explanation that reaches the server log — which
-  // scope the pool came from and which fallback (if any) widened it. Without it
-  // the log shows a pick and nothing about why the similar-artist filter didn't
-  // hold, which is the part that keeps needing explaining.
-  const note = [hasArtistFilter ? `similar filter: ${body.artists.length} artists` : 'no similar filter'];
-  if (hasArtistFilter && batch.length === 0 && ignoreArtists?.length > 0) {
-    batch = db.getAllFilesWithMetadata(vpaths, user.username, { ...baseOpts, artists: body.artists });
-    note.push(`cooldown list (${ignoreArtists.length}) dropped — every similar artist was in it`);
-  }
-  if (hasArtistFilter && batch.length === 0) {
-    batch = db.getAllFilesWithMetadata(vpaths, user.username, { ...baseOpts, ignoreArtists });
-    balanceByArtist = false; // artist scope dropped entirely — plain pool now
-    note.push('similar filter dropped — none of those artists in the Auto-DJ scope');
-  }
-  if (batch.length === 0) return null;
-  const inScope = batch.length;
-
-  if (balanceByArtist) {
-    const byArtist = new Map();
-    for (const row of batch) {
-      const key = (row.artist || '').toLowerCase();
-      if (!byArtist.has(key)) byArtist.set(key, []);
-      byArtist.get(key).push(row);
-    }
-    batch = [...byArtist.values()].flatMap(songs => _sampleUpTo(songs, PER_ARTIST_SAMPLE_CAP));
-  }
-
-  const songs = batch.length > RANDOM_SONGS_BATCH_CAP ? _sampleUpTo(batch, RANDOM_SONGS_BATCH_CAP) : batch;
-  note.push(`${inScope} in scope${balanceByArtist ? `, ${batch.length} after per-artist sampling` : ''}${songs.length < batch.length ? `, capped at ${songs.length}` : ''}`);
-  return { songs, note: note.join('; ') };
+  return batchCandidatePool(opts => db.getAllFilesWithMetadata(vpaths, user.username, opts), body);
 }
 
 /**

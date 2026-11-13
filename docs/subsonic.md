@@ -8,7 +8,7 @@ Velvet implements the **Subsonic REST API 1.16.1** plus the **Open Subsonic** ex
 
 | Client | Platform | Notes |
 |---|---|---|
-| **Music Assistant** | Server (Home Assistant) | Verified against MA's provider stack (py-opensonic 10.4) — all calls the Open Subsonic provider makes pass, incl. empty-query `search3` pagination, API-key auth, lyrics, similar songs. See [Music Assistant setup](#music-assistant) below |
+| **Music Assistant** | Server (Home Assistant) | Verified against MA's provider stack (py-opensonic 10.4.1) — radio by Velvet's Auto-DJ, loudness, smart playlists, synced lyrics. See [Music Assistant](#music-assistant) below |
 | **Symfonium** | Android | Full library sync verified (v6.10.0+) |
 | **DSub** | Android | ✅ |
 | **Substreamer** | iOS | ✅ |
@@ -22,7 +22,19 @@ Velvet implements the **Subsonic REST API 1.16.1** plus the **Open Subsonic** ex
 
 ## Music Assistant
 
-[Music Assistant](https://www.music-assistant.io/) (the Open Home Foundation's music library manager, tightly integrated with Home Assistant) can use Velvet as an **Open Subsonic** music source. This unlocks playback of your Velvet library on everything MA streams to — Chromecast, AirPlay, Squeezelite, Sonos, DLNA players — plus Home Assistant automations and voice control.
+[Music Assistant](https://www.music-assistant.io/) (the Open Home Foundation's music library manager, tightly integrated with Home Assistant) can use Velvet as an **Open Subsonic** music source. MA then plays your Velvet library on everything it streams to — Chromecast, AirPlay, Squeezelite, Sendspin, Sonos, DLNA players — with Home Assistant automations and voice control.
+
+The split is simple: **MA does the playing, Velvet does the thinking.** Velvet answers MA's Subsonic calls with its own brain instead of plain lookups:
+
+| What MA shows | What Velvet answers with |
+|---|---|
+| **Radio / "Don't stop the music"** (`getSimilarSongs`) | A chain picked by Velvet's **Auto-DJ**, server-side: every next track is chosen against the one before it — Last.fm similar artists of the *current* artist, BPM corridor, Camelot key, genre family, era, artist cooldown — exactly the scoring the web player's Auto-DJ uses ([autodj-scoring.md](autodj-scoring.md)). No seed, no repeats (not even another version of the same song), audiobooks and radio recordings never included. Works without a Last.fm key too (then BPM/key/genre/era decide). Honours the user's Auto-DJ minimum rating and keyword filter. |
+| **Top tracks** of an artist (`getTopSongs`) | Velvet's own play counts (all users of the server — a household's shared taste; one user's counts are too sparse to rank by) blended with Last.fm's top tracks for the artist when a Last.fm key is set, one version per song. |
+| **Loudness normalisation** (`replayGain`) | Velvet's rsgain / EBU R128 measurements as OpenSubsonic `replayGain` (`trackGain`, `albumGain`, `trackPeak`, `albumPeak`, gains against −18 LUFS, peaks linear). MA stores them as the track's integrated loudness (−18 − gain) and normalises from the first play on. |
+| **Playlists** | Your playlists, plus your **smart playlists** as read-only playlists (`smart:<id>`), evaluated fresh each time MA opens them. |
+| **Lyrics** (`getLyricsBySongId`) | Synced lyrics first: a sidecar `.lrc` next to the file, lyrics embedded in the file (SYLT / USLT / Vorbis `LYRICS`, LRC text counts as synced), then lyrics the Velvet web player already fetched from LRCLIB. No network lookups here — MA asks for lyrics of every track it syncs. |
+| **Recommendations** (`getAlbumList2`) | Album-level lists: *newest* (by the album's latest addition), *frequent*/*recent*/*highest* (your plays and ratings), *byYear* (sorted by year), *byGenre*. |
+| **Track details** | BPM, genre list, MusicBrainz recording id, sample rate / bit depth / channels / bitrate (MA shows the real audio format), artist biography and MusicBrainz artist id from Velvet's artist enrichment. |
 
 ### Setup
 
@@ -34,12 +46,15 @@ Velvet implements the **Subsonic REST API 1.16.1** plus the **Open Subsonic** ex
 3. Recommended settings:
    - **Enable Podcasts: off** — Velvet serves podcasts through its own player, not the Subsonic podcast endpoints
    - Leave **Enable Legacy Auth** off — Velvet supports modern token and API-key auth
+4. Optional: a Last.fm API key in Velvet's config (`lastFM.apiKey`) gives the radio its similar-artist signal and adds Last.fm to top tracks.
 
 ### Notes
 
-- **Endless Mix / similar tracks** work when Velvet has a Last.fm API key configured (same requirement as Navidrome/Gonic).
+- **Radio speed.** A 25-track radio takes well under a second once Velvet has the Last.fm similar-artist lists it needs (they are cached for hours, and the artists of every radio are looked up in the background for the next one). The first radio for an artist Velvet has never looked up can take 1–3 s; Last.fm time per request is capped, after which the chain keeps the last similar-artist list, as the web Auto-DJ does.
+- **Play counts.** MA's Open Subsonic provider never sends `scrobble` or `reportPlayback` for music (only podcast bookmarks), so tracks played through MA do not appear in Velvet's play history, statistics or Velvet's Last.fm/ListenBrainz forwarding. Use MA's own Last.fm / ListenBrainz scrobble plugins for those services.
+- **Sendspin speakers.** A Sendspin speaker plays for one server at a time. If both MA and Velvet Rooms ([rooms.md](rooms.md)) know the same speaker, whichever starts playing takes it over from the other.
 - MA cannot play some **opus/m4a/VBR** files over a Subsonic connection (a known MA limitation). Workaround: enable Velvet transcoding (`transcode.enabled: true`) so MA can request a compatible format.
-- Verified against MA's exact client stack (py-opensonic): library sync (artists, albums, playlists, empty-query `search3` pagination), streaming, cover art, lyrics, similar songs, top songs, radio stations, star/unstar, and scrobbling all pass.
+- Verified against MA's exact client stack (py-opensonic 10.4.1, MA's own `parsers.py`): library sync, streaming, cover art, synced lyrics, radio, top tracks, album lists, smart playlists, loudness, star/unstar.
 
 
 ## Base URL
@@ -166,7 +181,7 @@ and Last.fm/ListenBrainz forwarding), `transcoding` (extension flow not needed �
 | Endpoint | Status | Notes |
 |---|---|---|
 | `getArtists` | ✅ | Alphabetical artist index grouped by letter |
-| `getArtist` | ✅ | Artist + album list |
+| `getArtist` | ✅ | Artist + album list; `musicBrainzId` when known |
 | `getAlbum` | ✅ | Album + song list; single-FLAC CUE-sheet albums expand into virtual per-track entries |
 | `getSong` | ✅ | Single song by hash ID |
 
@@ -182,7 +197,7 @@ Song results in `search2`/`search3` match the query against **title, artist, or 
 ### Album lists
 | Endpoint | Status | Notes |
 |---|---|---|
-| `getAlbumList` | ✅ | `newest`, `recent`, `random`, `alphabeticalByName`, `alphabeticalByArtist`, `byGenre`, `byYear`, `starred` |
+| `getAlbumList` | ✅ | `newest`, `recent`, `frequent`, `highest`, `random`, `alphabeticalByName`, `alphabeticalByArtist`, `byGenre`, `byYear`, `starred`. `newest`/`recent`/`frequent`/`highest`/`byYear`/`byGenre` are album-level queries (paged with `size`/`offset`); `byYear` is sorted by year, descending when `fromYear` > `toYear` |
 | `getAlbumList2` | ✅ | Same sort modes, ID3 mode |
 | `getRandomSongs` | ✅ | Optional genre/year/folder/size filter |
 | `getSongsByGenre` | ✅ | Filtered by exact genre string |
@@ -203,8 +218,8 @@ Song results in `search2`/`search3` match the query against **title, artist, or 
 | `stream` | ✅ | Serves original file; CUE tracks sliced via ffmpeg with correct STREAMINFO |
 | `download` | ✅ | Same as stream |
 | `getCoverArt` | ✅ | Serves from albumArtDirectory; supports arbitrary `?size=` parameter (snapped to cache-friendly tiers); artist IDs (`ar-<id>`); SVG folder icon fallback |
-| `getLyrics` | ✅ | Legacy v1 stub (returns empty) |
-| `getLyricsBySongId` | ✅ | OpenSubsonic `songLyrics` extension — reads embedded lyrics (USLT/plain) from file tags on demand via music-metadata; cached per content hash |
+| `getLyrics` | ✅ | Legacy v1: finds the song by `artist` + `title` and returns its lyrics as plain text |
+| `getLyricsBySongId` | ✅ | OpenSubsonic `songLyrics` extension — sidecar `.lrc`/`.txt`, then lyrics embedded in the file (SYLT, USLT, Vorbis `LYRICS`; LRC text is returned synced), then the web player's LRCLIB cache. Synced first; cached per content hash |
 | `scrobble` | ✅ | Updates play count + last played; forwards to Last.fm / ListenBrainz |
 | `reportPlayback` | ✅ | Available to explicit callers but not advertised; updates timeline state and honours `ignoreScrobble`. Clients use classic `scrobble` for reliable play counts and Last.fm/ListenBrainz forwarding. |
 | `setRating` | ✅ | Stores 1–5 rating in user_metadata |
@@ -219,11 +234,11 @@ Song results in `search2`/`search3` match the query against **title, artist, or 
 ### Playlists
 | Endpoint | Status | Notes |
 |---|---|---|
-| `getPlaylists` | ✅ | All playlists visible to the current user; includes `created`/`changed` timestamps (required by spec — verified against py-opensonic strict parsing) |
-| `getPlaylist` | ✅ | Full playlist with song list |
+| `getPlaylists` | ✅ | All playlists visible to the current user, plus the user's smart playlists as read-only entries (`id` `smart:<n>`, `readonly: true`); includes `created`/`changed` timestamps (required by spec — verified against py-opensonic strict parsing) |
+| `getPlaylist` | ✅ | Full playlist with song list; a `smart:<n>` id runs the smart playlist |
 | `createPlaylist` | ✅ | Create new or replace existing |
-| `updatePlaylist` | ✅ | Rename (`name` param), append songs (`songIdToAdd`), remove by index (`songIndexToRemove`) |
-| `deletePlaylist` | ✅ | Delete by ID |
+| `updatePlaylist` | ✅ | Rename (`name` param), append songs (`songIdToAdd`), remove by index (`songIndexToRemove`); error 50 for smart playlists |
+| `deletePlaylist` | ✅ | Delete by ID; error 50 for smart playlists |
 
 ### Bookmarks
 | Endpoint | Status | Notes |
@@ -235,13 +250,13 @@ Song results in `search2`/`search3` match the query against **title, artist, or 
 ### Artist/Album info
 | Endpoint | Status | Notes |
 |---|---|---|
-| `getArtistInfo` | ✅ | Returns `smallImageUrl`/`mediumImageUrl`/`largeImageUrl` pointing to `getCoverArt?id=ar-<artist_id>` when an artist portrait exists in `image-cache/artists/`; biography always empty (no external fetch) |
+| `getArtistInfo` | ✅ | `biography` and `musicBrainzId` from Velvet's artist enrichment (empty biography when none); `smallImageUrl`/`mediumImageUrl`/`largeImageUrl` pointing to `getCoverArt?id=ar-<artist_id>` when an artist portrait exists in `image-cache/artists/` |
 | `getArtistInfo2` | ✅ | Same |
 | `getAlbumInfo` | ⚠️ | Returns empty notes/URL |
 | `getAlbumInfo2` | ⚠️ | Same |
-| `getSimilarSongs` | ✅ | Last.fm `track.getSimilar` → matched against local library; falls back to empty if no Last.fm API key |
+| `getSimilarSongs` | ✅ | Radio chain by Velvet's Auto-DJ (`src/autodj/`), `count` tracks (max 100), seed excluded; `id` may be a song, album or artist id. Last.fm `track.getSimilar` is only the fallback when the chain finds nothing |
 | `getSimilarSongs2` | ✅ | Same |
-| `getTopSongs` | ✅ | Last.fm `artist.getTopTracks` → matched against local library; falls back to empty |
+| `getTopSongs` | ✅ | The artist's songs ranked by Velvet play counts (all users) blended with Last.fm `artist.getTopTracks` when a key is set; one version per song |
 
 ### Users (admin only)
 | Endpoint | Status | Notes |
@@ -315,7 +330,10 @@ Clients then navigate deeper using `getMusicDirectory?id=<dirId>`.
 | `starred` | ISO date string if starred, omitted otherwise |
 | `userRating` | 1–5 or omitted |
 | `playCount`, `played` | From user_metadata |
-| `replayGain.trackGain` | dB value from file tags (Open Subsonic) |
+| `replayGain` | `trackGain`/`albumGain` (dB, −18 LUFS reference: rsgain measurement → R128 tag → ReplayGain tag) and `trackPeak`/`albumPeak` (linear) |
+| `bpm`, `genres`, `musicBrainzId` | BPM (rounded), genre tag split into `[{ name }]`, MusicBrainz recording id |
+| `samplingRate`, `bitDepth`, `channelCount`, `bitRate` | From the scan (bitRate in kbps; a format estimate when unknown) |
+| `displayArtist`, `artists`, `displayAlbumArtist` | Track artist with its id; album artist when it differs |
 | `mediaType` | Always `"song"` |
 | `isDir` | Always `false` |
 | `isVideo` | Always `false` |
@@ -341,7 +359,7 @@ Clients then navigate deeper using `getMusicDirectory?id=<dirId>`.
 | Transcoding | ✅ Supported — `stream` honours `format` (`mp3`/`opus`/`aac`) and `maxBitRate`; requires ffmpeg and `transcode.enabled: true` in config. `transcodedSuffix`/`transcodedContentType` are intentionally **not** set in song metadata to avoid extension-flow conflicts with clients such as Symfonium. |
 | `getCoverArt` `size` param | Accepted but not used — full-size image always returned |
 | `ifModifiedSince` on `getIndexes` | Accepted but ignored — always returns full response |
-| Artist/album metadata (bio, similar) | External lookups (Last.fm, MusicBrainz) not wired up |
+| Album notes | `getAlbumInfo` returns empty notes |
 | `enc:` hex-encoded password | Accepted as auth but not extensively tested |
 
 

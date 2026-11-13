@@ -2265,25 +2265,41 @@ function _foldArtistKey(name) {
     .replaceAll(/[øæßđłðþ’‘‐‑–—]/g, ch => _FOLD_CHARS[ch]);
 }
 
-// Lazily-built folded-name index over artists_normalized, rebuilt when the
-// row count changes (a scan added/removed artists). Count-based invalidation
-// can miss same-count edits — acceptable for a last-resort fuzzy tier.
-let _foldedArtistIndex = null;
-let _foldedArtistIndexCount = -1;
-function _getFoldedArtistIndex() {
+// Lazily-built name indexes over artists_normalized, rebuilt when the row
+// count changes (a scan added/removed artists). Count-based invalidation can
+// miss same-count edits — acceptable here. exact/norm reproduce the former
+// per-name SQL lookups (lower(artist_clean) = lower(?) and the '&'/'and'
+// normalisation), which scanned the whole table for every Last.fm name that is
+// not in the library — ~20 ms each, ~1 s per similar-artist list.
+let _artistNameIndex = null;
+let _artistNameIndexCount = -1;
+function _sqlNormArtist(clean) {
+  return clean.replaceAll(/^ +| +$/g, '').toLowerCase().replaceAll(' & ', ' and ').replaceAll('&', ' and ').replaceAll('  ', ' ');
+}
+function _getArtistNameIndex() {
   const count = db.prepare('SELECT COUNT(*) AS c FROM artists_normalized').get().c;
-  if (_foldedArtistIndex && count === _foldedArtistIndexCount) return _foldedArtistIndex;
-  const idx = new Map();
-  for (const row of db.prepare('SELECT artist_clean, artist_raw_variants FROM artists_normalized').all()) {
-    const key = _foldArtistKey(row.artist_clean || '');
+  if (_artistNameIndex && count === _artistNameIndexCount) return _artistNameIndex;
+  const exact = new Map();
+  const norm = new Map();
+  const folded = new Map();
+  for (const row of db.prepare('SELECT artist_clean, artist_raw_variants FROM artists_normalized ORDER BY rowid').all()) {
+    const clean = row.artist_clean || '';
+    let variants;
+    try { variants = JSON.parse(row.artist_raw_variants); } catch { variants = null; }
+    const lc = clean.toLowerCase();
+    if (!exact.has(lc)) exact.set(lc, variants);
+    const nk = _sqlNormArtist(clean);
+    if (!norm.has(nk)) norm.set(nk, variants);
+    const key = _foldArtistKey(clean);
     if (!key) continue;
-    let set = idx.get(key);
-    if (!set) { set = new Set(); idx.set(key, set); }
-    try { for (const v of JSON.parse(row.artist_raw_variants)) set.add(v); } catch { set.add(row.artist_clean); }
+    let set = folded.get(key);
+    if (!set) { set = new Set(); folded.set(key, set); }
+    if (Array.isArray(variants)) for (const v of variants) set.add(v);
+    else set.add(clean);
   }
-  _foldedArtistIndex = idx;
-  _foldedArtistIndexCount = count;
-  return idx;
+  _artistNameIndex = { exact, norm, folded };
+  _artistNameIndexCount = count;
+  return _artistNameIndex;
 }
 
 /**
@@ -2306,30 +2322,19 @@ function _getFoldedArtistIndex() {
  */
 export function resolveArtistNamesForDJ(names) {
   if (!names || names.length === 0) return [];
-  // Exact case-insensitive match on canonical artist name
-  const exactStmt = db.prepare(
-    `SELECT artist_raw_variants FROM artists_normalized WHERE lower(artist_clean) = lower(?)`
-  );
-  // Normalized match — normalize '&' variants and whitespace in both SQL and param
-  // SQL: lower → replace ' & '→' and ' → replace '&'→' and ' → collapse '  '→' '
-  const normStmt = db.prepare(
-    `SELECT artist_raw_variants FROM artists_normalized
-     WHERE replace(replace(replace(lower(trim(artist_clean)), ' & ', ' and '), '&', ' and '), '  ', ' ') = ?`
-  );
+  const idx = _getArtistNameIndex();
   const result = new Set();
   for (const name of names) {
     if (!name || typeof name !== 'string') continue;
-    let row = exactStmt.get(name.trim());
-    if (!row) row = normStmt.get(_normArtist(name));
-    if (row) {
-      try {
-        const variants = JSON.parse(row.artist_raw_variants);
-        for (const v of variants) result.add(v);
-      } catch (e) { console.debug('[velvet]', e?.message ?? e); }
-    }
+    const lc = name.trim().toLowerCase();
+    const nk = _normArtist(name);
+    let variants;
+    if (idx.exact.has(lc)) variants = idx.exact.get(lc);
+    else if (idx.norm.has(nk)) variants = idx.norm.get(nk);
+    if (Array.isArray(variants)) for (const v of variants) result.add(v);
     // Always union folded matches too — the library may hold BOTH spellings
     // ("Alizée" and "Alizee") as separate artist rows for the same artist.
-    const folded = _getFoldedArtistIndex().get(_foldArtistKey(name));
+    const folded = idx.folded.get(_foldArtistKey(name));
     if (folded) for (const v of folded) result.add(v);
   }
   return [...result];
@@ -2477,6 +2482,19 @@ export function getArtistImageByArtistId(artistId) {
     'SELECT image_file FROM artists_normalized WHERE lower(trim(artist_clean)) = lower(trim(?)) LIMIT 1'
   ).get(fileRow.artist);
   return anRow?.image_file ?? null;
+}
+
+// Biography and MusicBrainz id of the artist behind an artist_id (Subsonic
+// getArtist / getArtistInfo). null when the artist has no profile.
+export function getArtistProfileByArtistId(artistId) {
+  if (!artistId) return null;
+  const fileRow = db.prepare(
+    'SELECT artist FROM files WHERE artist_id = ? AND artist IS NOT NULL LIMIT 1'
+  ).get(artistId);
+  if (!fileRow?.artist) return null;
+  return db.prepare(
+    'SELECT bio, mbid FROM artists_normalized WHERE lower(trim(artist_clean)) = lower(trim(?)) LIMIT 1'
+  ).get(fileRow.artist) ?? null;
 }
 
 export function getArtistImageAudit(kind, limit = 200) {
@@ -2813,8 +2831,11 @@ export function getAllFilesWithMetadata(vpaths, username, opts) {
   const vIn = inClause('f.vpath', filtered);
   const ep = excludePrefixClauses(opts.excludeFilepathPrefixes, 'f.vpath', 'f.filepath');
 
+  // opts.columns === 'autodj': only what Auto-DJ scoring and dedup read — the
+  // full row is ~80 columns and the server-side radio fetches many pools.
+  const cols = opts.columns === 'autodj' ? AUTODJ_COLUMNS : 'f.*';
   let sql = `
-    SELECT f.rowid AS id, f.*, um.rating
+    SELECT f.rowid AS id, ${cols}, um.rating
     FROM files f
     LEFT JOIN user_metadata um ON f.hash = um.hash AND um.user = ?
     WHERE ${vIn.sql}${ep.sql}
@@ -2848,9 +2869,18 @@ export function getAllFilesWithMetadata(vpaths, username, opts) {
   sql = _appendGenreFilter(sql, params, opts);
   sql = _appendDurationFilter(sql, params, opts);
 
+  // opts.sample: a random sample of the scope instead of all of it.
+  const sample = Number(opts.sample);
+  if (Number.isInteger(sample) && sample > 0) {
+    sql += ' ORDER BY RANDOM() LIMIT ?';
+    params.push(sample);
+  }
+
   const rows = db.prepare(sql).all(...params);
   return rows.map(mapFileRow);
 }
+
+const AUTODJ_COLUMNS = 'f.hash, f.vpath, f.filepath, f.title, f.artist, f.album_artist, f.album, f.genre, f.year, f.bpm, f.musical_key, f.duration';
 
 // ── Lightweight random-pick helpers (used by Auto-DJ no-filter path) ──────────
 // Avoid loading all 100k+ rows into heap just to pick one index.
@@ -6120,6 +6150,94 @@ export function findSongByTitleArtist(title, artist, vpaths, username) {
     LIMIT 1
   `).get(username, ...vpaths, title, artist);
   return row ?? null;
+}
+
+/**
+ * Every song credited to an artist (track artist, case-insensitive, or album
+ * artist) with the requesting user's metadata and the play count summed over
+ * all users. Used by Subsonic getTopSongs.
+ */
+export function getArtistSongsWithPlays(artist, vpaths, username) {
+  if (!vpaths?.length || !artist) return [];
+  const vIn = inClause('f.vpath', vpaths);
+  const rows = db.prepare(`
+    SELECT f.rowid AS id, f.*, um.rating, um.starred, um.lp AS lastPlayed, um.pc AS playCount,
+           (SELECT COALESCE(SUM(u2.pc), 0) FROM user_metadata u2 WHERE u2.hash = f.hash) AS totalPlays
+    FROM files f
+    LEFT JOIN user_metadata um ON um.hash = f.hash AND um.user = ?
+    WHERE ${vIn.sql}
+      AND (lower(trim(f.artist)) = lower(trim(?)) OR COALESCE(f.album_artist, f.artist) = ?)
+  `).all(username, ...vIn.params, artist, artist);
+  return rows.map(mapFileRow);
+}
+
+/**
+ * Album-level Subsonic album lists (getAlbumList/getAlbumList2): one row per
+ * album, ordered by the album's newest addition, the user's latest play, the
+ * user's play total, the user's average rating, year, or name within a genre.
+ * Returns the same shape as getAllAlbumIds. null for an unsupported type.
+ */
+export function getAlbumListRows(type, vpaths, username, opts = {}) {
+  const filtered = vpathFilter(vpaths, null);
+  if (filtered.length === 0) return [];
+  const vIn = inClause('f.vpath', filtered);
+  const pf = prefixClause(opts.filepathPrefix, 'f.filepath');
+  const size = Math.max(0, Number(opts.size) || 10);
+  const offset = Math.max(0, Number(opts.offset) || 0);
+  const params = [...vIn.params, ...pf.params];
+  let join = '';
+  let where = '';
+  let order;
+  switch (type) {
+    case 'newest':
+      order = 'MAX(CASE WHEN f.ts > unixepoch() THEN 0 ELSE f.ts END) DESC';
+      break;
+    case 'recent':
+      join = 'JOIN user_metadata um ON um.hash = f.hash AND um.user = ?';
+      where = ' AND um.lp > 0';
+      order = 'MAX(um.lp) DESC';
+      break;
+    case 'frequent':
+      join = 'JOIN user_metadata um ON um.hash = f.hash AND um.user = ?';
+      where = ' AND um.pc > 0';
+      order = 'SUM(um.pc) DESC, MAX(um.lp) DESC';
+      break;
+    case 'highest':
+      join = 'JOIN user_metadata um ON um.hash = f.hash AND um.user = ?';
+      where = ' AND um.rating > 0';
+      order = 'AVG(um.rating) DESC, COUNT(*) DESC';
+      break;
+    case 'byYear': {
+      const from = Number.parseInt(opts.fromYear, 10) || 0;
+      const to = Number.parseInt(opts.toYear, 10) || 9999;
+      where = ' AND f.year BETWEEN ? AND ?';
+      params.push(Math.min(from, to), Math.max(from, to));
+      order = from > to ? 'MAX(f.year) DESC, f.album COLLATE NOCASE' : 'MAX(f.year) ASC, f.album COLLATE NOCASE';
+      break;
+    }
+    case 'byGenre': {
+      const genre = String(opts.genre || '').trim();
+      where = " AND (f.genre = ? OR (',' || REPLACE(REPLACE(REPLACE(f.genre, ';', ','), '/', ','), ', ', ',') || ',') LIKE ? ESCAPE '\\')";
+      params.push(genre, '%,' + genre.replaceAll(/[%_\\]/g, String.raw`\$&`) + ',%');
+      order = 'f.album COLLATE NOCASE';
+      break;
+    }
+    default:
+      return null;
+  }
+  if (join) params.unshift(username);
+  return db.prepare(`
+    SELECT f.album_id, MAX(f.artist_id) AS artist_id, MAX(f.album) AS album, MAX(f.artist) AS artist,
+           MAX(f.album_artist) AS album_artist, MAX(f.year) AS year, MAX(f.aaFile) AS aaFile,
+           MAX(f.genre) AS genre, MAX(f.mb_release_id) AS mb_release_id,
+           COUNT(*) AS songCount, CAST(SUM(f.duration) AS INTEGER) AS totalDuration, MAX(f.ts) AS ts
+    FROM files f ${join}
+    WHERE ${vIn.sql}${pf.sql}${where}
+      AND f.album_id IS NOT NULL AND f.album IS NOT NULL AND TRIM(f.album) != ''
+    GROUP BY f.album_id
+    ORDER BY ${order}
+    LIMIT ? OFFSET ?
+  `).all(...params, size, offset);
 }
 
 /** Delete all rows from `files` whose vpath is in the supplied array. Returns number deleted. */
