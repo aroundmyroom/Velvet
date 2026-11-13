@@ -14,7 +14,7 @@ The mode button cycles through five modes:
 | **Spectrum** | Seven built-in canvas displays (bars, mirror, radial, oscilloscope, waterfall, VU needles, Lissajous) | Click the picture |
 | **AudioMotion** | audioMotion-analyzer with six curated presets | Click the picture |
 | **Lyrics** | Album art with synced lyrics | — |
-| **VoltViz** | 50+ modern WebGL/WebGPU styles by Sander de Wildt | Previous / next buttons or the style list |
+| **VoltViz** | 40+ modern WebGL/WebGPU styles by Sander de Wildt | Previous / next buttons or the style list |
 
 ## VoltViz
 
@@ -40,6 +40,11 @@ The mode button cycles through five modes:
 - **Resources.** Switching to another mode or closing the visualizer destroys
   the VoltViz renderer, so no animation or GPU work keeps running in the
   background.
+- **Styles not included.** Of upstream VoltViz, Moss Ball and Flame
+  (non-commercial licenses) and Aurora Waves, Shambhala, Inside Quantum, Holo
+  Blinds and Particles Stream (adapted from outside shaders or demos whose
+  license is not stated) are left out, since Velvet is GPL-3.0. Your Logo is
+  left out because it needs an uploaded logo. See `NOTICE.md`.
 
 ## What the visualizer listens to
 

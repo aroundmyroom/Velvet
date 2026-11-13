@@ -1,7 +1,12 @@
 0.35.1+bff5e16
 https://github.com/sanderdw/voltviz/tree/bff5e16c20b22bb631aa348254e63c74b01236f9
 
-included: 51
+included: 46
 dropped: mossball (shaders are CC BY-NC 4.0 (non-commercial), incompatible with Velvet's GPLv3)
 dropped: flame (shader is CC BY-NC-SA 3.0 (non-commercial), incompatible with Velvet's GPLv3)
 dropped: yourlogo (draws nothing until the user uploads an SVG logo)
+dropped: aurorawaves (Shadertoy port with no source or license named ("the original Shadertoy defaults"); Shadertoy default is CC BY-NC-SA 3.0)
+dropped: shambhala (shader in Shadertoy form (iTime/iResolution) with no source or license named; provenance unclear)
+dropped: insidequantum (adapted from an unnamed original ("green palette from the original"); provenance and license unclear)
+dropped: holoblinds (adapted from an unnamed original ("Base constants matching the original params"); provenance and license unclear)
+dropped: particlesstream (adapted from an unnamed demo ("the lil-gui params from the source demo"); provenance and license unclear)

@@ -3,7 +3,7 @@
 ### Added
 
 - **VoltViz visualizer.** The full-screen visualizer gets a fifth mode,
-  VoltViz, with more than 50 modern styles: shader scenes, particle fields,
+  VoltViz, with more than 40 modern styles: shader scenes, particle fields,
   oscilloscopes, spectrum displays and more. Pick a style with the previous/next
   buttons or the style list in the visualizer bar; your choice is remembered.
   Styles that need WebGPU only appear in browsers that support it. For

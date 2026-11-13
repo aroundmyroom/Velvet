@@ -1,4 +1,4 @@
-import{H as e,N as t,W as n,Y as r,Z as i,ct as a,dt as o,et as s,h as c,j as l,r as u,st as d,t as f,tt as p}from"./three-_gmPQh3Y.js";var m=({container:m,width:h,height:g})=>{let _=new Uint8Array(256),v=new Uint8Array(512),y=f(m,h,g,1,{alpha:!1,antialias:!1,powerPreference:`high-performance`});y.autoClear=!1;let b=new s,x=new e(-1,1,1,-1,0,1),S={minFilter:l,magFilter:l,format:r,type:d},C=new o(h,g,S),w=new o(h,g,S),T=new c(_,256,1,i);T.needsUpdate=!0;let E=new c(v,512,1,i);E.needsUpdate=!0;let D=new n(2,2),O=new p({uniforms:{uPrev:{value:C.texture},uFreq:{value:T},uWave:{value:E},uTime:{value:0},uSens:{value:1},uSpeed:{value:1},uHue:{value:0},uScale:{value:1},uRes:{value:new a(h,g)}},vertexShader:`
+import{$ as e,J as t,N as n,U as r,V as i,X as a,et as o,h as s,j as c,ot as l,r as u,st as d,t as f,ut as p}from"./three-DIyfzUHm.js";var m=({container:m,width:h,height:g})=>{let _=new Uint8Array(256),v=new Uint8Array(512),y=f(m,h,g,1,{alpha:!1,antialias:!1,powerPreference:`high-performance`});y.autoClear=!1;let b=new e,x=new i(-1,1,1,-1,0,1),S={minFilter:c,magFilter:c,format:t,type:l},C=new p(h,g,S),w=new p(h,g,S),T=new s(_,256,1,a);T.needsUpdate=!0;let E=new s(v,512,1,a);E.needsUpdate=!0;let D=new r(2,2),O=new o({uniforms:{uPrev:{value:C.texture},uFreq:{value:T},uWave:{value:E},uTime:{value:0},uSens:{value:1},uSpeed:{value:1},uHue:{value:0},uScale:{value:1},uRes:{value:new d(h,g)}},vertexShader:`
       varying vec2 vUv;
       void main() {
         vUv = uv;
@@ -127,7 +127,7 @@ import{H as e,N as t,W as n,Y as r,Z as i,ct as a,dt as o,et as s,h as c,j as l,
 
         gl_FragColor = vec4(col, 1.0);
       }
-    `,depthTest:!1,depthWrite:!1}),k=new p({uniforms:{uTex:{value:w.texture}},vertexShader:`
+    `,depthTest:!1,depthWrite:!1}),k=new o({uniforms:{uTex:{value:w.texture}},vertexShader:`
       varying vec2 vUv;
       void main() {
         vUv = uv;
@@ -142,4 +142,4 @@ import{H as e,N as t,W as n,Y as r,Z as i,ct as a,dt as o,et as s,h as c,j as l,
         col = pow(col, vec3(0.95));
         gl_FragColor = vec4(col, 1.0);
       }
-    `,depthTest:!1,depthWrite:!1}),A=new t(D,O);b.add(A);let j=0;return{resize(e,t){y.setPixelRatio(1),y.setSize(e,t),O.uniforms.uRes.value.set(e,t),C.setSize(e,t),w.setSize(e,t)},frame({audio:e,settings:t,dt:n}){j+=n*t.speed,_.set(e.spectrum({fftSize:512,smoothing:.82})),v.set(e.waveform({fftSize:512,smoothing:.82})),T.needsUpdate=!0,E.needsUpdate=!0,O.uniforms.uPrev.value=C.texture,O.uniforms.uTime.value=j,O.uniforms.uSens.value=t.sensitivity,O.uniforms.uSpeed.value=t.speed,O.uniforms.uHue.value=t.hueShift,O.uniforms.uScale.value=t.scale,A.material=O,y.setRenderTarget(w),y.clear(),y.render(b,x),k.uniforms.uTex.value=w.texture,A.material=k,y.setRenderTarget(null),y.clear(),y.render(b,x);let r=C;C=w,w=r},dispose(){D.dispose(),O.dispose(),k.dispose(),C.dispose(),w.dispose(),T.dispose(),E.dispose(),u(y)}}};export{m as default};
+    `,depthTest:!1,depthWrite:!1}),A=new n(D,O);b.add(A);let j=0;return{resize(e,t){y.setPixelRatio(1),y.setSize(e,t),O.uniforms.uRes.value.set(e,t),C.setSize(e,t),w.setSize(e,t)},frame({audio:e,settings:t,dt:n}){j+=n*t.speed,_.set(e.spectrum({fftSize:512,smoothing:.82})),v.set(e.waveform({fftSize:512,smoothing:.82})),T.needsUpdate=!0,E.needsUpdate=!0,O.uniforms.uPrev.value=C.texture,O.uniforms.uTime.value=j,O.uniforms.uSens.value=t.sensitivity,O.uniforms.uSpeed.value=t.speed,O.uniforms.uHue.value=t.hueShift,O.uniforms.uScale.value=t.scale,A.material=O,y.setRenderTarget(w),y.clear(),y.render(b,x),k.uniforms.uTex.value=w.texture,A.material=k,y.setRenderTarget(null),y.clear(),y.render(b,x);let r=C;C=w,w=r},dispose(){D.dispose(),O.dispose(),k.dispose(),C.dispose(),w.dispose(),T.dispose(),E.dispose(),u(y)}}};export{m as default};

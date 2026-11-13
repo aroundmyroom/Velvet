@@ -47,7 +47,13 @@ Of the material listed in upstream's notices, Velvet ships:
 
 The Moss Ball (CC BY-NC 4.0 shaders by ledhieu) and Flame (CC BY-NC-SA 3.0
 shader by kuvkar) visualizers are not included: their non-commercial licenses
-are incompatible with the GPL. The *Beat This!* model is not included either.
+are incompatible with the GPL. Aurora Waves, Shambhala, Inside Quantum, Holo
+Blinds and Particles Stream are not included either: their source code says
+they were adapted from an outside shader or demo without naming it or its
+license (Aurora Waves explicitly from Shadertoy, whose default license is
+CC BY-NC-SA 3.0), so their license cannot be confirmed as GPL-compatible. The
+reasons are recorded in `VERSION`. The *Beat This!* model is not included
+either.
 
 Names used for visualizers (Winamp, Windows 95, Disney, Defqon.1, Razor 1911
 and others) are trademarks of their respective owners, used descriptively.

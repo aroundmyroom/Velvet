@@ -14,6 +14,12 @@ const DROPPED = {
   mossball: 'shaders are CC BY-NC 4.0 (non-commercial), incompatible with Velvet\'s GPLv3',
   flame: 'shader is CC BY-NC-SA 3.0 (non-commercial), incompatible with Velvet\'s GPLv3',
   yourlogo: 'draws nothing until the user uploads an SVG logo',
+  // Ports of outside shaders/demos with no source or license named: Shadertoy code defaults to CC BY-NC-SA 3.0.
+  aurorawaves: 'Shadertoy port with no source or license named ("the original Shadertoy defaults"); Shadertoy default is CC BY-NC-SA 3.0',
+  shambhala: 'shader in Shadertoy form (iTime/iResolution) with no source or license named; provenance unclear',
+  insidequantum: 'adapted from an unnamed original ("green palette from the original"); provenance and license unclear',
+  holoblinds: 'adapted from an unnamed original ("Base constants matching the original params"); provenance and license unclear',
+  particlesstream: 'adapted from an unnamed demo ("the lil-gui params from the source demo"); provenance and license unclear',
 };
 
 const ROOT = path.resolve(__dirname, '..');
