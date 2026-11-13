@@ -195,7 +195,9 @@ states (`paired`, `aborted`) stay readable for 60 s after they occur.
   "playable": true,
   "lineIn": null,
   "sonos": [],
-  "eq": { "enabled": true, "gains": [0, 0, 0, 0, 0, 0, 0, 0], "preset": null }
+  "eq": { "enabled": true, "gains": [0, 0, 0, 0, 0, 0, 0, 0], "preset": null },
+  "autoDj": false,
+  "scrobble": { "lastfm": "pending", "listenbrainz": "off" }
 }
 ```
 
@@ -222,6 +224,17 @@ states (`paired`, `aborted`) stay readable for 60 s after they occur.
 | `sonos` | object[] | Sonos speakers following the room: `{ id: "sonos:<uuid>", uuid, name, trimMs, leadMs, volume, muted, state, error }`. `trimMs`: the fine-tune set by hand (−1000 to 1000). `leadMs`: the lead Velvet measured from the Sonos's position, `null` until the first measurement. `state`: `idle` (room not playing), `starting` (Velvet is telling the Sonos to play), `waiting` (told, not listening right now), `streaming` (pulling the stream), `error` (the Sonos did not answer; `error` says why). `volume`/`muted` `null` until read. Use `id` as `clientId` for the per-speaker volume/mute routes. A Sonos counts as `playable` while Sonos is enabled in Velvet; while it is off the entries stay but are dormant (not driven, no added delay, not `playable`). |
 | `eq` | `RoomEq` | The room's equalizer (see [Room EQ](#room-eq)). Default `{ enabled: true, gains: [0×8], preset: null }`. |
 | `autoDj` | boolean | The room's own Auto-DJ: when its last song starts, Velvet picks and adds the next one on the server, exactly like the web player's Auto-DJ (its settings and DJ state are handed over). Queue entries it added carry `dj: true`. |
+| `scrobble` | `{ lastfm, listenbrainz } \| null` | Scrobble state of `current`, each `'pending' \| 'ok' \| 'err' \| 'off'` (same meaning as the web player's Playing Now badges: `off` = not enabled on the server or not linked by the listener). `null` when the room does not scrobble this song: idle, line-in, no listener, or a song taken over past the 30 s mark (see [Listening](#listening-scrobbles-play-counts-statistics)). |
+
+### Listening (scrobbles, play counts, statistics)
+
+A room does on the server what the web player does around its own playback, with the same functions, server switches and per-user settings as the web player's routes (`src/api/room-listen.js`), so no browser has to be open:
+
+- **Listener**: the user who last used one of the room's control routes (`play`, `add`, `jump`, `remove`, `move`, `reorder`, `pause`, `resume`, `next`, `previous`, `stop`, `seek`, `repeat`, `shuffle`, `autodj`, `line-in`, `line-in/stop`). Kept in `rooms.json` (`listener`). A room nobody controlled from Velvet listens for its Auto-DJ user; without either nothing is recorded.
+- **Song starts** (it becomes audible): play count + last played (as `POST /api/v1/db/stats/log-play`; skipped for a song taken over mid-way, which was counted where it started), Wrapped `play-start` (source `autodj` / `shuffle` / `manual`), ListenBrainz `playing_now`.
+- **30 s later** (the web player's timer: a pause does not hold it back, a song change or stop cancels it): Last.fm scrobble plus play count (as `scrobble-by-filepath`), ListenBrainz listen, Discord webhook, custom webhooks. A song taken over at position *p* (from the browser, or resumed after a restart) waits 30 s − *p*; past 30 s it is not scrobbled again.
+- **Song ends**: Wrapped `play-end` when it played to its end, `play-skip` on next/previous/jump/a new queue, `play-stop` on stop, line-in, deleting the room or a server shutdown; `pause` on pause. Played time is the room position, like the browser's audio time. Resuming or seeking the same song continues the same listen.
+- Line-in is not recorded. The browser records nothing while a room is its output; handing a song to a room ends the browser's own listen, taking it back continues from the room's (no second play count or scrobble).
 
 ### QueueEntry
 
@@ -377,6 +390,12 @@ always capped so the stored peak stays ≤ 0 dBFS (no peak known → never above
   room's `eq` (debounced `PUT …/eq`, about 300 ms); the polled state keeps two
   browsers on the same room in sync. The browser's own EQ is left untouched and
   applies again after *Play in this browser*.
+- **Scrobbles.** While a room is active the player sends no play count,
+  scrobble or Wrapped call of its own; entering a room ends its own Wrapped
+  play (`play-stop`) and cancels its 30 s scrobble timer. The *Playing now*
+  badges show the polled `scrobble` (`null` for a new song shows them off).
+  Taking a song back at position *p* skips `log-play` and scrobbles after
+  30 s − *p* (not at all past 30 s).
 - Remotes treat `queueVersion` changes they did not cause as "someone else
   changed the queue" and refetch `GET …/queue`.
 - **Queue edits.** While a room is active the browser queue mirrors the room

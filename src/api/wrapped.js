@@ -56,6 +56,73 @@ function resolveFileRow(filePath, user) {
   return result;
 }
 
+// ── play events (the web player's routes below, and Velvet Rooms) ───────────
+// user: { ...config.program.users[name], username }.
+
+export async function playStart(user, { filePath, sessionId, source, dj }) {
+  let fileRow = resolveFileRow(filePath, user);
+  if (!fileRow) {
+    try {
+      fileRow = await indexFileOnDemand(vpath.getVPathInfo(filePath, user)); // NOSONAR — indexFileOnDemand is async
+    } catch (e) { console.debug('[velvet]', e?.message ?? e); }
+  }
+  if (!fileRow) return { ok: false };
+
+  const userId     = user.username;
+  const now        = Date.now();
+  const durationMs = fileRow.duration ? Math.round(fileRow.duration * 1000) : null;
+
+  // Deduplicate page-reload resumes: find the most recent event for this
+  // user+song within 10 minutes. If it was NOT completed (song was interrupted
+  // by a reload or tab close), reuse that row. If it WAS completed, the user
+  // genuinely replayed the song — allow a new row.
+  const DEDUP_WINDOW_MS = 10 * 60 * 1000;
+  const recent = db.findRecentPlayEvent(userId, fileRow.hash, DEDUP_WINDOW_MS);
+  if (recent && !recent.completed) return { ok: true, eventId: recent.id };
+
+  if (source === 'autodj' && dj) console.log(formatAutoDjPick(userId, fileRow, dj));
+
+  const eventId = db.insertPlayEvent({
+    user_id:    userId,
+    file_hash:  fileRow.hash,
+    started_at: now,
+    duration_ms: durationMs,
+    source,
+    session_id:  sessionId,
+  });
+
+  db.upsertListeningSession({
+    session_id: sessionId,
+    user_id:    userId,
+    started_at: now,
+  });
+
+  return { ok: true, eventId };
+}
+
+// Natural completion (completed when played_ms >= 90 % of duration_ms).
+export function playEnd(user, { eventId, playedMs }) {
+  const row = db.getPlayEventById(eventId, user.username);
+  const completed = row?.duration_ms ? playedMs >= row.duration_ms * 0.9 : false;
+  db.updatePlayEvent(eventId, user.username, { ended_at: Date.now(), played_ms: playedMs, completed, skipped: false });
+  if (completed) _scheduleSpGen();
+}
+
+export function playPause(user, { eventId }) {
+  db.incrementPauseCount(eventId, user.username);
+}
+
+export function playSkip(user, { eventId, playedMs }) {
+  db.updatePlayEvent(eventId, user.username, { ended_at: Date.now(), played_ms: playedMs, completed: false, skipped: true });
+}
+
+// Tab close / explicit stop: no skip flag; completed when it got far enough.
+export function playStop(user, { eventId, playedMs }) {
+  const row = db.getPlayEventById(eventId, user.username);
+  const completed = row?.duration_ms ? playedMs >= row.duration_ms * 0.9 : false;
+  db.updatePlayEvent(eventId, user.username, { ended_at: Date.now(), played_ms: playedMs, completed, skipped: false });
+}
+
 // ── setup ──────────────────────────────────────────────────────────────────────
 
 export function setup(velvet) {
@@ -81,46 +148,7 @@ export function setup(velvet) {
       }).optional(),
     });
     joiValidate(schema, req.body);
-
-    let fileRow = resolveFileRow(req.body.filePath, req.user);
-    if (!fileRow) {
-      try {
-        const pathInfo = vpath.getVPathInfo(req.body.filePath, req.user);
-        fileRow = await indexFileOnDemand(pathInfo); // NOSONAR — indexFileOnDemand is async
-      } catch (e) { console.debug('[velvet]', e?.message ?? e); }
-    }
-    if (!fileRow) { return res.json({ ok: false }); }
-
-    const userId     = req.user.username;
-    const now        = Date.now();
-    const durationMs = fileRow.duration ? Math.round(fileRow.duration * 1000) : null;
-
-    // Deduplicate page-reload resumes: find the most recent event for this
-    // user+song within 10 minutes. If it was NOT completed (song was interrupted
-    // by a reload or tab close), reuse that row. If it WAS completed, the user
-    // genuinely replayed the song — allow a new row.
-    const DEDUP_WINDOW_MS = 10 * 60 * 1000;
-    const recent = db.findRecentPlayEvent(userId, fileRow.hash, DEDUP_WINDOW_MS);
-    if (recent && !recent.completed) { return res.json({ ok: true, eventId: recent.id }); }
-
-    if (req.body.source === 'autodj' && req.body.dj) console.log(formatAutoDjPick(userId, fileRow, req.body.dj));
-
-    const eventId = db.insertPlayEvent({
-      user_id:    userId,
-      file_hash:  fileRow.hash,
-      started_at: now,
-      duration_ms: durationMs,
-      source:      req.body.source,
-      session_id:  req.body.sessionId,
-    });
-
-    db.upsertListeningSession({
-      session_id: req.body.sessionId,
-      user_id:    userId,
-      started_at: now,
-    });
-
-    return res.json({ ok: true, eventId });
+    return res.json(await playStart(req.user, req.body));
   });
 
   // ── play-end (natural completion) ──────────────────────────────────────────
@@ -130,22 +158,7 @@ export function setup(velvet) {
       playedMs: Joi.number().integer().min(0).required(),
     });
     joiValidate(schema, req.body);
-
-    // Fetch the event to compute completed flag (played_ms >= 90% of duration_ms)
-    const row = db.getPlayEventById(req.body.eventId, req.user.username);
-    const completed = row?.duration_ms
-      ? req.body.playedMs >= row.duration_ms * 0.9
-      : false;
-
-    db.updatePlayEvent(req.body.eventId, req.user.username, {
-      ended_at:  Date.now(),
-      played_ms: req.body.playedMs,
-      completed,
-      skipped:   false,
-    });
-
-    if (completed) _scheduleSpGen();
-
+    playEnd(req.user, req.body);
     return res.json({ ok: true });
   });
 
@@ -155,7 +168,7 @@ export function setup(velvet) {
       eventId: Joi.number().integer().positive().required(),
     });
     joiValidate(schema, req.body);
-    db.incrementPauseCount(req.body.eventId, req.user.username);
+    playPause(req.user, req.body);
     return res.json({ ok: true });
   });
 
@@ -166,14 +179,7 @@ export function setup(velvet) {
       playedMs: Joi.number().integer().min(0).required(),
     });
     joiValidate(schema, req.body);
-
-    db.updatePlayEvent(req.body.eventId, req.user.username, {
-      ended_at:  Date.now(),
-      played_ms: req.body.playedMs,
-      completed: false,
-      skipped:   true,
-    });
-
+    playSkip(req.user, req.body);
     return res.json({ ok: true });
   });
 
@@ -184,19 +190,7 @@ export function setup(velvet) {
       playedMs: Joi.number().integer().min(0).required(),
     });
     joiValidate(schema, req.body);
-
-    const row = db.getPlayEventById(req.body.eventId, req.user.username);
-    const completed = row?.duration_ms
-      ? req.body.playedMs >= row.duration_ms * 0.9
-      : false;
-
-    db.updatePlayEvent(req.body.eventId, req.user.username, {
-      ended_at:  Date.now(),
-      played_ms: req.body.playedMs,
-      completed,
-      skipped:   false,
-    });
-
+    playStop(req.user, req.body);
     return res.json({ ok: true });
   });
 

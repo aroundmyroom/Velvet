@@ -886,7 +886,7 @@ small local window for instant boot, then lazy-loads the rest from here.
 | `POST` | `/api/v1/rooms` | `{ name, members[] }` | Create a room from speakers (they leave their old rooms). |
 | `PATCH` | `/api/v1/rooms/:id` | `{ name?, members? }` | Rename / set members (moves speakers). |
 | `DELETE` | `/api/v1/rooms/:id` | — | Dissolve a room; members return to solo rooms. |
-| `GET` | `/api/v1/rooms/:id/state` | — | Room state; polled ~1 s by the remote UI. |
+| `GET` | `/api/v1/rooms/:id/state` | — | Room state; polled ~1 s by the remote UI. Includes `scrobble: { lastfm, listenbrainz } \| null`, the current song's scrobble state (rooms scrobble, count plays and record Wrapped statistics on the server for the user who last controlled them — see [API/rooms.md](API/rooms.md#listening-scrobbles-play-counts-statistics)). |
 | `GET` | `/api/v1/rooms/:id/queue` | — | `{ queueVersion, index, songs[] }`. |
 | `POST` | `/api/v1/rooms/:id/play` | `{ songs[], index?, positionMs?, paused?, rgEnabled?, rgMode?, rgPreamp?, rgClip? }` | Hand a queue to the room (replaces its queue); `skipped` counts unresolvable songs. |
 | `POST` | `/api/v1/rooms/:id/add` | `{ songs[], next?, queueVersion?, rgEnabled?, rgMode?, rgPreamp?, rgClip? }` | Append (or insert after current with `next`). `queueVersion` → `409 queue_changed` if the queue changed meanwhile. |

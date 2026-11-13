@@ -876,3 +876,129 @@ test('Auto-DJ off: nothing is picked; the setting is kept with the room', async 
   assert.equal(again.getRoom(id).autoDj, false);
   await again.close();
 });
+
+// The listen hooks (src/api/room-listen.js in Velvet) as a log: what a room would scrobble, count and record.
+function listenLog({ status = { lastfm: 'pending', listenbrainz: 'off' }, scrobbled = { lastfm: 'ok', listenbrainz: 'off' } } = {}) {
+  const calls = [];
+  const title = (ctx) => ctx.item.meta.title;
+  const hooks = {
+    start: (ctx) => {
+      calls.push({ type: 'start', title: title(ctx), user: ctx.user, startMs: ctx.startMs, source: ctx.source });
+      return status;
+    },
+    scrobble: (ctx) => {
+      calls.push({ type: 'scrobble', title: title(ctx), user: ctx.user });
+      return Promise.resolve(scrobbled);
+    },
+    pause: (ctx) => calls.push({ type: 'pause', title: title(ctx) }),
+    end: (ctx, { how, playedMs }) => calls.push({ type: how, title: title(ctx), playedMs }),
+  };
+  return { hooks, calls, types: () => calls.map((c) => `${c.type} ${c.title}`) };
+}
+
+test('listen: a song that starts is a listen for the room\'s listener, scrobbled after the threshold, ended when played out', async () => {
+  const log = listenLog();
+  const rm = await manager({ listen: log.hooks, scrobbleAfterMs: 800 });
+  const a = new FakeMember();
+  const id = rm.attach(a);
+  rm.setListener(id, 'ann');
+  rm.play(id, { items: [item(F.mid, 'M', 1500), item(F.b, 'B', 500)] });
+  await until(() => log.calls.length > 0);
+  assert.deepEqual(log.calls[0], { type: 'start', title: 'M', user: 'ann', startMs: 0, source: 'manual' });
+  assert.deepEqual(rm.getRoom(id).scrobble, { lastfm: 'pending', listenbrainz: 'off' }, 'the room shows the pending scrobble');
+  await until(() => log.calls.some((c) => c.type === 'scrobble'), { timeoutMs: 3000 });
+  await until(() => rm.getRoom(id).scrobble?.lastfm === 'ok');
+  await new Promise((res) => rm.once('ended', res));
+  assert.deepEqual(log.types(), ['start M', 'scrobble M', 'end M', 'start B', 'end B'], 'B ends before the threshold: not scrobbled');
+  assert.equal(log.calls[2].playedMs, 1500);
+  assert.equal(log.calls[4].playedMs, 500);
+  assert.equal(rm.getRoom(id).scrobble, null);
+  await sleep(900);
+  assert.equal(log.calls.length, 5, 'nothing fires after the room stopped');
+  await rm.close();
+});
+
+test('listen: skip and stop cut it before the threshold; a pause keeps the listen and a resume does not restart it', async () => {
+  const log = listenLog();
+  const rm = await manager({ listen: log.hooks, scrobbleAfterMs: 1000 });
+  const a = new FakeMember();
+  const id = rm.attach(a);
+  rm.setListener(id, 'ann');
+  rm.play(id, { items: longQueue() });
+  await until(() => a.chunks.length > 0);
+  await until(() => serverNow() > a.chunks[0].ts + 300_000);
+  rm.next(id);
+  await until(() => log.calls.some((c) => c.type === 'start' && c.title === 'A'));
+  const skip = log.calls.find((c) => c.type === 'skip');
+  assert.equal(skip.title, 'L');
+  assert.ok(skip.playedMs >= 250 && skip.playedMs < 1500, `skipped after ${skip.playedMs} ms`);
+  rm.stop(id);
+  assert.deepEqual(log.types(), ['start L', 'skip L', 'start A', 'stop A']);
+
+  rm.jump(id, 0);
+  await until(() => log.calls.length === 5);
+  rm.pause(id);
+  assert.deepEqual(log.calls.at(-1), { type: 'pause', title: 'L' });
+  rm.resume(id);
+  await until(() => rm.getRoom(id).state === 'playing');
+  await until(() => log.calls.some((c) => c.type === 'scrobble'), { timeoutMs: 3000 });
+  assert.deepEqual(log.types().slice(4), ['start L', 'pause L', 'scrobble L'], 'the resumed song is the same listen, scrobbled once');
+  rm.seek(id, 100);
+  await sleep(300);
+  assert.deepEqual(log.types().slice(4), ['start L', 'pause L', 'scrobble L'], 'a seek re-announces the song: no new listen');
+  await rm.close();
+  assert.equal(log.calls.at(-1).type, 'stop', 'closing ends the listen');
+});
+
+test('listen: line-in is not scrobbled; a song taken over past the mark is not scrobbled again', async () => {
+  const log = listenLog();
+  const rm = await manager({ listen: log.hooks, scrobbleAfterMs: 500 });
+  const m = new FakeMember();
+  const id = rm.attach(m);
+  rm.setListener(id, 'ann');
+  rm.play(id, { items: longQueue() });
+  await until(() => log.calls.length === 1);
+  rm.playLive(id, { sourceId: 'src', name: 'Turntable', feed: silentFeed });
+  await sleep(700);
+  assert.deepEqual(log.types(), ['start L', 'stop L'], 'the line-in ends the listen and starts none');
+  assert.equal(rm.getRoom(id).scrobble, null);
+  rm.stopLive(id, 'src');
+
+  rm.play(id, { items: longQueue(), positionMs: 1200 });
+  await until(() => log.calls.length === 3);
+  assert.equal(log.calls[2].startMs, 1200);
+  await sleep(700);
+  assert.deepEqual(log.types().slice(2), ['start L'], 'no scrobble for a song that was past the mark');
+  assert.equal(rm.getRoom(id).scrobble, null);
+  await rm.close();
+});
+
+test('listen: the listener is kept with the room; without one Auto-DJ\'s user listens, without either nobody does', async () => {
+  const d = path.join(dir, 'listener-keep');
+  const log = listenLog();
+  const rm = await manager({ dir: d, listen: log.hooks });
+  const a = new FakeMember();
+  const id = rm.attach(a);
+  rm.play(id, { items: [item(F.b, 'B', 500)] });
+  await new Promise((res) => rm.once('ended', res));
+  assert.deepEqual(log.calls, [], 'no one to listen');
+  rm.setAutoDj(id, { on: true, user: 'dj' });
+  rm.play(id, { items: [item(F.b, 'B', 500)] });
+  await until(() => log.calls.length === 1);
+  assert.equal(log.calls[0].user, 'dj');
+  assert.equal(log.calls[0].source, 'autodj');
+  rm.setAutoDj(id, { on: false });
+  rm.setListener(id, 'ann');
+  await rm.close();
+  const raw = JSON.parse(await fsp.readFile(path.join(d, 'rooms.json'), 'utf8'));
+  assert.equal(raw.rooms.find((r) => r.id === id).listener, 'ann');
+
+  const log2 = listenLog();
+  const again = await manager({ dir: d, listen: log2.hooks });
+  const a2 = new FakeMember({ clientId: a.clientId });
+  again.attach(a2);
+  again.play(id, { items: [item(F.b, 'B', 500)] });
+  await until(() => log2.calls.length === 1);
+  assert.equal(log2.calls[0].user, 'ann', 'the listener survives a restart');
+  await again.close();
+});

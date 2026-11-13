@@ -3,9 +3,8 @@ import https from 'node:https';
 import Joi from 'joi';
 import winston from 'winston';
 import * as config from '../state/config.js';
-import * as db from '../db/manager.js';
 import { joiValidate } from '../util/validation.js';
-import { getVPathInfo } from '../util/vpath.js';
+import { findUserFile } from './scrobbler.js';
 
 // ── Deterministic fun nick from username ────────────────────────────────────
 const ADJECTIVES = ['Cosmic','Velvet','Groovy','Mellow','Electric','Funky','Dreamy','Neon','Crystal','Golden','Jazzy','Sonic','Stellar','Midnight','Vivid'];
@@ -80,6 +79,17 @@ export async function sendDiscordScrobble(user, { artist, album, track }) {
   });
 }
 
+/** The Discord post for a song played 30 s. -> false when it is not sent (switched off, unknown file). */
+export function discordScrobbleByFilepath(user, filePath) {
+  if (config.program.discordWebhook?.enabled !== true) return false;
+  if (!user['discord-webhook-enabled']) return false;
+  const file = findUserFile(filePath, user);
+  if (!file) return false;
+  sendDiscordScrobble(user, { artist: file.artist, album: file.album, track: file.title })
+    .catch((err) => winston.warn('[discord-webhook] scrobble error: ' + err.message));
+  return true;
+}
+
 // ── Express routes ───────────────────────────────────────────────────────────
 export function setup(velvet) {
 
@@ -120,40 +130,10 @@ export function setup(velvet) {
 
   // Scrobble endpoint — called from the client 30 s after playback starts,
   // same pattern as /api/v1/lastfm/scrobble-by-filepath.
-  velvet.post('/api/v1/discord-webhook/scrobble-by-filepath', async (req, res) => {
+  velvet.post('/api/v1/discord-webhook/scrobble-by-filepath', (req, res) => {
     const schema = Joi.object({ filePath: Joi.string().required() });
     joiValidate(schema, req.body);
 
-    if (config.program.discordWebhook?.enabled !== true) return res.json({ sent: false });
-    if (!req.user['discord-webhook-enabled']) return res.json({ sent: false });
-
-    // Resolve filepath — with child-vpath fallback (same as scrobbler.js pattern)
-    const pathInfo = getVPathInfo(req.body.filePath, req.user);
-    let dbFileInfo = db.findFileByPath(pathInfo.relativePath, pathInfo.vpath);
-    if (!dbFileInfo) {
-      const folders = config.program?.folders || {};
-      const myRoot  = folders[pathInfo.vpath]?.root.replace(/\/?$/, '/');
-      if (myRoot) {
-        for (const [parentKey, parentFolder] of Object.entries(folders)) {
-          if (parentKey === pathInfo.vpath) continue;
-          if (!req.user.vpaths.includes(parentKey)) continue;
-          const parentRoot = parentFolder.root.replace(/\/?$/, '/');
-          if (myRoot.startsWith(parentRoot) && myRoot !== parentRoot) {
-            const prefix = myRoot.slice(parentRoot.length);
-            dbFileInfo = db.findFileByPath(prefix + pathInfo.relativePath, parentKey);
-            if (dbFileInfo) break;
-          }
-        }
-      }
-    }
-    if (!dbFileInfo) return res.json({ sent: false });
-
-    res.json({ sent: true });
-
-    sendDiscordScrobble(req.user, {
-      artist: dbFileInfo.artist,
-      album:  dbFileInfo.album,
-      track:  dbFileInfo.title,
-    }).catch((err) => winston.warn('[discord-webhook] scrobble error: ' + err.message));
+    res.json({ sent: discordScrobbleByFilepath(req.user, req.body.filePath) });
   });
 }

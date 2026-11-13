@@ -377,6 +377,29 @@ started from the browser, Home Assistant or a speaker's own buttons.
 - The setting stays with the room across restarts. A pick that finds nothing
   is tried again after 30 seconds.
 
+**Scrobbles, play counts and statistics.** A room counts what it plays
+exactly like the web player counts its own playback, on the server, so it
+also works with the tab closed and when the music was started from Home
+Assistant or a speaker's buttons:
+
+- The play count and *last played* go up when a song starts; Wrapped
+  (listening statistics and the history) records every song, with pauses,
+  skips and how long it played.
+- After 30 seconds the song is scrobbled to Last.fm and ListenBrainz and sent
+  to the Discord and custom webhooks — following the same switches as in the
+  browser: the service must be on in the admin panel and linked or switched
+  on in your own settings. ListenBrainz also gets *playing now* when the song
+  starts.
+- It all goes to the account of **whoever last controlled the room from
+  Velvet** (played, added, skipped, paused …). The room remembers that person
+  across restarts; buttons on the speaker itself do not change it. A room that
+  nobody controlled from Velvet uses the account that switched its Auto-DJ on;
+  otherwise nothing is recorded.
+- The Last.fm and ListenBrainz badges in *Playing now* follow the room: orange
+  while pending, green once the room scrobbled the song.
+- Handing a song from the browser to a room, or taking it back, does not count
+  or scrobble it twice. Line-in is not counted or scrobbled.
+
 Reload the page while a room plays and the player reconnects as its remote.
 
 **Take it back:** **Play in this browser** (in the player bar or queue panel),

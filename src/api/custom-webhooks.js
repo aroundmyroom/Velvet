@@ -4,9 +4,8 @@ import http from 'node:http';
 import Joi from 'joi';
 import winston from 'winston';
 import * as config from '../state/config.js';
-import * as db from '../db/manager.js';
 import { joiValidate } from '../util/validation.js';
-import { getVPathInfo } from '../util/vpath.js';
+import { findUserFile } from './scrobbler.js';
 
 // Maximum number of custom webhook slots the admin can configure.
 const MAX_SLOTS = 2;
@@ -89,6 +88,19 @@ export async function sendCustomWebhookScrobble(user, { artist, album, track }, 
   });
 }
 
+/** The custom webhook post (slot) for a song played 30 s. -> false when it is not sent (switched off, unknown file). */
+export function customWebhookScrobbleByFilepath(user, filePath, slotIndex) {
+  if (!getSlots()[slotIndex]?.enabled) return false;
+  if (!user[userKey(slotIndex, 'enabled')]) return false;
+  const file = findUserFile(filePath, user);
+  if (!file) return false;
+  sendCustomWebhookScrobble(user, { artist: file.artist, album: file.album, track: file.title }, slotIndex)
+    .catch((err) => winston.warn(`[custom-webhooks] scrobble error: ${err.message}`));
+  return true;
+}
+
+export const CUSTOM_WEBHOOK_SLOTS = MAX_SLOTS;
+
 // ── Express routes ───────────────────────────────────────────────────────────
 export function setup(velvet) {
 
@@ -134,45 +146,13 @@ export function setup(velvet) {
   });
 
   // ── User: fire scrobble ───────────────────────────────────────────────────
-  velvet.post('/api/v1/custom-webhooks/scrobble-by-filepath', async (req, res) => {
+  velvet.post('/api/v1/custom-webhooks/scrobble-by-filepath', (req, res) => {
     const schema = Joi.object({
       filePath: Joi.string().required(),
       slot:     Joi.number().integer().min(0).max(MAX_SLOTS - 1).required(),
     });
     joiValidate(schema, req.body);
 
-    const slotIndex = req.body.slot;
-    const slots = getSlots();
-    if (!slots[slotIndex]?.enabled) return res.json({ sent: false });
-    if (!req.user[userKey(slotIndex, 'enabled')]) return res.json({ sent: false });
-
-    // Resolve filepath — with child-vpath fallback (same as discord-webhook.js pattern)
-    const pathInfo = getVPathInfo(req.body.filePath, req.user);
-    let dbFileInfo = db.findFileByPath(pathInfo.relativePath, pathInfo.vpath);
-    if (!dbFileInfo) {
-      const folders = config.program?.folders || {};
-      const myRoot  = folders[pathInfo.vpath]?.root.replace(/\/?$/, '/');
-      if (myRoot) {
-        for (const [parentKey, parentFolder] of Object.entries(folders)) {
-          if (parentKey === pathInfo.vpath) continue;
-          if (!req.user.vpaths.includes(parentKey)) continue;
-          const parentRoot = parentFolder.root.replace(/\/?$/, '/');
-          if (myRoot.startsWith(parentRoot) && myRoot !== parentRoot) {
-            const prefix = myRoot.slice(parentRoot.length);
-            dbFileInfo = db.findFileByPath(prefix + pathInfo.relativePath, parentKey);
-            if (dbFileInfo) break;
-          }
-        }
-      }
-    }
-    if (!dbFileInfo) return res.json({ sent: false });
-
-    res.json({ sent: true });
-
-    sendCustomWebhookScrobble(req.user, {
-      artist: dbFileInfo.artist,
-      album:  dbFileInfo.album,
-      track:  dbFileInfo.title,
-    }, slotIndex).catch((err) => winston.warn(`[custom-webhooks] scrobble error: ${err.message}`));
+    res.json({ sent: customWebhookScrobbleByFilepath(req.user, req.body.filePath, req.body.slot) });
   });
 }

@@ -1,3 +1,22 @@
+## Unreleased
+
+### Fixed
+
+- **Velvet Rooms now scrobble, count plays and keep statistics.** Music
+  playing in a room was never scrobbled to Last.fm or ListenBrainz, did not
+  raise play counts, reached no Discord or custom webhook and was missing from
+  Wrapped and the history — the browser is only a remote then, and all of that
+  used to run from the browser's own playback. The room now does it on the
+  server, with the same timing and the same switches and personal settings as
+  the web player: play count and Wrapped play at the start, ListenBrainz
+  *playing now*, the scrobbles and webhooks after 30 seconds, and skip, pause,
+  stop and played-to-the-end in the statistics. It works without a browser
+  open (Home Assistant, a speaker's own buttons) and counts for the user who
+  last controlled the room. The *Playing now* scrobble badges follow the room
+  and turn green once it scrobbled. Handing a song to a room or taking it back
+  does not count it twice. The web player's routes and the rooms share one
+  implementation. (`docs/rooms.md`, `docs/API/rooms.md`.)
+
 ## v0.9.3 (2026-11-13)
 
 VoltViz, Music Assistant brain, rooms like the web player

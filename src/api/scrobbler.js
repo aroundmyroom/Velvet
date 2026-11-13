@@ -16,6 +16,7 @@ const Scrobbler = new Scribble();
 const SIMILAR_TTL_MS = 6 * 60 * 60 * 1000;
 const SIMILAR_CACHE_MAX = 2000;
 const LASTFM_TIMEOUT_MS = 4000;
+const LASTFM_SCROBBLE_TIMEOUT_MS = 15_000;
 const _similarCache = new Map();
 // Resolved to library variants; shorter-lived so newly scanned artists show up.
 const RESOLVED_TTL_MS = 30 * 60 * 1000;
@@ -159,30 +160,7 @@ export function setup(velvet) {
   velvet.post('/api/v1/lastfm/scrobble-by-filepath', (req, res) => {
     const schema = Joi.object({ filePath: Joi.string().required() });
     joiValidate(schema, req.body);
-
-    const pathInfo  = getVPathInfo(req.body.filePath, req.user);
-    const dbFileInfo = _lookupFileWithChildFallback(pathInfo, req.user);
-
-    if (!dbFileInfo) return res.json({ scrobble: false });
-
-    const result = db.findUserMetadata(dbFileInfo.hash, req.user.username);
-    if (result) {
-      result.pc = result.pc && typeof result.pc === 'number' ? result.pc + 1 : 1;
-      result.lp = Date.now();
-      db.updateUserMetadata(result);
-    } else {
-      db.insertUserMetadata({ user: req.user.username, hash: dbFileInfo.hash, pc: 1, lp: Date.now() });
-    }
-    db.saveUserDB();
-    res.json({});
-
-    if (req.user['lastfm-user'] && (req.user['lastfm-session'] || req.user['lastfm-password'])) {
-      Scrobbler.Scrobble(
-        { artist: dbFileInfo.artist, album: dbFileInfo.album, track: dbFileInfo.title },
-        req.user['lastfm-user'],
-        (_post_return_data) => {}
-      );
-    }
+    res.json(scrobbleByFilepath(req.user, req.body.filePath) ? {} : { scrobble: false });
   });
 
   velvet.get('/api/v1/lastfm/similar-artists', async (req, res) => {
@@ -355,6 +333,52 @@ export function updateApiKeys(apiKey, apiSecret) {
 // Expose the shared Scrobbler instance for Last.fm API calls from other modules
 export { Scrobbler };
 
+const lastfmLinked = (user) => Boolean(user['lastfm-user'] && (user['lastfm-session'] || user['lastfm-password']));
+
+/** The web player's Last.fm switch (scrobble-by-filepath runs at all) and whether the user is linked as well. */
+export function lastfmEnabled() {
+  return config.program.lastFM?.enabled !== false;
+}
+
+export function lastfmActive(user) {
+  return lastfmEnabled() && Boolean(config.program.lastFM?.apiKey) && lastfmLinked(user);
+}
+
+export function findUserFile(filePath, user) {
+  return _lookupFileWithChildFallback(getVPathInfo(filePath, user), user);
+}
+
+/**
+ * The play count (pc/lp) of a song played 30 s, plus its Last.fm scrobble when the user is linked.
+ * user: { ...config.program.users[name], username }. -> null when the file is unknown, else a promise
+ * of the Last.fm outcome: true / false, null when the user is not linked.
+ */
+export function scrobbleByFilepath(user, filePath) {
+  const file = findUserFile(filePath, user);
+  if (!file) return null;
+  const result = db.findUserMetadata(file.hash, user.username);
+  if (result) {
+    result.pc = result.pc && typeof result.pc === 'number' ? result.pc + 1 : 1;
+    result.lp = Date.now();
+    db.updateUserMetadata(result);
+  } else {
+    db.insertUserMetadata({ user: user.username, hash: file.hash, pc: 1, lp: Date.now() });
+  }
+  db.saveUserDB();
+  if (!lastfmLinked(user)) return Promise.resolve(null);
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => resolve(false), LASTFM_SCROBBLE_TIMEOUT_MS);
+    const done = (ok) => { clearTimeout(timer); resolve(ok); };
+    try {
+      Scrobbler.Scrobble({ artist: file.artist, album: file.album, track: file.title }, user['lastfm-user'],
+        (body) => done(body != null && !/status="failed"/.test(body)));
+    } catch (e) {
+      console.debug('[velvet]', e?.message ?? e);
+      done(false);
+    }
+  });
+}
+
 /**
  * Submit a Last.fm scrobble on behalf of a user object from config.program.users.
  * No-op if the user hasn't linked Last.fm or the API key is missing.
@@ -383,6 +407,33 @@ export function scrobbleLbForUser(username, { artist, album, track }) {
 // under config.program.listenBrainz.noAuthToken in default.json.
 // Initialized in setupListenBrainz() once config.program is available.
 let _noAuthLbToken = null;
+
+const lbToken = (user) => (user.username === 'velvet-user' ? _noAuthLbToken : user['listenbrainz-token']);
+
+export function lbActive(user) {
+  return config.program.listenBrainz?.enabled === true && Boolean(lbToken(user));
+}
+
+function lbSend(user, filePath, listenedAt) {
+  const token = lbToken(user);
+  if (!token) return null;
+  const file = findUserFile(filePath, user);
+  if (!file) return null;
+  return lbSubmit(token, file.artist, file.title, file.album, listenedAt).then(() => true, (e) => {
+    console.debug('[velvet]', e?.message ?? e);
+    return false;
+  });
+}
+
+/** ListenBrainz now-playing for a song that starts. -> null when not sent (no token / unknown file), else a promise of the outcome. */
+export function lbPlayingNow(user, filePath) {
+  return lbSend(user, filePath, 'playing_now');
+}
+
+/** ListenBrainz listen for a song played 30 s. -> null when not sent, else a promise of the outcome. */
+export function lbScrobbleByFilepath(user, filePath) {
+  return lbSend(user, filePath);
+}
 
 /**
  * Submit a listen to ListenBrainz.
@@ -531,77 +582,17 @@ export function setupListenBrainz(velvet) {
   });
 
   // ── Now-playing ping (appears instantly on ListenBrainz) ───────────────────
-  velvet.post('/api/v1/listenbrainz/playing-now', async (req, res) => {
+  velvet.post('/api/v1/listenbrainz/playing-now', (req, res) => {
     const schema = Joi.object({ filePath: Joi.string().required() });
     joiValidate(schema, req.body);
-
-    const username = req.user.username;
-    const token = username === 'velvet-user'
-      ? _noAuthLbToken
-      : req.user['listenbrainz-token'];
-    if (!token) return res.json({ sent: false });
-
-    const pathInfo = getVPathInfo(req.body.filePath, req.user);
-    let dbFileInfo = db.findFileByPath(pathInfo.relativePath, pathInfo.vpath);
-    if (!dbFileInfo) {
-      const folders = config.program?.folders || {};
-      const myRoot  = folders[pathInfo.vpath]?.root.replace(/\/?$/, '/');
-      if (myRoot) {
-        for (const [parentKey, parentFolder] of Object.entries(folders)) {
-          if (parentKey === pathInfo.vpath) continue;
-          if (!req.user.vpaths.includes(parentKey)) continue;
-          const parentRoot = parentFolder.root.replace(/\/?$/, '/');
-          if (myRoot.startsWith(parentRoot) && myRoot !== parentRoot) {
-            const prefix = myRoot.slice(parentRoot.length);
-            dbFileInfo = db.findFileByPath(prefix + pathInfo.relativePath, parentKey);
-            if (dbFileInfo) break;
-          }
-        }
-      }
-    }
-    if (!dbFileInfo) return res.json({ sent: false });
-
-    res.json({ sent: true });
-    try {
-      await lbSubmit(token, dbFileInfo.artist, dbFileInfo.title, dbFileInfo.album, 'playing_now');
-    } catch (e) { console.debug('[velvet]', e?.message ?? e); }
+    res.json({ sent: Boolean(lbPlayingNow(req.user, req.body.filePath)) });
   });
 
   // ── Scrobble ────────────────────────────────────────────────────────────────
-  velvet.post('/api/v1/listenbrainz/scrobble-by-filepath', async (req, res) => {
+  velvet.post('/api/v1/listenbrainz/scrobble-by-filepath', (req, res) => {
     const schema = Joi.object({ filePath: Joi.string().required() });
     joiValidate(schema, req.body);
-
-    const username = req.user.username;
-    const token = username === 'velvet-user'
-      ? _noAuthLbToken
-      : req.user['listenbrainz-token'];
-    if (!token) return res.json({ scrobble: false });
-
-    const pathInfo = getVPathInfo(req.body.filePath, req.user);
-    let dbFileInfo = db.findFileByPath(pathInfo.relativePath, pathInfo.vpath);
-    if (!dbFileInfo) {
-      const folders = config.program?.folders || {};
-      const myRoot  = folders[pathInfo.vpath]?.root.replace(/\/?$/, '/');
-      if (myRoot) {
-        for (const [parentKey, parentFolder] of Object.entries(folders)) {
-          if (parentKey === pathInfo.vpath) continue;
-          if (!req.user.vpaths.includes(parentKey)) continue;
-          const parentRoot = parentFolder.root.replace(/\/?$/, '/');
-          if (myRoot.startsWith(parentRoot) && myRoot !== parentRoot) {
-            const prefix = myRoot.slice(parentRoot.length);
-            dbFileInfo = db.findFileByPath(prefix + pathInfo.relativePath, parentKey);
-            if (dbFileInfo) break;
-          }
-        }
-      }
-    }
-    if (!dbFileInfo) return res.json({ scrobble: false });
-
-    res.json({});
-    try {
-      await lbSubmit(token, dbFileInfo.artist, dbFileInfo.title, dbFileInfo.album);
-    } catch (e) { console.debug('[velvet]', e?.message ?? e); }
+    res.json(lbScrobbleByFilepath(req.user, req.body.filePath) ? {} : { scrobble: false });
   });
 }
 

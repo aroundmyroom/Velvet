@@ -27,6 +27,8 @@ const TEXT_FIELDS = ['title', 'artist', 'album_artist', 'album'];
 const LIVE_COMMANDS = Object.freeze(['play', 'pause', 'stop', 'switch']);
 
 export const AUTO_DJ_RETRY_MS = 30_000;
+// The web player scrobbles a song 30 s after it starts (webapp/app.js _scheduleScrobble).
+export const SCROBBLE_AFTER_MS = 30_000;
 const validTrim = (ms) => Number.isInteger(ms) && Math.abs(ms) <= MAX_SONOS_TRIM_MS;
 
 export class RoomError extends Error {
@@ -109,6 +111,7 @@ export class RoomManager extends EventEmitter {
     setPlayback = defaultSetPlayback, idleGraceMs = IDLE_GRACE_MS, initialUnavailableGraceMs = INITIAL_UNAVAILABLE_GRACE_MS,
     random = Math.random, streamOptions = {}, visualizerOptions = {},
     sonos = null, sonosOptions = {}, autoDjPick = null, autoDjRetryMs = AUTO_DJ_RETRY_MS,
+    listen = null, scrobbleAfterMs = SCROBBLE_AFTER_MS,
   }) {
     super();
     if (!dir) throw new Error('RoomManager needs a dir');
@@ -117,7 +120,7 @@ export class RoomManager extends EventEmitter {
     this.#log = logger;
     this.#opts = {
       ffmpeg, artworkFor, colorFor, setPlayback, idleGraceMs, initialUnavailableGraceMs, random, streamOptions, visualizerOptions,
-      autoDjPick, autoDjRetryMs,
+      autoDjPick, autoDjRetryMs, listen, scrobbleAfterMs,
     };
     this.#sonos = { bridge: sonos, ...sonosOptions };
   }
@@ -158,6 +161,7 @@ export class RoomManager extends EventEmitter {
       autoDj: r.autoDj?.on === true && typeof r.autoDj.user === 'string'
         ? { on: true, user: r.autoDj.user, rg: r.autoDj.rg ?? {}, settings: r.autoDj.settings ?? {}, state: r.autoDj.state ?? null }
         : null,
+      listener: typeof r.listener === 'string' ? r.listener : null,
     });
     room.order = Array.isArray(r.order) && r.order.length === room.queue.length ? r.order : room.queue.map((_, i) => i);
     for (const x of Array.isArray(r.sonos) ? r.sonos : []) {
@@ -178,6 +182,8 @@ export class RoomManager extends EventEmitter {
 
   async close() {
     for (const room of this.#rooms.values()) {
+      this.#listenMark(room);
+      this.#endListen(room, 'stop');
       if (room.state === 'playing') this.#halt(room, 'paused');
       clearTimeout(room.idleTimer);
       clearTimeout(room.djTimer);
@@ -317,6 +323,8 @@ export class RoomManager extends EventEmitter {
     if (room.state === 'playing') this.#halt(room, 'stopped');
     room.sonos?.close();
     room.stream?.close();
+    this.#listenMark(room);
+    this.#endListen(room, 'stop');
     this.#clearTimers(room);
     clearTimeout(room.idleTimer);
     this.#rooms.delete(room.id);
@@ -361,6 +369,8 @@ export class RoomManager extends EventEmitter {
   // feed(track) -> async generator function in GroupStream's decode shape (see SourceSession.feed).
   playLive(id, { sourceId, name, feed }) {
     const room = this.#room(id);
+    this.#listenMark(room);
+    this.#endListen(room, 'stop');
     if (room.state === 'playing') this.#halt(room, room.queue.length ? 'paused' : 'stopped');
     const item = { filepath: null, live: true, meta: { title: truncateUtf8(`Line-in — ${name}`, 255), durationMs: 0 } };
     room.live = { sourceId, name, item };
@@ -689,7 +699,7 @@ export class RoomManager extends EventEmitter {
       id, name, solo, members: [], queue: [], order: [], index: 0, positionMs: 0, state: 'stopped',
       repeat: 'off', shuffle: false, lastPlayedAt: null, stream: null, timers: [], idleTimer: null,
       current: null, scheduled: null, token: 0, queueVersion: 1, live: null, eq: defaultEq(),
-      autoDj: null, djBusy: false, djFor: -1, djTimer: null,
+      autoDj: null, djBusy: false, djFor: -1, djTimer: null, listener: null, listen: null,
     };
     this.#rooms.set(room.id, room);
     return room;
@@ -914,6 +924,7 @@ export class RoomManager extends EventEmitter {
   }
 
   #start(room, index, positionMs) {
+    this.#listenMark(room);
     this.#endLive(room);
     this.#clearTimers(room);
     clearTimeout(room.idleTimer);
@@ -1092,12 +1103,15 @@ export class RoomManager extends EventEmitter {
   }
 
   #halt(room, state) {
+    this.#listenMark(room);
+    if (room.listen && room.state === 'playing' && state === 'paused') this.#hook('pause', room.listen.ctx);
     const pos = room.stream?.stop() ?? null;
     if (pos && room.state === 'playing' && !room.live) {
       room.index = pos.track.index;
       room.positionMs = pos.positionMs;
     }
     this.#cancelScheduled(room);
+    if (state === 'stopped') this.#endListen(room, 'stop');
     room.state = state;
     if (state === 'stopped' && !room.live) room.positionMs = 0;
     this.#endLive(room);
@@ -1126,6 +1140,7 @@ export class RoomManager extends EventEmitter {
       this.#halt(room, room.queue.length ? 'paused' : 'stopped');
       return;
     }
+    this.#endListen(room, 'end');
     room.stream.stop();
     room.index = room.order[0] ?? 0;
     this.#halt(room, 'stopped');
@@ -1225,11 +1240,13 @@ export class RoomManager extends EventEmitter {
     this.#later(room, timestampUs, timestampUs, () => {
       if (room.token !== token) return;
       room.scheduled = null;
-      this.#becomeCurrent(room, entry, { announce: false });
+      this.#becomeCurrent(room, entry, { announce: false, natural: true });
     });
   }
 
-  #becomeCurrent(room, entry, { announce = true } = {}) {
+  // natural: the previous track played to its end (a gapless boundary), not cut by a jump, next or seek.
+  #becomeCurrent(room, entry, { announce = true, natural = false } = {}) {
+    this.#listen(room, entry, natural);
     room.current = entry;
     room.index = entry.index;
     if (!entry.item.live) room.positionMs = entry.startMs;
@@ -1238,6 +1255,76 @@ export class RoomManager extends EventEmitter {
     this.#save();
     this.#changed(room);
     this.#autoDjCheck(room);
+  }
+
+  // Who listens: the user who last controlled the room from Velvet; Auto-DJ's user when no one did.
+  setListener(id, username) {
+    const room = this.#rooms.get(id);
+    if (!room || !username || room.listener === username) return;
+    room.listener = username;
+    this.#save();
+  }
+
+  // Scrobbling, play counts and listening statistics, the way the web player does them for its own playback
+  // (webapp/app.js playAt, _scheduleScrobble): a song that becomes audible starts a listen, 30 s later it is
+  // scrobbled, and it ends as played to the end, skipped or stopped. The work itself is the injected listen hooks.
+  #listen(room, entry, natural) {
+    const prev = room.listen;
+    if (prev && prev.item === entry.item && !natural) return;
+    if (prev) this.#endListen(room, natural ? 'end' : 'skip');
+    const user = room.listener ?? room.autoDj?.user ?? null;
+    if (!this.#opts.listen || !user || entry.item.live) return;
+    const { startMs } = entry;
+    let source = room.shuffle ? 'shuffle' : 'manual';
+    if (room.autoDj?.on) source = 'autodj';
+    const ctx = { roomId: room.id, user, item: entry.item, startMs, source };
+    const listen = { item: entry.item, startMs, posMs: null, ctx, timer: null, scrobble: null };
+    room.listen = listen;
+    const status = this.#hook('start', ctx);
+    // A song taken over past the mark (from the web player, or resumed after a restart) was scrobbled where it played.
+    const wait = this.#opts.scrobbleAfterMs - startMs;
+    if (wait <= 0) return;
+    listen.scrobble = status ?? null;
+    listen.timer = setTimeout(() => {
+      listen.timer = null;
+      Promise.resolve(this.#hook('scrobble', ctx)).then((done) => {
+        if (room.listen !== listen || !done) return;
+        listen.scrobble = done;
+        this.#changed(room);
+      });
+    }, wait);
+    listen.timer.unref?.();
+  }
+
+  // Where the listened song is now, before a cut, pause or stop changes the stream.
+  #listenMark(room) {
+    const listen = room.listen;
+    if (!listen || room.state !== 'playing') return;
+    const pos = room.stream?.position();
+    if (pos?.track.item === listen.item) listen.posMs = pos.positionMs;
+  }
+
+  #endListen(room, how) {
+    const listen = room.listen;
+    if (!listen) return;
+    room.listen = null;
+    clearTimeout(listen.timer);
+    const reached = how === 'end' ? (listen.item.meta?.durationMs ?? listen.posMs) : listen.posMs;
+    this.#hook('end', listen.ctx, { how, playedMs: Math.max(0, Math.round((reached ?? listen.startMs) - listen.startMs)) });
+  }
+
+  #hook(name, ...args) {
+    try {
+      const out = this.#opts.listen?.[name]?.(...args);
+      if (typeof out?.then !== 'function') return out;
+      return out.catch((err) => {
+        this.#log?.warn?.(`[rooms] ${name} hook failed: ${err?.message ?? err}`);
+        return null;
+      });
+    } catch (err) {
+      this.#log?.warn?.(`[rooms] ${name} hook failed: ${err?.message ?? err}`);
+      return null;
+    }
   }
 
   // Auto-DJ on the server: whoever started the room (browser, Home Assistant, a speaker's own buttons), when its
@@ -1634,6 +1721,7 @@ export class RoomManager extends EventEmitter {
       sonos: room.sonos?.view() ?? [],
       eq: { ...room.eq, gains: room.eq.gains.slice() },
       autoDj: Boolean(room.autoDj?.on),
+      scrobble: room.listen && room.listen.item === item ? room.listen.scrobble : null,
     };
     if (queue) {
       view.queue = room.queue.map((q) => ({ filepath: q.filepath, meta: q.meta ?? {}, ...(q.dj ? { dj: true } : {}) }));
@@ -1679,6 +1767,7 @@ export class RoomManager extends EventEmitter {
         ...(r.sonos?.size ? { sonos: r.sonos.toJSON() } : {}),
         ...(isDefaultEq(r.eq) ? {} : { eq: r.eq }),
         ...(r.autoDj ? { autoDj: r.autoDj } : {}),
+        ...(r.listener ? { listener: r.listener } : {}),
         index: pos?.track.index ?? r.index, positionMs: pos?.positionMs ?? r.positionMs,
         repeat: r.repeat, shuffle: r.shuffle, state: r.live ? 'paused' : r.state, lastPlayedAt: r.lastPlayedAt, queueVersion: r.queueVersion,
       };

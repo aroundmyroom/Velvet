@@ -69,6 +69,7 @@ import * as sonosApi from './sonos.js';
 import { PairingInputError, decodePskToken } from '../sendspin/pairing.js';
 import { EQ_BANDS, EQ_MIN_DB, EQ_MAX_DB, MAX_PRESET_LENGTH } from '../sendspin/eq.js';
 import { nextForRoom } from '../autodj/library.js';
+import { roomListen } from './room-listen.js';
 
 const MAX_SONGS = 10_000;
 const MAX_FILEPATH = 4096;
@@ -321,7 +322,7 @@ function sonosBases(req) {
 function svc() {
   if (!service) {
     const art = createArtwork({ artDir: config.program.storage.albumArtDirectory });
-    const roomOptions = { sonos: sonosBridge(), autoDjPick, ...serviceOpts.roomOptions };
+    const roomOptions = { sonos: sonosBridge(), autoDjPick, listen: roomListen, ...serviceOpts.roomOptions };
     service = new RoomsService({ dataDir: sendspinDataDir(), logger: winston, ...art, ...serviceOpts, roomOptions });
   }
   return service;
@@ -602,6 +603,11 @@ export function setup(velvet) {
 
   const admin = (method, p, ...handlers) => velvet[method](`/api/v1/admin/sendspin${p}`, adminGuard, ...handlers);
   const player = (method, p, fn) => velvet[method](`/api/v1/rooms${p}`, playerGuard, route(fn));
+  // A room scrobbles and counts plays for whoever last controlled it (see rooms.js setListener).
+  const control = (method, p, fn) => player(method, p, (req, res) => {
+    service.rooms.setListener(req.params.id, req.user.username);
+    return fn(req, res);
+  });
 
   admin('get', '/status', route(() => status()));
 
@@ -792,7 +798,7 @@ export function setup(velvet) {
     };
   });
 
-  player('post', '/:id/play', async (req) => {
+  control('post', '/:id/play', async (req) => {
     const body = validate(SCHEMAS.play, req.body);
     const { id } = req.params;
     lightView(service, id);
@@ -804,7 +810,7 @@ export function setup(velvet) {
     return { ...service.room(id), skipped };
   });
 
-  player('post', '/:id/add', async (req) => {
+  control('post', '/:id/add', async (req) => {
     const body = validate(SCHEMAS.add, req.body);
     const { id } = req.params;
     lightView(service, id);
@@ -823,7 +829,7 @@ export function setup(velvet) {
     return { ok: true, queueLength: after.queueLength, queueVersion: after.queueVersion, skipped };
   });
 
-  player('post', '/:id/jump', (req) => {
+  control('post', '/:id/jump', (req) => {
     const { index } = validate(SCHEMAS.index, req.body);
     const { id } = req.params;
     const view = lightView(service, id);
@@ -834,7 +840,7 @@ export function setup(velvet) {
     return service.room(id);
   });
 
-  const edit = (action, schema, fn) => player('post', `/:id/${action}`, (req) => {
+  const edit = (action, schema, fn) => control('post', `/:id/${action}`, (req) => {
     const body = validate(schema, req.body);
     const { id } = req.params;
     checkVersion(lightView(service, id), body.queueVersion);
@@ -846,7 +852,7 @@ export function setup(velvet) {
   edit('move', SCHEMAS.move, (id, { from, to }) => service.rooms.move(id, from, to));
   edit('reorder', SCHEMAS.reorder, (id, { order }) => service.rooms.reorder(id, order));
 
-  const simple = (action, fn, { needsQueue = false } = {}) => player('post', `/:id/${action}`, (req) => {
+  const simple = (action, fn, { needsQueue = false } = {}) => control('post', `/:id/${action}`, (req) => {
     validate(SCHEMAS.empty, req.body);
     const { id } = req.params;
     const view = lightView(service, id);
@@ -877,7 +883,7 @@ export function setup(velvet) {
     return { ...service.room(id), stoppedAt: { index: before.index, positionMs: before.positionMs } };
   });
 
-  player('post', '/:id/line-in', (req) => {
+  control('post', '/:id/line-in', (req) => {
     const { clientId: id } = validate(SCHEMAS.lineIn, req.body);
     lightView(service, req.params.id);
     if (!service.listSources().some((x) => x.clientId === id)) fail(404, 'not_found', 'unknown or not allowed source');
@@ -885,7 +891,7 @@ export function setup(velvet) {
     return service.room(req.params.id);
   });
 
-  player('post', '/:id/line-in/stop', (req) => {
+  control('post', '/:id/line-in/stop', (req) => {
     validate(SCHEMAS.empty, req.body);
     lightView(service, req.params.id);
     service.sources.stopRoom(req.params.id);
@@ -925,7 +931,7 @@ export function setup(velvet) {
     return service.room(req.params.id);
   });
 
-  player('post', '/:id/seek', (req) => {
+  control('post', '/:id/seek', (req) => {
     const { positionMs } = validate(SCHEMAS.seek, req.body);
     const { id } = req.params;
     const view = service.room(id);
@@ -950,7 +956,7 @@ export function setup(velvet) {
 
   player('get', '/:id/autodj', (req) => service.rooms.getAutoDj(req.params.id));
 
-  player('put', '/:id/autodj', (req) => {
+  control('put', '/:id/autodj', (req) => {
     const { on, settings, state, ...rg } = validate(SCHEMAS.autoDj, req.body);
     lightView(service, req.params.id);
     service.rooms.setAutoDj(req.params.id, { on, user: req.user.username, rg, settings: settings ?? {}, state });
@@ -966,13 +972,13 @@ export function setup(velvet) {
     return service.room(req.params.id);
   });
 
-  player('post', '/:id/repeat', (req) => {
+  control('post', '/:id/repeat', (req) => {
     const { repeat } = validate(SCHEMAS.repeat, req.body);
     service.rooms.setRepeat(req.params.id, repeat);
     return service.room(req.params.id);
   });
 
-  player('post', '/:id/shuffle', (req) => {
+  control('post', '/:id/shuffle', (req) => {
     const { shuffle } = validate(SCHEMAS.shuffle, req.body);
     service.rooms.setShuffle(req.params.id, shuffle);
     return service.room(req.params.id);

@@ -268,6 +268,38 @@ describe('Velvet Rooms REST', async () => {
     assert.equal(typeof state.body.positionAt, 'number');
   });
 
+  it('counts what a room plays for the user who controls it: history, play count, scrobble state, listener', async () => {
+    const id = (await call('caster', 'GET', '/api/v1/rooms')).body.rooms[0].id;
+    const C = 'lib/Tones/c.flac';
+    const poll = async (get, ok, what) => {
+      for (const t0 = Date.now(); ;) {
+        const v = await get();
+        if (ok(v)) return v;
+        if (Date.now() - t0 > 5000) throw new Error(`${what} did not show up: ${JSON.stringify(v)}`);
+        await new Promise(res => setTimeout(res, 100));
+      }
+    };
+    const audio = speaker.audio;
+    const r = await call('caster', 'POST', `/api/v1/rooms/${id}/play`, { songs: [C] });
+    assert.equal(r.status, 200);
+    await waitFile(f => f.rooms.find(x => x.id === id)?.listener === 'caster');
+    const st = await poll(() => call('caster', 'GET', `/api/v1/rooms/${id}/state`), s => s.body.scrobble, 'the scrobble state');
+    assert.deepEqual(st.body.scrobble, { lastfm: 'off', listenbrainz: 'off' }, 'nothing linked: both off');
+    const history = () => call('caster', 'GET', '/api/v1/history').then(h => h.body.events.find(e => e.filepath === C));
+    const ev = await poll(history, Boolean, 'the Wrapped play');
+    assert.equal(ev.title, 'Tone C');
+    const played = () => call('caster', 'POST', '/api/v1/db/stats/most-played', { limit: 20 }).then(m => m.body.find(x => x.filepath === C));
+    assert.equal((await poll(played, Boolean, 'the play count')).metadata['play-count'], 1);
+    await speaker.until(() => speaker.audio > audio);
+    await poll(() => call('caster', 'GET', `/api/v1/rooms/${id}/state`), s => s.body.positionMs > 300, 'playback');
+    await call('caster', 'POST', `/api/v1/rooms/${id}/stop`);
+    const stopped = await poll(history, e => e?.played_ms > 0, 'the stopped play');
+    assert.equal(stopped.id, ev.id);
+    assert.equal(stopped.skipped, false);
+    const other = await call('admin', 'GET', '/api/v1/history');
+    assert.equal(other.body.events.some(e => e.filepath === C), false, 'only the listener gets the play');
+  });
+
   it('jumps, plays next and loads paused without resending the queue', async () => {
     const id = (await call('caster', 'GET', '/api/v1/rooms')).body.rooms[0].id;
     const T = ['lib/Tones/a.flac', 'lib/Tones/b.flac', 'lib/Tones/c.flac'];

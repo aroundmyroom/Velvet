@@ -123,6 +123,24 @@ export function userDbVpaths(user) {
   return user.dbVpaths ?? user.vpaths;
 }
 
+/** A play of a song that starts (play count + last played). user: { ...config.program.users[name], username }. -> false when unknown. */
+export async function logPlay(user, filePath) {
+  if (/^https?:\/\//i.test(filePath)) return false;
+  const pathInfo = vpath.getVPathInfo(filePath, user);
+  const fileRow = resolveFile(pathInfo, user) ?? await indexFileOnDemand(pathInfo); // NOSONAR — indexFileOnDemand is async
+  if (!fileRow) return false;
+  const existing = db.findUserMetadata(fileRow.hash, user.username);
+  if (existing) {
+    existing.pc = (existing.pc && typeof existing.pc === 'number') ? existing.pc + 1 : 1;
+    existing.lp = Date.now();
+    db.updateUserMetadata(existing);
+  } else {
+    db.insertUserMetadata({ user: user.username, hash: fileRow.hash, pc: 1, lp: Date.now() });
+  }
+  db.saveUserDB();
+  return true;
+}
+
 // Resolve a file by its child-vpath filepath, falling back to the parent vpath
 // if the file is stored in the DB under the parent (scanned before the child
 // vpath was added, or vice-versa).  Returns the DB row or null.
@@ -886,23 +904,7 @@ export function setup(velvet) {
   velvet.post('/api/v1/db/stats/log-play', async (req, res) => {
     const schema = Joi.object({ filePath: Joi.string().required() });
     joiValidate(schema, req.body);
-    if (/^https?:\/\//i.test(req.body.filePath)) { return res.json({ ok: false }); }
-    const pathInfo = vpath.getVPathInfo(req.body.filePath, req.user);
-    let fileRow  = resolveFile(pathInfo, req.user);
-    if (!fileRow) {
-      fileRow = await indexFileOnDemand(pathInfo); // NOSONAR — indexFileOnDemand is async
-    }
-    if (!fileRow) { return res.json({ ok: false }); }
-    const existing = db.findUserMetadata(fileRow.hash, req.user.username);
-    if (existing) {
-      existing.pc = (existing.pc && typeof existing.pc === 'number') ? existing.pc + 1 : 1;
-      existing.lp = Date.now();
-      db.updateUserMetadata(existing);
-    } else {
-      db.insertUserMetadata({ user: req.user.username, hash: fileRow.hash, pc: 1, lp: Date.now() });
-    }
-    db.saveUserDB();
-    res.json({ ok: true });
+    res.json({ ok: await logPlay(req.user, req.body.filePath) });
   });
 
   velvet.post('/api/v1/db/stats/recently-played', (req, res) => {

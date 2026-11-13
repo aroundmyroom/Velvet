@@ -257,6 +257,7 @@ export class RoomsService extends EventEmitter {
       lineIn: view.live ? { clientId: view.live.sourceId, name: view.live.name } : null,
       eq: view.eq,
       autoDj: view.autoDj === true,
+      scrobble: !idle && view.scrobble ? { ...view.scrobble } : null,
     };
   }
 

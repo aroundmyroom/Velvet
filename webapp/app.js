@@ -256,6 +256,7 @@ if (navigator.mediaDevices?.addEventListener) {
 let scanTimer    = null;
 let djTimer      = null;
 let scrobbleTimer = null;
+let _roomHandBackMs = 0;      // where a song taken back from a Velvet Room continues (see _roomResumeLocal)
 // ── Wrapped play tracking ────────────────────────────────────────────────────
 const _wrappedSessionId = (() => {
   const arr = new Uint8Array(16);
@@ -1682,6 +1683,8 @@ const Player = {
   playAt(idx, opts = {}) {
     if (idx < 0 || idx >= S.queue.length) return;
     if (_room) { _roomPlayAt(idx); return; }
+    const _handBackMs = _roomHandBackMs;
+    _roomHandBackMs = 0;
     // Selecting a local track takes over from a playing Sonos Favourite.
     if (_sonosFav) _exitSonosFavorite({ stopDevice: true });
     // Wrapped: if a song was interrupted (not naturally ended), count it as a skip
@@ -1805,7 +1808,8 @@ const Player = {
       _cuePoints = []; _cueTrack1Title = ''; ['cue-markers','np-cue-markers'].forEach(id => { const el = document.getElementById(id); if (el) el.innerHTML = ''; });
     }
     if (!s.isRadio && !s.isPodcast) {
-      api('POST', 'api/v1/db/stats/log-play', { filePath: s.filepath }).catch(() => {});
+      // Taken back from a room mid-song: the room already counted this play.
+      if (!_handBackMs) api('POST', 'api/v1/db/stats/log-play', { filePath: s.filepath }).catch(() => {});
       // Wrapped: stop any active radio or podcast event, then log play-start
       if (_wrappedRadioEventId) {
         const eid = _wrappedRadioEventId; _wrappedRadioEventId = null;
@@ -1868,7 +1872,7 @@ const Player = {
         }).then(r => { _wrappedPodcastEventId = r?.eventId ?? null; }).catch(() => {});
       }
     }
-    _scheduleScrobble(s);
+    _scheduleScrobble(s, _handBackMs);
     // Early Auto-DJ prefetch: fetch the next DJ pick shortly after a track
     // STARTS (not only ~25-45 s before its end) so a manual NEXT press is an
     // instant queue advance instead of a 5-6 s fetch+score round-trip. The
@@ -12339,8 +12343,10 @@ function _updateScrobbleUI() {
   }
 }
 
-function _scheduleScrobble(s) {
+// fromMs: where a song taken back from a room continues; past the 30 s mark the room scrobbled it already.
+function _scheduleScrobble(s, fromMs = 0) {
   clearTimeout(scrobbleTimer);
+  if (fromMs >= 30000) return;
   _initScrobbleState(s);
   _updateScrobbleUI();
 
@@ -12377,7 +12383,7 @@ function _scheduleScrobble(s) {
         if (on) api('POST', 'api/v1/custom-webhooks/scrobble-by-filepath', { filePath: s.filepath, slot: i }).catch(() => {});
       });
       _updateScrobbleUI();
-    }, 30000);
+    }, 30000 - fromMs);
   }
 }
 
@@ -20163,6 +20169,7 @@ function _roomEnter(room) {
   _roomPollFails = 0;
   try { localStorage.setItem(_uKey('room'), room.id); } catch (_) {}
   if (!audioEl.paused) audioEl.pause();
+  _roomTakeOverListen();
   document.body.classList.add('room-remote');
   _roomApply(room);
   _syncRepeatIcon();
@@ -20170,6 +20177,28 @@ function _roomEnter(room) {
   EQ.refresh();
   _roomStartPoll();
   _updateOutputBtn();
+}
+
+// From here the server scrobbles, counts and logs what the room plays (src/api/room-listen.js): this tab stops doing it.
+function _roomTakeOverListen() {
+  clearTimeout(scrobbleTimer);
+  if (!_wrappedEventId) return;
+  const eid = _wrappedEventId;
+  _wrappedEventId = null;
+  api('POST', 'api/v1/wrapped/play-stop', { eventId: eid, playedMs: Math.max(0, Math.round(((audioEl.currentTime || 0) - _wrappedTrackStartOffset) * 1000)) }).catch(() => {});
+}
+
+// The Playing Now scrobble badges follow the room's own scrobbles; null = the room does not scrobble this song.
+function _roomScrobbleSync(st) {
+  const fp = st.current?.filepath;
+  if (!fp || st.lineIn) return;
+  const sc = st.scrobble;
+  if (!sc && _scrobbleState.filepath === fp) return;
+  const lastfm = sc?.lastfm || 'off';
+  const listenbrainz = sc?.listenbrainz || 'off';
+  if (_scrobbleState.filepath === fp && _scrobbleState.lastfm === lastfm && _scrobbleState.listenbrainz === listenbrainz) return;
+  _scrobbleState = { filepath: fp, lastfm, listenbrainz };
+  _updateScrobbleUI();
 }
 
 function _roomShadowSync() {
@@ -20203,6 +20232,7 @@ function _roomResumeLocal(idx, posMs) {
   const s = S.queue[idx];
   if (!s || s.isRadio) return false;
   if (posMs > 1000 && !s._isCueSplit) _pendingCueSeek = posMs / 1000;
+  _roomHandBackMs = Math.max(0, Math.round(posMs || 0));
   Player.playAt(idx);
   return true;
 }
@@ -20647,6 +20677,7 @@ function _roomApply(st) {
     if (st.queueVersion !== _roomHandedVersion && !_roomOpsPending) _roomFetchQueue();
   }
   _roomAlignIndex(st);
+  _roomScrobbleSync(st);
   _roomAutoDjFollowSettings(st);
   _roomShadowSync();
   _roomPaintProgress();
