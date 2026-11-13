@@ -991,4 +991,6 @@ tr:hover td { background: var(--raised); }
 .vr-sonos-row{display:flex;align-items:center;gap:.5rem;flex-wrap:wrap;}
 .vr-sonos-delay{display:inline-flex;align-items:center;gap:.4rem;font-size:.8rem;color:var(--t2);}
 .vr-sonos-delay input[type="range"]{width:160px;}
+.vr-sonos-delay input.vr-delay-num{width:76px;padding:2px 6px;font-size:.8rem;font-variant-numeric:tabular-nums;}
+.vr-sonos-hint{flex-basis:100%;font-size:.75rem;color:var(--t2);}
 .vr-sonos-add{width:auto;padding:2px 6px;font-size:.8rem;}

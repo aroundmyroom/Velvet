@@ -13,7 +13,7 @@
   <script defer src="../assets/js/lib/butterchurn.min.js"></script>
   <script defer src="../assets/js/lib/audiomotion-analyzer.js"></script>
   <script defer src="../assets/js/lib/qr.js"></script>
-  <link rel="stylesheet" href="/style.css?v=0.9.2-0ac8e030">
+  <link rel="stylesheet" href="/style.css?v=0.9.2-3758cc39">
   <script src="/assets/js/lib/simplewebauthn-browser.js"></script>
   <script src="/assets/js/i18n.js"></script>
 </head>
@@ -1056,6 +1056,8 @@
   <canvas id="viz-brand-canvas" class="viz-brand-canvas"></canvas>
   <canvas id="spec-canvas" class="spec-canvas hidden"></canvas>
   <div id="am-container" class="am-container hidden"></div>
+  <div id="vv-container" class="vv-container hidden"></div>
+  <div id="vv-status" class="vv-status hidden" role="status" aria-live="polite"></div>
   <!-- Lyric mode: art left, scrolling lyrics right -->
   <div id="viz-lyric-mode" class="viz-lyric-mode hidden">
     <div class="vlm-art-wrap">
@@ -1072,6 +1074,7 @@
     <button class="viz-btn" id="viz-next-btn" title="Next preset" data-i18n="player.ctrl.vizNext" data-i18n-attr="title">
       <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><polygon points="5,4 15,12 5,20"/><line x1="19" y1="5" x2="19" y2="19" stroke="currentColor" stroke-width="2.5"/></svg>
     </button>
+    <select id="viz-vv-select" class="viz-select hidden" title="VoltViz style" aria-label="VoltViz style" data-i18n="player.ctrl.vizStyle" data-i18n-attr="title"></select>
     <button class="viz-btn viz-mode-btn" id="viz-mode-btn" title="Switch to Spectrum" data-i18n="player.ctrl.vizSwitchTo" data-i18n-attr="title" style="margin-left:8px;gap:5px">
       <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="2" y="14" width="3" height="8"/><rect x="7" y="9" width="3" height="13"/><rect x="12" y="5" width="3" height="17"/><rect x="17" y="11" width="3" height="11"/></svg>
       <span id="viz-mode-label">Spectrum</span>
@@ -1113,7 +1116,7 @@
 
 <div id="tip-box"></div>
 <script src="/assets/js/player-locale.js"></script>
-  <script src="/app.js?v=0.9.2-1adf592a"></script>
+  <script src="/app.js?v=0.9.2-e51499a4"></script>
 
 </body>
 </html>

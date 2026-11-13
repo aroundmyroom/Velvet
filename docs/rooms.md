@@ -431,18 +431,24 @@ Sonos speakers Velvet found on the network (the same discovery as
 [Sonos cast](sonos.md)); it only appears while Sonos is enabled in Velvet.
 
 **It follows the room, it is not sample-accurate.** A Sonos keeps a few
-seconds of buffer of its own. Velvet sends it the room's audio that many
-milliseconds early — the **delay** slider (0–5000 ms, default 2000 ms). Play
-something with a clear beat, listen to a Sendspin speaker and the Sonos
-together, and move the slider until they line up: the Sonos is late → raise
-the delay; the Sonos is early → lower it. A change takes effect at once (the
-Sonos skips ahead or falls back a moment). Expect it to stay roughly in line,
-not perfectly: the Sonos runs on its own clock.
+seconds of buffer of its own. Velvet therefore sends it the room's audio
+early, and the Sendspin speakers in the room wait that long before they play.
+How early is the **Sonos head start** (0–5000 ms, default 2000 ms): drag the
+slider or type the milliseconds in the box next to it. Play something with a
+clear beat, listen to a Sendspin speaker and the Sonos together, and adjust
+until they line up:
+
+- **The Sonos plays late** → raise the head start.
+- **The Sonos plays early** → lower it.
+
+Fine-tune in steps of 100–200 ms. A change takes effect at once (the Sonos
+skips ahead or falls back a moment). Expect it to stay roughly in line, not
+perfectly: the Sonos runs on its own clock.
 
 What to expect:
 
 - **Start.** The Sonos starts when the room starts playing. With a Sonos in
-  the room, every play, seek or skip starts *delay* later on all speakers, so
+  the room, every play, seek or skip starts *head start* later on all speakers, so
   the Sonos hears it from the beginning too; the Sonos itself may still miss
   the first moment while it connects.
 - **One continuous stream.** Track changes, seek, skip, pause and resume keep
@@ -453,7 +459,7 @@ What to expect:
   Removing the Sonos from the room stops it — only if it still plays the room.
 - **Volume and mute** of the room include the Sonos (Sonos volume via its
   own volume control); the editor sets one Sonos's volume like any speaker.
-- **Line-in** also reaches the Sonos, a *delay* later on every speaker.
+- **Line-in** also reaches the Sonos, a *head start* later on every speaker.
 - **Title.** The Sonos shows "*room* · Velvet Rooms" and the current artist
   and title (internet-radio style metadata).
 - A Sonos is in one room at a time; adding it to another room moves it. It
@@ -479,7 +485,7 @@ same bands, presets and on/off switch. Changes go to the room:
 
 - **Instant enough.** While the room plays, a change is heard within about a
   second, without stopping or restarting the song. With a Sonos following the
-  room it takes as long as that Sonos's delay.
+  room it takes as long as that Sonos's head start.
 - **Stored with the room.** The EQ is kept on the server (with the room, in
   `rooms.json`), so it survives a restart and applies whichever browser — or a
   speaker's own buttons — plays the room. Two browsers on the same room see the
@@ -557,6 +563,13 @@ folders or no longer exist on disk; the room plays the rest.
 status checks the player gives up being a remote and continues in the browser.
 The room itself may still be playing; pick it again in the output picker to
 reconnect.
+
+**A speaker says "Waiting for server" after a PC slept or Wi-Fi dropped.**
+Velvet calls a paired or allowed speaker back every 30 seconds at its last
+address, so it should reconnect within half a minute of being reachable
+again. It does not call back a speaker that switched to another server or was
+disconnected or unpaired on purpose; connect it again from the Speakers card.
+If the speaker's address changed, add it by address.
 
 ---
 

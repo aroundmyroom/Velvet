@@ -3629,5 +3629,8 @@ body.vinyl-mode.vinyl-paused .pnow-art img{ animation-play-state:paused; }
 .rooms-edit-badge{font-size:.72rem;padding:1px 7px;border-radius:999px;border:1px solid var(--border, rgba(127,127,127,.4));opacity:.8;}
 .rooms-edit-delay{width:130px;}
 .rooms-edit-delay-val{font-size:.78rem;font-variant-numeric:tabular-nums;opacity:.8;}
+.rooms-edit-delay-name{font-size:.78rem;opacity:.8;}
+.rooms-edit-delay-num{width:72px;padding:3px 6px;font-size:.8rem;font-variant-numeric:tabular-nums;}
+.rooms-edit-sonos-hint{font-size:.75rem;opacity:.7;}
 .rooms-edit-sonos-err{font-size:.78rem;color:#e57373;}
 .rooms-edit-hint{font-size:.75rem;opacity:.7;}

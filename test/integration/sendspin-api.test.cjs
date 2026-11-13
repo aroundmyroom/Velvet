@@ -111,8 +111,11 @@ describe('Velvet Rooms REST', async () => {
 
   it('is hidden while disabled', async () => {
     const r = await call('caster', 'GET', '/api/v1/rooms');
-    assert.equal(r.status, 404);
-    assert.equal(r.body.code, 'rooms_disabled');
+    assert.equal(r.status, 200);
+    assert.deepEqual(r.body, { enabled: false, allowed: true, rooms: [], sources: [] });
+    const play = await call('caster', 'GET', '/api/v1/rooms/sonos');
+    assert.equal(play.status, 409);
+    assert.equal(play.body.code, 'rooms_disabled');
     const st = await call('admin', 'GET', '/api/v1/admin/sendspin/status');
     assert.equal(st.status, 200);
     assert.equal(st.body.enabled, false);
@@ -137,11 +140,14 @@ describe('Velvet Rooms REST', async () => {
 
   it('checks the player permission', async () => {
     const plain = await call('plain', 'GET', '/api/v1/rooms');
-    assert.equal(plain.status, 403);
-    assert.equal(plain.body.code, 'forbidden');
+    assert.equal(plain.status, 200);
+    assert.deepEqual(plain.body, { enabled: true, allowed: false, rooms: [], sources: [] });
+    const plainSonos = await call('plain', 'GET', '/api/v1/rooms/sonos');
+    assert.equal(plainSonos.status, 403);
+    assert.equal(plainSonos.body.code, 'forbidden');
     const caster = await call('caster', 'GET', '/api/v1/rooms');
     assert.equal(caster.status, 200);
-    assert.deepEqual(caster.body, { enabled: true, rooms: [], sources: [] });
+    assert.deepEqual(caster.body, { enabled: true, allowed: true, rooms: [], sources: [] });
   });
 
   it('lists a connecting speaker, approves it and shows its solo room', async () => {
@@ -646,6 +652,6 @@ describe('Velvet Rooms REST', async () => {
   it('stops the listener when disabled', async () => {
     const r = await call('admin', 'POST', '/api/v1/admin/sendspin/settings', { enabled: false });
     assert.equal(r.body.running, false);
-    assert.equal((await call('caster', 'GET', '/api/v1/rooms')).body.code, 'rooms_disabled');
+    assert.equal((await call('caster', 'GET', '/api/v1/rooms')).body.enabled, false);
   });
 });

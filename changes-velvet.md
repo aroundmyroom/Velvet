@@ -52,6 +52,27 @@ VoltViz visualizer and Velvet's brain in Music Assistant
 
 - Embedded lyrics over Subsonic came back as `[object Object]` with the
   current tag reader.
+- Missing cover art, artist photos and radio logos now show the placeholder
+  again instead of a broken image. The fallbacks were inline `onerror`
+  handlers, which the page's security policy blocks; the browser console
+  filled up with CSP errors.
+- The On/Off and delete buttons of scheduled radio recordings did nothing,
+  for the same reason.
+- With Velvet Rooms switched off, the player no longer gets a 404 from
+  `GET /api/v1/rooms`: the list answers `enabled: false` (or `allowed: false`
+  for a user without the Cast permission). Other room calls answer `409
+  rooms_disabled`. The Home Assistant integration understands both the new
+  and the old answers.
+- A Sendspin speaker that dropped off (a PC going to sleep, Wi-Fi losing the
+  connection or the discovery messages) could stay on "Waiting for server"
+  for minutes or for good. Velvet now calls trusted speakers back every 30
+  seconds at their last address, unless they left for another server or were
+  disconnected or unpaired on purpose; the wait between retries is capped at
+  30 seconds instead of 5 minutes. Disconnects and the reconnect decision
+  are now in the log.
+- The Sonos **Delay** setting is now called **Sonos head start**, with a
+  hint (Sonos late → higher, early → lower) and a box to type the
+  milliseconds next to the slider, in the admin page and the player.
 
 ## v0.9.2 (2026-11-12)
 

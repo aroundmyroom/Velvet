@@ -77,6 +77,8 @@ class FakeVelvet:
     def __init__(self) -> None:
         self.has_users = True
         self.rooms_status: int | None = None
+        self.rooms_enabled = True
+        self.rooms_allowed = True
         self.rooms_code: str | None = None
         self.token_valid = True
         self.pair_polls_until_approved = 1
@@ -186,7 +188,13 @@ class FakeVelvet:
     async def list_rooms(self, request):
         if self.rooms_status:
             return web.json_response({"error": "x", "code": self.rooms_code}, status=self.rooms_status)
-        return web.json_response({"enabled": True, "rooms": list(copy.deepcopy(self.rooms).values()), "sources": []})
+        if not self.rooms_enabled or not self.rooms_allowed:
+            return web.json_response(
+                {"enabled": self.rooms_enabled, "allowed": self.rooms_allowed, "rooms": [], "sources": []}
+            )
+        return web.json_response(
+            {"enabled": True, "allowed": True, "rooms": list(copy.deepcopy(self.rooms).values()), "sources": []}
+        )
 
     async def room_state(self, request):
         return web.json_response(copy.deepcopy(self.rooms[request.match_info["id"]]))

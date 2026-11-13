@@ -575,6 +575,31 @@ test('server-initiated connection and reconnect policy', async (t) => {
   assert.equal(clients.length, 2, 'no redial after another_server');
 });
 
+test('the watchdog calls a trusted speaker back after it left, unless it went to another server', async (t) => {
+  const server = await makeServer(t, { allowLoopback: true, reconnect: { minMs: 50, maxMs: 200, watchMs: 150 } });
+  const wss = new WebSocketServer({ host: LOCAL, port: 0, path: '/sendspin' });
+  await new Promise((r) => wss.once('listening', r));
+  t.after(() => new Promise((r) => {
+    for (const ws of wss.clients) ws.terminate();
+    wss.close(r);
+  }));
+  const keyPair = generateStaticKeyPair();
+  await server.approve(encodeKeyId(keyPair.publicKey));
+  const clients = [];
+  wss.on('connection', (ws) => clients.push(new FakeClient(ws, { keyPair, suite: SUITES[1] })));
+  server.connectTo(`ws://${LOCAL}:${wss.address().port}/sendspin`);
+  await waitFor({ on: (e, f) => wss.on(e, f), off: (e, f) => wss.off(e, f) }, 'connection');
+  await clients[0].connect();
+  clients[0].send('client/goodbye', { reason: 'shutdown' });
+  await clients[0].closed;
+  await clients[0].until(() => clients.length === 2, 3000);
+  await clients[1].connect();
+  clients[1].send('client/goodbye', { reason: 'another_server' });
+  await clients[1].closed;
+  await new Promise((r) => setTimeout(r, 600));
+  assert.equal(clients.length, 2, 'not called back after another_server');
+});
+
 test('reconnect decisions follow the goodbye reason', () => {
   assert.equal(reconnectDecision({ goodbye: 'restart', handshakeCompleted: true }), 'now');
   assert.equal(reconnectDecision({ goodbye: 'concurrent_attempt', handshakeCompleted: true }), 'later');

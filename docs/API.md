@@ -862,7 +862,7 @@ small local window for instant boot, then lazy-loads the rest from here.
 
 ## Velvet Rooms *(Velvet)*
 
-> Server-side queue played on speakers that implement the Sendspin protocol (works with Sendspin speakers). Full contract — object shapes, limits, error codes, polling — in [API/rooms.md](API/rooms.md). Player routes need `allow-mpv-cast` (or admin) and return `404 { code: "rooms_disabled" }` while the feature is off.
+> Server-side queue played on speakers that implement the Sendspin protocol (works with Sendspin speakers). Full contract — object shapes, limits, error codes, polling — in [API/rooms.md](API/rooms.md). Player routes need `allow-mpv-cast` (or admin) and return `409 { code: "rooms_disabled" }` while the feature is off; the room list itself answers `200` with `enabled: false`.
 
 | Method | Endpoint | Body | Description |
 |---|---|---|---|

@@ -355,7 +355,7 @@ function canUseRooms(user) {
 }
 
 function playerGuard(req, res, next) {
-  if (config.program.sendspin?.enabled !== true) return res.status(404).json({ error: 'Velvet Rooms is disabled', code: 'rooms_disabled' });
+  if (config.program.sendspin?.enabled !== true) return res.status(409).json({ error: 'Velvet Rooms is disabled', code: 'rooms_disabled' });
   if (!canUseRooms(req.user)) return res.status(403).json({ error: 'Velvet Rooms is not allowed for this user', code: 'forbidden' });
   if (!service?.running) return res.status(503).json({ error: 'the Sendspin listener is not running', code: 'not_running' });
   next();
@@ -653,7 +653,12 @@ export function setup(velvet) {
     return { ok: true, device: sv.device(id) };
   }));
 
-  player('get', '', () => ({ enabled: true, rooms: service.listRooms(), sources: service.listSources() }));
+  velvet.get('/api/v1/rooms', (req, res, next) => {
+    if (config.program.sendspin?.enabled !== true) return res.json({ enabled: false, allowed: canUseRooms(req.user), rooms: [], sources: [] });
+    if (!canUseRooms(req.user)) return res.json({ enabled: true, allowed: false, rooms: [], sources: [] });
+    next();
+  });
+  player('get', '', () => ({ enabled: true, allowed: true, rooms: service.listRooms(), sources: service.listSources() }));
 
   player('post', '', (req, res) => {
     const { name, members } = validate(SCHEMAS.createRoom, req.body);

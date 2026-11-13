@@ -524,12 +524,32 @@ const _BOOT_DBG = localStorage.getItem('ms2_dbg_boot') === '1';
 function artOrPlaceholder(f, size, extraClass, eager = false) {
   const u = artUrl(f, size);
   const cls = extraClass ? ` ${extraClass}` : '';
-  if (u) return `<img src="${u}" alt=""${eager ? '' : ' loading="lazy"'} onerror="this.parentNode.innerHTML=noArtHtml()">`;
+  if (u) return `<img src="${u}" alt=""${eager ? '' : ' loading="lazy"'} data-err="noart">`;
   return noArtHtml(cls);
 }
 function noArtHtml(extraClass) {
   return `<div class="no-art${extraClass||''}"><div class="no-art-wave"><span></span><span></span><span></span><span></span><span></span></div></div>`;
 }
+// The CSP blocks inline onerror attributes, so image fallbacks are declared as data-err / data-err-src.
+const _IMG_ERR = {
+  'noart':        el => { el.parentNode.innerHTML = noArtHtml(); },
+  'noart-sm':     el => { el.parentNode.innerHTML = noArtHtml(' no-art-sm'); },
+  'hide':         el => { el.style.display = 'none'; },
+  'remove':       el => { el.remove(); },
+  'parent-hidden':el => { el.parentNode.classList.add('hidden'); },
+  'parent-hide':  el => { el.parentNode.style.display = 'none'; },
+  'parent-note':  el => { el.parentNode.innerHTML = '♪'; },
+  'parent-empty': el => { el.parentNode.innerHTML = ''; },
+  'radio':        el => { _radioImgErr(el); },
+  'fe-icon':      el => { el.outerHTML = '<svg class="fe-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>'; },
+};
+document.addEventListener('error', e => {
+  const el = e.target;
+  if (!(el instanceof HTMLImageElement)) return;
+  if (el.dataset.errSrc) { const src = el.dataset.errSrc; delete el.dataset.errSrc; el.src = src; return; }
+  const fn = _IMG_ERR[el.dataset.err];
+  if (fn && el.parentNode) fn(el);
+}, true);
 function encodeFp(fp) {
   // Encode each path segment so characters like # & ? don't break the URL,
   // while keeping / separators intact. express.static decodes them server-side.
@@ -2070,14 +2090,14 @@ const Player = {
     let u = artUrl(s['album-art'], 'l');
     if (u && s['album-art-v']) u += `&_v=${encodeURIComponent(s['album-art-v'])}`;
     thumb.innerHTML = u
-      ? `<img src="${u}" alt="" loading="lazy" onerror="this.parentNode.innerHTML=noArtHtml()">`
+      ? `<img src="${u}" alt="" loading="lazy" data-err="noart">`
       : noArtHtml();
     VU_NEEDLE.setArt(u || '');
     // Sync Playing Now view art whenever updateBar runs (e.g. after Discogs/Deezer embed)
     if (S.view === 'playing-now') {
       const _pnArt = document.querySelector('.pnow-art');
       const _pnBg  = document.getElementById('pnow-bg');
-      if (_pnArt) _pnArt.innerHTML = u ? `<img src="${u}" alt="" onerror="this.parentNode.innerHTML=noArtHtml()">` : noArtHtml();
+      if (_pnArt) _pnArt.innerHTML = u ? `<img src="${u}" alt="" data-err="noart">` : noArtHtml();
       if (_pnBg)  _pnBg.style.backgroundImage = u ? `url(${u})` : '';
     }
 
@@ -2091,7 +2111,7 @@ const Player = {
           if (S.queue[S.idx] !== s) return;
           s['album-art'] = d.aaFile;
           const nu = artUrl(d.aaFile, 'l');
-          thumb.innerHTML = `<img src="${nu}" alt="" loading="lazy" onerror="this.parentNode.innerHTML=noArtHtml()">`;
+          thumb.innerHTML = `<img src="${nu}" alt="" loading="lazy" data-err="noart">`;
           VU_NEEDLE.setArt(nu);
           _applyAlbumArtTheme(nu);
           _TabFav.setSong(s, !audioEl.paused);
@@ -2106,7 +2126,7 @@ const Player = {
           if (S.view === 'playing-now') {
             const pnowArt = document.querySelector('.pnow-art');
             const pnowBg  = document.getElementById('pnow-bg');
-            if (pnowArt) pnowArt.innerHTML = `<img src="${nu}" alt="" onerror="this.parentNode.innerHTML=noArtHtml()">`;
+            if (pnowArt) pnowArt.innerHTML = `<img src="${nu}" alt="" data-err="noart">`;
             if (pnowBg)  pnowBg.style.backgroundImage = `url(${nu})`;
           }
         })
@@ -3115,7 +3135,7 @@ function _fetchMissingArt(songs, container, selector, rowAttr) {
           const artDiv = row.querySelector(selector);
           if (!artDiv) return;
           const u = artUrl(d.aaFile, 's');
-          artDiv.innerHTML = `<img src="${u}" alt="" onerror="this.parentNode.innerHTML=noArtHtml(' no-art-sm')">`;  // no lazy — already in viewport
+          artDiv.innerHTML = `<img src="${u}" alt="" data-err="noart-sm">`;  // no lazy — already in viewport
         });
         // Also patch the Now-Playing card if this is the current song
         if (S.queue[S.idx] === s) {
@@ -3767,7 +3787,7 @@ function renderSongRows(songs) {
         <svg class="row-play-icon" width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><polygon points="5,3 19,12 5,21"/></svg>
       </div>
       <div class="row-art">
-        ${art ? `<img src="${art}" loading="lazy" onerror="this.parentNode.innerHTML=noArtHtml(' no-art-sm')">` : noArtHtml(' no-art-sm')}
+        ${art ? `<img src="${art}" loading="lazy" data-err="noart-sm">` : noArtHtml(' no-art-sm')}
       </div>
       <div class="song-info">
         <div class="song-title">${esc(title)}</div>
@@ -3804,7 +3824,7 @@ function renderSongRowsWithPath(songs) {
         <svg class="row-play-icon" width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><polygon points="5,3 19,12 5,21"/></svg>
       </div>
       <div class="row-art">
-        ${art ? `<img src="${art}" loading="lazy" onerror="this.parentNode.innerHTML=noArtHtml(' no-art-sm')">` : noArtHtml(' no-art-sm')}
+        ${art ? `<img src="${art}" loading="lazy" data-err="noart-sm">` : noArtHtml(' no-art-sm')}
       </div>
       <div class="song-info">
         <div class="song-title">${esc(title)}</div>
@@ -3876,7 +3896,7 @@ function renderMostPlayedRows(songs, maxPlays) {
         <svg class="row-play-icon" width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><polygon points="5,3 19,12 5,21"/></svg>
       </div>
       <div class="row-art">
-        ${art ? `<img src="${art}" loading="lazy" onerror="this.parentNode.innerHTML=noArtHtml(' no-art-sm')">` : noArtHtml(' no-art-sm')}
+        ${art ? `<img src="${art}" loading="lazy" data-err="noart-sm">` : noArtHtml(' no-art-sm')}
       </div>
       <div class="song-info">
         <div class="song-title">${esc(title)}</div>
@@ -4068,7 +4088,7 @@ function renderNPModal() {
     npArtDiv.removeAttribute('title');
   }
   npArtDiv.innerHTML = u
-    ? `<img src="${u}" alt="" onerror="this.parentNode.innerHTML=noArtHtml()">`
+    ? `<img src="${u}" alt="" data-err="noart">`
     : noArtHtml();
   document.getElementById('np-title').textContent  = s.title  || s.filepath?.split('/').pop() || '—';
   document.getElementById('np-artist').textContent = _queueArtist(s) || '';
@@ -4213,7 +4233,7 @@ function renderNPModal() {
             ? `api/v1/artists/images/${encodeURIComponent(d.imageFile)}`
             : artUrl(s['album-art'], 's');
           if (imgSrc) {
-            wrap.innerHTML = `<img src="${imgSrc}" alt="" loading="eager" onerror="this.parentNode.classList.add('hidden')">`;
+            wrap.innerHTML = `<img src="${imgSrc}" alt="" loading="eager" data-err="parent-hidden">`;
             wrap.classList.remove('hidden');
           } else {
             wrap.classList.add('hidden');
@@ -4225,7 +4245,7 @@ function renderNPModal() {
           if (!wrap) return;
           const fallbackU = artUrl(s['album-art'], 's');
           if (fallbackU) {
-            wrap.innerHTML = `<img src="${fallbackU}" alt="" loading="eager" onerror="this.parentNode.classList.add('hidden')">`;
+            wrap.innerHTML = `<img src="${fallbackU}" alt="" loading="eager" data-err="parent-hidden">`;
             wrap.classList.remove('hidden');
           } else {
             wrap.classList.add('hidden'); wrap.innerHTML = '';
@@ -7381,7 +7401,7 @@ const VIZ = (() => {
     if (artEl && s) {
       const u = artUrl(s['album-art'], 'l');
       artEl.innerHTML = u
-        ? `<img src="${u}" alt="" onerror="this.parentNode.innerHTML=''">` : '';
+        ? `<img src="${u}" alt="" data-err="parent-empty">` : '';
       if (artBlurEl) artBlurEl.style.backgroundImage = u ? `url('${u}')` : 'none';
     }
 
@@ -8575,7 +8595,7 @@ async function viewRecent() {
             const countBadge = count > 1 ? `<span class="hc-count-badge">${count}</span>` : '';
             return `<div class="album-card" data-day-idx="${di}" data-folder-idx="${fi}">
               <div class="album-art">
-                ${art ? `<img src="${esc(art)}" alt="${esc(label)}" loading="lazy" onerror="this.parentNode.innerHTML=noArtHtml()">` : noArtHtml()}
+                ${art ? `<img src="${esc(art)}" alt="${esc(label)}" loading="lazy" data-err="noart">` : noArtHtml()}
                 ${countBadge}
               </div>
               <div class="album-meta">
@@ -8614,7 +8634,7 @@ async function viewRecent() {
                 if (!card) return;
                 const artDiv = card.querySelector('.album-art');
                 if (artDiv && !artDiv.querySelector('img')) {
-                  artDiv.insertAdjacentHTML('afterbegin', `<img src="${artUrl(d.aaFile,'m')}" alt="" loading="lazy" onerror="this.parentNode.innerHTML=noArtHtml()">`);
+                  artDiv.insertAdjacentHTML('afterbegin', `<img src="${artUrl(d.aaFile,'m')}" alt="" loading="lazy" data-err="noart">`);
                 }
               })
               .catch(() => {});
@@ -8733,7 +8753,7 @@ async function viewArtists_old() {
       if (!a.canonicalName) return '';
       const fallbackSrc = 'api/v1/artists/placeholder';
       const artInner = a.imageFile
-        ? `<img class="artist-home-img" src="api/v1/artists/images/${encodeURIComponent(a.imageFile)}" alt="" loading="lazy" onerror="this.onerror=null;this.src='${fallbackSrc}'">`
+        ? `<img class="artist-home-img" src="api/v1/artists/images/${encodeURIComponent(a.imageFile)}" alt="" loading="lazy" data-err-src="${fallbackSrc}">`
         : `<img class="artist-home-img" src="${fallbackSrc}" alt="">`;
       const sub = Number.isFinite(a.playCount) && a.playCount > 0
         ? `${a.playCount} play${a.playCount !== 1 ? 's' : ''}`
@@ -8896,7 +8916,7 @@ async function viewArtists_old() {
           ? `/api/v1/artists/images/${encodeURIComponent(a.imageFile)}`
           : 'api/v1/artists/placeholder';
         return `<div class="artist-row" data-akey="${esc(a.artistKey)}" data-aname="${esc(a.canonicalName)}">
-          <div class="artist-av"><img class="artist-av-img" src="${esc(imgSrc)}" alt="${esc(a.canonicalName)}" loading="lazy" onerror="this.onerror=null;this.src='api/v1/artists/placeholder'"><span class="artist-av-fallback">${esc(av)}</span></div>
+          <div class="artist-av"><img class="artist-av-img" src="${esc(imgSrc)}" alt="${esc(a.canonicalName)}" loading="lazy" data-err-src="api/v1/artists/placeholder"><span class="artist-av-fallback">${esc(av)}</span></div>
           <div class="artist-col">
             <div class="artist-name">${esc(a.canonicalName)}</div>
             ${sub ? `<div class="artist-sub">${sub}</div>` : ''}
@@ -9158,7 +9178,7 @@ async function viewArtistProfile(artistKey, displayName, variants, backFn) {
       const imgSrc = profile?.imageFile
         ? `api/v1/artists/images/${encodeURIComponent(profile.imageFile)}`
         : 'api/v1/artists/placeholder';
-      wrap.innerHTML = `<img class="artpro-img" src="${imgSrc}" alt="${esc(displayName)}" loading="lazy" onerror="this.onerror=null;this.src='api/v1/artists/placeholder'">`;
+      wrap.innerHTML = `<img class="artpro-img" src="${imgSrc}" alt="${esc(displayName)}" loading="lazy" data-err-src="api/v1/artists/placeholder">`;
     }
   }
   const bioEl   = document.getElementById('artpro-bio');
@@ -9217,7 +9237,7 @@ async function viewArtistProfile(artistKey, displayName, variants, backFn) {
     albumsEl.innerHTML = albums.map((alb, i) => {
       const albArtU = artUrl(alb.album_art_file, 's');
       const albArtHtml = albArtU
-        ? `<img src="${albArtU}" alt="" loading="lazy" onerror="this.parentNode.innerHTML=noArtHtml()">`
+        ? `<img src="${albArtU}" alt="" loading="lazy" data-err="noart">`
         : noArtHtml();
       const prevName = i > 0 ? albums[i-1].name : null;
       const nextName = i < albums.length-1 ? albums[i+1].name : null;
@@ -9349,7 +9369,7 @@ async function viewArtists() {
       if (!a.canonicalName) return '';
       const fallbackSrc = 'api/v1/artists/placeholder';
       const artInner = a.imageFile
-        ? `<img class="artist-home-img" src="api/v1/artists/images/${encodeURIComponent(a.imageFile)}" alt="" loading="lazy" onerror="this.onerror=null;this.src='${fallbackSrc}'">`
+        ? `<img class="artist-home-img" src="api/v1/artists/images/${encodeURIComponent(a.imageFile)}" alt="" loading="lazy" data-err-src="${fallbackSrc}">`
         : `<img class="artist-home-img" src="${fallbackSrc}" alt="">`;
       const sub = Number.isFinite(a.playCount) && a.playCount > 0
         ? `${a.playCount} play${a.playCount !== 1 ? 's' : ''}`
@@ -9505,7 +9525,7 @@ async function viewArtists() {
           ? `/api/v1/artists/images/${encodeURIComponent(a.imageFile)}`
           : 'api/v1/artists/placeholder';
         return `<div class="artist-row" data-akey="${esc(a.artistKey)}" data-aname="${esc(a.canonicalName)}">
-          <div class="artist-av"><img class="artist-av-img" src="${esc(imgSrc)}" alt="${esc(a.canonicalName)}" loading="lazy" onerror="this.onerror=null;this.src='api/v1/artists/placeholder'"><span class="artist-av-fallback">${esc(av)}</span></div>
+          <div class="artist-av"><img class="artist-av-img" src="${esc(imgSrc)}" alt="${esc(a.canonicalName)}" loading="lazy" data-err-src="api/v1/artists/placeholder"><span class="artist-av-fallback">${esc(av)}</span></div>
           <div class="artist-col">
             <div class="artist-name">${esc(a.canonicalName)}</div>
             ${sub ? `<div class="artist-sub">${sub}</div>` : ''}
@@ -9795,7 +9815,7 @@ async function viewArtistProfile2(artistKey, displayName, variants, backFn, init
       const imgSrc = profile?.imageFile
         ? `api/v1/artists/images/${encodeURIComponent(profile.imageFile)}`
         : 'api/v1/artists/placeholder';
-      wrap.innerHTML = `<img class="artpro-img" src="${imgSrc}" alt="${esc(displayName)}" loading="lazy" onerror="this.onerror=null;this.src='api/v1/artists/placeholder'">`;
+      wrap.innerHTML = `<img class="artpro-img" src="${imgSrc}" alt="${esc(displayName)}" loading="lazy" data-err-src="api/v1/artists/placeholder">`;
     }
   }
 
@@ -9983,7 +10003,7 @@ async function viewArtistProfile2(artistKey, displayName, variants, backFn, init
         visible.map((alb, i) => {
           const albArtU = _albArtUrl(alb.artFile, alb.aaFile);
           const albArtHtml = albArtU
-            ? `<img src="${albArtU}" alt="" loading="lazy" onerror="this.parentNode.innerHTML=noArtHtml()">`
+            ? `<img src="${albArtU}" alt="" loading="lazy" data-err="noart">`
             : noArtHtml();
           const verBadge = alb.album_version ? `<span class="alb-version-badge" title="${esc(alb.album_version)}">${esc(alb.album_version)}</span>` : '';
           return `<div class="album-card" data-alb2-idx="${artistAlbums.indexOf(alb)}">
@@ -10208,7 +10228,7 @@ async function viewAlbumLibrary() {
       const count = (s.albumIds || []).length;
       return `<div class="album-card album-card--series" data-series-id="${esc(s.id)}">
         <div class="album-art" style="position:relative;">
-          ${art ? `<img src="${esc(art)}" alt="${esc(s.displayName)}" loading="lazy" onerror="this.style.display='none'">` : noArtHtml()}
+          ${art ? `<img src="${esc(art)}" alt="${esc(s.displayName)}" loading="lazy" data-err="hide">` : noArtHtml()}
           <div class="alb-badges"><span class="alb-badge">${count} albums</span></div>
           <div class="play-ov"><svg width="30" height="30" viewBox="0 0 24 24" fill="white"><polygon points="5,3 19,12 5,21"/></svg></div>
         </div>
@@ -10228,7 +10248,7 @@ async function viewAlbumLibrary() {
       const catBadge    = a.categoryLabel ? `<span class="alb-cat-badge" title="${esc(a.categoryLabel)}">${esc(a.categoryLabel.replaceAll(/^\[|\]$/g, ''))}</span>` : '';
       return `<div class="album-card" data-album-id="${esc(a.id)}">
         <div class="album-art" style="position:relative;">
-          ${art ? `<img src="${esc(art)}" alt="${esc(a.displayName)}" loading="lazy" onerror="this.style.display='none'">` : noArtHtml()}
+          ${art ? `<img src="${esc(art)}" alt="${esc(a.displayName)}" loading="lazy" data-err="hide">` : noArtHtml()}
           <div class="alb-badges">${multiDisc ? `<span class="alb-badge alb-badge--disc">${discCnt} discs</span>` : ''}</div>
           <div class="play-ov"><svg width="30" height="30" viewBox="0 0 24 24" fill="white"><polygon points="5,3 19,12 5,21"/></svg></div>
         </div>
@@ -10430,7 +10450,7 @@ async function viewAlbumSeries(seriesId, inheritedVersions = new Set(), initialC
       const verBadge  = a.album_version ? `<span class="alb-version-badge" title="${esc(a.album_version)}">${esc(a.album_version)}</span>` : '';
       return `<div class="album-card" data-album-id="${esc(a.id)}">
         <div class="album-art" style="position:relative;">
-          ${art ? `<img src="${esc(art)}" alt="${esc(a.displayName)}" loading="lazy" onerror="this.style.display='none'">` : noArtHtml()}
+          ${art ? `<img src="${esc(art)}" alt="${esc(a.displayName)}" loading="lazy" data-err="hide">` : noArtHtml()}
           <div class="alb-badges">${multiDisc ? `<span class="alb-badge alb-badge--disc">${discCnt} discs</span>` : ''}</div>
           <div class="play-ov"><svg width="30" height="30" viewBox="0 0 24 24" fill="white"><polygon points="5,3 19,12 5,21"/></svg></div>
         </div>
@@ -10765,7 +10785,7 @@ async function viewAlbumDetail(albumId, activeDiscIdx, opts = {}) {
       <div class="alb-detail-header">
         <div class="alb-art-wrap${S.isAdmin ? ' alb-art-editable' : ''}">
           ${art
-            ? `<img class="alb-detail-art" src="${esc(art)}" alt="${esc(album.displayName)}" onerror="this.style.display='none'">`
+            ? `<img class="alb-detail-art" src="${esc(art)}" alt="${esc(album.displayName)}" data-err="hide">`
             : `<div class="alb-detail-art" style="display:flex;align-items:center;justify-content:center;">${noArtHtml()}</div>`}
           ${artEditOverlay}
         </div>
@@ -11126,7 +11146,7 @@ function renderAlbumGrid(albums, defaultArtist, artistVariants, _parentRestoreFn
       return `<div class="album-card album-card--series" data-series-name="${esc(item.seriesName)}">
         <div class="album-art">
           ${art
-            ? `<img src="${art}" alt="${esc(item.seriesName)}" loading="lazy" onerror="this.style.display='none'">`
+            ? `<img src="${art}" alt="${esc(item.seriesName)}" loading="lazy" data-err="hide">`
             : `<div class="no-art no-art-album"><div class="no-art-wave"><span></span><span></span><span></span><span></span><span></span></div><span class="no-art-label">no artwork</span></div>`}
           <div class="play-ov"><svg width="30" height="30" viewBox="0 0 24 24" fill="white"><polygon points="5,3 19,12 5,21"/></svg></div>
         </div>
@@ -11143,7 +11163,7 @@ function renderAlbumGrid(albums, defaultArtist, artistVariants, _parentRestoreFn
     return `<div class="album-card" data-i="${item.idx}">
       <div class="album-art">
         ${art
-          ? `<img src="${art}" alt="${esc(name)}" loading="lazy" onerror="this.style.display='none'">`
+          ? `<img src="${art}" alt="${esc(name)}" loading="lazy" data-err="hide">`
           : `<div class="no-art no-art-album"><div class="no-art-wave"><span></span><span></span><span></span><span></span><span></span></div><span class="no-art-label">no artwork</span></div>`}
         <div class="play-ov"><svg width="30" height="30" viewBox="0 0 24 24" fill="white"><polygon points="5,3 19,12 5,21"/></svg></div>
       </div>
@@ -11541,7 +11561,7 @@ async function doSearch(q) {
           const verBadge = a.album_version ? `<span class="alb-version-badge" title="${esc(a.album_version)}">${esc(a.album_version)}</span>` : '';
           return `<div class="artist-row" data-album="${esc(a.name)}">
             <div class="artist-av" style="border-radius:6px;overflow:hidden">
-              ${au ? `<img src="${au}" style="width:38px;height:38px;object-fit:cover" loading="lazy" onerror="this.parentNode.innerHTML='♪'">` : '♪'}
+              ${au ? `<img src="${au}" style="width:38px;height:38px;object-fit:cover" loading="lazy" data-err="parent-note">` : '♪'}
             </div>
             <div class="artist-name">${esc(a.name)}${verBadge}</div>
           </div>`;
@@ -12049,7 +12069,7 @@ async function viewHistory() {
         if (curDensity === 'list') {
           return `<div class="album-card" data-hist-i="${i}" style="display:flex;align-items:center;gap:10px;padding:6px 8px;min-height:56px;">
             <div class="album-art" style="width:44px;min-width:44px;height:44px;border-radius:8px;overflow:hidden;">
-              ${art ? `<img src="${art}" alt="" loading="lazy" onerror="this.style.display='none'">` : `<div class="no-art no-art-album"><div class="no-art-wave"><span></span><span></span><span></span><span></span><span></span></div></div>`}
+              ${art ? `<img src="${art}" alt="" loading="lazy" data-err="hide">` : `<div class="no-art no-art-album"><div class="no-art-wave"><span></span><span></span><span></span><span></span><span></span></div></div>`}
               <div class="play-ov" style="inset:0;"><svg width="18" height="18" viewBox="0 0 24 24" fill="white"><polygon points="5,3 19,12 5,21"/></svg></div>
             </div>
             <div class="album-meta" style="min-width:0;flex:1 1 auto;">
@@ -12061,7 +12081,7 @@ async function viewHistory() {
         }
         return `<div class="album-card" data-hist-i="${i}">
           <div class="album-art">
-            ${art ? `<img src="${art}" alt="" loading="lazy" onerror="this.style.display='none'">` : `<div class="no-art no-art-album"><div class="no-art-wave"><span></span><span></span><span></span><span></span><span></span></div><span class="no-art-label">no artwork</span></div>`}
+            ${art ? `<img src="${art}" alt="" loading="lazy" data-err="hide">` : `<div class="no-art no-art-album"><div class="no-art-wave"><span></span><span></span><span></span><span></span><span></span></div><span class="no-art-label">no artwork</span></div>`}
             <div class="play-ov"><svg width="30" height="30" viewBox="0 0 24 24" fill="white"><polygon points="5,3 19,12 5,21"/></svg></div>
           </div>
           <div class="album-meta">
@@ -12325,7 +12345,7 @@ async function _renderPlayingNow(fade) {
 
   const artU = artUrl(s['album-art'], 'l');
   const artHtml = artU
-    ? `<img src="${artU}" alt="" onerror="this.parentNode.innerHTML=noArtHtml()">`
+    ? `<img src="${artU}" alt="" data-err="noart">`
     : noArtHtml();
 
   const stars = Array.from({length:5}, (_, i) => {
@@ -12483,7 +12503,7 @@ async function _pnowLoadArtistData(artist, forFp, skipImg = false) {
           ? `api/v1/artists/images/${encodeURIComponent(d.imageFile)}`
           : artUrl(S.queue[S.idx]?.['album-art'], 's');
         if (finalSrc) {
-          wrap2.innerHTML = `<img class="pnow-tadb-img" src="${finalSrc}" alt="" loading="lazy" onerror="this.parentNode.style.display='none'">`;
+          wrap2.innerHTML = `<img class="pnow-tadb-img" src="${finalSrc}" alt="" loading="lazy" data-err="parent-hide">`;
         }
       })
       .catch(() => {});
@@ -12625,7 +12645,7 @@ async function _pnowLoadArtistData(artist, forFp, skipImg = false) {
         albumsEl2.innerHTML = artistAlbums.map((alb, i) => {
           const albArtU = _albArtUrl(alb.artFile, alb.aaFile);
           const albArtHtml = albArtU
-            ? `<img src="${albArtU}" alt="" loading="lazy" onerror="this.parentNode.innerHTML=noArtHtml()">`
+            ? `<img src="${albArtU}" alt="" loading="lazy" data-err="noart">`
             : noArtHtml();
           const verBadge = alb.album_version ? `<span class="alb-version-badge" title="${esc(alb.album_version)}">${esc(alb.album_version)}</span>` : '';
           return `<div class="album-card" data-pnow-alb-idx="${i}">
@@ -12760,7 +12780,7 @@ async function viewHome() {
   function songCard(s, showCount) {
     const url = artUrl(s['album-art'], 's');
     const artInner = url
-      ? `<img src="${url}" alt="" loading="lazy" onerror="this.parentNode.innerHTML=noArtHtml()">`
+      ? `<img src="${url}" alt="" loading="lazy" data-err="noart">`
       : noArtHtml();
     const sub = showCount && s._playCount
       ? `${esc(s.artist || '')}${s.artist ? ' · ' : ''}${s._playCount}×`
@@ -12777,7 +12797,7 @@ async function viewHome() {
   function albumCard(group, idx) {
     const url = artUrl(group.art, 's');
     const artInner = url
-      ? `<img src="${url}" alt="" loading="lazy" onerror="this.parentNode.innerHTML=noArtHtml()">`
+      ? `<img src="${url}" alt="" loading="lazy" data-err="noart">`
       : noArtHtml();
     const fp0 = group._artFp || group.songs[0]?.filepath || '';
     const countBadge = group.songs.length > 1 ? `<span class="hc-count-badge">${group.songs.length}</span>` : '';
@@ -12855,7 +12875,7 @@ async function viewHome() {
             if (card.dataset.fp !== fp) return;
             const artDiv = card.querySelector('.hc-art');
             if (artDiv && !artDiv.querySelector('img')) {
-              artDiv.insertAdjacentHTML('afterbegin', `<img src="${artUrl(d.aaFile, 's')}" alt="" loading="lazy" onerror="this.parentNode.innerHTML=noArtHtml()">`);
+              artDiv.insertAdjacentHTML('afterbegin', `<img src="${artUrl(d.aaFile, 's')}" alt="" loading="lazy" data-err="noart">`);
             }
           });
         })
@@ -13009,7 +13029,7 @@ async function viewShortcuts() {
 
   function artCard(imgUrl, title, sub, attrs) {
     const artInner = imgUrl
-      ? `<img src="${imgUrl}" alt="" loading="lazy" onerror="this.parentNode.innerHTML=noArtHtml()">`
+      ? `<img src="${imgUrl}" alt="" loading="lazy" data-err="noart">`
       : noArtHtml();
     return `<div class="hc" ${attrs || ''}>
       <div class="hc-art">${artInner}</div>
@@ -13023,7 +13043,7 @@ async function viewShortcuts() {
   function songCard(s, showCount) {
     const url = artUrl(s['album-art'], 's');
     const artInner = url
-      ? `<img src="${url}" alt="" loading="lazy" onerror="this.parentNode.innerHTML=noArtHtml()">`
+      ? `<img src="${url}" alt="" loading="lazy" data-err="noart">`
       : noArtHtml();
     const sub = showCount && s._playCount
       ? `${esc(s.artist || '')}${s.artist ? ' · ' : ''}${s._playCount}×`
@@ -13374,7 +13394,7 @@ function renderFileExplorer(d) {
     const artist = meta?.artist || '';
     const artU   = artUrl(meta?.['album-art'], 's');
     const thumb  = artU
-      ? `<img class="fe-thumb" src="${artU}" alt="" loading="lazy" onerror="this.outerHTML='<svg class=fe-icon width=16 height=16 viewBox=&quot;0 0 24 24&quot; fill=none stroke=currentColor stroke-width=2><path d=&quot;M9 18V5l12-2v13&quot;/><circle cx=6 cy=18 r=3/><circle cx=18 cy=16 r=3/></svg>'">`
+      ? `<img class="fe-thumb" src="${artU}" alt="" loading="lazy" data-err="fe-icon">`
       : `<svg class="fe-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>`;
     return `
       <div class="${rowClass}"${ciAttr} data-fp="${esc(fp || '')}" data-name="${esc(file.name)}">
@@ -13395,7 +13415,7 @@ function renderFileExplorer(d) {
           ${fp ? `<button class="fe-act fe-pl-btn" title="${t('player.fe.btnAddPlaylist')}">
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>
           </button>` : ''}
-          <a class="fe-act" href="${fp ? dlUrl(fp) : '#'}" download="${esc(file.name)}" title="${t('player.fe.btnDownload')}" onclick="event.stopPropagation()">
+          <a class="fe-act" href="${fp ? dlUrl(fp) : '#'}" download="${esc(file.name)}" title="${t('player.fe.btnDownload')}">
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7,10 12,15 17,10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
           </a>
           ${canDelete ? `<button class="fe-act fe-del-btn" title="${t('player.fe.btnDeleteRec')}" style="color:var(--red,#e05)">
@@ -15109,7 +15129,7 @@ function _mountSongVScroll(allSongs, container) {
         <span class="num-val">${i + 1}</span>
         <svg class="row-play-icon" width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><polygon points="5,3 19,12 5,21"/></svg>
       </div>
-      <div class="row-art">${art ? `<img src="${art}" loading="lazy" onerror="this.parentNode.innerHTML=noArtHtml(' no-art-sm')">` : noArtHtml(' no-art-sm')}</div>
+      <div class="row-art">${art ? `<img src="${art}" loading="lazy" data-err="noart-sm">` : noArtHtml(' no-art-sm')}</div>
       <div class="song-info">
         <div class="song-title">${esc(title)}</div>
         <div class="song-sub">${esc(artist)}${esc(album)}</div>
@@ -15286,7 +15306,7 @@ async function viewGenreDetail(genre, defaultTab) {
         _mountAlbumVScroll(fa,
           (a, i) => {
             const u   = artUrl(a.album_art_file, 'l');
-            const art = u ? `<img src="${u}" alt="" loading="lazy" onerror="this.parentNode.innerHTML=noArtHtml()">` : noArtHtml();
+            const art = u ? `<img src="${u}" alt="" loading="lazy" data-err="noart">` : noArtHtml();
             return `<div class="album-card" data-i="${i}">
               <div class="album-art">${art}<div class="play-ov"><svg width="28" height="28" viewBox="0 0 24 24" fill="currentColor"><polygon points="5,3 19,12 5,21"/></svg></div></div>
               <div class="album-info"><div class="album-name">${esc(a.name)}</div><div class="album-meta">${esc(a.artist||'')}${a.year ? ' · ' + a.year : ''}</div></div>
@@ -15368,7 +15388,7 @@ async function viewDecadeDetail(decade, label, defaultTab) {
         _mountAlbumVScroll(fa,
           (a, i) => {
             const u   = artUrl(a.album_art_file, 'l');
-            const art = u ? `<img src="${u}" alt="" loading="lazy" onerror="this.parentNode.innerHTML=noArtHtml()">` : noArtHtml();
+            const art = u ? `<img src="${u}" alt="" loading="lazy" data-err="noart">` : noArtHtml();
             return `<div class="album-card" data-i="${i}">
               <div class="album-art">${art}<div class="play-ov"><svg width="28" height="28" viewBox="0 0 24 24" fill="currentColor"><polygon points="5,3 19,12 5,21"/></svg></div></div>
               <div class="album-info"><div class="album-name">${esc(a.name)}</div><div class="album-meta">${esc(a.artist||'')}${a.year ? ' · ' + a.year : ''}</div></div>
@@ -17556,7 +17576,7 @@ function _radioImgErr(el) { el.outerHTML = _RADIO_ART_PLACEHOLDER; }
 
 function _radioArtHtml(imgUrl) {
   const u = imgUrl ? artUrl(imgUrl, 's') : null;
-  if (u) return `<img src="${u}" alt="" style="width:48px;height:48px;object-fit:cover;border-radius:6px;flex-shrink:0;" onerror="_radioImgErr(this)">`;
+  if (u) return `<img src="${u}" alt="" style="width:48px;height:48px;object-fit:cover;border-radius:6px;flex-shrink:0;" data-err="radio">`;
   return _RADIO_ART_PLACEHOLDER;
 }
 
@@ -18352,7 +18372,7 @@ async function _execRadioSearch() {
     const codecLabel = s => [(s.codec || '').toUpperCase(), s.bitrate ? `${s.bitrate}kbps` : ''].filter(Boolean).join(' ');
 
     const radioThumb = (favicon) => {
-      if (favicon) return `<img src="${esc(favicon)}" alt="" style="width:40px;height:40px;object-fit:cover;border-radius:6px;flex-shrink:0;" onerror="_radioImgErr(this)">`;
+      if (favicon) return `<img src="${esc(favicon)}" alt="" style="width:40px;height:40px;object-fit:cover;border-radius:6px;flex-shrink:0;" data-err="radio">`;
       return `<div style="width:40px;height:40px;background:var(--card);border-radius:6px;flex-shrink:0;display:flex;align-items:center;justify-content:center;"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--t3)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="2"/><path d="M4.93 4.93a10 10 0 0 0 0 14.14"/><path d="M7.76 7.76a6 6 0 0 0 0 8.49"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/><path d="M16.24 7.76a6 6 0 0 1 0 8.49"/></svg></div>`;
     };
 
@@ -18933,7 +18953,7 @@ function _renderPodcastsView(abVpaths, recVpaths = []) {
 function _pfArtHtml(img, size, w, h) {
   const u = img ? artUrl(img, size || 's') : null;
   const ws = w || '100%'; const hs = h || '100%';
-  if (u) return `<img src="${u}" alt="" style="width:${ws};height:${hs};object-fit:cover;display:block" onerror="this.parentNode.innerHTML=noArtHtml()">` ;
+  if (u) return `<img src="${u}" alt="" style="width:${ws};height:${hs};object-fit:cover;display:block" data-err="noart">` ;
   return noArtHtml();
 }
 function _fmtDuration(secs) {
@@ -18967,7 +18987,7 @@ function _renderPodcastFeedsView() {
     const vParam = f._v || f.last_fetched || '';
     const imgUrl = f.img ? artUrl(f.img, 's') + (vParam ? `&_v=${encodeURIComponent(vParam)}` : '') : null;
     const artHtml = imgUrl
-      ? `<img src="${esc(imgUrl)}" alt="" style="width:88px;height:88px;object-fit:cover;display:block" onerror="this.remove()">`
+      ? `<img src="${esc(imgUrl)}" alt="" style="width:88px;height:88px;object-fit:cover;display:block" data-err="remove">`
       : pfPlaceholder;
     return `<div class="pf-item" data-id="${f.id}">
       <div class="pf-feed-row">
@@ -19048,7 +19068,7 @@ function _renderPodcastFeedsView() {
       const p = await api('GET', `api/v1/podcast/preview?url=${encodeURIComponent(url)}`);
       const artEl = body.querySelector('#pf-preview-art');
       if (p.imgUrl) {
-        artEl.innerHTML = `<img src="${esc(artUrl(p.imgUrl, 's'))}" alt="" style="width:100%;height:100%;object-fit:cover" onerror="this.remove()">`;
+        artEl.innerHTML = `<img src="${esc(artUrl(p.imgUrl, 's'))}" alt="" style="width:100%;height:100%;object-fit:cover" data-err="remove">`;
       }
       body.querySelector('#pf-preview-title').textContent  = p.title || t('player.podcast.untitled');
       body.querySelector('#pf-preview-author').textContent = p.author || '';
@@ -19250,7 +19270,7 @@ async function viewPodcastEpisodes(feed) {
   const vParam = feed._v || feed.last_fetched || '';
   const feedImgUrl = feed.img ? artUrl(feed.img, 'l') + (vParam ? `&_v=${encodeURIComponent(vParam)}` : '') : null;
   const artHtml = feedImgUrl
-    ? `<img src="${esc(feedImgUrl)}" alt="" style="width:96px;height:96px;object-fit:cover;display:block" onerror="this.remove()">`
+    ? `<img src="${esc(feedImgUrl)}" alt="" style="width:96px;height:96px;object-fit:cover;display:block" data-err="remove">`
     : `<svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" style="opacity:.35"><path d="M3 18v-6a9 9 0 0 1 18 0v6"/><path d="M21 19a2 2 0 0 1-2 2h-1a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h3zM3 19a2 2 0 0 0 2 2h1a2 2 0 0 0 2-2v-3a2 2 0 0 0-2-2H3z"/></svg>`;
   const _saveSvgIdle     = `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>`;
   const _saveSvgSpinner  = `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" style="animation:spin .8s linear infinite"><path d="M12 2a10 10 0 1 0 10 10"/></svg>`;
@@ -20000,19 +20020,25 @@ function _roomQueuePayload(at) {
   return { songs, index, complete };
 }
 
+function _roomsOff() {
+  S.roomsAvailable = false;
+  S.rooms = [];
+  S.roomSources = [];
+  if (_room) _roomFallback(t('player.rooms.unavailable'));
+}
+
 async function _roomsProbe() {
   try {
     const d = await api('GET', 'api/v1/rooms');
-    S.roomsAvailable = true;
-    S.rooms = Array.isArray(d?.rooms) ? d.rooms : [];
-    S.roomSources = Array.isArray(d?.sources) ? d.sources : [];
-  } catch (e) {
-    if (e.status === 404 || e.status === 403 || e.status === 401) {
-      S.roomsAvailable = false;
-      S.rooms = [];
-      S.roomSources = [];
-      if (_room) _roomFallback(t('player.rooms.unavailable'));
+    if (d?.enabled === false || d?.allowed === false) {
+      _roomsOff();
+    } else {
+      S.roomsAvailable = true;
+      S.rooms = Array.isArray(d?.rooms) ? d.rooms : [];
+      S.roomSources = Array.isArray(d?.sources) ? d.sources : [];
     }
+  } catch (e) {
+    if (e.code === 'rooms_disabled' || e.status === 403 || e.status === 401) _roomsOff();
   }
   _updateOutputBtn();
   return S.rooms;
@@ -20225,7 +20251,7 @@ async function _roomCmd(cmd, body, beforeApply) {
     }
     return st;
   } catch (e) {
-    if (e.status === 404 || e.status === 403) { _roomFallback(t('player.rooms.lost')); return null; }
+    if (e.status === 404 || e.status === 403 || e.code === 'rooms_disabled') { _roomFallback(t('player.rooms.lost')); return null; }
     toastError(_roomErrText(e, 'player.rooms.cmdFailed'));
     return null;
   }
@@ -20306,7 +20332,7 @@ function _roomAddSongs(songs, next) {
         _roomFetchQueue();
       }
     } catch (e) {
-      if (e.status === 404 || e.status === 403) _roomFallback(t('player.rooms.lost'));
+      if (e.status === 404 || e.status === 403 || e.code === 'rooms_disabled') _roomFallback(t('player.rooms.lost'));
       else toastError(_roomErrText(e, 'player.rooms.addFailed'));
     }
   });
@@ -20396,7 +20422,7 @@ function _roomQueueEdited() {
       _roomApply(st);
     } catch (e) {
       if (!_room || _room.id !== id) return;
-      if (e.status === 404 || e.status === 403) { _roomFallback(t('player.rooms.lost')); return; }
+      if (e.status === 404 || e.status === 403 || e.code === 'rooms_disabled') { _roomFallback(t('player.rooms.lost')); return; }
       toastError(e.code === 'queue_changed' ? t('player.rooms.queueChanged') : _roomErrText(e, 'player.rooms.editFailed'));
       _roomMirror = null;
       _roomFetchQueue();
@@ -20537,7 +20563,7 @@ async function _roomPoll() {
     _roomPollFails = 0;
     _roomApply(st);
   } catch (e) {
-    if (e.status === 404 || e.status === 403) _roomFallback(t('player.rooms.lost'));
+    if (e.status === 404 || e.status === 403 || e.code === 'rooms_disabled') _roomFallback(t('player.rooms.lost'));
     else if (++_roomPollFails >= 5) _roomFallback(t('player.rooms.unreachable'));
   } finally {
     _roomPollInFlight = false;
@@ -20854,19 +20880,42 @@ function _roomsEditSonos(card, r) {
     badge.className = 'rooms-edit-badge';
     badge.textContent = t('player.rooms.sonos.follows');
     badge.title = t('player.rooms.sonos.followsHint');
+    const delayName = document.createElement('span');
+    delayName.className = 'rooms-edit-delay-name';
+    delayName.textContent = t('player.rooms.sonos.delay');
+    delayName.title = t('player.rooms.sonos.delayHint');
     const range = document.createElement('input');
     range.type = 'range';
     range.min = '0';
     range.max = String(_roomsSonos.maxDelayMs);
-    range.step = '50';
+    range.step = '10';
     range.value = String(s.delayMs);
     range.className = 'rooms-edit-delay';
+    range.title = t('player.rooms.sonos.delayHint');
     range.setAttribute('aria-label', t('player.rooms.sonos.delayLabel', { name: s.name }));
-    const val = document.createElement('span');
-    val.className = 'rooms-edit-delay-val';
-    val.textContent = t('player.rooms.sonos.delayValue', { ms: s.delayMs });
-    range.addEventListener('input', () => { val.textContent = t('player.rooms.sonos.delayValue', { ms: range.value }); });
-    range.addEventListener('change', () => _roomsEditCall('PATCH', base + '/' + encodeURIComponent(s.uuid), { delayMs: Number(range.value) }));
+    const num = document.createElement('input');
+    num.type = 'number';
+    num.min = '0';
+    num.max = String(_roomsSonos.maxDelayMs);
+    num.step = '10';
+    num.value = String(s.delayMs);
+    num.className = 'rooms-edit-delay-num';
+    num.setAttribute('aria-label', t('player.rooms.sonos.delayLabel', { name: s.name }));
+    const unit = document.createElement('span');
+    unit.className = 'rooms-edit-delay-val';
+    unit.textContent = t('player.rooms.sonos.unitMs');
+    let current = s.delayMs;
+    const commit = (raw) => {
+      const v = Math.round(Number(raw));
+      const ms = raw !== '' && Number.isFinite(v) ? Math.max(0, Math.min(_roomsSonos.maxDelayMs, v)) : current;
+      range.value = num.value = String(ms);
+      if (ms === current) return;
+      current = ms;
+      _roomsEditCall('PATCH', base + '/' + encodeURIComponent(s.uuid), { delayMs: ms });
+    };
+    range.addEventListener('input', () => { num.value = range.value; });
+    range.addEventListener('change', () => commit(range.value));
+    num.addEventListener('change', () => commit(num.value));
     const rm = document.createElement('button');
     rm.type = 'button';
     rm.className = 'btn-ghost';
@@ -20874,7 +20923,7 @@ function _roomsEditSonos(card, r) {
     rm.addEventListener('click', async () => {
       if (await _roomsEditCall('DELETE', base + '/' + encodeURIComponent(s.uuid))) _roomsSonosLoad();
     });
-    row.append(label, badge, range, val);
+    row.append(label, badge, delayName, range, num, unit);
     if (s.state === 'error') {
       const err = document.createElement('span');
       err.className = 'rooms-edit-sonos-err';
@@ -20883,6 +20932,12 @@ function _roomsEditSonos(card, r) {
     }
     row.appendChild(rm);
     box.appendChild(row);
+  }
+  if (followers.length) {
+    const hint = document.createElement('div');
+    hint.className = 'rooms-edit-sonos-hint';
+    hint.textContent = t('player.rooms.sonos.delayHint');
+    box.appendChild(hint);
   }
   if (choices.length) {
     const sel = document.createElement('select');
@@ -21558,7 +21613,7 @@ function _paintSonosFavorite(st) {
   if (!u && /^https:\/\//i.test(st.trackArt || '')) u = st.trackArt;
   const thumb = document.getElementById('player-art');
   thumb.innerHTML = u
-    ? `<img src="${esc(u)}" alt="" loading="lazy" onerror="this.parentNode.innerHTML=noArtHtml()">`
+    ? `<img src="${esc(u)}" alt="" loading="lazy" data-err="noart">`
     : noArtHtml();
   VU_NEEDLE.setArt(u || '');
   const fill = document.getElementById('prog-fill');
@@ -21939,11 +21994,13 @@ async function _loadScheduleList() {
           <span class="rec-sched-when">${esc(when)} &bull; ${sc.durationMinutes} min &bull; ${esc(sc.vpath)}</span>
         </div>
         <div class="rec-sched-item-actions">
-          <button class="btn-xs${sc.enabled ? ' btn-xs-on' : ''}" onclick="_recToggleSchedule('${esc(sc.id)}',${sc.enabled})">${sc.enabled ? 'On' : 'Off'}</button>
-          <button class="btn-xs btn-xs-del" onclick="_recDeleteSchedule('${esc(sc.id)}')">&#x2715;</button>
+          <button class="btn-xs${sc.enabled ? ' btn-xs-on' : ''}" data-sched-toggle="${esc(sc.id)}" data-enabled="${sc.enabled ? '1' : ''}">${sc.enabled ? 'On' : 'Off'}</button>
+          <button class="btn-xs btn-xs-del" data-sched-del="${esc(sc.id)}">&#x2715;</button>
         </div>
       </div>`;
     }).join('');
+    list.querySelectorAll('[data-sched-toggle]').forEach(b => b.addEventListener('click', () => _recToggleSchedule(b.dataset.schedToggle, !!b.dataset.enabled)));
+    list.querySelectorAll('[data-sched-del]').forEach(b => b.addEventListener('click', () => _recDeleteSchedule(b.dataset.schedDel)));
   } catch (_) {
     wrap.style.display = 'none';
   }
@@ -25942,7 +25999,7 @@ function _updateAudioBookChapterBar() {
             ? `api/v1/artists/images/${encodeURIComponent(d.imageFile)}`
             : artUrl(s2?.['album-art'], 's');
           if (imgSrc2) {
-            wrap.innerHTML = `<img src="${imgSrc2}" alt="" loading="eager" onerror="this.parentNode.classList.add('hidden')">`;
+            wrap.innerHTML = `<img src="${imgSrc2}" alt="" loading="eager" data-err="parent-hidden">`;
             wrap.classList.remove('hidden');
           } else {
             wrap.classList.add('hidden');
@@ -25970,7 +26027,7 @@ function _updateAudioBookChapterBar() {
             ? `api/v1/artists/images/${encodeURIComponent(d.imageFile)}`
             : artUrl(s3?.['album-art'], 's');
           if (src3) {
-            wrap.innerHTML = `<img class="pnow-tadb-img" src="${src3}" alt="" loading="eager" onerror="this.parentNode.style.display='none'">`;
+            wrap.innerHTML = `<img class="pnow-tadb-img" src="${src3}" alt="" loading="eager" data-err="parent-hide">`;
           }
         })
         .catch(() => {});

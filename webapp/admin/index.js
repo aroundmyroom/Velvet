@@ -5084,11 +5084,13 @@ const roomsView = Vue.component('rooms-view', {
                   <div v-for="s in (r.sonos || [])" :key="s.id" class="vr-sonos-row">
                     <span class="vr-member-name">{{ s.name }}</span>
                     <span class="vr-pill vr-pill-grey" :title="this.t('admin.rooms.sonos.followsHint')">{{ this.t('admin.rooms.sonos.follows') }}</span>
-                    <label class="vr-sonos-delay">
+                    <span class="vr-sonos-delay" :title="this.t('admin.rooms.sonos.delayHint')">
                       <span>{{ this.t('admin.rooms.sonos.delay') }}</span>
-                      <input type="range" min="0" :max="sonos.maxDelayMs" step="50" :value="s.delayMs" @input="s.delayMs = Number($event.target.value)" @change="sonosDelay(r, s, $event)" :disabled="busy" :aria-label="this.t('admin.rooms.sonos.delayLabel', { name: s.name })">
-                      <span class="vr-mono">{{ this.t('admin.rooms.sonos.delayValue', { ms: s.delayMs }) }}</span>
-                    </label>
+                      <input type="range" min="0" :max="sonos.maxDelayMs" step="10" :value="s.delayMs" @input="s.delayMs = Number($event.target.value)" @change="sonosDelay(r, s, $event)" :disabled="busy" :aria-label="this.t('admin.rooms.sonos.delayLabel', { name: s.name })">
+                      <input type="number" class="vr-delay-num" min="0" :max="sonos.maxDelayMs" step="10" :value="s.delayMs" @change="sonosDelay(r, s, $event)" :disabled="busy" :aria-label="this.t('admin.rooms.sonos.delayLabel', { name: s.name })">
+                      <span>{{ this.t('admin.rooms.sonos.unitMs') }}</span>
+                    </span>
+                    <span class="vr-sonos-hint">{{ this.t('admin.rooms.sonos.delayHint') }}</span>
                     <span v-if="s.state === 'error'" class="vr-warn">{{ this.t('admin.rooms.sonos.error') }}</span>
                     <button type="button" class="btn-small btn-flat" @click="roomCall('DELETE', '/' + encodeURIComponent(r.id) + '/sonos/' + encodeURIComponent(s.uuid))" :disabled="busy">{{ this.t('admin.rooms.sonos.remove') }}</button>
                   </div>
@@ -5215,7 +5217,11 @@ const roomsView = Vue.component('rooms-view', {
       if (uuid && await this.roomCall('POST', '/' + encodeURIComponent(r.id) + '/sonos', { uuid })) this.loadSonos();
     },
     sonosDelay(r, s, ev) {
-      this.roomCall('PATCH', '/' + encodeURIComponent(r.id) + '/sonos/' + encodeURIComponent(s.uuid), { delayMs: Number(ev.target.value) });
+      const v = Math.round(Number(ev.target.value));
+      const ms = Number.isFinite(v) && ev.target.value !== '' ? Math.max(0, Math.min(this.sonos.maxDelayMs, v)) : s.delayMs;
+      s.delayMs = ms;
+      ev.target.value = String(ms);
+      this.roomCall('PATCH', '/' + encodeURIComponent(r.id) + '/sonos/' + encodeURIComponent(s.uuid), { delayMs: ms });
     },
     roomName(id) { return this.rooms.find(r => r.id === id)?.name || ''; },
     hasCodeMethod(d) {

@@ -77,6 +77,14 @@ async def test_pairing_user_without_rooms_permission(hass: HomeAssistant, velvet
     assert result["reason"] == "no_rooms_permission"
 
 
+async def test_pairing_user_not_allowed(hass: HomeAssistant, velvet: FakeVelvet) -> None:
+    velvet.rooms_allowed = False
+    result = await _start(hass, velvet.url)
+    result = await _pair(hass, result["flow_id"])
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "no_rooms_permission"
+
+
 async def test_password_login(hass: HomeAssistant, velvet: FakeVelvet) -> None:
     result = await _start(hass, velvet.url)
     result = await hass.config_entries.flow.async_configure(result["flow_id"], {"next_step_id": "password"})
@@ -98,6 +106,17 @@ async def test_password_login(hass: HomeAssistant, velvet: FakeVelvet) -> None:
 async def test_password_rooms_disabled(hass: HomeAssistant, velvet: FakeVelvet) -> None:
     velvet.rooms_status = 404
     velvet.rooms_code = "rooms_disabled"
+    result = await _start(hass, velvet.url)
+    result = await hass.config_entries.flow.async_configure(result["flow_id"], {"next_step_id": "password"})
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {CONF_USERNAME: "ha", CONF_PASSWORD: "secret"}
+    )
+    assert result["type"] is FlowResultType.FORM
+    assert result["errors"] == {"base": "rooms_disabled"}
+
+
+async def test_password_rooms_switched_off(hass: HomeAssistant, velvet: FakeVelvet) -> None:
+    velvet.rooms_enabled = False
     result = await _start(hass, velvet.url)
     result = await hass.config_entries.flow.async_configure(result["flow_id"], {"next_step_id": "password"})
     result = await hass.config_entries.flow.async_configure(

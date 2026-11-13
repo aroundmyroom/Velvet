@@ -21,7 +21,7 @@ export const DEFAULT_PORT = 8927;
 export const DEFAULT_PATH = '/sendspin';
 export const DEFAULT_CLIENT_PORT = 8928;
 
-const DEFAULT_RECONNECT = Object.freeze({ minMs: 1000, maxMs: 300_000, concurrentMs: 60_000, stableMs: 60_000 });
+const DEFAULT_RECONNECT = Object.freeze({ minMs: 1000, maxMs: 30_000, concurrentMs: 60_000, stableMs: 60_000, watchMs: 30_000 });
 export const KNOWN_DEVICES_FILE = 'known-devices.json';
 export const PAIRING_STATUS_TTL_MS = 60_000;
 export const MAX_KNOWN_DEVICES = 256;
@@ -31,6 +31,8 @@ export const MAX_PENDING_PER_ADDRESS = 4;
 export const MAX_UNTRUSTED_PER_ADDRESS = 4;
 export const INIT_TIMEOUT_MS = 5_000;
 const OTHER_SERVER_GOODBYES = new Set(['another_server', 'concurrent_attempt']);
+// A speaker that left for one of these reasons is not called back by the watchdog.
+const STAY_AWAY_GOODBYES = new Set(['another_server', 'user_request', 'unauthorized', 'unpaired', 'pairing_required']);
 const STATUS_BY_EVENT = Object.freeze({
   started: 'waiting', code_queued: 'waiting', code_sent: 'waiting', confirmed: 'waiting', persist: 'waiting',
   pending: 'pending', need_code: 'need_code', wrong_code: 'wrong_code', paired: 'paired', aborted: 'aborted',
@@ -128,6 +130,7 @@ export class SendspinServer extends EventEmitter {
   #known = new Map();
   #knownWrite = Promise.resolve();
   #knownTimer = null;
+  #watchTimer = null;
   #pendingByAddress = new Map();
   #slots = new WeakMap();
 
@@ -191,6 +194,28 @@ export class SendspinServer extends EventEmitter {
     this.#log.info(`[sendspin] listening on ws://${this.#opts.host}:${this.port}${this.#opts.path} as ${this.serverId.slice(0, 8)}`);
     for (const k of this.#known.values()) if (k.manual) this.#dialSafe(k.url);
     if (this.#opts.discovery) await this.#startDiscovery();
+    this.#watchTimer = setInterval(this.#guard('watch', () => this.#watchKnown()), this.#opts.reconnect.watchMs);
+    this.#watchTimer.unref?.();
+  }
+
+  // Trusted speakers that went offline (sleep, Wi-Fi drop, an mDNS goodbye whose re-announcement never arrived)
+  // are called back at their last address; a failed call is not retried until the next round.
+  #watchKnown() {
+    if (this.#stopping) return;
+    for (const k of this.#known.values()) {
+      if (!k.url || this.#clients.has(k.clientId) || STAY_AWAY_GOODBYES.has(k.lastGoodbye) || !this.isTrusted(k.clientId)) continue;
+      const href = parseWsUrl(k.url);
+      if (!href || this.#dials.has(href) || !this.#onLan(new URL(href).hostname)) continue;
+      this.#log.debug(`[sendspin] calling ${k.clientId.slice(0, 8)} back at ${href}`);
+      const dial = { url: href, source: k.manual ? 'address' : 'watch', wanted: true, backoff: this.#opts.reconnect.minMs, conn: null, socket: null, timer: null, oneShot: true };
+      this.#dials.set(href, dial);
+      this.#dial(dial);
+    }
+  }
+
+  #onLan(host) {
+    const a = normalizeAddress(host.replace(/^\[|\]$/g, ''));
+    return Boolean(a) && (isLoopbackAddress(a) ? this.#opts.allowLoopback : onLocalSubnet(a, this.#opts.subnets()));
   }
 
   #dialSafe(url) {
@@ -505,6 +530,7 @@ export class SendspinServer extends EventEmitter {
     const ws = new WebSocket(dial.url, { maxPayload: MAX_WS_PAYLOAD, perMessageDeflate: false, handshakeTimeout: 10_000, followRedirects: false });
     dial.socket = ws;
     ws.once('open', this.#guard('outbound connection', () => {
+      dial.oneShot = false;
       dial.conn = this.#attach(ws, { direction: 'outbound', url: dial.url });
     }, () => ws.terminate()));
     ws.on('error', (err) => {
@@ -514,6 +540,10 @@ export class SendspinServer extends EventEmitter {
     ws.once('close', this.#guard('dial close', () => {
       if (dial.conn) return;
       dial.socket = null;
+      if (dial.oneShot) {
+        if (this.#dials.get(dial.url) === dial) this.#dials.delete(dial.url);
+        return;
+      }
       this.#scheduleRedial(dial, 'backoff');
     }));
   }
@@ -528,6 +558,7 @@ export class SendspinServer extends EventEmitter {
       return;
     }
     const decision = reconnectDecision(info);
+    this.#log.info(`[sendspin] ${dial.url} closed (${info.goodbye ? `goodbye ${info.goodbye}` : `code ${info.code}`}); reconnect: ${decision}`);
     if (decision === 'now' && info.durationMs >= this.#opts.reconnect.stableMs) dial.backoff = this.#opts.reconnect.minMs;
     this.#scheduleRedial(dial, decision);
   }
@@ -662,6 +693,8 @@ export class SendspinServer extends EventEmitter {
     for (const entry of this.#pairings.values()) clearTimeout(entry.timer);
     clearTimeout(this.#knownTimer);
     this.#knownTimer = null;
+    clearInterval(this.#watchTimer);
+    this.#watchTimer = null;
   }
 
   // ---- pairing ----

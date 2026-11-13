@@ -126,6 +126,10 @@ class VelvetClient:
     async def rooms(self) -> list[dict[str, Any]]:
         """All rooms the user may control."""
         data = await self._request("GET", "/api/v1/rooms")
+        if data.get("enabled") is False:
+            raise VelvetApiError(409, "rooms_disabled", "Velvet Rooms is disabled")
+        if data.get("allowed") is False:
+            raise VelvetApiError(403, "forbidden", "Velvet Rooms is not allowed for this user")
         return data.get("rooms", [])
 
     async def room_state(self, room_id: str) -> dict[str, Any]:

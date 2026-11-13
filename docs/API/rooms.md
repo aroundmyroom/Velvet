@@ -14,12 +14,13 @@ JSON out. Field names below are exact.
 
 | Situation | Admin routes | Player routes |
 |---|---|---|
-| Feature disabled in config (`sendspin.enabled: false`) | work (`status` returns `enabled: false`, `devices: []`) | `404 { error, code: "rooms_disabled" }` |
-| User lacks `allow-mpv-cast` (and is not admin) | `403` (admin routes are admin-only anyway) | `403 { error, code: "forbidden" }` |
+| Feature disabled in config (`sendspin.enabled: false`) | work (`status` returns `enabled: false`, `devices: []`) | `GET /api/v1/rooms` answers `200 { enabled: false, allowed, rooms: [], sources: [] }`; every other player route `409 { error, code: "rooms_disabled" }` |
+| User lacks `allow-mpv-cast` (and is not admin) | `403` (admin routes are admin-only anyway) | `GET /api/v1/rooms` answers `200 { enabled: true, allowed: false, rooms: [], sources: [] }`; every other player route `403 { error, code: "forbidden" }` |
 | Server enabled but listener failed to start | `status.running: false`, `status.error` set | `503 { error, code: "not_running" }` |
 
-The player uses `GET /api/v1/rooms` as its capability check: any non-2xx means
-"hide Rooms". Admins may call every player route even without `allow-mpv-cast`
+The player uses `GET /api/v1/rooms` as its capability check: `enabled: false`
+or `allowed: false` means "hide Rooms". A feature that is switched off is not
+an error, so this call never answers 404 for it. Admins may call every player route even without `allow-mpv-cast`
 (the admin page edits rooms through them).
 
 ### Errors
@@ -30,7 +31,7 @@ The player uses `GET /api/v1/rooms` as its capability check: any non-2xx means
 |---|---|---|
 | 400 | `invalid_body` | Body fails validation (types, limits below). |
 | 403 | `forbidden` | Missing permission. |
-| 404 | `rooms_disabled` | Player route while the feature is off. |
+| 409 | `rooms_disabled` | Player route (other than the room list) while the feature is off. |
 | 404 | `not_found` | Unknown `clientId` or room `id`. |
 | 400 | `bad_address` | `devices/add`: not an IP address on Velvet's own network, or a bad port or path. |
 | 409 | `not_connected` | Action needs a live connection (pair-code start, connect to a device that is not discoverable). |
@@ -258,7 +259,7 @@ whose approval is revoked or that is unpaired leaves its room.
 
 | Method | Endpoint | Body | Response |
 |---|---|---|---|
-| `GET` | `/api/v1/rooms` | — | `{ enabled: true, rooms: Room[], sources: Source[] }` (rooms with at least one trusted member; sorted by name). `Source = { clientId, name, available, signal, streaming, roomId }`: devices allowed as a source and connected with the role active. |
+| `GET` | `/api/v1/rooms` | — | `{ enabled: true, allowed: true, rooms: Room[], sources: Source[] }`, or `{ enabled: false \| true, allowed, rooms: [], sources: [] }` while the feature is off or the user may not use it (rooms with at least one trusted member; sorted by name). `Source = { clientId, name, available, signal, streaming, roomId }`: devices allowed as a source and connected with the role active. |
 | `POST` | `/api/v1/rooms` | `{ name, members: string[] (clientIds, 1–32) }` | `201 Room`. Members leave their current rooms (a solo room left empty disappears; playback in the room they leave continues for the others). |
 | `PATCH` | `/api/v1/rooms/:id` | `{ name?, members? }` | `Room`. `members` is the full new list. A speaker belongs to exactly one room: listing it here moves it out of its old room; a speaker dropped from the list returns to a solo room named after it. An empty `members` → 400. |
 | `DELETE` | `/api/v1/rooms/:id` | — | `{ ok: true }`. Stops the room; every member returns to its own solo room. 409 `solo_room` for a one-member room. |
