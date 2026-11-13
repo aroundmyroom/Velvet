@@ -229,6 +229,77 @@ speaker, see [Backup](#backup).
 
 ---
 
+## Step by step
+
+Three things most people want to do. You need the **Cast** permission (an
+admin has it), and Velvet Rooms switched on with at least one speaker allowed
+or paired (see [Enabling it](#enabling-it)).
+
+### 1. Play music in one room
+
+1. Play something in the browser as usual, or just put songs in the queue.
+2. Click the **Cast to…** button in the player bar (the box-shaped icon right
+   of the play buttons, next to the headphones).
+3. Under **Velvet Rooms**, click the room (a speaker you added is a room of
+   its own, named after the speaker).
+
+The queue moves to the room, the song continues where it was, and above the
+player buttons you see **Playing in *room* · Play in this browser**. The
+player is now the remote for that room: play/pause, next, the seek bar,
+volume, the EQ and the queue all work on the room. You can close the browser;
+the room keeps playing.
+
+To get the music back in the browser, click **Play in this browser** (or
+pick *Browser* under **Cast to…**).
+
+### 2. Play the same music on several speakers
+
+Put the speakers in **one room**: everything in a room plays in sync.
+
+1. Click **Cast to…**, then the **pencil** next to *Velvet Rooms*. This
+   opens *Edit rooms* (the same as *Admin → Velvet Rooms → Rooms*).
+2. Under **New room**, type a name (for example *Downstairs*), tick the
+   speakers that should play together and click **Create room**.
+3. Pick that room under **Cast to…**, as in step 1.
+
+To add a speaker later, use **Move to…** next to it and choose the room. It
+joins while the music plays and starts in sync. A **Sonos** can join a room
+too: *Add a Sonos…* in the same editor (see
+[Sonos speakers in a room](#sonos-speakers-in-a-room)). To play somewhere
+alone again, *Move to… → Its own room*; **Split up** puts every speaker of a
+room back on its own.
+
+### 3. Play different music in two rooms
+
+Every room has its own queue, its own position, its own EQ and its own
+Auto-DJ, all on the server, so rooms can play different music at the same
+time. A browser tab controls **one room at a time**, so use one tab or
+device per room:
+
+1. In the first tab (or on your laptop), pick room **A** and play the first
+   music.
+2. Open Velvet in a **second tab** (or on your phone) and pick room **B**.
+   A new tab starts with your last queue, so room B first gets that; now
+   play an album, a playlist or Auto-DJ in this tab and it replaces room B's
+   music.
+
+Both rooms keep playing, also when you close the tabs. With Auto-DJ on, each
+room picks its own next songs.
+
+Good to know:
+
+- **Picking a room sends your queue to it.** Picking room B in the tab that
+  controls room A *moves* the music: room A stops and room B plays your
+  queue. That is why you use a second tab or device for a second room.
+- **Picking a room that already plays replaces its music** with your queue.
+  A tab that started a room reconnects to it when you reload the page, without
+  changing anything.
+- **Home Assistant** shows every room as its own media player, so you can
+  start and control each room separately there, also by voice (see
+  [Home Assistant](home-assistant.md)).
+
+---
+
 ## Rooms
 
 The **Rooms** card (in *Admin → Velvet Rooms*) lists every room with its state
