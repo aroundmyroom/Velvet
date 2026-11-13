@@ -2,6 +2,14 @@
 
 ### Fixed
 
+- The waveform stood still while a Velvet Room played: its played part was
+  coloured from the browser's own (paused) audio. It now follows the room's
+  position, like the progress ball and the time.
+- **A play counted twice.** The play count went up when a song started and
+  again when it was scrobbled to Last.fm (after 30 seconds), in the web
+  player, the mobile player and rooms. It now goes up once per play, at the
+  start; the scrobble no longer touches it. Play counts recorded before this
+  fix stay as they are.
 - **Velvet Rooms now scrobble, count plays and keep statistics.** Music
   playing in a room was never scrobbled to Last.fm or ListenBrainz, did not
   raise play counts, reached no Discord or custom webhook and was missing from

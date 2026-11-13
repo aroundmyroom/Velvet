@@ -20736,6 +20736,7 @@ function _roomPaintProgress() {
   }
   const thumb = document.getElementById('prog-thumb');
   if (thumb) { thumb.style.display = ''; thumb.style.left = pct + '%'; }
+  if (_waveformData?.length) _drawWaveformIfMoved();
   const lText = S.timeFlipped ? fmt(dur) : fmt(pos);
   const rText = S.timeFlipped ? fmt(Math.max(0, dur - pos)) : fmt(dur);
   for (const [id, txt] of [['time-cur', lText], ['time-total', rText], ['np-time-cur', lText], ['np-time-total', rText]]) {
@@ -22655,9 +22656,16 @@ function _drawWaveform() {
     return;
   }
 
-  const data   = _waveformData;
-  const pct    = audioEl.duration > 0 ? audioEl.currentTime / audioEl.duration : 0;
-  _drawWaveformBars(ctx, W, H, data, pct);
+  _drawWaveformBars(ctx, W, H, _waveformData, _waveformPct());
+}
+
+// How far the song is, 0..1: the room's position while a room plays (the browser's own audio is paused then).
+function _waveformPct() {
+  if (_room) {
+    const dur = _roomDurSec();
+    return dur > 0 ? Math.max(0, Math.min(1, _roomPosSec() / dur)) : 0;
+  }
+  return audioEl.duration > 0 ? audioEl.currentTime / audioEl.duration : 0;
 }
 
 function _updateWaveformProgress() {
@@ -22676,13 +22684,15 @@ function _startWaveformRaf() {
     // timeupdate fires ~4 Hz; at 60 fps ~93% of frames would redraw 1600 fillRects
     // for zero visible change. Guard on whole-pixel split position, not in
     // _drawWaveform itself — several callers need an unconditional clear (track change).
-    const canvas = document.getElementById('waveform-canvas');
-    const W = canvas ? canvas.offsetWidth : 0;
-    const dur = audioEl.duration || 0;
-    const splitPx = (dur > 0 && W > 0) ? Math.round((audioEl.currentTime / dur) * W) : 0;
-    if (splitPx !== _wfLastSplitPx) { _wfLastSplitPx = splitPx; _drawWaveform(); }
+    _drawWaveformIfMoved();
     _waveformRaf = requestAnimationFrame(loop);
   }());
+}
+function _drawWaveformIfMoved() {
+  const canvas = document.getElementById('waveform-canvas');
+  const W = canvas ? canvas.offsetWidth : 0;
+  const splitPx = W > 0 ? Math.round(_waveformPct() * W) : 0;
+  if (splitPx !== _wfLastSplitPx) { _wfLastSplitPx = splitPx; _drawWaveform(); }
 }
 function _stopWaveformRaf() {
   if (_waveformRaf) { cancelAnimationFrame(_waveformRaf); _waveformRaf = null; }

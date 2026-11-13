@@ -90,8 +90,9 @@ Clears `lastfm-user`, `lastfm-session`, and `lastfm-password` (legacy) from conf
 
 ### POST `/api/v1/lastfm/scrobble-by-filepath`
 
-Scrobbles a track by its Velvet filepath and logs the play count in the user's metadata.  
-This is the endpoint the player calls automatically after 30 seconds of playback.
+Scrobbles a track by its Velvet filepath to Last.fm.  
+This is the endpoint the player calls automatically after 30 seconds of playback. It does not
+change the play count: that is raised once per play by `POST /api/v1/db/stats/log-play` at the start.
 
 **Request body**
 ```json

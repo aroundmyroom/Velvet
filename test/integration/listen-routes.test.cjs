@@ -31,10 +31,11 @@ describe('listen routes', async () => {
     assert.equal((await post('/api/v1/db/stats/log-play', {})).status, 400);
   });
 
-  it('Last.fm scrobble-by-filepath counts the play without a Last.fm link; unknown songs are refused', async () => {
+  it('a play counts once: log-play raises the count, the Last.fm scrobble does not; unknown songs are refused', async () => {
     const before = (await playCount(FP)) ?? 0;
+    assert.deepEqual((await post('/api/v1/db/stats/log-play', { filePath: FP })).body, { ok: true });
     assert.deepEqual((await post('/api/v1/lastfm/scrobble-by-filepath', { filePath: FP })).body, {});
-    assert.equal(await playCount(FP), before + 1);
+    assert.equal(await playCount(FP), before + 1, 'start plus scrobble is one play');
     assert.deepEqual((await post('/api/v1/lastfm/scrobble-by-filepath', { filePath: 'testlib/nope.mp3' })).body, { scrobble: false });
   });
 

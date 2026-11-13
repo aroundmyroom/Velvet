@@ -354,17 +354,9 @@ export function findUserFile(filePath, user) {
  * of the Last.fm outcome: true / false, null when the user is not linked.
  */
 export function scrobbleByFilepath(user, filePath) {
+  // The play count is raised once per play by log-play (src/api/db.js logPlay), not again here.
   const file = findUserFile(filePath, user);
   if (!file) return null;
-  const result = db.findUserMetadata(file.hash, user.username);
-  if (result) {
-    result.pc = result.pc && typeof result.pc === 'number' ? result.pc + 1 : 1;
-    result.lp = Date.now();
-    db.updateUserMetadata(result);
-  } else {
-    db.insertUserMetadata({ user: user.username, hash: file.hash, pc: 1, lp: Date.now() });
-  }
-  db.saveUserDB();
   if (!lastfmLinked(user)) return Promise.resolve(null);
   return new Promise((resolve) => {
     const timer = setTimeout(() => resolve(false), LASTFM_SCROBBLE_TIMEOUT_MS);
