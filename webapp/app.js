@@ -7344,13 +7344,14 @@ const VIZ = (() => {
     const inst = _vvInst;
     try {
       await inst.setVisualizer(id);
-      if (_vvInst === inst) _vvStore(id);
+      if (_vvInst === inst && _vvStyleId === id) _vvStore(id);
     } catch (e) {
       console.warn('[Velvet] VoltViz style failed:', id, e);
       if (_vvInst !== inst) return;
       toast(t('player.toast.voltvizStyleFailed'));
       if (_vvStyleId !== id) return;
-      _vvStyleId = prevId;
+      // After rapid steps prevId may never have mounted; the renderer knows what is really on screen.
+      _vvStyleId = inst.visualizer || prevId;
       _vvLabel();
     }
   }
