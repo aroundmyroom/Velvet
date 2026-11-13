@@ -67,8 +67,11 @@ On top of the scoring above, `_djPickSong()` also applies one **hard**
 artist-repeat floor (`DJ_ARTIST_HARD_FLOOR = 3`): candidates whose artist
 matches one of the last 3 played artists are excluded outright, regardless of
 score. The match is collaboration-aware: `Eric Prydz` overlaps
-`Eric Prydz & Steve Angello`, and `Mel & Kim` overlaps
-`Mel & Kim vs. Frantique`. This exists because `_batchRandomSongs()` can legitimately drop the
+`Eric Prydz & Steve Angello`, `Mel & Kim` overlaps
+`Mel & Kim vs. Frantique`, and `04. Clean Bandit Fe. Mabel` overlaps
+`Clean Bandit` (leaked track number and the `Fe.` shorthand; vinyl-side
+prefixes such as `A1.` likewise).
+This exists because `_batchRandomSongs()` can legitimately drop the
 server-side cooldown list entirely when the similar-artist pool is too narrow
 to satisfy both filters at once — without this backstop, the 10% diversity
 scoring bonus alone wasn't always enough to outweigh a strong similar-artist/
@@ -193,6 +196,38 @@ continue to use the original single-song-per-request endpoint behaviour
 (`_leanRandomPick` / `_fullLoadFallbackChain` / `_qualityTierFilter` /
 `_selectRandom` in `src/api/db.js`), unchanged.
 
+## Server-side radio (Subsonic `getSimilarSongs`, Music Assistant)
+
+The same decision also runs on the server, for clients that only ask "what
+comes after this song?" — Music Assistant's radio calls Subsonic
+`getSimilarSongs`. `src/autodj/radio.js` plays a session forward without a
+browser: for every next track it looks up the similar artists of the
+*current* track, builds the candidate pool with the same code as the
+endpoint above (`src/autodj/pool.js`, shared with `POST /api/v1/db/random-songs`),
+scores it with `src/autodj/scoring.js` and updates the BPM / year / genre /
+artist histories the way the browser does when a track starts. The browser
+keeps its own copy of the scoring; `test/autodj-parity.test.mjs` evaluates
+`_djScoreSong` and friends from `webapp/app.js` and the server module on the
+same 3000 fixtures, so the two cannot drift apart silently.
+
+What the radio adds, because it answers with a whole list at once:
+
+- the seed is never returned and no song appears twice — not even another
+  version of it ("Hot Stuff" and "Hot Stuff (12" Version)");
+- the seed's artist starts in the artist history (no immediate repeat);
+- BPM continuity is on (the rolling BPM anchor), tolerance ±8;
+- untagged files are only used when nothing else is left (they show as
+  "[unknown]" in Music Assistant);
+- when the current similar artists are used up, or every artist of a small
+  library is in the cooldown list, the pool widens instead of ending early;
+- the user's synced Auto-DJ minimum rating and keyword filter apply;
+  audiobook and recording folders never do;
+- Last.fm time per request is capped (3 s for the seed, 0.6 s for the rest
+  of the chain); an artist not looked up in time counts as a miss and the
+  last list is kept, exactly as above. Lists are cached (6 h from Last.fm,
+  30 min resolved to library artists) and the radio's artists are looked up
+  in the background, so the next request is fast.
+
 ## What the server log shows (`journalctl -fu music.service`)
 
 The decision is made in the browser, so the server log carries three compact
@@ -206,7 +241,9 @@ opening the browser console:
 ```
 
 - **similar-artists** — what Last.fm returned and which part of the credit
-  finally matched. `→ 0 (tried: …)` means the whole pick ran without the
+  finally matched. Logged when the list is fetched; the resolved list is then
+  reused for 30 minutes (the raw Last.fm answer for 6 hours), so a repeat
+  lookup is silent. `→ 0 (tried: …)` means the whole pick ran without the
   similar-artist signal.
 - **pool** — the candidate scope the client scored, and any fallback that
   widened it (cooldown list dropped / similar filter dropped).
