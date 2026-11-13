@@ -40,6 +40,12 @@ The mode button cycles through five modes:
 - **Resources.** Switching to another mode or closing the visualizer destroys
   the VoltViz renderer, so no animation or GPU work keeps running in the
   background.
+- **Cyber Matrix can wash out to white.** Its glowing particles have a fixed
+  size in screen pixels and get brighter with the bass, so in a small window
+  (below roughly 1280×720) or with bass-heavy music they add up to a white
+  screen. Upstream VoltViz behaves the same; it is not a Velvet or graphics
+  driver problem. Full screen and calmer music show the intended particle
+  grid.
 - **Styles not included.** Of upstream VoltViz, Moss Ball and Flame
   (non-commercial licenses) and Aurora Waves, Shambhala, Inside Quantum, Holo
   Blinds and Particles Stream (adapted from outside shaders or demos whose
