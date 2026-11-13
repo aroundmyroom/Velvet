@@ -13,7 +13,7 @@
   <script defer src="../assets/js/lib/butterchurn.min.js"></script>
   <script defer src="../assets/js/lib/audiomotion-analyzer.js"></script>
   <script defer src="../assets/js/lib/qr.js"></script>
-  <link rel="stylesheet" href="/style.css?v=0.9.2-a3da5ce5">
+  <link rel="stylesheet" href="/style.css?v=0.9.2-3ba3ba9e">
   <script src="/assets/js/lib/simplewebauthn-browser.js"></script>
   <script src="/assets/js/i18n.js"></script>
 </head>
@@ -807,11 +807,6 @@
 
   <!-- PLAYER BAR -->
   <footer class="player">
-    <div id="player-room" class="room-banner player-room hidden" role="status">
-      <span class="room-banner-dot" aria-hidden="true"></span>
-      <span id="player-room-text" class="room-banner-text"></span>
-      <button id="player-room-back" type="button" class="room-banner-btn" data-i18n="player.rooms.takeBack">Play in this browser</button>
-    </div>
     <!-- Left: now playing info (click to expand) -->
     <div class="player-left" id="np-open-btn" title="Expand Now Playing" data-i18n="player.ctrl.expandNP" data-i18n-attr="title">
       <div id="player-art" class="player-thumb">
@@ -832,6 +827,11 @@
     <!-- Center: controls + progress -->
     <div class="player-center">
       <div class="player-controls">
+        <div id="player-room" class="room-banner player-room hidden" role="status">
+          <span class="room-banner-dot" aria-hidden="true"></span>
+          <span id="player-room-text" class="room-banner-text"></span>
+          <button id="player-room-back" type="button" class="room-banner-btn" data-i18n="player.rooms.takeBack">Play in this browser</button>
+        </div>
         <div class="ctrl-transport">
         <button id="shuffle-btn" class="ctrl-btn ctrl-sm" title="Shuffle" data-i18n="player.ctrl.shuffle" data-i18n-attr="title">
           <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="square" stroke-linejoin="miter">
