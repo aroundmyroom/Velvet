@@ -2681,7 +2681,12 @@ function _djArtistKeys(name) {
     out.add(key);
   };
   add(name);
-  const chunks = String(name || '').split(/\s+(?:feat\.?|ft\.?|featuring|vs\.?|pres\.?|presents?\b|\bx\b)\s+/i);
+  // "04. Clean Bandit Fe. Mabel", "A1. Donna Summer", "02.Donna Summer": a leaked
+  // track / vinyl-side number and the "Fe." shorthand (see src/util/artist-credit.js)
+  // must not hide the main artist.
+  const credit = String(name || '').replace(/^[A-Z]?\d{1,3}\.\s*/, '');
+  add(credit);
+  const chunks = credit.split(/\s+(?:feat\.?|ft\.?|fe\.|featuring|vs\.?|pres\.?|presents?\b|\bx\b)\s+/i);
   for (const chunk of chunks) {
     add(chunk);
     for (const part of chunk.split(/\s+(?:&|and)\s+/i)) add(part);

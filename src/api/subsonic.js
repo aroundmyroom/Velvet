@@ -26,6 +26,12 @@ import * as scanProgress from '../state/scan-progress.js';
 import { ffmpegBin, ensureFfmpeg } from '../util/ffmpeg-bootstrap.js';
 import { resolveChildPath, resolvePathWithinRoot } from '../util/path-security.js';
 import * as transcode from './transcode.js';
+import { radioForUser } from '../autodj/library.js';
+import { resolveTrackGain } from './db.js';
+import { splitRaw } from '../util/genre-merge.js';
+import { songLyrics } from '../util/song-lyrics.js';
+import { runSavedSmartPlaylist, countSavedSmartPlaylist } from './smart-playlists.js';
+import { rankTopSongs } from '../util/top-songs.js';
 
 const require = createRequire(import.meta.url);
 const packageJson = require('../../package.json');
@@ -313,6 +319,12 @@ function resolveVpaths(req) {
   return [...dbVpaths];
 }
 
+// The user's root (DB) vpaths — the ones whose rows getSong & co. will serve.
+function _rootVpaths(req) {
+  const meta = req.subsonicVpathMeta || {};
+  return req.subsonicVpaths.filter(v => !meta[v]?.parentVpath);
+}
+
 /**
  * Return the filepath prefix for the selected musicFolderId, or null if
  * the folder is not a child vpath or no folder was selected.
@@ -346,6 +358,29 @@ function resolveExcludePrefixes(req) {
     .filter(([, m]) => m.parentVpath === vp && m.filepathPrefix)
     .map(([, m]) => ({ vpath: vp, prefix: m.filepathPrefix }));
   return excl.length > 0 ? excl : null;
+}
+
+// Velvet's saved smart playlists appear as read-only Subsonic playlists
+// "smart:<id>", evaluated each time they are opened.
+const SMART_PREFIX = 'smart:';
+function _smartPlaylistId(id) {
+  const m = /^smart:(\d+)$/.exec(String(id ?? ''));
+  return m ? Number.parseInt(m[1], 10) : null;
+}
+function _smartPlaylistHeader(sp, owner, songCount, songs = null) {
+  const created = isoOrNull(sp.created) || new Date().toISOString().replaceAll('.000Z', 'Z');
+  return {
+    id: SMART_PREFIX + sp.id,
+    name: sp.name,
+    comment: 'Velvet smart playlist',
+    owner,
+    public: false,
+    readonly: true,
+    songCount,
+    duration: songs ? songs.reduce((t, s) => t + (s.duration || 0), 0) : 0,
+    created,
+    changed: new Date().toISOString().replaceAll(/\.\d{3}Z$/g, 'Z'),
+  };
 }
 
 // ── Song/Album/Artist object builders ────────────────────────────────────────
@@ -508,6 +543,54 @@ function _expandDirFiles(files, parentId) {
   return out;
 }
 
+// OpenSubsonic replayGain from the same priority chain the web player uses
+// (resolveTrackGain: rsgain measurement → R128 tag → ReplayGain tag). Gains in
+// dB against the ReplayGain 2.0 reference (-18 LUFS) — Music Assistant turns
+// them into loudness as -18 - gain. Peaks are linear amplitude, as the spec
+// and ReplayGain tags define them; Velvet stores true peak in dBFS.
+function _linearPeak(dbfs) {
+  return dbfs == null || !Number.isFinite(dbfs) ? null : Math.round(10 ** (dbfs / 20) * 1e6) / 1e6;
+}
+function _roundDb(v) {
+  return Math.round(v * 100) / 100;
+}
+function _replayGain(row) {
+  const track = resolveTrackGain(row, 'track');
+  const rg = {};
+  if (track) {
+    rg.trackGain = _roundDb(track.gain);
+    const peak = _linearPeak(track.peak);
+    if (peak != null) rg.trackPeak = peak;
+  }
+  if (row.rg_album_gain_db != null) {
+    rg.albumGain = _roundDb(row.rg_album_gain_db);
+    const peak = _linearPeak(row.rg_album_peak_dbfs);
+    if (peak != null) rg.albumPeak = peak;
+  }
+  return Object.keys(rg).length ? rg : null;
+}
+
+// OpenSubsonic song fields Music Assistant (and others) read: audio format,
+// BPM, genre list, MusicBrainz recording id, artist arrays.
+function _openSubsonicSongFields(row, artist, artistId, albumArtist) {
+  const out = {};
+  if (Number.isFinite(row.sample_rate) && row.sample_rate > 0) out.samplingRate = Math.round(row.sample_rate);
+  if (Number.isFinite(row.bit_depth) && row.bit_depth > 0) out.bitDepth = Math.round(row.bit_depth);
+  if (Number.isFinite(row.channels) && row.channels > 0) out.channelCount = Math.round(row.channels);
+  if (Number.isFinite(row.bpm) && row.bpm > 0) out.bpm = Math.round(row.bpm);
+  if (row.genre) {
+    const genres = splitRaw(String(row.genre));
+    if (genres.length) out.genres = genres.map(name => ({ name }));
+  }
+  if (row.mbid) out.musicBrainzId = row.mbid;
+  if (artist) {
+    out.displayArtist = artist;
+    if (artistId) out.artists = [{ id: artistId, name: artist }];
+  }
+  if (albumArtist) out.displayAlbumArtist = albumArtist;
+  return out;
+}
+
 function buildSong(row, _vpaths) {
   // contentType heuristic from format
   const fmt = (row.format || 'mp3').toLowerCase();
@@ -520,8 +603,9 @@ function buildSong(row, _vpaths) {
   };
   const contentType = mimeMap[fmt] || 'audio/mpeg';
 
-  // Estimate bitRate from format average — avoids slow fs.statSync on network mounts
-  const bitRate = FORMAT_BITRATE[fmt] || 128;
+  // Scanned bitrate (kbps) when known; else a format average — never fs.stat
+  // (slow on network mounts).
+  const bitRate = Number.isFinite(row.bitrate) && row.bitrate > 0 ? Math.round(row.bitrate) : (FORMAT_BITRATE[fmt] || 128);
 
   // created: use file mtime stored in DB (milliseconds since epoch)
   const created = row.modified ? new Date(row.modified).toISOString() : null;
@@ -566,14 +650,13 @@ function buildSong(row, _vpaths) {
   if (row.lastPlayed || row.lp) {
     song.played = isoOrNull(row.lastPlayed || row.lp);
   }
-  if (row.replaygainTrackDb != null || row['replaygain-track-db'] != null) {
-    const rgVal = row.replaygainTrackDb ?? row['replaygain-track-db'];
-    song.replayGain = { trackGain: rgVal };
-  }
+  const replayGain = _replayGain(row);
+  if (replayGain) song.replayGain = replayGain;
   if (row.rating) {
     song.userRating = Math.min(5, Math.round(row.rating / 2));
   }
   if (row.disk) song.discNumber = row.disk;
+  Object.assign(song, _openSubsonicSongFields(row, artist, artistId, albumArtist));
 
   // Advertise transcodedSuffix for lossless formats so clients display the correct
   // output format (e.g. "Opus 192 kbps" instead of "FLAC") when transcoding is on.
@@ -609,6 +692,8 @@ function buildAlbum(albumRow, songs) {
     ...(artist && albumRow.artist_id ? { artistId: albumRow.artist_id } : {}),
     ...(albumRow.aaFile ? { coverArt: albumRow.aaFile } : {}),
     ...(albumRow.year ? { year: albumRow.year } : {}),
+    ...(albumRow.genre ? { genre: albumRow.genre, genres: splitRaw(String(albumRow.genre)).map(name => ({ name })) } : {}),
+    ...(albumRow.mb_release_id ? { musicBrainzId: albumRow.mb_release_id } : {}),
   };
   if (songs) {
     album.song = songs.map(s => buildSong(s));
@@ -699,6 +784,19 @@ function _buildArtistInfoImageUrl(req, artistId) {
   return base + '/rest/getCoverArt?id=ar-' + String(artistId) + '&v=1.16.1&c=velvet';
 }
 
+// Artist info: Velvet's stored biography (Last.fm / TheAudioDB enrichment)
+// and MusicBrainz id, plus the artist image.
+function _artistInfo(req) {
+  const artistId = String(req.query.id || req.body?.id || '');
+  const imageUrl = _buildArtistInfoImageUrl(req, artistId);
+  const profile = artistId ? db.getArtistProfileByArtistId(artistId) : null;
+  return {
+    biography: profile?.bio || '',
+    ...(profile?.mbid ? { musicBrainzId: profile.mbid } : {}),
+    ...(imageUrl ? { smallImageUrl: imageUrl, mediumImageUrl: imageUrl, largeImageUrl: imageUrl } : {}),
+  };
+}
+
 // Map an Velvet radio station row to a Subsonic internetRadioStation element.
 function _buildRadioStation(s) {
   const obj = {
@@ -715,43 +813,26 @@ function _buildRadioStation(s) {
 
 const _lyricsCache = new Map();
 
-async function _readFileLyrics(fullPath) {
+function _lyricsCacheDir() {
+  const dbDir = config.program.storage?.dbDirectory;
+  return dbDir ? path.join(dbDir, '..', 'lyrics') : null;
+}
+
+async function _rowLyrics(row) {
+  const cached = _cacheGet(_lyricsCache, row.hash);
+  if (cached !== undefined) return cached;
+  const folder = config.program.folders[row.vpath];
+  let fullPath;
   try {
-    const { parseFile } = await import('music-metadata');
-    const meta = await parseFile(fullPath, { skipCovers: true });
-    const results = [];
-
-    // Plain (unsynced) lyrics — common.lyrics is string[]
-    const plain = meta?.common?.lyrics;
-    if (plain?.length) {
-      for (const text of plain) {
-        if (!text?.trim()) continue;
-        const lines = String(text).split(/\r?\n/).map(v => ({ value: v }));
-        results.push({ displayTitle: null, lang: 'xxx', synced: false, line: lines });
-      }
-    }
-
-    // Synced lyrics from native ID3 SYLT tags (music-metadata < v8 exposes as native)
-    const nativeAll = meta?.native ?? {};
-    for (const [tagType, tags] of Object.entries(nativeAll)) {
-      if (!tagType.toLowerCase().startsWith('id3')) continue;
-      for (const tag of tags) {
-        if (tag.id !== 'SYLT') continue;
-        const entries = Array.isArray(tag.value) ? tag.value : [];
-        const lines = entries.map(e => ({
-          value: e.text ?? '',
-          start: typeof e.timestamp === 'number' ? e.timestamp : undefined,
-        })).filter(l => l.value);
-        if (lines.length) {
-          results.push({ displayTitle: null, lang: 'xxx', synced: true, line: lines });
-        }
-      }
-    }
-
-    return results.length ? results : null;
+    fullPath = resolvePathWithinRoot(folder.root, row.filepath);
   } catch {
-    return null;
+    return [];
   }
+  const found = await songLyrics({
+    fullPath, artist: row.artist, title: row.title, duration: row.duration, cacheDir: _lyricsCacheDir(),
+  });
+  _cacheSet(_lyricsCache, row.hash, found);
+  return found;
 }
 
 // ── Route handler factory ────────────────────────────────────────────────────
@@ -931,6 +1012,8 @@ export function setup(velvet) {
       albumCount: albums.length
     };
     const artistObj = buildArtist(artistRow, albums);
+    const mbid = db.getArtistProfileByArtistId(id)?.mbid;
+    if (mbid) artistObj.musicBrainzId = mbid;
     sendResponse(req, res, makeResponse('ok', { artist: artistObj }));
   });
 
@@ -952,6 +1035,8 @@ export function setup(velvet) {
       artist_id:    first.artist_id,
       aaFile:       first.aaFile,
       year:         first.year,
+      genre:        first.genre,
+      mb_release_id: first.mb_release_id,
       songCount:    songs.length
     };
 
@@ -1153,14 +1238,25 @@ export function setup(velvet) {
       return sendResponse(req, res, makeResponse('ok', { [key]: { album: albumObjs } }));
     }
 
-    const rows = _fetchAlbumListRows(db, vp, user, type, limit, pfx, req);
+    const key = req.path.includes('2') ? 'albumList2' : 'albumList';
+    const listed = db.getAlbumListRows(type, vp, user, {
+      size, offset, filepathPrefix: pfxValue,
+      fromYear: qparam(req, 'fromYear') ?? req.body?.fromYear,
+      toYear:   qparam(req, 'toYear')   ?? req.body?.toYear,
+      genre:    qparam(req, 'genre')    ?? req.body?.genre,
+    });
+    if (listed) {
+      return sendResponse(req, res, makeResponse('ok', { [key]: { album: listed.map(a => buildAlbum(a, null)) } }));
+    }
+
+    const rows = _fetchAlbumListRows(db, vp, user, type, limit * 4, pfx, req);
 
     const seen = {}, albumRows = [];
     for (const r of rows) {
       if (!r.album_id || seen[r.album_id]) continue;
       seen[r.album_id] = true;
       albumRows.push(r);
-      if (albumRows.length >= size) break;
+      if (albumRows.length >= limit) break;
     }
 
     const statsMap  = db.getAlbumStatsByIds(albumRows.map(r => r.album_id));
@@ -1174,7 +1270,6 @@ export function setup(velvet) {
       }, null);
     });
 
-    const key = req.path.includes('2') ? 'albumList2' : 'albumList';
     sendResponse(req, res, makeResponse('ok', { [key]: { album: albumObjs.slice(offset) } }));
   };
 
@@ -1649,39 +1744,29 @@ export function setup(velvet) {
 
   // ── getLyrics / getLyricsBySongId ────────────────────────────────────────────
   // getLyrics (v1): simple text lyrics from title+artist lookup
-  router('getLyrics', (req, res) => {
-    sendResponse(req, res, makeResponse('ok', { lyrics: {} }));
+  router('getLyrics', async (req, res) => {
+    const artist = qparam(req, 'artist') ?? req.body?.artist;
+    const title  = qparam(req, 'title')  ?? req.body?.title;
+    const row = title && artist ? db.findSongByTitleArtist(title, artist, _rootVpaths(req), req.subsonicUser) : null;
+    if (!row || !config.program.folders[row.vpath]) return sendResponse(req, res, makeResponse('ok', { lyrics: {} }));
+    const found = await _rowLyrics(row);
+    if (!found.length) return sendResponse(req, res, makeResponse('ok', { lyrics: {} }));
+    sendResponse(req, res, makeResponse('ok', {
+      lyrics: { artist: row.artist || artist, title: row.title || title, value: found[0].line.map(l => l.value).join('\n') },
+    }));
   });
 
-  // getLyricsBySongId (OpenSubsonic songLyrics extension): reads embedded lyrics
-  // from the file on-demand using music-metadata.
+  // getLyricsBySongId (OpenSubsonic songLyrics extension): sidecar .lrc, tags
+  // embedded in the file, then Velvet's lrclib cache — synced lyrics first.
   router('getLyricsBySongId', async (req, res) => {
     const id = req.query.id || req.body?.id;
     if (!id) return sendResponse(req, res, makeError(ERRORS.MISSING_PARAM.code, 'id required'));
 
     const row = resolveSongRow(id, req.subsonicUser);
-    if (!row || !req.subsonicVpaths.includes(row.vpath)) {
+    if (!row || !req.subsonicVpaths.includes(row.vpath) || !config.program.folders[row.vpath]) {
       return sendResponse(req, res, makeResponse('ok', { lyricsList: { structuredLyrics: [] } }));
     }
-
-    const folder = config.program.folders[row.vpath];
-    if (!folder) return sendResponse(req, res, makeResponse('ok', { lyricsList: { structuredLyrics: [] } }));
-
-    let fullPath;
-    try {
-      fullPath = resolvePathWithinRoot(folder.root, row.filepath);
-    } catch {
-      return sendResponse(req, res, makeResponse('ok', { lyricsList: { structuredLyrics: [] } }));
-    }
-
-    const cacheKey = row.hash;
-    let cached = _cacheGet(_lyricsCache, cacheKey);
-    if (cached === undefined) {
-      cached = await _readFileLyrics(fullPath);
-      _cacheSet(_lyricsCache, cacheKey, cached ?? null);
-    }
-
-    const structuredLyrics = cached ?? [];
+    const structuredLyrics = await _rowLyrics(row);
     sendResponse(req, res, makeResponse('ok', { lyricsList: { structuredLyrics } }));
   });
 
@@ -1748,6 +1833,9 @@ export function setup(velvet) {
       created: new Date(pl.created ?? Date.now()).toISOString(),
       changed: new Date(pl.created ?? Date.now()).toISOString()
     }));
+    for (const sp of db.getSmartPlaylists(req.subsonicUser)) {
+      playlists.push(_smartPlaylistHeader(sp, req.subsonicUser, countSavedSmartPlaylist(sp, req.subsonicVpaths, req.subsonicUser)));
+    }
     sendResponse(req, res, makeResponse('ok', { playlists: { playlist: playlists } }));
   });
 
@@ -1755,6 +1843,16 @@ export function setup(velvet) {
   router('getPlaylist', (req, res) => {
     const id = req.query.id || req.body?.id;
     if (!id) return sendResponse(req, res, makeError(ERRORS.MISSING_PARAM.code, 'id required'));
+
+    const smartId = _smartPlaylistId(id);
+    if (smartId != null) {
+      const sp = db.getSmartPlaylist(smartId, req.subsonicUser);
+      if (!sp) return sendResponse(req, res, makeError(ERRORS.NOT_FOUND.code, ERRORS.NOT_FOUND.message));
+      const songs = runSavedSmartPlaylist(sp, req.subsonicVpaths, req.subsonicUser).map(r => buildSong(r));
+      return sendResponse(req, res, makeResponse('ok', {
+        playlist: { ..._smartPlaylistHeader(sp, req.subsonicUser, songs.length, songs), entry: songs },
+      }));
+    }
 
     const entries = db.loadPlaylistEntries(req.subsonicUser, id);
     const vpaths  = req.subsonicVpaths;
@@ -1843,6 +1941,7 @@ export function setup(velvet) {
   router('updatePlaylist', (req, res) => {
     const rawPlaylistId = qparam(req, 'playlistId') ?? req.body?.playlistId;
     if (!rawPlaylistId) return sendResponse(req, res, makeError(ERRORS.MISSING_PARAM.code, 'playlistId required'));
+    if (_smartPlaylistId(rawPlaylistId) != null) return sendResponse(req, res, makeError(ERRORS.UNAUTH.code, 'Smart playlists are read-only; edit them in Velvet.'));
     const playlistId = sanitizePlaylistName(rawPlaylistId);
 
     const rawNewName = qparam(req, 'name') ?? req.body?.name;
@@ -1895,6 +1994,7 @@ export function setup(velvet) {
     const id = req.query.id || req.body?.id;
     if (!id) return sendResponse(req, res, makeError(ERRORS.MISSING_PARAM.code, 'id required'));
 
+    if (_smartPlaylistId(id) != null) return sendResponse(req, res, makeError(ERRORS.UNAUTH.code, 'Smart playlists are read-only; edit them in Velvet.'));
     db.deletePlaylist(req.subsonicUser, id);
     db.saveUserDB();
     sendResponse(req, res, makeResponse());
@@ -1909,87 +2009,79 @@ export function setup(velvet) {
   // (_buildArtistInfoImageUrl moved to module scope)
 
   router('getArtistInfo', (req, res) => {
-    const artistId  = req.query.id || req.body?.id || '';
-    const imageUrl  = _buildArtistInfoImageUrl(req, artistId);
-    const info = {
-      biography: '',
-      ...(imageUrl ? { smallImageUrl: imageUrl, mediumImageUrl: imageUrl, largeImageUrl: imageUrl } : {}),
-    };
-    sendResponse(req, res, makeResponse('ok', { artistInfo: info }));
+    sendResponse(req, res, makeResponse('ok', { artistInfo: _artistInfo(req) }));
   });
 
   router('getArtistInfo2', (req, res) => {
-    const artistId  = req.query.id || req.body?.id || '';
-    const imageUrl  = _buildArtistInfoImageUrl(req, artistId);
-    const info = {
-      biography: '',
-      ...(imageUrl ? { smallImageUrl: imageUrl, mediumImageUrl: imageUrl, largeImageUrl: imageUrl } : {}),
-    };
-    sendResponse(req, res, makeResponse('ok', { artistInfo2: info }));
+    sendResponse(req, res, makeResponse('ok', { artistInfo2: _artistInfo(req) }));
   });
 
   router('getAlbumInfo',   (req, res) => sendResponse(req, res, makeResponse('ok', { albumInfo:   { notes: '' } })));
   router('getAlbumInfo2',  (req, res) => sendResponse(req, res, makeResponse('ok', { albumInfo2:  { notes: '' } })));
 
   // ── getSimilarSongs / getSimilarSongs2 ───────────────────────────────────────
-  // Uses Last.fm track.getSimilar if an API key is configured. Falls back to empty.
-  const handleSimilarSongs = (req, res, keyName) => {
-    const id    = req.query.id    || req.body?.id;
-    const count = Math.min(Number.parseInt(req.query.count || req.body?.count || '50', 10), 200);
-    if (!id) return sendResponse(req, res, makeError(ERRORS.MISSING_PARAM.code, 'id required'));
-
-    const row = resolveSongRow(id, req.subsonicUser);
-    if (!row || !req.subsonicVpaths.includes(row.vpath)) {
-      return sendResponse(req, res, makeResponse('ok', { [keyName]: { song: [] } }));
-    }
-
-    if (!Scrobbler.apiKey || !row.artist || !row.title) {
-      return sendResponse(req, res, makeResponse('ok', { [keyName]: { song: [] } }));
-    }
-
+  // A radio chain picked by Velvet's Auto-DJ (src/autodj/): each track chosen
+  // against the one before it. Music Assistant uses this for its radio mode.
+  // id may be a song, album or artist id (the album/artist's first song seeds it).
+  // Last.fm track.getSimilar remains the fallback when the chain finds nothing.
+  const lastfmSimilarSongs = (req, row, count) => new Promise(resolve => {
+    if (!Scrobbler.apiKey || !row.artist || !row.title) return resolve([]);
     Scrobbler.GetSimilarSongs({ artist: row.artist, track: row.title }, (data) => {
       try {
-        const tracks = (data?.similartracks?.track || []).slice(0, count);
         const songs = [];
-        for (const t of tracks) {
+        for (const t of (data?.similartracks?.track || []).slice(0, count)) {
           if (!t.name || !t.artist?.name) continue;
           const found = db.findSongByTitleArtist(t.name, t.artist.name, req.subsonicVpaths, req.subsonicUser);
           if (found) songs.push(buildSong(found));
         }
-        sendResponse(req, res, makeResponse('ok', { [keyName]: { song: songs } }));
-      } catch {
-        sendResponse(req, res, makeResponse('ok', { [keyName]: { song: [] } }));
-      }
+        resolve(songs);
+      } catch { resolve([]); }
     }, count);
+  });
+
+  const handleSimilarSongs = async (req, res, keyName) => {
+    const id    = req.query.id    || req.body?.id;
+    const count = Math.max(1, Math.min(Number.parseInt(req.query.count || req.body?.count || '50', 10) || 50, 100));
+    if (!id) return sendResponse(req, res, makeError(ERRORS.MISSING_PARAM.code, 'id required'));
+
+    const rootVpaths = _rootVpaths(req);
+    let row = resolveSongRow(id, req.subsonicUser);
+    if (!row) row = db.getFilesByAlbumId(id, rootVpaths, req.subsonicUser)[0] || null;
+    if (!row) {
+      const album = db.getAlbumsByArtistId(id, rootVpaths)[0];
+      if (album) row = db.getFilesByAlbumId(album.album_id, rootVpaths, req.subsonicUser)[0] || null;
+    }
+    if (!row || !rootVpaths.includes(row.vpath)) {
+      return sendResponse(req, res, makeResponse('ok', { [keyName]: { song: [] } }));
+    }
+
+    let songs = [];
+    try {
+      const { rows } = await radioForUser({ seedRow: row, count, username: req.subsonicUser, vpaths: rootVpaths });
+      songs = rows.map(r => buildSong(r));
+    } catch (e) {
+      winston.warn(`[subsonic] getSimilarSongs radio failed: ${e?.message ?? e}`);
+    }
+    if (!songs.length) songs = await lastfmSimilarSongs(req, row, count);
+    sendResponse(req, res, makeResponse('ok', { [keyName]: { song: songs } }));
   };
   router('getSimilarSongs',  (req, res) => handleSimilarSongs(req, res, 'similarSongs'));
   router('getSimilarSongs2', (req, res) => handleSimilarSongs(req, res, 'similarSongs2'));
 
   // ── getTopSongs ───────────────────────────────────────────────────────────────
-  // Uses Last.fm artist.getTopTracks if an API key is configured.
-  router('getTopSongs', (req, res) => {
-    const artistName = req.query.artist || req.body?.artist;
-    const count      = Math.min(Number.parseInt(req.query.count || req.body?.count || '50', 10), 200);
+  // Velvet's own play counts blended with Last.fm's top tracks (when an API key
+  // is configured), matched to the library — see util/top-songs.js.
+  router('getTopSongs', async (req, res) => {
+    const artistName = qparam(req, 'artist') ?? req.body?.artist;
+    const count      = Math.max(1, Math.min(Number.parseInt(req.query.count || req.body?.count || '50', 10) || 50, 200));
     if (!artistName) return sendResponse(req, res, makeError(ERRORS.MISSING_PARAM.code, 'artist required'));
 
-    if (!Scrobbler.apiKey) {
-      return sendResponse(req, res, makeResponse('ok', { topSongs: { song: [] } }));
-    }
-
-    Scrobbler.GetArtistTopTracks(artistName, (data) => {
-      try {
-        const tracks = (data?.toptracks?.track || []).slice(0, count);
-        const songs = [];
-        for (const t of tracks) {
-          if (!t.name || !t.artist?.name) continue;
-          const found = db.findSongByTitleArtist(t.name, t.artist.name, req.subsonicVpaths, req.subsonicUser);
-          if (found) songs.push(buildSong(found));
-        }
-        sendResponse(req, res, makeResponse('ok', { topSongs: { song: songs } }));
-      } catch {
-        sendResponse(req, res, makeResponse('ok', { topSongs: { song: [] } }));
-      }
-    }, count);
+    const rows = db.getArtistSongsWithPlays(String(artistName), _rootVpaths(req), req.subsonicUser);
+    if (!rows.length) return sendResponse(req, res, makeResponse('ok', { topSongs: { song: [] } }));
+    let lastfm = [];
+    try { lastfm = await scrobblerApi.artistTopTracks(String(artistName), 50); } catch { lastfm = []; }
+    const songs = rankTopSongs(rows, lastfm, count).map(r => buildSong(r));
+    sendResponse(req, res, makeResponse('ok', { topSongs: { song: songs } }));
   });
 
   // ── getBookmarks / saveBookmark / deleteBookmark ─────────────────────────────

@@ -120,6 +120,36 @@ function expandGenres(displayGenres, vpaths) {
   return [...rawSet];
 }
 
+function _resolveFilters(rawFilters, vpaths) {
+  // eslint-disable-next-line sonarjs/no-unused-vars
+  const { selectedVpaths, freshPicks: _, ...songFilters } = rawFilters; // freshPicks is client-only
+  const { ignoreVPaths, filepathPrefix } = resolveVpathParams(selectedVpaths, vpaths);
+  return { filters: { ...songFilters, genres: expandGenres(songFilters.genres, vpaths) }, ignoreVPaths, filepathPrefix };
+}
+
+function _validFilters(raw) {
+  const { error, value } = filtersSchema.validate(raw ?? {});
+  return error ? null : value;
+}
+
+/** Song rows of a saved smart playlist (db.getSmartPlaylists row) for a user's vpaths. */
+export function runSavedSmartPlaylist(sp, vpaths, username) {
+  const valid = _validFilters(sp.filters);
+  if (!valid) return [];
+  const { filters, ignoreVPaths, filepathPrefix } = _resolveFilters(valid, vpaths);
+  const sort = VALID_SORTS.includes(sp.sort) ? sp.sort : 'artist';
+  return db.runSmartPlaylist(filters, sort, sp.limit_n, vpaths, username, ignoreVPaths, filepathPrefix);
+}
+
+/** Number of songs a saved smart playlist currently yields (capped at its limit). */
+export function countSavedSmartPlaylist(sp, vpaths, username) {
+  const valid = _validFilters(sp.filters);
+  if (!valid) return 0;
+  const { filters, ignoreVPaths, filepathPrefix } = _resolveFilters(valid, vpaths);
+  const n = db.countSmartPlaylist(filters, vpaths, username, ignoreVPaths, filepathPrefix);
+  return Math.min(n, Math.min(Number(sp.limit_n) || 100, 1000));
+}
+
 export function setup(velvet) {
   // List all saved smart playlists for the current user
   velvet.get('/api/v1/smart-playlists', (req, res) => {
@@ -133,10 +163,7 @@ export function setup(velvet) {
     const { error, value } = runSchema.validate(req.body);
     if (error) return res.status(400).json({ error: error.message });
     try {
-      // eslint-disable-next-line sonarjs/no-unused-vars
-      const { selectedVpaths, freshPicks: _, ...songFilters } = value.filters; // freshPicks is client-only
-      const { ignoreVPaths, filepathPrefix } = resolveVpathParams(selectedVpaths, req.user.vpaths);
-      const filters = { ...songFilters, genres: expandGenres(songFilters.genres, req.user.vpaths) };
+      const { filters, ignoreVPaths, filepathPrefix } = _resolveFilters(value.filters, req.user.vpaths);
       const rows = db.runSmartPlaylist(filters, value.sort, value.limit, req.user.vpaths, req.user.username, ignoreVPaths, filepathPrefix);
       const songs = rows.map(renderRow);
       res.json({ songs, total: songs.length });
@@ -148,10 +175,7 @@ export function setup(velvet) {
     const { error, value } = Joi.object({ filters: filtersSchema.required() }).validate(req.body);
     if (error) return res.status(400).json({ error: error.message });
     try {
-      // eslint-disable-next-line sonarjs/no-unused-vars
-      const { selectedVpaths, freshPicks: _, ...songFilters } = value.filters; // freshPicks is client-only
-      const { ignoreVPaths, filepathPrefix } = resolveVpathParams(selectedVpaths, req.user.vpaths);
-      const filters = { ...songFilters, genres: expandGenres(songFilters.genres, req.user.vpaths) };
+      const { filters, ignoreVPaths, filepathPrefix } = _resolveFilters(value.filters, req.user.vpaths);
       const count = db.countSmartPlaylist(filters, req.user.vpaths, req.user.username, ignoreVPaths, filepathPrefix);
       res.json({ count });
     } catch (e) { console.error('[SPL count]', e.message, e.stack); res.status(500).json({ error: e.message }); }

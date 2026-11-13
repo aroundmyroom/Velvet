@@ -162,6 +162,9 @@ export function getRecentlyAdded(vpaths, username, limit, ignoreVPaths, opts) { 
 export function getRecentlyPlayed(vpaths, username, limit, ignoreVPaths, opts) { return backend.getRecentlyPlayed(vpaths, username, limit, ignoreVPaths, opts); }
 export function getMostPlayed(vpaths, username, limit, ignoreVPaths, opts) { return backend.getMostPlayed(vpaths, username, limit, ignoreVPaths, opts); }
 export function getAllFilesWithMetadata(vpaths, username, opts) { return backend.getAllFilesWithMetadata(vpaths, username, opts); }
+export function getArtistProfileByArtistId(artistId) { return backend.getArtistProfileByArtistId(artistId); }
+export function getAlbumListRows(type, vpaths, username, opts) { return backend.getAlbumListRows(type, vpaths, username, opts); }
+export function getArtistSongsWithPlays(artist, vpaths, username) { return backend.getArtistSongsWithPlays(artist, vpaths, username); }
 export function countFilesForRandom(vpaths, username, opts) { return backend.countFilesForRandom(vpaths, username, opts); }
 export function pickFileAtOffset(vpaths, username, opts, offset) { return backend.pickFileAtOffset(vpaths, username, opts, offset); }
 export function getGenres(vpaths, ignoreVPaths, opts) { return backend.getGenres(vpaths, ignoreVPaths, opts); }
