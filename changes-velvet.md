@@ -1,6 +1,6 @@
-## Unreleased
+## v0.9.3 (2026-11-13)
 
-VoltViz visualizer and Velvet's brain in Music Assistant
+VoltViz, Music Assistant brain, rooms like the web player
 
 ### Added
 
@@ -47,6 +47,12 @@ VoltViz visualizer and Velvet's brain in Music Assistant
   Bandit, and `A1. Donna Summer` as Donna Summer, for the artist cooldown.
 - Similar-artist lookups resolve Last.fm names to library artists from an
   in-memory index and cache the result, instead of one table scan per name.
+- The README is rewritten in plain language and covers Velvet Rooms, the
+  Home Assistant integration and the ports Rooms needs.
+- *Pair a Device* in the user settings has the same compact layout as
+  *Passkeys*.
+- The "Playing in *room* · Play in this browser" banner sits above the
+  player's control row, in line with the queue button.
 
 ### Fixed
 
