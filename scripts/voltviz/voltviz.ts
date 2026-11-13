@@ -48,7 +48,13 @@ export async function createVoltViz({ container, audioContext, input, visualizer
   // A private tap: tearing down only ever disconnects input -> tap, never the player's other connections.
   const tap = audioContext.createGain();
   input.connect(tap);
-  const engine = await AudioEngine.fromNode(audioContext, tap, { autoGain: true, neural: false });
+  let engine: AudioEngine;
+  try {
+    engine = await AudioEngine.fromNode(audioContext, tap, { autoGain: true, neural: false });
+  } catch (err) {
+    try { input.disconnect(tap); } catch { /* already disconnected */ }
+    throw err;
+  }
   const host = new VisualizerHost(engine);
   const root = document.createElement('div');
   root.className = 'voltviz-root';
@@ -66,10 +72,12 @@ export async function createVoltViz({ container, audioContext, input, visualizer
     el.className = 'voltviz-layer';
     root.appendChild(el);
     const handle = host.mount(id, el, factory, SETTINGS, null);
-    await handle.ready;
-    if (destroyed || mySeq !== seq) {
+    // The host reports a factory that threw as a null instance, not a rejection.
+    const inst = await handle.ready;
+    if (destroyed || mySeq !== seq || !inst) {
       handle.dispose();
       el.remove();
+      if (!inst && !destroyed && mySeq === seq) throw new Error(`VoltViz: visualizer "${id}" failed to start`);
       return;
     }
     const prev = current;
@@ -80,7 +88,27 @@ export async function createVoltViz({ container, audioContext, input, visualizer
     }
   }
 
-  await mount(resolveId(visualizer));
+  function destroy(): void {
+    if (destroyed) return;
+    destroyed = true;
+    seq++;
+    if (current) {
+      current.handle.dispose();
+      current.el.remove();
+      current = null;
+    }
+    host.dispose();
+    engine.dispose();
+    try { input.disconnect(tap); } catch { /* already disconnected */ }
+    root.remove();
+  }
+
+  try {
+    await mount(resolveId(visualizer));
+  } catch (err) {
+    destroy();
+    throw err;
+  }
 
   return {
     get visualizer(): string | null {
@@ -101,19 +129,6 @@ export async function createVoltViz({ container, audioContext, input, visualizer
       });
     },
     setBpm(_bpm: number | null): void {},
-    destroy(): void {
-      if (destroyed) return;
-      destroyed = true;
-      seq++;
-      if (current) {
-        current.handle.dispose();
-        current.el.remove();
-        current = null;
-      }
-      host.dispose();
-      engine.dispose();
-      try { input.disconnect(tap); } catch { /* already disconnected */ }
-      root.remove();
-    },
+    destroy,
   };
 }

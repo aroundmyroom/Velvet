@@ -72,6 +72,10 @@ function patch(dir) {
   replaceOnce(path.join(dir, 'src/audio/host/scriptProcessorHost.ts'),
     '      node.port.onmessage = null;',
     "      node.port.postMessage({ type: 'dispose' });\n      node.port.onmessage = null;");
+  // Evicting an idle analyser only cut its (empty) outputs; the input kept feeding it, so it went on running an FFT.
+  replaceOnce(path.join(dir, 'src/audio/host/analyserPool.ts'),
+    '          e.node.disconnect();\n          this.entries.delete(k);',
+    '          this.input.disconnect(e.node);\n          this.entries.delete(k);');
 
   // Overlays are React upload/settings UIs that Velvet never renders; unexported they tree-shake away with React.
   const implDir = path.join(dir, 'src/visualizers/impl');

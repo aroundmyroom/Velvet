@@ -1,4 +1,4 @@
-/* global window, document, AudioNode, AudioContext */
+/* global window, document, AudioNode, AudioContext, AnalyserNode, HTMLCanvasElement */
 const probe = { raf: 0, intervals: new Set(), timeouts: new Set(), csp: [], edges: new Map() };
 window.__probe = probe;
 
@@ -73,3 +73,55 @@ window.__smoke = async () => {
 };
 
 window.__inputEdges = () => [...(probe.edges.get(window.__input) ?? [])].map(n => n === window.__ctx.destination ? 'destination' : n.constructor.name);
+
+// Makes WebGL unavailable so a WebGL style's factory throws, then checks that nothing is left behind.
+window.__failMount = async id => {
+  const probe = window.__probe;
+  const stage = document.getElementById('stage');
+  const getContext = HTMLCanvasElement.prototype.getContext;
+  HTMLCanvasElement.prototype.getContext = function (type, ...rest) {
+    return /webgl/.test(type) ? null : getContext.call(this, type, ...rest);
+  };
+  const out = {};
+  try {
+    try {
+      await window.__vv.createVoltViz({ container: stage, audioContext: window.__ctx, input: window.__input, visualizer: id });
+      out.createRejected = false;
+    } catch {
+      out.createRejected = true;
+    }
+    await new Promise(r => setTimeout(r, 300));
+    const raf0 = probe.raf;
+    await new Promise(r => setTimeout(r, 1000));
+    out.rafCallsAfter = probe.raf - raf0;
+    out.inputEdges = window.__inputEdges();
+    out.stageEmpty = stage.childElementCount === 0;
+
+    HTMLCanvasElement.prototype.getContext = getContext;
+    const viz = await window.__vv.createVoltViz({ container: stage, audioContext: window.__ctx, input: window.__input, visualizer: 'bars' });
+    HTMLCanvasElement.prototype.getContext = function (type, ...rest) {
+      return /webgl/.test(type) ? null : getContext.call(this, type, ...rest);
+    };
+    try {
+      await viz.setVisualizer(id);
+      out.switchRejected = false;
+    } catch {
+      out.switchRejected = true;
+    }
+    out.keptStyle = viz.visualizer;
+    out.layersAfterSwitch = stage.querySelectorAll('.voltviz-layer').length;
+    viz.destroy();
+    await new Promise(r => setTimeout(r, 300));
+    out.finalInputEdges = window.__inputEdges();
+    out.finalStageEmpty = stage.childElementCount === 0;
+  } finally {
+    HTMLCanvasElement.prototype.getContext = getContext;
+  }
+  return out;
+};
+
+window.__analyserEdges = () => {
+  let n = 0;
+  for (const dsts of window.__probe.edges.values()) for (const d of dsts) if (d instanceof AnalyserNode) n++;
+  return n;
+};

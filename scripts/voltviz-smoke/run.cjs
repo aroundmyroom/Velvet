@@ -57,11 +57,18 @@ function analyse(buf) {
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
+// Cyber Matrix draws point sprites of a fixed pixel size: at 640x360 they overlap into solid white (upstream too).
+const FULL_SIZE = new Set(['cybermatrix']);
+
 async function main() {
   const server = await serve();
   const base = `http://127.0.0.1:${server.address().port}`;
   const browser = await chromium.launch({ args: ['--autoplay-policy=no-user-gesture-required', '--enable-unsafe-webgpu'] });
   const page = await browser.newPage({ viewport: { width: 640, height: 360 } });
+  const setStage = async (width, height) => {
+    await page.setViewportSize({ width, height });
+    await page.evaluate(([w, h]) => Object.assign(document.getElementById('stage').style, { width: `${w}px`, height: `${h}px` }), [width, height]);
+  };
   let current = 'boot';
   const errors = {};
   const requests = {};
@@ -84,6 +91,8 @@ async function main() {
   for (const v of info.list.filter(x => !only || only.includes(x.id))) {
     current = v.id;
     const before = await page.evaluate(() => window.__probe.csp.length);
+    const large = FULL_SIZE.has(v.id);
+    if (large) await setStage(1920, 1080);
     await page.evaluate(id => window.__viz.setVisualizer(id), v.id);
     await sleep(1500);
     const shot = () => page.screenshot({ clip: { x: 0, y: 0, width: 640, height: 360 }, timeout: 120000 });
@@ -96,6 +105,7 @@ async function main() {
     for (let i = 0; i < a.lum.length; i++) motion += Math.abs(a.lum[i] - b.lum[i]);
     motion /= a.lum.length;
     const state = await page.evaluate(n => ({ active: window.__viz.visualizer, csp: window.__probe.csp.slice(n), layers: document.querySelectorAll('.voltviz-layer').length }), before);
+    if (large) await setStage(640, 360);
     const rendered = a.std > 1.5 || motion > 0.2;
     const msgs = (errors[v.id] || []).filter(e => !/GPU stall|GL Driver Message|Automatic fallback to software WebGL|WebGL-/.test(e));
     const errs = msgs.filter(e => !e.startsWith('warning:'));
@@ -109,6 +119,17 @@ async function main() {
       chunks: (requests[v.id] || []).map(u => u.replace(/^chunks\//, '').replace(/-[\w-]{8}\.js$/, '')).join(' ') });
     console.log(`${status.padEnd(18)} ${v.id.padEnd(26)} mean=${a.mean.toFixed(1)} std=${a.std.toFixed(1)} motion=${motion.toFixed(2)}${errs.length ? ' ERR ' + errs[0].slice(0, 160) : ''}${warns.length ? ' WARN ' + warns[0].slice(0, 120) : ''}${state.csp.length ? ' CSP ' + state.csp[0] : ''}`);
   }
+
+  // The engine evicts analysers no style has read for 600 frames; evicted ones must leave the graph.
+  current = 'evict';
+  const evict = await page.evaluate(async () => {
+    await window.__viz.setVisualizer('bars');
+    const before = window.__analyserEdges();
+    const raf0 = window.__probe.raf;
+    const t0 = performance.now();
+    while (window.__probe.raf - raf0 < 1300 && performance.now() - t0 < 120000) await new Promise(r => setTimeout(r, 500));
+    return { before, after: window.__analyserEdges(), frames: window.__probe.raf - raf0 };
+  });
 
   current = 'fallback';
   const fallback = await page.evaluate(async () => { await window.__viz.setVisualizer('no-such-visualizer'); return window.__viz.visualizer; });
@@ -137,6 +158,10 @@ async function main() {
     return out;
   });
 
+  current = 'mountfail';
+  const webglId = info.list.find(v => v.group === 'webgl').id;
+  const mountFail = await page.evaluate(id => window.__failMount(id), webglId);
+
   await browser.close();
   server.close();
 
@@ -144,13 +169,19 @@ async function main() {
   const summary = { ok: count('ok'), blank: count('blank'), error: count('error'), 'webgpu-unavailable': count('webgpu-unavailable') };
   console.log('\nsummary', JSON.stringify(summary));
   console.log('unknown id ->', fallback);
+  console.log('idle analysers', JSON.stringify(evict));
   console.log('teardown', JSON.stringify(teardown));
+  console.log(`mount failure (${webglId} without WebGL)`, JSON.stringify(mountFail));
   const leftovers = Object.entries(errors).filter(([k]) => ['boot', 'fallback', 'destroy'].includes(k));
   if (leftovers.length) console.log('other console output', JSON.stringify(leftovers).slice(0, 2000));
   const outFile = process.env.VOLTVIZ_SMOKE_OUT;
-  if (outFile) fs.writeFileSync(outFile, JSON.stringify({ info, rows, summary, fallback, teardown, requests }, null, 2));
+  if (outFile) fs.writeFileSync(outFile, JSON.stringify({ info, rows, summary, fallback, evict, teardown, mountFail, requests }, null, 2));
   const failed = summary.error || summary.blank || teardown.rafCallsAfter || teardown.secondRafCallsAfter
-    || teardown.inputEdges.join() !== 'destination' || !teardown.stageEmpty || teardown.cspTotal.length;
+    || teardown.inputEdges.join() !== 'destination' || !teardown.stageEmpty || teardown.cspTotal.length
+    || (rows.length > 1 && evict.after >= evict.before)
+    || !mountFail.createRejected || mountFail.rafCallsAfter || mountFail.inputEdges.join() !== 'destination' || !mountFail.stageEmpty
+    || !mountFail.switchRejected || mountFail.keptStyle !== 'bars' || mountFail.layersAfterSwitch !== 1
+    || mountFail.finalInputEdges.join() !== 'destination' || !mountFail.finalStageEmpty;
   process.exitCode = failed ? 1 : 0;
 }
 
