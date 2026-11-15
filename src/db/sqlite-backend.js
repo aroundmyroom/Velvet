@@ -6,6 +6,12 @@ import { DatabaseSync } from 'node:sqlite';
 import { createHash } from 'node:crypto';
 import * as config from '../state/config.js';
 import * as broker from '../state/bg-task-broker.js';
+import { inClause, excludePrefixClauses, includePrefixClauses } from './sql-clauses.js';
+import { toCamelot, camelotCompat, CAMELOT_TO_KEYS } from '../util/camelot.js';
+import { albumFolderPath } from '../util/album-dir.js';
+import { normRoot, parentVpathOf, rootVpathOf } from '../util/vpath.js';
+import { computeFileHash } from '../util/file-hash.js';
+import { resolvePathWithinRoot } from '../util/path-security.js';
 
 const _workerPath = path.join(path.dirname(fileURLToPath(import.meta.url)), '../util/artist-rebuild-worker.mjs');
 
@@ -34,31 +40,11 @@ function _makeAlbumId(artist, album) {
 // multi-disc albums stay together. Files that sit directly in a vpath root (no
 // folder of their own) fall back to tag-based identity.
 //
-// The disc-folder detection MUST stay in sync with albums-browse.js so the
-// Subsonic grouping matches the web view 1:1.
-const _DISC_RE         = /^(cd|disc)\s*[-–]?\s*\d/i;
-const _DISC_SUFFIX_RE  = /\b(cd|disc)\s*[-–]?\s*\d+\s*$/i;
-const _NUMERIC_DISC_RE = /^\d{1,2}$/;
-function _isDiscFolder(name) {
-  return _DISC_RE.test(name) || _DISC_SUFFIX_RE.test(name) || _NUMERIC_DISC_RE.test(name);
-}
-// Album directory (vpath-relative) for a file, collapsing a trailing disc folder
-// (CD1, Disc 2, …) into the album above it. Returns null for a file sitting
-// directly in the vpath root (no album folder).
-function _albumFolderPath(filepath) {
-  const parts = String(filepath || '').split('/');
-  if (parts.length < 2) return null;
-  const immediateParent = parts[parts.length - 2];
-  const albumDepth = (parts.length >= 3 && _isDiscFolder(immediateParent))
-    ? parts.length - 3
-    : parts.length - 2;
-  if (albumDepth < 0) return null;
-  return parts.slice(0, albumDepth + 1).join('/');
-}
+// The disc-folder rule lives in src/util/album-dir.js, shared with albums-browse.js.
 // Folder-based album_id: the file's album directory identifies the album. Loose
 // root files (no folder) fall back to the tag-based scheme.
 function _albumIdFor(vpath, filepath, artist, album) {
-  const dir = _albumFolderPath(filepath);
+  const dir = albumFolderPath(filepath);
   if (dir) {
     return createHash('md5') // NOSONAR: MD5 used as DB identity key, not for security
       .update(`dir|||${vpath}|||${dir}`)
@@ -81,24 +67,11 @@ export function albumFolderName(albumId) {
   try {
     if (!_albumNameStmt) _albumNameStmt = db.prepare('SELECT filepath FROM files WHERE album_id = ? LIMIT 1');
     const row = _albumNameStmt.get(albumId);
-    const dir = row ? _albumFolderPath(row.filepath) : null;
+    const dir = row ? albumFolderPath(row.filepath) : null;
     if (dir) name = dir.slice(dir.lastIndexOf('/') + 1) || null;
   } catch { /* fall back to tag name */ }
   _albumNameCache.set(albumId, name);
   return name;
-}
-
-/**
- * Compute the "physical album directory" from a file's relative filepath.
- * Strips the filename, then collapses any trailing /CD N / Disc N / Side N
- * indicator so that multi-disc albums group together under one directory key.
- */
-function _normalizeAlbumDir(filepath) {
-  const lastSlash = filepath.lastIndexOf('/');
-  let dir = lastSlash > 0 ? filepath.slice(0, lastSlash) : '';
-  // Collapse trailing disc-indicator segment so CD 1 and CD 2 share the same key
-  dir = dir.replace(/\/(CD|Disc|Disk|Side)\s*\d+\s*$/i, '');
-  return dir;
 }
 
 let db;
@@ -158,7 +131,8 @@ export function init(dbDirectory) {
   // Needed when the acoustid worker thread also writes to the same DB.
   db.exec('PRAGMA busy_timeout = 30000');
   // Raise auto-checkpoint threshold so SQLite never triggers a blocking
-  // checkpoint while a song is streaming. The WAL is cleaned up on DB close.
+  // checkpoint while a song is streaming. The WAL is checkpointed and removed
+  // when the DB is closed on SIGTERM/SIGINT (src/state/shutdown.js).
   db.exec('PRAGMA wal_autocheckpoint(10000)');
   // 32 MB page cache — default 2 MB is far too small for a 123K-song library;
   // keeps frequently-used B-tree pages (indexes, hot rows) in RAM.
@@ -516,7 +490,7 @@ export function init(dbDirectory) {
     if (_bfDir.length > 0) {
       const _bfDirUpd = db.prepare('UPDATE files SET mb_album_dir = ? WHERE filepath = ? AND vpath = ?');
       db.exec('BEGIN');
-      for (const r of _bfDir) _bfDirUpd.run(_normalizeAlbumDir(r.filepath), r.filepath, r.vpath);
+      for (const r of _bfDir) _bfDirUpd.run(albumFolderPath(r.filepath) ?? '', r.filepath, r.vpath);
       db.exec('COMMIT');
     }
   } catch (e) { console.debug('[velvet]', e?.message ?? e); }
@@ -563,7 +537,9 @@ export function init(dbDirectory) {
   // bump and is skipped on every subsequent boot.
   //   v1 — folder-based for albumsOnly folders only
   //   v2 — folder-based for ALL folders (a folder of loose tracks is one album)
-  const _ALBUM_ID_SCHEME_VERSION = 2;
+  //   v3 — repair rows the folder-metadata backfill wrote with the tag-based id,
+  //        and regroup mb_album_dir with the album-view disc-folder rule
+  const _ALBUM_ID_SCHEME_VERSION = 3;
   try {
     const _uv = db.prepare('PRAGMA user_version').get().user_version || 0;
     if (_uv < _ALBUM_ID_SCHEME_VERSION) {
@@ -571,6 +547,10 @@ export function init(dbDirectory) {
       const _aiUpd  = db.prepare('UPDATE files SET album_id = ? WHERE rowid = ?');
       db.exec('BEGIN');
       for (const r of _aiRows) _aiUpd.run(_albumIdFor(r.vpath, r.filepath, r.artist, r.album), r.rowid);
+      const _mdUpd = db.prepare('UPDATE files SET mb_album_dir = ? WHERE rowid = ?');
+      for (const r of db.prepare('SELECT rowid, filepath FROM files WHERE mb_release_id IS NOT NULL').all()) {
+        _mdUpd.run(albumFolderPath(r.filepath) ?? '', r.rowid);
+      }
       db.exec('COMMIT');
       db.exec(`PRAGMA user_version = ${_ALBUM_ID_SCHEME_VERSION}`);
       console.log(`[velvet] album_id recomputed (folder-based, scheme v${_ALBUM_ID_SCHEME_VERSION}) for ${_aiRows.length} rows`);
@@ -578,6 +558,26 @@ export function init(dbDirectory) {
   } catch (e) {
     try { db.exec('ROLLBACK'); } catch { /* no active txn */ }
     console.debug('[velvet] album_id recompute skipped:', e?.message ?? e);
+  }
+
+  // v4 — one-time repair of rows the on-demand indexer stored with a SHA-256 hash (scanner uses MD5).
+  // Only after the v3 album_id pass succeeded, since user_version is shared with it.
+  const _uvNow = db.prepare('PRAGMA user_version').get().user_version || 0;
+  if (_uvNow >= _ALBUM_ID_SCHEME_VERSION && _uvNow < HASH_REPAIR_VERSION) {
+    repairLongHashes().catch(e => console.debug('[velvet] hash repair skipped:', e?.message ?? e));
+  }
+
+  // v5 — drop the audio_features table: nothing ever wrote to it (BPM/key live in files).
+  // Waits for the async v4 repair, which sets user_version 4 when it finishes.
+  if (_uvNow === HASH_REPAIR_VERSION) {
+    db.exec('DROP TABLE IF EXISTS audio_features');
+    db.exec(`PRAGMA user_version = ${AUDIO_FEATURES_DROP_VERSION}`);
+  }
+
+  // v6 — user_metadata.lp is epoch ms; Subsonic scrobbles used to store seconds (anything below 1e11 is seconds)
+  if ((db.prepare('PRAGMA user_version').get().user_version || 0) === AUDIO_FEATURES_DROP_VERSION) {
+    db.exec('UPDATE user_metadata SET lp = lp * 1000 WHERE lp IS NOT NULL AND lp < 100000000000');
+    db.exec(`PRAGMA user_version = ${LP_MS_VERSION}`);
   }
 
   // ── album_version columns (added post-initial-release) ─────────────────────
@@ -683,13 +683,6 @@ export function init(dbDirectory) {
   try { db.exec('ALTER TABLE files ADD COLUMN rg_measured_ts      INTEGER'); } catch { /* already exists */ }
   try { db.exec('ALTER TABLE files ADD COLUMN rg_measurement_tool TEXT'); }    catch { /* noop */ }
   try { db.exec('ALTER TABLE files ADD COLUMN rg_measurement_error TEXT'); }   catch { /* noop */ }
-  // Tag-sourced fallback values (read from file tags at scan time)
-  try { db.exec('ALTER TABLE files ADD COLUMN rg_tag_track_gain   REAL'); }    catch { /* noop */ }
-  try { db.exec('ALTER TABLE files ADD COLUMN rg_tag_track_peak   REAL'); }    catch { /* noop */ }
-  try { db.exec('ALTER TABLE files ADD COLUMN rg_tag_album_gain   REAL'); }    catch { /* noop */ }
-  try { db.exec('ALTER TABLE files ADD COLUMN rg_tag_album_peak   REAL'); }    catch { /* noop */ }
-  try { db.exec('ALTER TABLE files ADD COLUMN r128_track_gain_db  REAL'); }    catch { /* noop */ }
-  try { db.exec('ALTER TABLE files ADD COLUMN r128_album_gain_db  REAL'); }    catch { /* noop */ }
 
   // ── BPM & Key Analysis ────────────────────────────────────────────────────
   try { db.exec('ALTER TABLE files ADD COLUMN bpm            INTEGER'); } catch { /* already exists */ }
@@ -716,25 +709,6 @@ export function init(dbDirectory) {
     rg_album_gain_db    REAL,
     rg_album_peak_dbfs  REAL,
     reset_ts            INTEGER NOT NULL
-  )`);
-
-  // ── Essentia audio_features table ────────────────────────────────────────
-  // Stores per-track audio features computed by the Essentia WASM worker.
-  // Linked to `files` via hash (content hash). Separate table so it does not
-  // bloat the main files table with large JSON vectors.
-  db.exec(`CREATE TABLE IF NOT EXISTS audio_features (
-    hash               TEXT PRIMARY KEY,
-    bpm                REAL,
-    bpm_confidence     REAL,
-    key_name           TEXT,
-    key_scale          TEXT,
-    key_strength       REAL,
-    danceability       REAL,
-    loudness           REAL,
-    dynamic_complexity REAL,
-    mfcc_mean          TEXT,
-    hpcp_mean          TEXT,
-    analyzed_at        INTEGER
   )`);
 
   // ── Smart Playlist ML tables ──────────────────────────────────────────────
@@ -852,7 +826,7 @@ export function init(dbDirectory) {
     liveHashes:     db.prepare('SELECT DISTINCT hash FROM files WHERE hash IS NOT NULL'),
     staleHashes:    db.prepare('SELECT hash FROM files WHERE vpath = ? AND (sID IS NULL OR sID != ?) AND hash IS NOT NULL'),
     removeStale:    db.prepare('DELETE FROM files WHERE vpath = ? AND (sID IS NULL OR sID != ?)'),
-    clearScanIds:   db.prepare('UPDATE files SET sID = NULL WHERE vpath = ?'),
+    clearScanIds:   db.prepare('UPDATE files SET sID = NULL WHERE vpath = ? AND sID IS NOT ?'),
     removeByPath:   db.prepare('DELETE FROM files WHERE filepath = ? AND vpath = ?'),
     rgByHash:       db.prepare(`
       SELECT rg_measured_ts, rg_measurement_tool, rg_integrated_lufs,
@@ -918,15 +892,6 @@ export function vacuumInto(destPath) {
   db.exec(`VACUUM INTO '${destPath.replaceAll("'", "''")}'`);
 }
 
-// Save operations (no-ops for SQLite - writes are immediate)
-export function saveFilesDB() { /* no-op: SQLite writes are immediate */ }
-
-export function beginTransaction() {
-  try { db.exec('BEGIN'); } catch (e) { console.debug('[velvet]', e?.message ?? e); }
-}
-export function commitTransaction() {
-  try { db.exec('COMMIT'); } catch (e) { console.debug('[velvet]', e?.message ?? e); }
-}
 export function beginTransactionStrict() {
   db.exec('BEGIN');
 }
@@ -939,27 +904,6 @@ export function rollbackTransactionStrict() {
 export function savepoint(name) { db.exec(`SAVEPOINT ${name}`); }
 export function releasePoint(name) { db.exec(`RELEASE ${name}`); }
 export function rollbackToPoint(name) { db.exec(`ROLLBACK TO ${name}`); }
-export function saveUserDB() { /* no-op: SQLite writes are immediate */ }
-export function saveShareDB() { /* no-op: SQLite writes are immediate */ }
-
-// ── Artist name normalization ─────────────────────────────────────────────
-// Server-side equivalent of the frontend cleanArtistDisplay() / normalizeArtist().
-// Strip leading noise (symbols, zero-padded numbers like "01 ", "02 ") from
-// artist tag values that were maltagged with track numbers.
-// Genuinely numeric names (10cc, 2Pac, 808 State) are preserved because they
-// don't match the zero-padded number pattern.
-function _cleanArtist(name) {
-  if (!name) return '';
-  const noise = /^[\s#'"`()|[\]{}_.,\-\u2013\u2014*!/\\]+/;
-  return String(name)
-    .replace(noise, '')               // strip leading symbols
-    .replace(/^\d{2,}[\s.,)\]]+/, '') // strip any 2-digit+ leading number ("01 ", "28 ", "100 ", etc.)
-    .replace(noise, '')               // strip any newly-exposed leading symbols
-    .trim();
-}
-function _normalizeArtist(name) {
-  return _cleanArtist(name).toLowerCase();
-}
 
 // ── Rebuild folder index ──────────────────────────────────────────────────
 // Called after every scan completes. Extracts all unique directory paths from
@@ -1024,21 +968,24 @@ function _doRebuildArtistIndex() {
       },
     });
 
+    let failure = null;
     worker.on('message', msg => {
       if (msg.error) {
+        failure = new Error(msg.error);
         import('winston').then(w => w.default.error(`Artist index rebuild failed: ${msg.error}`)).catch(() => {});
       }
     });
 
-    worker.on('exit', () => {
-      const cbs = _rebuildDoneCallbacks.splice(0);
-      for (const cb of cbs) { try { cb(); } catch (e) { console.debug('[velvet]', e?.message ?? e); } }
-      resolve();
+    worker.on('error', err => {
+      failure = err;
+      import('winston').then(w => w.default.error(`Artist rebuild worker error: ${err.message}`)).catch(() => {});
     });
 
-    worker.on('error', err => {
-      import('winston').then(w => w.default.error(`Artist rebuild worker error: ${err.message}`)).catch(() => {});
-      resolve(); // never leave broker stuck
+    worker.on('exit', code => {
+      if (!failure && code !== 0) failure = new Error(`Artist rebuild worker exited with code ${code}`);
+      const cbs = _rebuildDoneCallbacks.splice(0);
+      for (const cb of cbs) { try { cb(failure); } catch (e) { console.debug('[velvet]', e?.message ?? e); } }
+      resolve();
     });
   });
 }
@@ -1060,12 +1007,6 @@ function vpathFilter(vpaths, ignoreVPaths) {
   return filtered;
 }
 
-function inClause(column, values) {
-  if (values.length === 0) { return { sql: '1=0', params: [] }; }
-  const placeholders = values.map(() => '?').join(',');
-  return { sql: `${column} IN (${placeholders})`, params: values };
-}
-
 // Returns an additional AND clause that restricts filepath to a subfolder prefix.
 // Used when a Subsonic client selects a child vpath (stored in DB under a parent vpath).
 function prefixClause(prefix, col = 'filepath') {
@@ -1074,81 +1015,10 @@ function prefixClause(prefix, col = 'filepath') {
   return { sql: String.raw` AND ${col} LIKE ? ESCAPE '\'`, params: [escaped + '%'] };
 }
 
-// Generates NOT clauses to exclude filepath prefixes under specific vpaths.
-// Used to exclude 'audio-books' child folders from music queries.
-function excludePrefixClauses(excludeFilepathPrefixes, vpathCol = 'vpath', pathCol = 'filepath') {
-  if (!Array.isArray(excludeFilepathPrefixes) || excludeFilepathPrefixes.length === 0) {
-    return { sql: '', params: [] };
-  }
-  const parts = [];
-  const params = [];
-  for (const { vpath, prefix } of excludeFilepathPrefixes) {
-    parts.push(String.raw`NOT (${vpathCol} = ? AND ${pathCol} LIKE ? ESCAPE '\')`);
-    params.push(vpath, prefix.replaceAll(/[%_\\]/g, String.raw`\$&`) + '%');
-  }
-  return { sql: ' AND ' + parts.join(' AND '), params };
-}
-
-// Generates AND clauses to WHITELIST filepath prefixes under specific vpaths.
-// Used for albumsOnly filtering: for each named parent vpath, only include rows
-// where the filepath starts with one of the given prefixes.
-// Other vpaths (not named here) are passed through unrestricted.
-// Logic per parent: AND (vpath != 'parent' OR (filepath LIKE 'prefix1%' OR ...))
-function includePrefixClauses(includeFilepathPrefixes, vpathCol = 'vpath', pathCol = 'filepath') {
-  if (!Array.isArray(includeFilepathPrefixes) || includeFilepathPrefixes.length === 0) {
-    return { sql: '', params: [] };
-  }
-  const byVpath = {};
-  for (const { vpath, prefix } of includeFilepathPrefixes) {
-    if (!byVpath[vpath]) byVpath[vpath] = [];
-    byVpath[vpath].push(prefix);
-  }
-  const parts = [];
-  const params = [];
-  for (const [vpath, prefixes] of Object.entries(byVpath)) {
-    const orParts = prefixes.map(() => String.raw`${pathCol} LIKE ? ESCAPE '\'`);
-    parts.push(`(${vpathCol} != ? OR (${orParts.join(' OR ')}))`);
-    params.push(vpath, ...prefixes.map(p => p.replaceAll(/[%_\\]/g, String.raw`\$&`) + '%'));
-  }
-  return { sql: ' AND ' + parts.join(' AND '), params };
-}
-
-function withSlash(p) {
-  return String(p || '').replace(/\/?$/, '/');
-}
-
-function getArtistFolderFilter() {
-  const folders = config.program?.folders || {};
+export function getArtistFolderFilter(folders = config.program?.folders || {}) {
   const entries = Object.entries(folders);
 
-  function findParent(name) {
-    const myRoot = withSlash(folders[name]?.root);
-    let best = null;
-    let bestLen = -1;
-    for (const [other, folder] of entries) {
-      if (other === name) continue;
-      const otherRoot = withSlash(folder.root);
-      if (myRoot === otherRoot) continue;
-      if (!myRoot.startsWith(otherRoot)) continue;
-      if (otherRoot.length > bestLen) {
-        best = other;
-        bestLen = otherRoot.length;
-      }
-    }
-    return best;
-  }
-
-  function findRoot(name) {
-    let cur = name;
-    let parent = findParent(cur);
-    while (parent) {
-      cur = parent;
-      parent = findParent(cur);
-    }
-    return cur;
-  }
-
-  const rootNames = entries.map(([name]) => name).filter(name => !findParent(name));
+  const rootNames = entries.map(([name]) => name).filter(name => !parentVpathOf(name, folders));
   const allowedRoots = new Set();
   const includeFilepathPrefixes = [];
   const excludeFilepathPrefixes = [];
@@ -1158,16 +1028,16 @@ function getArtistFolderFilter() {
     if (rootFolder.type === 'excluded') continue;
 
     const rootEnabled = rootFolder.artistsOn !== false;
-    const rootPath = withSlash(rootFolder.root);
+    const rootPath = normRoot(rootFolder.root);
     const descendants = entries.filter(([name, folder]) => {
       if (name === rootName) return false;
       if ((folder.type || 'music') === 'excluded') return false;
-      return findRoot(name) === rootName;
+      return rootVpathOf(name, folders).vpath === rootName;
     });
 
     const enabledPrefixes = [];
     for (const [, folder] of descendants) {
-      const prefix = withSlash(folder.root).slice(rootPath.length);
+      const prefix = normRoot(folder.root).slice(rootPath.length);
       if (!prefix) continue;
       if (folder.artistsOn === false) {
         excludeFilepathPrefixes.push({ vpath: rootName, prefix });
@@ -1260,7 +1130,13 @@ export function updateFileTechMeta(filepath, vpath, bitrate, sampleRate, channel
 }
 
 export function updateFileAlbumVersion(filepath, vpath, albumVersion, albumVersionSource) {
+  const ftsCols = 'SELECT rowid, title, artist, album_artist, album, album_version, filepath FROM files WHERE filepath = ? AND vpath = ?';
+  const old = db.prepare(ftsCols).get(filepath, vpath);
   const r = _s.updateAlbumVersion.run(albumVersion ?? null, albumVersionSource ?? null, filepath, vpath);
+  if (old && (old.album_version ?? null) !== (albumVersion ?? null)) {
+    _s.ftsDel.run(old.rowid, old.title ?? null, old.artist ?? null, old.album_artist ?? null, old.album ?? null, old.album_version ?? null, old.filepath);
+    _s.ftsInsert.run(old.rowid, old.title ?? null, old.artist ?? null, old.album_artist ?? null, old.album ?? null, albumVersion ?? null, old.filepath);
+  }
   return r.changes;
 }
 
@@ -1309,24 +1185,6 @@ export function updateFileModified(filepath, vpath, modifiedMs) {
   db.prepare('UPDATE files SET modified = ? WHERE filepath = ? AND vpath = ?').run(modifiedMs, filepath, vpath);
 }
 
-// Safety guard for Recently Added: if a scan run assigns scan-time ts to files
-// whose mtime is clearly older, clamp ts back to mtime to avoid false "new"
-// floods caused by path-identity drift or scan regressions.
-export function clampRecentTsToModified(vpath, scanId, scanStartTs, oldMtimeCutoffTs) {
-  if (!vpath || !scanId || !scanStartTs || !oldMtimeCutoffTs) return 0;
-  const r = db.prepare(`
-    UPDATE files
-    SET ts = CAST(modified / 1000 AS INTEGER)
-    WHERE vpath = ?
-      AND sID = ?
-      AND ts >= ?
-      AND modified IS NOT NULL
-      AND CAST(modified / 1000 AS INTEGER) > 0
-      AND CAST(modified / 1000 AS INTEGER) < ?
-  `).run(vpath, scanId, scanStartTs, oldMtimeCutoffTs);
-  return r?.changes ?? 0;
-}
-
 function _toSec(value) {
   if (value === null || value === undefined) return null;
   const n = Number(value);
@@ -1340,6 +1198,10 @@ function _toEpochMs(value) {
   if (!Number.isFinite(n) || n <= 0) return null;
   return n >= 1e12 ? Math.floor(n) : Math.floor(n * 1000);
 }
+
+// sID of a row indexed outside a scan (a file played before the scanner reached
+// it). Such rows carry only basic tags, so the next scan parses them fully.
+export const ON_DEMAND_SCAN_ID = 'on-demand';
 
 export function insertFile(fileData) {
   // If this hash already exists under a different vpath, inherit that ts so the
@@ -1358,9 +1220,9 @@ export function insertFile(fileData) {
     fileData.title ?? null, fileData.artist ?? null, fileData.albumArtist ?? null, fileData.year ?? null, fileData.album ?? null,
     fileData.filepath, fileData.format ?? null, fileData.track ?? null, fileData.trackOf ?? null, fileData.disk ?? null,
     fileData.modified ?? null, fileData.hash ?? null, fileData.audio_hash ?? null, fileData.aaFile ?? null, fileData.vpath,
-    ts, fileData.sID ?? null, fileData.replaygainTrackDb ?? null, fileData.genre ?? null, fileData.cuepoints ?? null,
+    ts, fileData.sID ?? ON_DEMAND_SCAN_ID, fileData.replaygainTrackDb ?? null, fileData.genre ?? null, fileData.cuepoints ?? null,
     fileData.art_source ?? null, fileData.duration ?? null,
-    fileData.artist_id ?? _makeArtistId(fileData.artist), _albumIdFor(fileData.vpath, fileData.filepath, fileData.artist, fileData.album),
+    _makeArtistId(fileData.artist), _albumIdFor(fileData.vpath, fileData.filepath, fileData.artist, fileData.album),
     fileData.cover_file ?? null,
     fileData.bitrate ?? null, fileData.sample_rate ?? null, fileData.channels ?? null,
     fileData.album_version ?? null, fileData.album_version_source ?? null, fileData.bit_depth ?? null,
@@ -1410,6 +1272,36 @@ export function removeFileByPath(filepath, vpath) {
   _s.removeByPath.run(filepath, vpath);
 }
 
+const HASH_REPAIR_VERSION = 4;
+const AUDIO_FEATURES_DROP_VERSION = 5;
+const LP_MS_VERSION = 6;
+
+export async function repairLongHashes(folders = config.program?.folders || {}) {
+  const rows = db.prepare('SELECT rowid, vpath, filepath, hash FROM files WHERE length(hash) = 64').all();
+  let fixed = 0;
+  for (const r of rows) {
+    const root = folders[r.vpath]?.root;
+    if (!root) continue;
+    let newHash;
+    try {
+      const full = resolvePathWithinRoot(root, r.filepath);
+      if (!existsSync(full)) continue;
+      newHash = await computeFileHash(full);
+    } catch { continue; }
+    // migrateHash runs first so a UNIQUE(hash, user) conflict leaves the row untouched instead of orphaning its stats.
+    try {
+      migrateHash(r.hash, newHash);
+      db.prepare('UPDATE files SET hash = ? WHERE rowid = ?').run(newHash, r.rowid);
+      fixed++;
+    } catch (e) {
+      console.warn(`[velvet] hash repair failed for ${r.vpath}/${r.filepath}: ${e?.message ?? e}`);
+    }
+  }
+  db.exec(`PRAGMA user_version = ${HASH_REPAIR_VERSION}`);
+  if (rows.length) console.log(`[velvet] repaired ${fixed} of ${rows.length} SHA-256 file hashes`);
+  return { found: rows.length, fixed };
+}
+
 // Migrate user_metadata and play_events rows from oldHash to newHash.
 // Called when a file is re-inserted with a new hash (e.g. external tag editor rewrites
 // bytes and mtime changes) so play counts, ratings, stars, and play history survive.
@@ -1456,7 +1348,7 @@ export function removeStaleFiles(vpath, scanId) {
  * Only call this for a FRESH scan — never for a resume.
  */
 export function clearScanIds(vpath) {
-  _s.clearScanIds.run(vpath);
+  _s.clearScanIds.run(vpath, ON_DEMAND_SCAN_ID);
 }
 
 export function removeFilesByVpath(vpath) {
@@ -1480,15 +1372,11 @@ export function countFilesByScanId(vpath, scanId) {
   return row.cnt;
 }
 
-// Batch version: one GROUP BY query instead of one query per vpath.
-// Used by /api/v1/db/status to avoid N+1 on users with many vpaths.
-export function countFilesByVpaths(vpaths) {
+export function countFilesByVpaths(vpaths, includeFilepathPrefixes) {
   if (!vpaths || vpaths.length === 0) return 0;
   const vIn = inClause('vpath', vpaths);
-  const rows = db.prepare(
-    `SELECT vpath, COUNT(*) AS cnt FROM files WHERE ${vIn.sql} GROUP BY vpath`
-  ).all(...vIn.params);
-  return rows.reduce((sum, r) => sum + r.cnt, 0);
+  const ip = includePrefixClauses(includeFilepathPrefixes);
+  return db.prepare(`SELECT COUNT(*) AS cnt FROM files WHERE ${vIn.sql}${ip.sql}`).get(...vIn.params, ...ip.params).cnt;
 }
 
 export function recordCompletedScan(vpath, scanId, scanStartTs, finishedAtSec) {
@@ -1504,8 +1392,7 @@ export function getLastScannedMs() {
  * Count distinct albums (by album_id) across one or more albumsOnly sources.
  * Each source has { dbVpath, prefix } — prefix may be null (entire vpath).
  */
-export function countAlbumsForSources(sources) {
-  if (!Array.isArray(sources) || sources.length === 0) return 0;
+function _sourcesWhere(sources) {
   const parts = [];
   const params = [];
   for (const src of sources) {
@@ -1517,8 +1404,13 @@ export function countAlbumsForSources(sources) {
       params.push(src.dbVpath);
     }
   }
-  const sql = `SELECT COUNT(DISTINCT album_id) AS cnt FROM files WHERE (${parts.join(' OR ')}) AND album_id IS NOT NULL`;
-  return db.prepare(sql).get(...params).cnt;
+  return { sql: `(${parts.join(' OR ')})`, params };
+}
+
+export function countAlbumsForSources(sources) {
+  if (!Array.isArray(sources) || sources.length === 0) return 0;
+  const where = _sourcesWhere(sources);
+  return db.prepare(`SELECT COUNT(DISTINCT album_id) AS cnt FROM files WHERE ${where.sql} AND album_id IS NOT NULL`).get(...where.params).cnt;
 }
 
 export function getStats() {
@@ -1943,7 +1835,7 @@ export function searchArtistsNormalized(query, vpaths, ignoreVPaths) {
 
   // Compute the set of vpaths the user is allowed to see
   let filteredVpaths = null;
-  if (Array.isArray(vpaths) && vpaths.length > 0) {
+  if (Array.isArray(vpaths)) {
     filteredVpaths = vpathFilter(vpaths, ignoreVPaths);
     if (filteredVpaths.length === 0) return [];
   }
@@ -2162,23 +2054,6 @@ export function getArtistHomeStats(includeFilepathPrefixes) {
   return { totalCount, topArtists, recentArtists, mostPlayedArtists };
 }
 
-// Returns all artists for the Artist Library grid, sorted by display name.
-// Uses precomputed song_count (no expensive join with files).
-export function getArtistsForBrowse(_vpaths, _ignoreVPaths) {
-  // Legacy function — kept for any future bulk use.
-  // For the home page, use getArtistHomeStats(). For letter browse, use getArtistsByLetter().
-  const rows = db.prepare(
-    'SELECT * FROM artists_normalized ORDER BY artist_clean COLLATE NOCASE'
-  ).all();
-  return rows.map(r => ({
-    artistKey:    r.artist_clean.toLowerCase(),
-    canonicalName: r.artist_clean,
-    imageFile:    r.image_file || null,
-    hasBio:       !!r.bio,
-    songCount:    r.song_count || 0,
-  }));
-}
-
 // Returns the full profile row for one artist by its artist_clean (case-insensitive).
 // Returns null if not found.
 export function getArtistRow(artistClean) {
@@ -2338,24 +2213,6 @@ export function resolveArtistNamesForDJ(names) {
     if (folded) for (const v of folded) result.add(v);
   }
   return [...result];
-}
-
-/**
- * Returns true if any of the supplied raw artist variants are credited as the
- * primary album artist (COALESCE(album_artist, artist)) on at least one file
- * in the accessible vpaths.  Used to filter similar-artist chips to artists
- * that actually have albums, not just featuring credits on compilations.
- */
-export function artistHasAlbums(variants, vpaths) {
-  if (!variants || variants.length === 0 || !vpaths || vpaths.length === 0) return false;
-  const filtered = vpathFilter(vpaths, undefined);
-  if (filtered.length === 0) return false;
-  const vIn = inClause('vpath', filtered);
-  const pl  = variants.map(String).map(() => '?').join(',');
-  const row = db.prepare(
-    `SELECT 1 FROM files WHERE ${vIn.sql} AND COALESCE(album_artist, artist) IN (${pl}) LIMIT 1`
-  ).get(...vIn.params, ...variants.map(String));
-  return !!row;
 }
 
 // Returns the SET of artist values (from COALESCE(album_artist, artist)) that appear as
@@ -2830,6 +2687,7 @@ export function getAllFilesWithMetadata(vpaths, username, opts) {
   if (filtered.length === 0) { return []; }
   const vIn = inClause('f.vpath', filtered);
   const ep = excludePrefixClauses(opts.excludeFilepathPrefixes, 'f.vpath', 'f.filepath');
+  const ip = includePrefixClauses(opts.includeFilepathPrefixes, 'f.vpath', 'f.filepath');
 
   // opts.columns === 'autodj': only what Auto-DJ scoring and dedup read — the
   // full row is ~80 columns and the server-side radio fetches many pools.
@@ -2838,9 +2696,9 @@ export function getAllFilesWithMetadata(vpaths, username, opts) {
     SELECT f.rowid AS id, ${cols}, um.rating
     FROM files f
     LEFT JOIN user_metadata um ON f.hash = um.hash AND um.user = ?
-    WHERE ${vIn.sql}${ep.sql}
+    WHERE ${vIn.sql}${ep.sql}${ip.sql}
   `;
-  const params = [username, ...vIn.params, ...ep.params];
+  const params = [username, ...vIn.params, ...ep.params, ...ip.params];
 
   if (opts.filepathPrefix && typeof opts.filepathPrefix === 'string') {
     sql += String.raw` AND f.filepath LIKE ? ESCAPE '\'`;
@@ -2884,35 +2742,6 @@ const AUTODJ_COLUMNS = 'f.hash, f.vpath, f.filepath, f.title, f.artist, f.album_
 
 // ── Lightweight random-pick helpers (used by Auto-DJ no-filter path) ──────────
 // Avoid loading all 100k+ rows into heap just to pick one index.
-// Reverse Camelot lookup: code → all long-form key names stored by scanner/AcousticBrainz.
-// Includes enharmonic equivalents (Ab=G#, Bb=A#, Eb=D#, Db=C#, Gb=F#).
-const _CAMELOT_TO_KEYS = {
-  '1A':  ['Ab minor',  'G# minor'],
-  '1B':  ['B major'],
-  '2A':  ['Eb minor',  'D# minor'],
-  '2B':  ['F# major',  'Gb major'],
-  '3A':  ['Bb minor',  'A# minor'],
-  '3B':  ['Db major',  'C# major'],
-  '4A':  ['F minor'],
-  '4B':  ['Ab major',  'G# major'],
-  '5A':  ['C minor'],
-  '5B':  ['Eb major',  'D# major'],
-  '6A':  ['G minor'],
-  '6B':  ['Bb major',  'A# major'],
-  '7A':  ['D minor'],
-  '7B':  ['F major'],
-  '8A':  ['A minor'],
-  '8B':  ['C major'],
-  '9A':  ['E minor'],
-  '9B':  ['G major'],
-  '10A': ['B minor'],
-  '10B': ['D major'],
-  '11A': ['F# minor'],
-  '11B': ['A major'],
-  '12A': ['C# minor'],
-  '12B': ['E major'],
-};
-
 // Strategy: COUNT(*) to get candidate size → caller picks a random offset →
 // fetch LIMIT 1 OFFSET n.  The ignore list is a small array of previously-picked
 // offsets; we skip any that map onto ignored offsets by advancing the offset by
@@ -2935,7 +2764,7 @@ function _appendBpmRangeFilter(sql, params, opts) {
 function _appendMusicalKeyFilter(sql, params, opts) {
   if (opts.requireMusicalKey) { sql += ' AND f.musical_key IS NOT NULL'; }
   if (Array.isArray(opts.musicalKeys) && opts.musicalKeys.length > 0) {
-    const rawKeys = [...new Set(opts.musicalKeys.flatMap(c => _CAMELOT_TO_KEYS[c?.toUpperCase() ?? c] || []))];
+    const rawKeys = [...new Set(opts.musicalKeys.flatMap(c => CAMELOT_TO_KEYS[c?.toUpperCase() ?? c] || []))];
     if (rawKeys.length > 0) {
       const kIn = rawKeys.map(() => '?').join(',');
       sql += ` AND f.musical_key IS NOT NULL AND f.musical_key IN (${kIn})`;
@@ -2987,8 +2816,9 @@ function _appendDurationFilter(sql, params, opts) {
 function _buildRandomWhere(opts, filtered) {
   const vIn = inClause('f.vpath', filtered);
   const ep = excludePrefixClauses(opts.excludeFilepathPrefixes, 'f.vpath', 'f.filepath');
-  let sql = `FROM files f LEFT JOIN user_metadata um ON f.hash = um.hash AND um.user = ? WHERE ${vIn.sql}${ep.sql}`;
-  const params = [...vIn.params, ...ep.params];
+  const ip = includePrefixClauses(opts.includeFilepathPrefixes, 'f.vpath', 'f.filepath');
+  let sql = `FROM files f LEFT JOIN user_metadata um ON f.hash = um.hash AND um.user = ? WHERE ${vIn.sql}${ep.sql}${ip.sql}`;
+  const params = [...vIn.params, ...ep.params, ...ip.params];
 
   if (opts.filepathPrefix && typeof opts.filepathPrefix === 'string') {
     sql += String.raw` AND f.filepath LIKE ? ESCAPE '\'`;
@@ -3006,6 +2836,7 @@ function _buildRandomWhere(opts, filtered) {
   }
   sql = _appendBpmKeyFilters(sql, params, opts);
   sql = _appendGenreFilter(sql, params, opts);
+  sql = _appendDurationFilter(sql, params, opts);
   return { sql, params };
 }
 
@@ -3189,10 +3020,6 @@ export function updateUserMetadata(obj) {
   );
 }
 
-export function removeUserMetadataByUser(username) {
-  db.prepare('DELETE FROM user_metadata WHERE user = ?').run(username);
-}
-
 export function resetPlayCounts(username) {
   db.prepare('UPDATE user_metadata SET pc = 0 WHERE user = ?').run(username);
 }
@@ -3266,10 +3093,6 @@ export function reorderPlaylistEntries(username, playlistName, ids) {
   }
 }
 
-export function removePlaylistsByUser(username) {
-  db.prepare('DELETE FROM playlists WHERE user = ?').run(username);
-}
-
 // Shared Playlists
 export function findSharedPlaylist(playlistId) {
   const row = db.prepare('SELECT rowid AS id, * FROM shared_playlists WHERE playlistId = ?').get(playlistId);
@@ -3299,10 +3122,6 @@ export function removeExpiredSharedPlaylists() {
 
 export function removeEternalSharedPlaylists() {
   db.prepare('DELETE FROM shared_playlists WHERE expires IS NULL').run();
-}
-
-export function removeSharedPlaylistsByUser(username) {
-  db.prepare('DELETE FROM shared_playlists WHERE user = ?').run(username);
 }
 
 // ── Scan Errors ─────────────────────────────────────────────────────────────
@@ -3387,19 +3206,6 @@ export function confirmScanErrorOk(filepath, vpath) {
   ).run(now, filepath, vpath);
 }
 
-/**
- * Mark a file's album-art lookup as "checked, none found" by setting aaFile = ''
- * (empty string). The scanner treats null as "never tried" and '' as "tried, nothing".
- */
-export function markFileArtChecked(filepath, vpath) {
-  db.prepare("UPDATE files SET aaFile = '' WHERE (aaFile IS NULL OR aaFile = '') AND filepath = ? AND vpath = ?").run(filepath, vpath);
-}
-
-/** Mark a file's cue-sheet check as done-with-nothing by setting cuepoints = '[]'. */
-export function markFileCueChecked(filepath, vpath) {
-  db.prepare("UPDATE files SET cuepoints = '[]' WHERE (cuepoints IS NULL) AND filepath = ? AND vpath = ?").run(filepath, vpath);
-}
-
 /** Count only actionable errors (unfixed AND file still in library) — used for the sidebar badge. */
 export function getScanErrorCount() {
   return db.prepare(`
@@ -3410,21 +3216,6 @@ export function getScanErrorCount() {
 }
 
 // ── Subsonic-specific queries ────────────────────────────────────────────────
-
-export function getFilesByArtistId(artistId, vpaths, username, opts = {}) {
-  const filtered = vpathFilter(vpaths, null);
-  if (filtered.length === 0) return [];
-  const vIn = inClause('f.vpath', filtered);
-  const pf = prefixClause(opts.filepathPrefix, 'f.filepath');
-  const rows = db.prepare(`
-    SELECT f.rowid AS id, f.*, um.rating, um.starred, um.lp AS lastPlayed, um.pc AS playCount
-    FROM files f
-    LEFT JOIN user_metadata um ON f.hash = um.hash AND um.user = ?
-    WHERE f.artist_id = ? AND ${vIn.sql}${pf.sql}
-    ORDER BY f.album COLLATE NOCASE, f.disk, f.track, f.filepath
-  `).all(username, artistId, ...vIn.params, ...pf.params);
-  return rows.map(mapFileRow);
-}
 
 export function getFilesByAlbumId(albumId, vpaths, username, opts = {}) {
   const filtered = vpathFilter(vpaths, null);
@@ -3490,26 +3281,6 @@ export function getSongsByRowids(rowids, username) {
     for (const row of rows) out.set(row.id, mapFileRow(row));
   }
   return out;
-}
-
-// In-memory set of content hashes that are shared by 2+ physical files. Used by the
-// Subsonic layer to decide when a song id needs the "@<rowid>" disambiguator so the
-// client always streams the exact file it selected. Rebuilt on startup and after
-// every scan (hashes only change when files are added/removed/rescanned).
-let _duplicateHashes = new Set();
-export function refreshDuplicateHashes() {
-  try {
-    const rows = db.prepare(
-      'SELECT hash FROM files WHERE hash IS NOT NULL GROUP BY hash HAVING COUNT(*) > 1'
-    ).all();
-    _duplicateHashes = new Set(rows.map(r => r.hash));
-  } catch {
-    _duplicateHashes = new Set();
-  }
-  return _duplicateHashes.size;
-}
-export function isDuplicatedHash(hash) {
-  return hash != null && _duplicateHashes.has(hash);
 }
 
 // Batch variant of getSongByHash used by Subsonic handlers to avoid N+1 lookups.
@@ -3979,8 +3750,8 @@ export function upsertPodcastEpisodes(feedId, episodes) {
 
 export function saveEpisodeProgress(episodeId, feedId, position, played) {
   db.prepare(
-    'UPDATE podcast_episodes SET play_position = ?, played = ? WHERE id = ? AND feed_id = ?'
-  ).run(position, played ? 1 : 0, episodeId, feedId);
+    'UPDATE podcast_episodes SET play_position = ?, played = COALESCE(?, played) WHERE id = ? AND feed_id = ?'
+  ).run(position, played == null ? null : (played ? 1 : 0), episodeId, feedId);
 }
 
 // ── Smart Playlists ──────────────────────────────────────────────────────────
@@ -3997,12 +3768,13 @@ function _applyPlayedStatusFilter(sql, params, filters) {
   return sql;
 }
 
-function _buildSmartPlaylistQuery(filters, vpaths, username, countOnly, ignoreVPaths, filepathPrefix) {
+function _buildSmartPlaylistQuery(filters, vpaths, username, countOnly, ignoreVPaths, filepathPrefix, includeFilepathPrefixes) {
   const filtered = vpathFilter(vpaths, ignoreVPaths || null);
   if (filtered.length === 0) return null;
   const vIn = inClause('f.vpath', filtered);
-  const params = [username, ...vIn.params];
-  let whereSql = `WHERE ${vIn.sql}`;
+  const ip = includePrefixClauses(includeFilepathPrefixes, 'f.vpath', 'f.filepath');
+  const params = [username, ...vIn.params, ...ip.params];
+  let whereSql = `WHERE ${vIn.sql}${ip.sql}`;
 
   if (filepathPrefix && typeof filepathPrefix === 'string') {
     whereSql += String.raw` AND f.filepath LIKE ? ESCAPE '\'`;
@@ -4042,8 +3814,8 @@ const _SORT_MAP = {
   random:      'RANDOM()',
 };
 
-export function runSmartPlaylist(filters, sort, limitN, vpaths, username, ignoreVPaths, filepathPrefix) {
-  const q = _buildSmartPlaylistQuery(filters, vpaths, username, false, ignoreVPaths, filepathPrefix);
+export function runSmartPlaylist(filters, sort, limitN, vpaths, username, ignoreVPaths, filepathPrefix, includeFilepathPrefixes) {
+  const q = _buildSmartPlaylistQuery(filters, vpaths, username, false, ignoreVPaths, filepathPrefix, includeFilepathPrefixes);
   if (!q) return [];
   const orderSql = 'ORDER BY ' + (_SORT_MAP[sort] || _SORT_MAP.artist);
   const limit = Math.min(Number(limitN) || 100, 1000);
@@ -4054,8 +3826,8 @@ export function runSmartPlaylist(filters, sort, limitN, vpaths, username, ignore
   return rows.map(mapFileRow);
 }
 
-export function countSmartPlaylist(filters, vpaths, username, ignoreVPaths, filepathPrefix) {
-  const q = _buildSmartPlaylistQuery(filters, vpaths, username, true, ignoreVPaths, filepathPrefix);
+export function countSmartPlaylist(filters, vpaths, username, ignoreVPaths, filepathPrefix, includeFilepathPrefixes) {
+  const q = _buildSmartPlaylistQuery(filters, vpaths, username, true, ignoreVPaths, filepathPrefix, includeFilepathPrefixes);
   if (!q) return 0;
   return db.prepare(`SELECT COUNT(*) AS n ${q.joinSql} ${q.whereSql}`).get(...q.params).n;
 }
@@ -4779,31 +4551,29 @@ export function previewFolderMetadata() {
  */
 export function backfillFolderMetadata() {
   const rows = db.prepare(
-    "SELECT rowid, filepath, artist, album, title FROM files WHERE (artist IS NULL OR artist = '') AND filepath IS NOT NULL"
+    "SELECT rowid, vpath, filepath, artist, album, album_artist, album_version, title FROM files WHERE (artist IS NULL OR artist = '') AND filepath IS NOT NULL"
   ).all();
-
-  const _md5 = s => createHash('md5').update((s || '').toLowerCase().trim()).digest('hex'); // NOSONAR: MD5 used as DB identity key, not for security
 
   const upd = db.prepare(
     'UPDATE files SET artist=?, album=?, title=?, artist_id=?, album_id=? WHERE rowid=?'
   );
 
   let updated = 0;
-  try { db.exec('BEGIN'); } catch (e) { console.debug('[velvet]', e?.message ?? e); }
+  db.exec('BEGIN');
   try {
     for (const row of rows) {
       const artist = _deriveArtist(row.filepath);
-      if (!artist) continue; // can't derive — skip
+      if (!artist) continue;
       const album  = row.album  || _deriveAlbum(row.filepath);
       const title  = row.title  || _deriveTitle(row.filepath);
-      const aid = _md5(artist).slice(0, 16);
-      const alid = _md5(`${artist}|||${album || ''}`).slice(0, 16);
-      upd.run(artist, album, title, aid, alid, row.rowid);
+      _s.ftsDel.run(row.rowid, row.title ?? null, row.artist ?? null, row.album_artist ?? null, row.album ?? null, row.album_version ?? null, row.filepath);
+      upd.run(artist, album, title, _makeArtistId(artist), _albumIdFor(row.vpath, row.filepath, artist, album), row.rowid);
+      _s.ftsInsert.run(row.rowid, title ?? null, artist, row.album_artist ?? null, album ?? null, row.album_version ?? null, row.filepath);
       updated++;
     }
-    try { db.exec('COMMIT'); } catch (e) { console.debug('[velvet]', e?.message ?? e); }
+    db.exec('COMMIT');
   } catch (e) {
-    try { db.exec('ROLLBACK'); } catch (e) { console.debug('[velvet]', e?.message ?? e); }
+    db.exec('ROLLBACK');
     throw e;
   }
   return updated;
@@ -4869,43 +4639,6 @@ export function getPodcastStatsInRange(userId, fromMs, toMs) {
 
 // ── AcoustID Fingerprinting ───────────────────────────────────────────────────
 
-/**
- * Returns a batch of up to `limit` files that need fingerprinting:
- *  - acoustid_status IS NULL (never attempted)
- *  - OR status='error' with a timestamp older than retryAfterSec seconds
- * Ordered oldest-indexed-first so newly scanned songs complete roughly in
- * library order rather than most-recently-added order.
- */
-export function getAcoustidQueue(limit, retryAfterSec) {
-  const cutoff = Math.floor(Date.now() / 1000) - retryAfterSec;
-  return db.prepare(`
-    SELECT filepath, vpath, duration
-    FROM files
-    WHERE format IS NOT NULL
-      AND (
-        acoustid_status IS NULL
-        OR (acoustid_status = 'error' AND (acoustid_ts IS NULL OR acoustid_ts < ?))
-      )
-    ORDER BY ts ASC
-    LIMIT ?
-  `).all(cutoff, limit);
-}
-
-/** Mark a file as pending (in-progress) so a restart doesn't double-process it. */
-export function setAcoustidPending(filepath, vpath) {
-  db.prepare(
-    `UPDATE files SET acoustid_status = 'pending', acoustid_ts = ? WHERE filepath = ? AND vpath = ?`
-  ).run(Math.floor(Date.now() / 1000), filepath, vpath);
-}
-
-/** Persist the result of a successful AcoustID lookup. */
-export function setAcoustidResult(filepath, vpath, { acoustid_id, mbid, score, status }) {
-  db.prepare(
-    `UPDATE files SET acoustid_id = ?, mbid = ?, acoustid_score = ?, acoustid_status = ?, acoustid_ts = ?
-     WHERE filepath = ? AND vpath = ?`
-  ).run(acoustid_id ?? null, mbid ?? null, score ?? null, status, Math.floor(Date.now() / 1000), filepath, vpath);
-}
-
 // ── ReplayGain worker DB helpers ──────────────────────────────────────────────
 
 /**
@@ -4920,24 +4653,11 @@ export function getRgStatus() {
       COUNT(CASE WHEN rg_measured_ts IS NULL THEN 1 END)                                                   AS queued,
       COUNT(CASE WHEN rg_measured_ts = -1 THEN 1 END)                                                     AS failed,
       COUNT(CASE WHEN rg_measured_ts = -2 THEN 1 END)                                                     AS shelved,
-      COUNT(CASE WHEN rg_tag_track_gain IS NOT NULL OR rg_tag_album_gain IS NOT NULL
-                   OR r128_track_gain_db IS NOT NULL THEN 1 END)                                           AS has_tags,
+      COUNT(CASE WHEN replaygainTrackDb IS NOT NULL THEN 1 END)                                            AS has_tags,
       COUNT(CASE WHEN rg_measurement_tool = 'rsgain'  AND rg_measured_ts > 0 THEN 1 END)                  AS measured_rsgain,
       COUNT(CASE WHEN rg_measurement_tool = 'ffmpeg'  AND rg_measured_ts > 0 THEN 1 END)                  AS measured_ffmpeg
     FROM files WHERE format IS NOT NULL
   `).get();
-}
-
-/**
- * Reset all failed rows (rg_measured_ts = -1) so they are retried on the next
- * worker pass.  Returns the number of rows affected.
- */
-export function resetRgFailed() {
-  const info = db.prepare(`
-    UPDATE files SET rg_measured_ts = NULL, rg_measurement_tool = NULL
-    WHERE rg_measured_ts = -1
-  `).run();
-  return info.changes;
 }
 
 /**
@@ -4985,40 +4705,6 @@ export function shelveRgRows(ids) {
     db.exec('COMMIT');
     return count;
   } catch (e) { db.exec('ROLLBACK'); throw e; }
-}
-
-/**
- * Unshelve rows (rg_measured_ts = -2 → NULL): re-queues them for analysis.
- */
-export function unshelveRgRows(ids) {
-  if (!ids.length) return 0;
-  const stmt = db.prepare(`
-    UPDATE files SET rg_measured_ts = NULL, rg_measurement_tool = NULL,
-                     rg_measurement_error = NULL
-    WHERE rowid = ? AND rg_measured_ts = -2
-  `);
-  db.exec('BEGIN');
-  try {
-    let count = 0;
-    for (const id of ids) { const r = stmt.run(id); count += r.changes; }
-    db.exec('COMMIT');
-    return count;
-  } catch (e) { db.exec('ROLLBACK'); throw e; }
-}
-
-/**
- * Delete rows from `files` by rowid array.  Used to purge orphaned entries
- * whose physical file no longer exists.  Returns the number deleted.
- */
-export function purgeRgRowsByIds(ids) {
-  if (!ids.length) return 0;
-  const stmt = db.prepare(`DELETE FROM files WHERE rowid = ?`);
-  db.exec('BEGIN');
-  try {
-    for (const id of ids) stmt.run(id);
-    db.exec('COMMIT');
-  } catch (e) { db.exec('ROLLBACK'); throw e; }
-  return ids.length;
 }
 
 /**
@@ -5129,11 +4815,6 @@ export function clearRgBackup() {
   db.prepare(`DELETE FROM rg_backup`).run();
 }
 
-/** Reset any 'pending' rows back to NULL so they are retried on next worker start. */
-export function resetAcoustidPending() {
-  db.prepare(`UPDATE files SET acoustid_status = NULL WHERE acoustid_status = 'pending'`).run();
-}
-
 /** Reset all 'error' rows back to NULL so they are retried immediately on the next worker pass. */
 export function resetAcoustidErrors() {
   const info = db.prepare(`UPDATE files SET acoustid_status = NULL, acoustid_ts = NULL WHERE acoustid_status = 'error'`).run();
@@ -5187,46 +4868,8 @@ export function getAcoustidStats() {
 
 // ── Tag Workshop — MB Enrichment ──────────────────────────────────────────────
 
-/** Fetch next batch of files awaiting MusicBrainz enrichment. */
-export function getMbEnrichQueue(limit) {
-  return db.prepare(`
-    SELECT filepath, vpath, mbid, title, artist, album, year, track
-    FROM files
-    WHERE mbid IS NOT NULL
-      AND mb_enrichment_status IS NULL
-      AND acoustid_status = 'found'
-    LIMIT ?
-  `).all(limit);
-}
-
-/** Mark a row as pending for MB enrichment. */
-export function setMbEnrichPending(filepath, vpath) {
-  db.prepare(
-    `UPDATE files SET mb_enrichment_status = 'pending', mb_enriched_ts = ? WHERE filepath = ? AND vpath = ?`
-  ).run(Math.floor(Date.now() / 1000), filepath, vpath);
-}
-
-/** Persist the result of a MusicBrainz recording lookup. */
-export function setMbEnrichResult(filepath, vpath, data) {
-  db.prepare(`
-    UPDATE files
-    SET mb_album = ?, mb_year = ?, mb_track = ?, mb_release_id = ?,
-        mb_enrichment_status = ?, mb_enriched_ts = ?, tag_status = ?
-    WHERE filepath = ? AND vpath = ?
-  `).run(
-    data.mb_album ?? null, data.mb_year ?? null, data.mb_track ?? null, data.mb_release_id ?? null,
-    data.status, Math.floor(Date.now() / 1000), data.tag_status ?? null,
-    filepath, vpath
-  );
-}
-
-/** Reset any rows stuck in 'pending' back to NULL so they are retried on next worker start. */
-export function resetMbEnrichPending() {
-  db.prepare(`UPDATE files SET mb_enrichment_status = NULL WHERE mb_enrichment_status = 'pending'`).run();
-}
-
 /** Aggregate MB enrichment statistics for the admin UI. */
-export function getMbEnrichStats() {
+function getMbEnrichStats() {
   return db.prepare(`
     SELECT
       COUNT(CASE WHEN mbid IS NOT NULL AND (acoustid_status = 'found' OR mb_text_search_status = 'found') THEN 1 END) AS total,
@@ -5261,7 +4904,7 @@ export function retryMbEnrichErrors() {
 }
 
 /** Aggregate stats for the MB text-search fallback worker. */
-export function getMbTextSearchStats() {
+function getMbTextSearchStats() {
   return db.prepare(`
     SELECT
       COUNT(CASE WHEN acoustid_status = 'not_found'
@@ -5453,17 +5096,6 @@ export function getTagWorkshopAlbumTracks(mb_release_id, album_dir = null) {
     FROM files
     WHERE mb_release_id = ? ${dirFilter}
     ORDER BY COALESCE(mb_track, track, 0), filepath COLLATE NOCASE
-  `).all(...params);
-}
-
-/** Return tracks needing tag updates for an accept operation. */
-export function getTracksForAccept(mb_release_id, album_dir = null) {
-  const dirFilter = album_dir == null ? '' : `AND COALESCE(mb_album_dir, '') = ?`;
-  const params    = album_dir == null ? [mb_release_id] : [mb_release_id, album_dir];
-  return db.prepare(`
-    SELECT filepath, vpath, mb_title, mb_artist, mb_album, mb_year, mb_track, title, artist, album, year, track, format
-    FROM files
-    WHERE mb_release_id = ? AND tag_status IN ('needs_review', 'confirmed', 'skipped') ${dirFilter}
   `).all(...params);
 }
 
@@ -5793,46 +5425,6 @@ export function genreCorrectBpmUndo() {
   return r.changes;
 }
 
-// ── Essentia audio_features helpers ────────────────────────────────────────
-
-export function saveAudioFeatures(hash, features) {
-  db.prepare(`
-    INSERT INTO audio_features
-      (hash, bpm, bpm_confidence, key_name, key_scale, key_strength,
-       danceability, loudness, dynamic_complexity, mfcc_mean, hpcp_mean, analyzed_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    ON CONFLICT(hash) DO UPDATE SET
-      bpm               = excluded.bpm,
-      bpm_confidence    = excluded.bpm_confidence,
-      key_name          = excluded.key_name,
-      key_scale         = excluded.key_scale,
-      key_strength      = excluded.key_strength,
-      danceability      = excluded.danceability,
-      loudness          = excluded.loudness,
-      dynamic_complexity = excluded.dynamic_complexity,
-      mfcc_mean         = excluded.mfcc_mean,
-      hpcp_mean         = excluded.hpcp_mean,
-      analyzed_at       = excluded.analyzed_at
-  `).run(
-    hash,
-    features.bpm ?? null, features.bpm_confidence ?? null,
-    features.key_name ?? null, features.key_scale ?? null, features.key_strength ?? null,
-    features.danceability ?? null, features.loudness ?? null,
-    features.dynamic_complexity ?? null,
-    features.mfcc_mean ? JSON.stringify(features.mfcc_mean) : null,
-    features.hpcp_mean ? JSON.stringify(features.hpcp_mean) : null,
-    Date.now()
-  );
-}
-
-export function getAudioFeatures(hash) {
-  const row = db.prepare('SELECT * FROM audio_features WHERE hash = ?').get(hash);
-  if (!row) return null;
-  if (row.mfcc_mean) { try { row.mfcc_mean = JSON.parse(row.mfcc_mean); } catch (e) { console.debug('[velvet]', e?.message ?? e); } }
-  if (row.hpcp_mean) { try { row.hpcp_mean = JSON.parse(row.hpcp_mean); } catch (e) { console.debug('[velvet]', e?.message ?? e); } }
-  return row;
-}
-
 /**
  * Find similar songs to the given track hash.
  *
@@ -5853,33 +5445,7 @@ export function getSimilarSongs(hash, limit = 50) {
   const { bpm, musical_key } = ref;
   if (!bpm && !musical_key) return [];
 
-  // Camelot wheel for key compatibility (relative + dominant)
-  const CAMELOT = {
-    'C major': '8B', 'A minor': '8A',
-    'G major': '9B', 'E minor': '9A',
-    'D major': '10B', 'B minor': '10A',
-    'A major': '11B', 'F# minor': '11A',
-    'E major': '12B', 'C# minor': '12A',
-    'B major': '1B', 'G# minor': '1A',
-    'F# major': '2B', 'D# minor': '2A',
-    'C# major': '3B', 'A# minor': '3A',
-    'F major': '7B', 'D minor': '7A',
-    'Bb major': '6B', 'G minor': '6A',
-    'Eb major': '5B', 'C minor': '5A',
-    'Ab major': '4B', 'F minor': '4A',
-  };
-
-  function camelotCompat(key1, key2) {
-    if (!key1 || !key2) return false;
-    const c1 = CAMELOT[key1], c2 = CAMELOT[key2];
-    if (!c1 || !c2) return key1 === key2;
-    const n1 = Number.parseInt(c1), n2 = Number.parseInt(c2);
-    const t1 = c1.slice(-1), t2 = c2.slice(-1);
-    if (t1 === t2 && Math.abs(n1 - n2) <= 1) return true; // adjacent same type
-    if (t1 !== t2 && n1 === n2) return true; // relative major/minor (same number)
-    return false;
-  }
-
+  const refCode = toCamelot(musical_key);
   const bpmRef = bpm || 0;
   const BPM_WINDOW = Math.max(5, bpmRef * 0.1); // ±10% or ±5 BPM
 
@@ -5917,7 +5483,7 @@ export function getSimilarSongs(hash, limit = 50) {
       if (diff <= BPM_WINDOW) score += 1 - diff / (BPM_WINDOW * 2);
     }
     if (musical_key && row.musical_key) {
-      if (row.musical_key === musical_key) score += 2;
+      if (row.musical_key === musical_key || (refCode && toCamelot(row.musical_key) === refCode)) score += 2;
       else if (camelotCompat(musical_key, row.musical_key)) score += 1;
     }
     if (score > 0) scored.push({ ...row, _score: score });
@@ -5927,13 +5493,6 @@ export function getSimilarSongs(hash, limit = 50) {
   return scored.slice(0, limit);
 }
 
-
-
-export function getRandomSongsForAutoDj(vpaths, ignoreVPaths, opts) {
-  // This is a thin alias — actual filtering logic lives in getRandomSongs()
-  // The BPM/key params are handled there; see that function for details.
-  return getRandomSongs(vpaths, ignoreVPaths, opts);
-}
 
 // ── Smart Playlist ML ─────────────────────────────────────────────────────
 
@@ -5970,16 +5529,23 @@ export function spGetNewEvents(userId, afterId) {
   ).all(userId, afterId);
 }
 
-/**
- * Get feature data for a single track hash (files LEFT JOIN audio_features).
- * Returns null if the hash is not found or has no parseable format.
- */
+const DLNA_TRACK_COLUMNS = 'title, artist, album, year, genre, filepath, vpath, aaFile, duration, track, disk, hash';
+
+export function getDlnaTrack(vpath, filepath) {
+  return db.prepare(`SELECT ${DLNA_TRACK_COLUMNS} FROM files WHERE vpath = ? AND filepath = ? LIMIT 1`).get(vpath, filepath);
+}
+
+// sources: [{ dbVpath, prefix }] — the DLNA-enabled folders (prefix null = the whole vpath)
+export function getDlnaTracks(sources) {
+  if (!sources.length) return [];
+  const where = _sourcesWhere(sources);
+  return db.prepare(`SELECT ${DLNA_TRACK_COLUMNS} FROM files WHERE ${where.sql}`).all(...where.params);
+}
+
 export function spGetTrackFeatures(hash) {
   return db.prepare(
-    `SELECT f.genre, f.year, f.bpm, f.musical_key, f.duration,
-            af.danceability, af.loudness
+    `SELECT f.genre, f.year, f.bpm, f.musical_key, f.duration
      FROM files f
-     LEFT JOIN audio_features af ON af.hash = f.hash
      WHERE f.hash = ? AND f.format IS NOT NULL
      LIMIT 1`
   ).get(hash) ?? null;
@@ -5990,8 +5556,7 @@ export function spGetTrackFeatures(hash) {
  * Used by the playlist generator to score the whole library.
  *
  * @param {string[]} vpaths
- * @returns {object[]} rows with vpath, filepath, genre, year, bpm, musical_key,
- *                     duration, danceability, loudness
+ * @returns {object[]} rows with vpath, filepath, artist, genre, year, bpm, musical_key, duration
  */
 export function spGetAllTracksWithFeatures(vpaths) {
   if (!Array.isArray(vpaths) || vpaths.length === 0) return [];
@@ -6001,10 +5566,8 @@ export function spGetAllTracksWithFeatures(vpaths) {
   return db.prepare(
     `SELECT f.vpath, f.filepath,
             MIN(f.artist) AS artist,
-            f.genre, f.year, f.bpm, f.musical_key, f.duration,
-            af.danceability, af.loudness
+            f.genre, f.year, f.bpm, f.musical_key, f.duration
      FROM files f
-     LEFT JOIN audio_features af ON af.hash = f.hash
      WHERE f.format IS NOT NULL AND f.hash IS NOT NULL
        AND f.hash != 'd41d8cd98f00b204e9800998ecf8427e'
        AND f.vpath IN (${placeholders})
@@ -6140,8 +5703,7 @@ export function findSongByTitleArtist(title, artist, vpaths, username) {
   if (!vpaths?.length || !title || !artist) return null;
   const placeholders = vpaths.map(() => '?').join(',');
   const row = db.prepare(`
-    SELECT f.*, um.pc AS playCount, um.lp AS lastPlayed, um.starred, um.rating,
-           f.replaygainTrackDb, f.rg_tag_track_gain
+    SELECT f.*, um.pc AS playCount, um.lp AS lastPlayed, um.starred, um.rating
     FROM files f
     LEFT JOIN user_metadata um ON um.hash = f.hash AND um.user = ?
     WHERE f.vpath IN (${placeholders})
@@ -6276,7 +5838,7 @@ export function deleteApiKeyById(id, username) {
   return result.changes > 0;
 }
 
-export function deleteAllApiKeysByUsername(username) {
+function deleteAllApiKeysByUsername(username) {
   db.prepare('DELETE FROM subsonic_api_keys WHERE username = ?').run(username);
 }
 
@@ -6313,6 +5875,600 @@ export function deletePasskeyById(id, username) {
   return result.changes > 0;
 }
 
-export function deleteAllPasskeysByUsername(username) {
+function deleteAllPasskeysByUsername(username) {
   db.prepare('DELETE FROM passkeys WHERE username = ?').run(username);
+}
+
+const _USER_TABLES = [
+  ['user_metadata', 'user'], ['playlists', 'user'], ['shared_playlists', 'user'],
+  ['user_settings', 'username'], ['radio_stations', 'user'], ['radio_schedules', 'username'],
+  ['smart_playlists', 'user'], ['bookmarks', 'username'], ['play_queues', 'username'],
+  ['play_events', 'user_id'], ['listening_sessions', 'user_id'], ['radio_play_events', 'user_id'],
+  ['podcast_play_events', 'user_id'], ['sp_slot_profiles', 'user_id'], ['sp_generated_playlists', 'user_id'],
+];
+
+export function deleteAllUserData(username) {
+  db.exec('BEGIN');
+  try {
+    db.prepare('DELETE FROM podcast_episodes WHERE feed_id IN (SELECT id FROM podcast_feeds WHERE user = ?)').run(username);
+    db.prepare('DELETE FROM podcast_feeds WHERE user = ?').run(username);
+    for (const [table, col] of _USER_TABLES) db.prepare(`DELETE FROM ${table} WHERE ${col} = ?`).run(username);
+    deleteAllApiKeysByUsername(username);
+    deleteAllPasskeysByUsername(username);
+    db.exec('COMMIT');
+  } catch (e) { db.exec('ROLLBACK'); throw e; }
+}
+
+// ── Album-Art Workshop ────────────────────────────────────────────────────────
+// album_art_workshop: one row per art-less album folder (album_key = "vpath|album_id").
+// album_art_shelf: folder prefixes the admin hid from the workshop.
+
+export function artWorkshopEnsureTables() {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS album_art_workshop (
+      album_key       TEXT PRIMARY KEY,
+      vpath           TEXT NOT NULL,
+      album_id        TEXT,
+      dir             TEXT NOT NULL,
+      album           TEXT,
+      artist          TEXT,
+      status          TEXT,
+      suggestions     TEXT,
+      last_attempt_ts INTEGER,
+      attempts        INTEGER DEFAULT 0,
+      outcome         TEXT,
+      applied_cover   TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_aaw_status ON album_art_workshop(status);
+    CREATE TABLE IF NOT EXISTS album_art_shelf (
+      vpath  TEXT NOT NULL,
+      prefix TEXT NOT NULL,
+      ts     INTEGER,
+      PRIMARY KEY (vpath, prefix)
+    );
+  `);
+  for (const col of [
+    'top_source TEXT',        // primary suggestion source — enables a paginated source filter
+    'prev_aaFile TEXT',       // snapshot before apply — for true restore/undo
+    'prev_art_source TEXT',
+    'prev_cover_file TEXT',
+    'prev_cover_backup TEXT', // filename of the backed-up folder cover (cover.velvet-prev.jpg)
+    'applied_aaFile TEXT',    // the aaFile this workshop wrote (for the Applied view)
+    'had_art INTEGER',        // 1 if the album already had art before this apply
+  ]) {
+    try { db.exec(`ALTER TABLE album_art_workshop ADD COLUMN ${col}`); } catch { /* already exists */ }
+  }
+  db.exec('CREATE INDEX IF NOT EXISTS idx_aaw_top_source ON album_art_workshop(top_source)');
+}
+
+export function artWorkshopShelves() {
+  return db.prepare('SELECT vpath, prefix, ts FROM album_art_shelf ORDER BY vpath, prefix').all();
+}
+
+export function artWorkshopAudioFilepaths() {
+  return db.prepare('SELECT vpath, filepath FROM files WHERE format IS NOT NULL').all();
+}
+
+// Albums (folder = album, via the folder-based album_id) where no track has art
+export function artWorkshopArtlessAlbums() {
+  return db.prepare(`
+    SELECT vpath, album_id,
+           MIN(filepath)                          AS sample_filepath,
+           MAX(album)                             AS album,
+           MAX(COALESCE(album_artist, artist))    AS artist,
+           MAX(year)                              AS year,
+           COUNT(*)                               AS track_count
+    FROM files
+    WHERE format IS NOT NULL
+    GROUP BY vpath, album_id
+    HAVING MAX(NULLIF(aaFile, '')) IS NULL
+  `).all();
+}
+
+export function artWorkshopReleaseId(vpath, albumId) {
+  return db.prepare(
+    'SELECT mb_release_id FROM files WHERE vpath = ? AND album_id = ? AND mb_release_id IS NOT NULL LIMIT 1'
+  ).get(vpath, albumId)?.mb_release_id || null;
+}
+
+const _artUpsertCandidateSql = `
+  INSERT INTO album_art_workshop (album_key, vpath, album_id, dir, album, artist, status, attempts)
+  VALUES (?, ?, ?, ?, ?, ?, 'pending', 0)
+  ON CONFLICT(album_key) DO UPDATE SET dir = excluded.dir, album = excluded.album, artist = excluded.artist`;
+
+export function artWorkshopUpsertCandidate(c) {
+  db.prepare(_artUpsertCandidateSql).run(c.albumKey, c.vpath, c.albumId, c.dir, c.album || null, c.artist || null);
+}
+
+// Upserts the current candidates and forgets rows no longer art-less, keeping applied/skipped history
+export function artWorkshopReconcile(candidates) {
+  const keep = new Set(candidates.map(c => c.albumKey));
+  const ins = db.prepare(_artUpsertCandidateSql);
+  const del = db.prepare('DELETE FROM album_art_workshop WHERE album_key = ?');
+  db.exec('BEGIN');
+  try {
+    for (const c of candidates) ins.run(c.albumKey, c.vpath, c.albumId, c.dir, c.album || null, c.artist || null);
+    for (const r of db.prepare('SELECT album_key, status FROM album_art_workshop').all()) {
+      if (!keep.has(r.album_key) && r.status !== 'applied' && r.status !== 'skipped') del.run(r.album_key);
+    }
+    db.exec('COMMIT');
+  } catch (e) {
+    try { db.exec('ROLLBACK'); } catch { /* no txn */ }
+    throw e;
+  }
+}
+
+export function artWorkshopAllRows() {
+  return db.prepare('SELECT album_key, vpath, album_id, dir, album, artist, status, last_attempt_ts FROM album_art_workshop').all();
+}
+
+export function artWorkshopRow(albumKey) {
+  return db.prepare('SELECT * FROM album_art_workshop WHERE album_key = ?').get(albumKey);
+}
+
+export function artWorkshopSaveSuggestions(albumKey, suggestions, status, ts) {
+  db.prepare(`
+    UPDATE album_art_workshop
+    SET suggestions = ?, status = ?, last_attempt_ts = ?, attempts = attempts + 1, outcome = ?, top_source = ?
+    WHERE album_key = ?
+  `).run(JSON.stringify(suggestions), status, ts, status, suggestions[0]?.source || null, albumKey);
+}
+
+// The art an album's tracks point at now (first track)
+export function artWorkshopAlbumArt(vpath, albumId) {
+  return db.prepare('SELECT aaFile, art_source, cover_file FROM files WHERE vpath = ? AND album_id = ? LIMIT 1').get(vpath, albumId);
+}
+
+export function artWorkshopSetAlbumArt(vpath, albumId, aaFile, artSource, coverFile) {
+  db.prepare('UPDATE files SET aaFile = ?, art_source = ?, cover_file = ? WHERE vpath = ? AND album_id = ?')
+    .run(aaFile, artSource, coverFile, vpath, albumId);
+}
+
+// The first apply snapshots the original art (COALESCE keeps it across re-applies). prev: { aaFile, artSource, coverFile } or nulls
+export function artWorkshopMarkApplied(albumKey, { source, ts, aaFile, prev, prevCoverBackup, hadArt }) {
+  db.prepare(
+    `UPDATE album_art_workshop SET
+       status = 'applied', applied_cover = ?, outcome = 'applied', last_attempt_ts = ?,
+       applied_aaFile = ?,
+       prev_aaFile      = COALESCE(prev_aaFile, ?),
+       prev_art_source  = COALESCE(prev_art_source, ?),
+       prev_cover_file  = COALESCE(prev_cover_file, ?),
+       prev_cover_backup= COALESCE(prev_cover_backup, ?),
+       had_art          = COALESCE(had_art, ?)
+     WHERE album_key = ?`
+  ).run(source, ts, aaFile, prev.aaFile, prev.artSource, prev.coverFile, prevCoverBackup, hadArt, albumKey);
+}
+
+export function artWorkshopClearApplied(albumKey, status, ts) {
+  db.prepare(
+    `UPDATE album_art_workshop SET status = ?, applied_cover = NULL, outcome = NULL,
+       applied_aaFile = NULL, prev_aaFile = NULL, prev_art_source = NULL,
+       prev_cover_file = NULL, prev_cover_backup = NULL, had_art = NULL, last_attempt_ts = ?
+     WHERE album_key = ?`
+  ).run(status, ts, albumKey);
+}
+
+export function artWorkshopStatusCounts() {
+  return db.prepare('SELECT status, COUNT(*) AS n FROM album_art_workshop GROUP BY status').all();
+}
+
+export function artWorkshopSourceCounts() {
+  return db.prepare("SELECT top_source AS s, COUNT(*) AS n FROM album_art_workshop WHERE status = 'suggested' GROUP BY top_source").all();
+}
+
+function _artCandidateWhere({ status, source, q }) {
+  const clauses = [];
+  const params  = [];
+  if (status) { clauses.push('status = ?'); params.push(status); }
+  if (source) { clauses.push('top_source = ?'); params.push(source); }
+  if (q) {
+    clauses.push('(dir LIKE ? OR album LIKE ? OR artist LIKE ?)');
+    const like = '%' + q + '%';
+    params.push(like, like, like);
+  }
+  return { sql: clauses.length ? 'WHERE ' + clauses.join(' AND ') : '', params };
+}
+
+const ART_CANDIDATE_ORDER = "ORDER BY (status = 'suggested') DESC, artist, album";
+
+// Every matching folder, no paging (for "select all found")
+export function artWorkshopCandidateKeys(filter) {
+  const w = _artCandidateWhere(filter);
+  return db.prepare(`SELECT album_key, vpath, dir FROM album_art_workshop ${w.sql} ${ART_CANDIDATE_ORDER}`).all(...w.params);
+}
+
+// -> { total, rows } with rows.liveAaFile = the cover the album's tracks show now
+export function artWorkshopCandidates(filter, limit, offset) {
+  const w = _artCandidateWhere(filter);
+  const liveArt = db.prepare('SELECT aaFile FROM files WHERE vpath = ? AND album_id = ? AND aaFile IS NOT NULL LIMIT 1');
+  const rows = db.prepare(`
+    SELECT album_key, vpath, album_id, dir, album, artist, status, suggestions, applied_cover,
+           applied_aaFile, top_source, last_attempt_ts
+    FROM album_art_workshop ${w.sql} ${ART_CANDIDATE_ORDER}
+    LIMIT ? OFFSET ?
+  `).all(...w.params, limit, offset)
+    .map(r => ({ ...r, liveAaFile: r.status === 'applied' ? (liveArt.get(r.vpath, r.album_id)?.aaFile || null) : null }));
+  const total = db.prepare(`SELECT COUNT(*) AS n FROM album_art_workshop ${w.sql}`).get(...w.params).n;
+  return { total, rows };
+}
+
+// Any album (also ones with art) whose album/artist matches, max 40
+export function artWorkshopFindAlbums(q) {
+  const like = '%' + q + '%';
+  return db.prepare(`
+    SELECT vpath, album_id,
+           MIN(filepath)                        AS sample_filepath,
+           MAX(album)                           AS album,
+           MAX(COALESCE(album_artist, artist))  AS artist,
+           MAX(aaFile)                          AS aaFile,
+           COUNT(*)                             AS track_count
+    FROM files
+    WHERE format IS NOT NULL AND (album LIKE ? OR artist LIKE ? OR album_artist LIKE ?)
+    GROUP BY vpath, album_id
+    ORDER BY artist, album
+    LIMIT 40
+  `).all(like, like, like);
+}
+
+export function artWorkshopAlbumInfo(vpath, albumId) {
+  return db.prepare(`
+    SELECT MIN(filepath) AS sample, MAX(album) AS album,
+           MAX(COALESCE(album_artist, artist)) AS artist, MAX(aaFile) AS aaFile
+    FROM files WHERE vpath = ? AND album_id = ?
+  `).get(vpath, albumId);
+}
+
+// -> rows changed
+export function artWorkshopSkip(albumKey, ts) {
+  return db.prepare(
+    `UPDATE album_art_workshop SET status = 'skipped', outcome = 'skipped', last_attempt_ts = ? WHERE album_key = ?`
+  ).run(ts, albumKey).changes;
+}
+
+// folders: [{ vpath, prefix }]. Shelving drops the folder's workshop rows except applied ones. -> rows removed
+export function artWorkshopShelve(folders, ts) {
+  const ins = db.prepare('INSERT INTO album_art_shelf (vpath, prefix, ts) VALUES (?, ?, ?) ON CONFLICT(vpath, prefix) DO NOTHING');
+  const del = db.prepare(`DELETE FROM album_art_workshop WHERE vpath = ? AND (dir = ? OR dir LIKE ? || '/%') AND status != 'applied'`);
+  let removed = 0;
+  for (const f of folders) {
+    ins.run(f.vpath, f.prefix, ts);
+    removed += del.run(f.vpath, f.prefix, f.prefix).changes;
+  }
+  return removed;
+}
+
+// -> shelf entries removed
+export function artWorkshopUnshelve(folders) {
+  const del = db.prepare('DELETE FROM album_art_shelf WHERE vpath = ? AND prefix = ?');
+  let changed = 0;
+  for (const f of folders) changed += del.run(f.vpath, f.prefix).changes;
+  return changed;
+}
+
+// ── Artist enrichment queue ───────────────────────────────────────────────────
+
+// Artists with no image and no enrichment re-enter the normal hydration queue. -> rows changed
+export function resetFetchForUnenrichedArtists() {
+  return db.prepare(`
+    UPDATE artists_normalized SET last_fetched = NULL
+    WHERE last_fetched IS NOT NULL AND (image_file IS NULL OR image_file = '')
+      AND bio IS NULL AND fanart_file IS NULL AND genre IS NULL
+  `).run().changes;
+}
+
+// Artists that have an image but no TheAudioDB enrichment (fanart, genre), most-played first
+export function getArtistsWithImageMissingEnrichment(limit) {
+  return db.prepare(`
+    SELECT artist_clean FROM artists_normalized
+    WHERE image_file IS NOT NULL AND image_file != '' AND fanart_file IS NULL AND genre IS NULL
+    ORDER BY song_count DESC NULLS LAST, artist_clean COLLATE NOCASE
+    LIMIT ?
+  `).all(limit).map(r => r.artist_clean);
+}
+
+// ── Artist-albums diagnostics (admin) ─────────────────────────────────────────
+
+// Every distinct COALESCE(album_artist, artist) of tracks that mention the name anywhere, with track counts
+export function diagEffectiveArtistValues(name) {
+  const like = `%${name}%`;
+  return db.prepare(`
+    SELECT DISTINCT COALESCE(album_artist, artist) AS effective, COUNT(*) AS track_count
+    FROM files
+    WHERE COALESCE(album_artist, artist) LIKE ? OR artist LIKE ? OR album_artist LIKE ?
+    GROUP BY COALESCE(album_artist, artist)
+    ORDER BY track_count DESC
+  `).all(like, like, like);
+}
+
+export function diagNormalizedArtist(name) {
+  return db.prepare(
+    'SELECT artist_clean, artist_raw_variants, vpaths_json, song_count FROM artists_normalized WHERE lower(artist_clean) = lower(?)'
+  ).get(name);
+}
+
+// -> [{ album, dir, vpath }] for one exact effective-artist value
+export function diagAlbumsForEffectiveArtist(effective) {
+  return db.prepare(`
+    SELECT DISTINCT album, rtrim(filepath, replace(filepath, '/', '')) AS dir, vpath
+    FROM files
+    WHERE COALESCE(album_artist, artist) = ?
+    ORDER BY album
+  `).all(effective).map(r => ({ album: r.album, dir: r.dir, vpath: r.vpath }));
+}
+
+// ── Duplicate workshop ────────────────────────────────────────────────────────
+// Group rows carry paths / fmts as '||'-joined "vpath/filepath" and format lists.
+
+const DUP_GROUP_COLS = String.raw`
+  COUNT(*) AS c,
+  GROUP_CONCAT(vpath || '/' || filepath, '||') AS paths,
+  GROUP_CONCAT(COALESCE(format,''), '||') AS fmts,
+  MIN(duration) AS min_dur,
+  MAX(duration) AS max_dur`;
+
+// Same file hash
+export function dupExactGroups() {
+  return db.prepare(String.raw`
+    SELECT hash, ${DUP_GROUP_COLS},
+      COALESCE(MIN(title),'') AS title, COALESCE(MIN(artist),'') AS artist, COALESCE(MIN(album),'') AS album
+    FROM files
+    WHERE hash IS NOT NULL AND hash != '' AND duration IS NOT NULL AND duration > 0
+    GROUP BY hash HAVING c > 1 ORDER BY c DESC
+  `).all();
+}
+
+// Same audio_hash, leaving out rows whose file hash is already an exact-duplicate group
+export function dupAudioGroups() {
+  return db.prepare(String.raw`
+    SELECT audio_hash, ${DUP_GROUP_COLS},
+      COALESCE(MIN(title),'') AS title, COALESCE(MIN(artist),'') AS artist, COALESCE(MIN(album),'') AS album
+    FROM files
+    WHERE audio_hash IS NOT NULL AND audio_hash != ''
+      AND duration IS NOT NULL AND duration > 0
+      AND (hash IS NULL OR hash = '' OR hash NOT IN (SELECT hash FROM files WHERE hash IS NOT NULL AND hash != '' AND duration > 0 GROUP BY hash HAVING COUNT(*) > 1))
+    GROUP BY audio_hash HAVING c > 1 ORDER BY c DESC
+  `).all();
+}
+
+// fullPaths: ["vpath/filepath"] -> their non-empty file hashes
+export function dupHashesForPaths(fullPaths) {
+  return db.prepare(
+    `SELECT hash FROM files WHERE vpath || '/' || filepath IN (${fullPaths.map(() => '?').join(',')}) AND hash IS NOT NULL AND hash != ''`
+  ).all(...fullPaths).map(r => r.hash);
+}
+
+// Same normalised artist + title (duration closeness is judged by the caller)
+export function dupSimilarGroups() {
+  return db.prepare(String.raw`
+    SELECT lower(trim(COALESCE(artist,''))) AS a, lower(trim(COALESCE(title,''))) AS t, ${DUP_GROUP_COLS},
+      COALESCE(MIN(artist),'') AS artist_display, COALESCE(MIN(title),'') AS title_display, COALESCE(MIN(album),'') AS album_display
+    FROM files
+    WHERE artist IS NOT NULL AND artist != '' AND artist != 'Artist'
+      AND title  IS NOT NULL AND title  != ''
+      AND duration IS NOT NULL AND duration > 0
+    GROUP BY a, t HAVING c > 1 ORDER BY c DESC
+  `).all();
+}
+
+// Every track with a content hash (audio_hash, else file hash), for folder fingerprints
+export function dupContentHashedTracks() {
+  return db.prepare(String.raw`
+    SELECT vpath || '/' || filepath AS fullpath,
+      COALESCE(NULLIF(audio_hash,''), NULLIF(hash,'')) AS content_hash,
+      COALESCE(artist,'') AS artist, COALESCE(album,'') AS album
+    FROM files
+    WHERE COALESCE(NULLIF(audio_hash,''), NULLIF(hash,'')) IS NOT NULL
+  `).all();
+}
+
+// ── Genre enricher ────────────────────────────────────────────────────────────
+// Values are per file row but uniform per artist; every count is of distinct artists.
+
+const GE_GENRE = { lastfm: 'genre_lastfm', mb: 'genre_mb', discogs: 'genre_discogs' };
+const GE_STATE = { lastfm: 'genre_enrich_lastfm', mb: 'genre_enrich_mb', discogs: 'genre_enrich_discogs' };
+const GE_HAS_ARTIST = "artist IS NOT NULL AND trim(artist) != ''";
+const GE_ANY_QUEUED = '(genre_enrich_lastfm IS NULL OR genre_enrich_mb IS NULL OR genre_enrich_discogs IS NULL)';
+const GE_ALL_DONE = 'genre_enrich_lastfm IS NOT NULL AND genre_enrich_mb IS NOT NULL AND genre_enrich_discogs IS NOT NULL';
+const GE_UNREVIEWED = '(genre_user_reviewed IS NULL OR genre_user_reviewed = 0)';
+const GE_CONSENSUS = String.raw`
+  genre_lastfm  IS NOT NULL AND trim(genre_lastfm)  != ''
+  AND genre_mb      IS NOT NULL AND trim(genre_mb)      != ''
+  AND genre_discogs IS NOT NULL AND trim(genre_discogs) != ''
+  AND lower(trim(genre_lastfm)) = lower(trim(genre_mb))
+  AND lower(trim(genre_mb))     = lower(trim(genre_discogs))`;
+// Exactly two sources agree and the third has no value; the CASE yields the agreed genre.
+const GE_MAJORITY_PAIRS = [
+  ['genre_lastfm', 'genre_mb', 'genre_discogs'],
+  ['genre_lastfm', 'genre_discogs', 'genre_mb'],
+  ['genre_mb', 'genre_discogs', 'genre_lastfm'],
+].map(([a, b, missing]) => ({
+  value: a,
+  sql: `(lower(trim(${a})) = lower(trim(${b})) AND ${a} IS NOT NULL AND trim(${a}) != '' AND ${b} IS NOT NULL AND trim(${b}) != '' AND (${missing} IS NULL OR trim(${missing}) = ''))`,
+}));
+const GE_MAJORITY = `(${GE_MAJORITY_PAIRS.map(p => p.sql).join(' OR ')})`;
+
+const _geCount = (where, ...params) => db.prepare(`SELECT COUNT(DISTINCT lower(trim(artist))) c FROM files WHERE ${where}`).get(...params)?.c ?? 0;
+
+export function genreEnricherArtistsQueued() {
+  return _geCount(`${GE_ANY_QUEUED} AND ${GE_HAS_ARTIST}`);
+}
+
+export function genreEnricherStats() {
+  const bucket = state => ({
+    ok:     _geCount(`${state} = 'ok'`),
+    nf:     _geCount(`${state} = 'nf'`),
+    error:  _geCount(`${state} = 'error'`),
+    queued: _geCount(`${state} IS NULL AND ${GE_HAS_ARTIST}`),
+  });
+  const lf = bucket(GE_STATE.lastfm);
+  const mb = bucket(GE_STATE.mb);
+  const dg = bucket(GE_STATE.discogs);
+  // enriched: all three sources processed, not yet decided in the compare screen; applied: decided
+  const enriched = _geCount(`${GE_ALL_DONE} AND ${GE_UNREVIEWED}`);
+  const applied = _geCount('genre_user_reviewed = 1');
+  return {
+    total: _geCount(GE_HAS_ARTIST),
+    byState: { lastfm: lf, mb, discogs: dg },
+    enriched, applied,
+    fillableEmpty: _geCount(`${GE_ALL_DONE} AND ${GE_UNREVIEWED} AND (genre IS NULL OR trim(genre) = '')`),
+    consensus: _geCount(`${GE_ALL_DONE} AND ${GE_UNREVIEWED} AND ${GE_CONSENSUS}`),
+    majority: _geCount(`${GE_UNREVIEWED} AND ${GE_MAJORITY}`),
+    artistsQueued: genreEnricherArtistsQueued(),
+    artistsNf: _geCount("genre_enrich_lastfm = 'nf' AND genre_enrich_mb = 'nf' AND genre_enrich_discogs = 'nf'"),
+    done: enriched + applied,
+    found: _geCount(`(genre_lastfm IS NOT NULL OR genre_mb IS NOT NULL OR genre_discogs IS NOT NULL) AND ${GE_HAS_ARTIST}`),
+    queued: lf.queued + mb.queued + dg.queued,
+    lfQueue: lf.queued, mbQueue: mb.queued, dgQueue: dg.queued,
+    not_found: lf.nf + mb.nf + dg.nf,
+    errors: lf.error + mb.error + dg.error,
+    bySource: { lastfm: lf.ok, mb: mb.ok, discogs: dg.ok },
+  };
+}
+
+// Boot-time schema + one-shot data repairs. -> { legacyMigrated, legacyCleared, lowercased, nulFixed, junkSkipped }
+export function genreEnricherMigrate() {
+  const tryExec = sql => { try { db.exec(sql); } catch { /* column/index already exists */ } };
+  for (const col of ['genre_lastfm', 'genre_mb', 'genre_discogs', 'genre_enrich_lastfm', 'genre_enrich_mb', 'genre_enrich_discogs', 'genre_lastfm_src']) {
+    tryExec(`ALTER TABLE files ADD COLUMN ${col} TEXT`);
+  }
+  tryExec('CREATE INDEX IF NOT EXISTS idx_files_genre_enrich_lastfm  ON files(genre_enrich_lastfm)');
+  tryExec('CREATE INDEX IF NOT EXISTS idx_files_genre_enrich_mb      ON files(genre_enrich_mb)');
+  tryExec('CREATE INDEX IF NOT EXISTS idx_files_genre_enrich_discogs ON files(genre_enrich_discogs)');
+  // WHERE lower(trim(artist)) = ? becomes an index seek (apply, set-genre, compare GROUP BY)
+  tryExec('CREATE INDEX IF NOT EXISTS idx_files_artist_lc ON files(lower(trim(artist)))');
+  tryExec('ALTER TABLE files ADD COLUMN genre_user_reviewed INTEGER DEFAULT 0');
+
+  // Legacy genre_lastfm_src sentinels → per-source state columns. Strictly one-shot: each UPDATE only
+  // touches rows the worker never wrote, and the sentinel column is cleared afterwards.
+  const untouched = 'genre_enrich_lastfm IS NULL AND genre_enrich_mb IS NULL AND genre_enrich_discogs IS NULL';
+  const legacy = [
+    "UPDATE files SET genre_enrich_lastfm = 'ok' WHERE genre_lastfm_src = 'lastfm' AND genre_lastfm IS NOT NULL",
+    "UPDATE files SET genre_mb = genre_lastfm, genre_enrich_mb = 'ok', genre_enrich_lastfm = 'nf', genre_lastfm = NULL WHERE genre_lastfm_src = 'mb'",
+    "UPDATE files SET genre_discogs = genre_lastfm, genre_enrich_discogs = 'ok', genre_enrich_lastfm = 'nf', genre_enrich_mb = 'nf', genre_lastfm = NULL WHERE genre_lastfm_src = 'discogs'",
+    "UPDATE files SET genre_enrich_lastfm = 'nf' WHERE genre_lastfm_src = 'lastfm-nf'",
+    "UPDATE files SET genre_enrich_lastfm = 'nf', genre_enrich_mb = 'nf' WHERE genre_lastfm_src = 'mb-nf'",
+    "UPDATE files SET genre_enrich_lastfm = 'nf', genre_enrich_mb = 'nf', genre_enrich_discogs = 'nf' WHERE genre_lastfm_src = 'nf'",
+  ];
+  let legacyMigrated = 0;
+  for (const sql of legacy) legacyMigrated += db.prepare(`${sql} AND ${untouched}`).run().changes;
+  const legacyCleared = db.prepare('UPDATE files SET genre_lastfm_src = NULL WHERE genre_lastfm_src IS NOT NULL').run().changes;
+
+  // Lowercase every genre column so "Pop" (Discogs) and "pop" (Last.fm) compare equal; a no-op once clean
+  let lowercased = 0;
+  for (const col of ['genre', 'genre_lastfm', 'genre_mb', 'genre_discogs']) {
+    lowercased += db.prepare(`UPDATE files SET ${col} = lower(${col}) WHERE ${col} IS NOT NULL AND ${col} != lower(${col})`).run().changes;
+  }
+
+  // Some encoders separate multi-value frames with NUL; truncate at the first NUL
+  let nulFixed = 0;
+  for (const col of ['artist', 'album_artist', 'title', 'album']) {
+    nulFixed += db.prepare(`UPDATE files SET ${col} = substr(${col}, 1, instr(${col}, char(0)) - 1) WHERE instr(${col}, char(0)) > 0`).run().changes;
+  }
+  if (nulFixed > 0) db.exec('REINDEX idx_files_artist_lc');
+
+  // Pure-digit artists (years, track numbers; 1–6 digits, so "10cc" and "2Pac" stay) never match a source
+  const junkWhere = [1, 2, 3, 4, 5, 6].map(n => `trim(artist) GLOB '${'[0-9]'.repeat(n)}'`).join(' OR ');
+  const junkSkipped = db.prepare(
+    `UPDATE files SET genre_enrich_lastfm = 'nf', genre_enrich_mb = 'nf', genre_enrich_discogs = 'nf'
+       WHERE ${GE_ANY_QUEUED} AND ${GE_HAS_ARTIST} AND (${junkWhere})`
+  ).run().changes;
+
+  return { legacyMigrated, legacyCleared, lowercased, nulFixed, junkSkipped };
+}
+
+// Clears one state value ('error' | 'nf') with its genre, for one source or all. -> rows changed
+export function genreEnricherClearState(value, source) {
+  const sources = source ? [source] : Object.keys(GE_STATE);
+  let total = 0;
+  for (const s of sources) {
+    total += db.prepare(`UPDATE files SET ${GE_STATE[s]} = NULL, ${GE_GENRE[s]} = NULL WHERE ${GE_STATE[s]} = ?`).run(value).changes;
+  }
+  return total;
+}
+
+export function genreEnricherResetSource(source) {
+  const g = GE_GENRE[source], s = GE_STATE[source];
+  return db.prepare(`UPDATE files SET ${g} = NULL, ${s} = NULL WHERE ${g} IS NOT NULL OR ${s} IS NOT NULL`).run().changes;
+}
+
+// Clears every source result; genre and genre_user_reviewed are kept
+export function genreEnricherResetAll() {
+  const cols = [...Object.values(GE_GENRE), ...Object.values(GE_STATE), 'genre_lastfm_src'];
+  return db.prepare(`UPDATE files SET ${cols.map(c => `${c} = NULL`).join(', ')} WHERE ${cols.map(c => `${c} IS NOT NULL`).join(' OR ')}`).run().changes;
+}
+
+// filter: 'enriched' | 'empty' | 'applied'. -> { total, rows }
+export function genreEnricherCompare({ filter, search, currentGenre, limit, offset }) {
+  let where = filter === 'applied' ? 'genre_user_reviewed = 1' : `${GE_ALL_DONE} AND ${GE_UNREVIEWED}`;
+  if (filter === 'empty') where += " AND (genre IS NULL OR trim(genre) = '')";
+  const params = [];
+  if (search) { where += ' AND lower(trim(artist)) LIKE lower(trim(?))'; params.push(`%${search}%`); }
+  if (currentGenre) { where += ' AND lower(trim(genre)) = lower(trim(?))'; params.push(currentGenre); }
+  const rows = db.prepare(String.raw`
+    SELECT artist,
+           COUNT(*) AS file_count,
+           MAX(genre) AS current_genre,
+           MAX(genre_lastfm)  AS lastfm_genre,
+           MAX(genre_mb)      AS mb_genre,
+           MAX(genre_discogs) AS discogs_genre,
+           MAX(genre_enrich_lastfm)  AS lf_state,
+           MAX(genre_enrich_mb)      AS mb_state,
+           MAX(genre_enrich_discogs) AS dg_state,
+           /* artist_raw_variants is a JSON array: match the raw value as a quoted entry */
+           (SELECT an.artist_clean FROM artists_normalized an
+              WHERE an.artist_raw_variants LIKE '%"' || replace(files.artist, '"', '\"') || '"%'
+              LIMIT 1) AS display_name
+    FROM files
+    WHERE ${where}
+    GROUP BY lower(trim(artist))
+    ORDER BY artist COLLATE NOCASE
+    LIMIT ? OFFSET ?`).all(...params, limit, offset);
+  return { total: _geCount(where, ...params), rows };
+}
+
+// items: [{ artist, source }] with source 'lastfm' | 'mb' | 'discogs' | 'keep' ('keep' marks reviewed only). -> files updated
+export function genreEnricherApply(items) {
+  let total = 0;
+  for (const { artist, source } of items) {
+    if (source === 'keep') {
+      db.prepare('UPDATE files SET genre_user_reviewed = 1 WHERE lower(trim(artist)) = lower(trim(?))').run(artist);
+      continue;
+    }
+    const col = GE_GENRE[source];
+    total += db.prepare(
+      `UPDATE files SET genre = lower(${col}), genre_user_reviewed = 1 WHERE lower(trim(artist)) = lower(trim(?)) AND ${col} IS NOT NULL AND trim(${col}) != ''`
+    ).run(artist).changes;
+  }
+  return total;
+}
+
+// -> artists updated
+export function genreEnricherApplyConsensus() {
+  const where = `${GE_CONSENSUS} AND ${GE_UNREVIEWED}`;
+  const artists = _geCount(where);
+  db.prepare(`UPDATE files SET genre = lower(trim(genre_lastfm)), genre_user_reviewed = 1 WHERE ${where}`).run();
+  return artists;
+}
+
+// -> artists updated
+export function genreEnricherApplyMajority() {
+  const where = `${GE_UNREVIEWED} AND ${GE_MAJORITY}`;
+  const artists = _geCount(where);
+  const pick = GE_MAJORITY_PAIRS.map(p => `WHEN ${p.sql} THEN ${p.value}`).join(' ');
+  db.prepare(`UPDATE files SET genre = lower(trim(CASE ${pick} END)), genre_user_reviewed = 1 WHERE ${where}`).run();
+  return artists;
+}
+
+// Fills a blank genre. source 'preferred' = MusicBrainz → Discogs → Last.fm. -> artists updated
+export function genreEnricherApplyAllEmpty(source) {
+  const value = source === 'preferred' ? 'COALESCE(genre_mb, genre_discogs, genre_lastfm)' : GE_GENRE[source];
+  const where = `(genre IS NULL OR trim(genre) = '') AND ${value} IS NOT NULL AND trim(${value}) != ''`;
+  const artists = _geCount(where);
+  db.prepare(`UPDATE files SET genre = lower(${value}) WHERE ${where}`).run();
+  return artists;
+}
+
+// value null clears the genre. -> files updated
+export function genreEnricherSetGenre(artist, value) {
+  return db.prepare('UPDATE files SET genre = ?, genre_user_reviewed = 1 WHERE lower(trim(artist)) = lower(trim(?))').run(value, artist).changes;
 }

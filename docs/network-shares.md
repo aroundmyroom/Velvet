@@ -43,27 +43,46 @@ how much privilege is asking. The feature detects this exact failure
 rather than a generic one, so it reads as "this container can't do this"
 rather than "something went wrong."
 
-On a **privileged** container, or a normal Docker/bare-metal install
-running as root (which is common — check with `systemctl show
-<yourservice> -p User` on a systemd install), this works directly.
+On a **privileged** LXC container, or a bare-metal install running as
+root (check with `systemctl show <yourservice> -p User` on a systemd
+install), this works directly.
+
+**The official Docker image is not meant for this.** Its entrypoint
+normally drops from root to the `node` user before starting Velvet, so
+attempts get the "not root" error; and even as root, a Docker container
+cannot mount NFS/CIFS without extra privileges. Mount the share on the Docker host and pass it into
+the container as a volume instead.
 
 ## What it does
 
-1. Validates the share address: `server:/export` for NFS, `//server/share`
-   for SMB/CIFS.
-2. Installs `nfs-common`/`cifs-utils` if not already present.
-3. Creates a mount point under `save/network-mounts/<name>`.
-4. For SMB/CIFS with a username, writes credentials to
+1. Validates the input: the name must be lowercase letters, digits and
+   hyphens (2–50 characters); the share address must be `server:/export`
+   for NFS or `//server/share` for SMB/CIFS; custom mount options may only
+   contain letters, digits and `= , . _ -`.
+2. Refuses if a share with that name already exists, or if `/etc/fstab`
+   already has a line for the same mount point.
+3. Installs `nfs-common`/`cifs-utils` with `apt-get` if not already present
+   (Debian/Ubuntu only — on other systems install it yourself).
+4. Creates a mount point under `save/network-mounts/<name>` (inside the
+   Velvet install folder).
+5. For SMB/CIFS with a username, writes credentials to
    `save/conf/network-mounts/<name>-credentials` (mode 600) rather than
    ever putting them in a mount command or `/etc/fstab` directly.
-5. Adds a tagged entry to `/etc/fstab` (`# velvet-network-mount:<name>`, so
+6. Adds a tagged entry to `/etc/fstab` (`# velvet-network-mount:<name>`, so
    it can be found again later and *only* that entry is ever touched) and
-   mounts it. NFS uses the same hardened default options
-   `contrib/lxc/ct/velvet.sh` uses — `rw,vers=4,hard,rsize=131072,
-   wsize=131072,timeo=600,retrans=2` — confirmed necessary, not just
-   cautious; see the NFS troubleshooting note in `docs/lxc-incus.md`.
-6. If the mount fails, the attempted `/etc/fstab` entry is rolled back
-   automatically — nothing is left half-configured.
+   mounts it. Default options, used when you leave the options field empty:
+   - NFS: `rw,vers=4,hard,rsize=131072,wsize=131072,timeo=600,retrans=2`,
+     the same as `contrib/lxc/ct/velvet.sh` — confirmed necessary, not just
+     cautious; see the "Offset is outside the bounds of the DataView" row
+     under Troubleshooting in [`docs/lxc-incus.md`](lxc-incus.md#troubleshooting).
+   - SMB/CIFS: `credentials=<file>,iocharset=utf8,vers=3.0`, or
+     `guest,iocharset=utf8,vers=3.0` without a username.
+7. If the mount fails, the `/etc/fstab` entry and the credentials file are
+   rolled back automatically — nothing is left half-configured. The error
+   says whether the cause was "Operation not permitted", an unreachable
+   server, rejected credentials, or something else.
+8. On success the share is saved under `networkMounts` in
+   `save/conf/default.json`.
 
 Once mounted, add it as a regular Velvet folder (Admin → Directories)
 pointing at `save/network-mounts/<name>`, the same as any local path.
@@ -71,7 +90,9 @@ pointing at `save/network-mounts/<name>`, the same as any local path.
 ## Removing a share
 
 Admin → Network Shares → Remove. Unmounts it, removes the `/etc/fstab`
-entry, and deletes the credentials file if one exists. Any Velvet folder
+entry, deletes the credentials file if one exists, and removes it from the
+config. If the unmount fails, the entry is removed anyway (the failure is
+logged). Any Velvet folder
 still pointing at that path will simply find an empty directory until
 something is mounted there again.
 
@@ -79,8 +100,8 @@ something is mounted there again.
 
 | Method | Endpoint | Description |
 |---|---|---|
-| `GET` | `/api/v1/admin/network-mount` | Lists configured network mounts. |
-| `POST` | `/api/v1/admin/network-mount` | `{ name, type: 'nfs'\|'cifs', server, username?, password?, domain?, options? }` — mounts a new share. |
-| `DELETE` | `/api/v1/admin/network-mount/:name` | Unmounts and removes a configured share. |
+| `GET` | `/api/v1/admin/network-mount` | Lists configured network mounts: an object keyed by name, each `{ type, server, mountPoint, options, hasCredentials }`. |
+| `POST` | `/api/v1/admin/network-mount` | `{ name, type: 'nfs'\|'cifs', server, options? }`; CIFS also takes `username?, password?, domain?`. Mounts a new share and returns `{ name, type, server, mountPoint, options, hasCredentials }`. Returns `409 { error: 'not-root' }` when Velvet is not running as root. |
+| `DELETE` | `/api/v1/admin/network-mount/:name` | Unmounts and removes a configured share; `404` if the name is unknown. |
 
 All three are admin-only.

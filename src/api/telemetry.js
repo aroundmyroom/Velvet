@@ -26,7 +26,7 @@ const PING_URL   = 'https://velvet.aroundmyroom.com/ping';
 const INTERVAL   = 24 * 60 * 60 * 1000; // 24 h
 const BOOT_DELAY = 60 * 1000;            // 60 s
 
-let _timer = null;
+let _started = false;
 
 function _idFile() {
   return path.join(config.program.storage.dbDirectory, '..', 'conf', 'instance-id');
@@ -60,9 +60,10 @@ async function _ping(version) {
 }
 
 export function setup(version) {
-  if (config.program.telemetry === false) return;
+  if (config.program.telemetry === false || _started) return;
+  _started = true;
   setTimeout(() => {
     _ping(version).catch(() => {});
-    _timer = setInterval(() => _ping(version).catch(() => {}), INTERVAL);
+    setInterval(() => _ping(version).catch(() => {}), INTERVAL);
   }, BOOT_DELAY);
 }

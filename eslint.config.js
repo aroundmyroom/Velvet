@@ -74,5 +74,9 @@ export default [
       'webapp/**',
       'docs/**'
     ]
+  },
+  {
+    files: ['src/**/*.{js,mjs,cjs}'],
+    rules: { 'no-undef': 'error' }
   }
 ];

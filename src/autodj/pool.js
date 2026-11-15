@@ -10,7 +10,7 @@ export const RANDOM_SONGS_BATCH_CAP = 500;
 // cannot crowd thinly represented similar artists out of the scored pool.
 export const PER_ARTIST_SAMPLE_CAP = 10;
 
-export function sampleUpTo(arr, n, rng = Math.random) {
+function sampleUpTo(arr, n, rng = Math.random) {
   if (arr.length <= n) return arr;
   const copy = [...arr];
   for (let i = copy.length - 1; i > 0; i--) {
@@ -35,6 +35,7 @@ export function batchCandidatePool(fetchRows, body, rng = Math.random) {
     minRating: body.minRating,
     filepathPrefix: body.filepathPrefix || null,
     excludeFilepathPrefixes: body.excludeFilepathPrefixes,
+    includeFilepathPrefixes: body.includeFilepathPrefixes,
     minDuration: body.minDuration,
     maxDuration: body.maxDuration,
     allowUnknownDuration: !!body.allowUnknownDuration,

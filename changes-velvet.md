@@ -1,7 +1,243 @@
-## Unreleased
+## v0.10.0 (2026-11-15)
+
+Blueprint: reviewed code, hardened security, accurate docs
+
+Two independent code reviews of the whole codebase, every finding fixed, and
+checks in the test suite that stop the same kind of problem from coming back.
+Before updating, read the upgrade notes in `releases/v0.10.0.md`.
+
+### Added
+
+- **Architecture guards in the test suite.** `npm test` (and so CI) now fails
+  when a route is missing from `docs/API.md` or documented but gone, a route
+  is registered twice, a function is copy-pasted across files, an export is
+  unused, code outside `src/db` touches the database directly, an i18n key is
+  missing, a page has inline script handlers, a file is sent without a path
+  check, or new hardcoded English appears. See
+  `docs/dev/architecture-guards.md`.
+- **One Auto-DJ for every client.** New `POST /api/v1/autodj/next` picks the
+  next song with the server engine rooms and Subsonic radio use. The TV app
+  and Server Remote now use it instead of their own copies.
+- **TV app scrobbles** to Last.fm and ListenBrainz; the mobile app sends
+  ListenBrainz "playing now".
+- **Clean shutdown.** On stop or restart, rooms stop first, then the web
+  server, then the database is closed.
+
+### Changed
+
+- **Sonos needs cast permission.** Controlling or casting to Sonos speakers now
+  needs admin or the "cast to server speaker" permission, like the server
+  speaker; the player hides Sonos for other users.
+- **YouTube, recordings and excluded folders** are no longer indexed by a full
+  scan (a YouTube folder inside a music folder is still part of that folder).
+- **YouTube download list** shows only your own downloads (admins see all).
+- **DLNA** only serves and searches folders that have DLNA switched on; the
+  unused `dlna.browse` setting is gone.
+- **Documentation** checked line by line against the code: `docs/API.md`
+  matches every route, finished plans moved to `docs/dev/history/`, and
+  `tags.md` / `tageditor.md` are now `album-version-tags.md` /
+  `tag-workshop.md`.
+
+### Removed
+
+- Unused code: the old artist page, artist album grid, the split-flap lyric
+  board, 19 unused database helpers, and the scanner `get-file` /
+  `counting-update` routes with the admin "Counting…" badge.
+- More unused parts: the Remote Proxy Network (RPN) and DDNS leftovers (admin
+  page, `rpn` config section, kill list), the old Discord-webhook admin page
+  (Discord stays under Custom Webhooks), the old `/login` page (now redirects
+  to `/`), the Electron start-up branch, and the routes
+  `POST /api/v1/admin/users/lastfm`, `GET /api/v1/admin/rg/tool`,
+  `GET /api/v1/tagworkshop/text-search/status`, `POST /api/v1/artists/fetch-info`
+  and `POST /api/v1/lastfm/test-login`, which nothing used.
+- The empty `audio_features` table and `GET /api/v1/db/audio-features/:hash`
+  (nothing ever filled them), the Sonos "sleep after pause" setting that
+  nothing used, and about 300 unused exports and helpers.
+- **Federation.** The old Syncthing-based library sharing between Velvet
+  servers never worked and is gone: the admin page, its API
+  (`/api/v1/federation/*`, `/api/v1/syncthing-proxy/*`,
+  `/api/v1/admin/federation/enable`), the bundled Syncthing binaries (84 MB)
+  and the `federation` and `storage.syncConfigDirectory` config options. An
+  old config that still has them starts as before; they are ignored.
+
+### Security
+
+- **Users limited to a sub-folder** can no longer reach the rest of the library:
+  `..` in a path cannot leave their folder, and every library list (search,
+  recent, rated, albums, artists, random songs, Auto-DJ, rooms) is limited on
+  the server, not only in the player.
+- **Logins can be revoked.** Changing a password signs out every other
+  session; admins can "Log out everywhere" for a user. Passwords are stored
+  with a much stronger hash (upgraded on the next login).
+- **Sonos stream links and the jukebox** carry a narrow, expiring token that
+  only opens that file or the jukebox, instead of a full login.
+- **No server crash** from a radio station that redirects oddly; outgoing
+  requests have size and time limits; YouTube downloads refuse private
+  network addresses; pairing and passkey requests are rate-limited; the
+  server-speaker gain is capped; an open redirect is closed.
+- **Backups and exports** are written owner-only, and a failed backup is
+  reported instead of silently succeeding.
+- **Server Speaker.** Casting to the server speaker resolved the path without
+  checks, so a crafted path could reach files outside the music folders, and
+  no route checked the cast permission. Paths now go through the user's own
+  folders, every route checks permission, and the diagnostic routes are
+  admin-only.
+- **Folder download.** Downloading a folder zipped the whole library root
+  instead of the chosen folder, so a user limited to one subfolder got the
+  entire parent library. It now zips only that folder, with a size limit.
+- **Saved user config.** The login check wrote per-request fields into the
+  live config, which were then saved to `default.json`; a user whose folders
+  were narrowed could keep seeing the old parent folder. Fixed, and the leaked
+  keys are removed on the next start.
+- **Outgoing requests.** Artist image downloads check every redirect against
+  private addresses and cap size and time; the Subsonic request log no longer
+  writes passwords, tokens or API keys; radio recording redirects are checked
+  the same way.
 
 ### Fixed
 
+- **Scanning no longer holds the database:** ratings, play counts and
+  playlists saved during a scan are kept, even when the scan is stopped.
+- **Songs played before they were scanned** get their full tags on the next
+  scan.
+- **Config saves** can no longer overwrite each other or leave a broken file.
+- **AAC transcoding** works again, and transcoding stops when the listener
+  disconnects.
+- **AcoustID with a wrong key** stops once instead of restarting forever;
+  **ReplayGain "reset failed"** never removes songs from the library;
+  the **Duplicate Workshop** runs in the background and can be cancelled.
+- **Player:** Auto-DJ never plays audiobooks; the visualizer starts once;
+  crossfade no longer leaves old players behind; a password change keeps you
+  signed in; logging out signs out other tabs; passkey sign-in loads your
+  settings; queue selection follows the songs; a page refresh never cuts the
+  saved queue; radio recordings belong to the tab that started them; the
+  Listening History view is reachable again.
+- **Last.fm and ListenBrainz badges** show the real scrobble result.
+- **Mobile app, TV app, Server Remote and shared links** are translated.
+- **Paired phones** keep playing and showing covers without a browser cookie.
+- **Audiobook speed button** opens its menu again (it crashed).
+- **Custom artist placeholder:** an uploaded image is now the one shown.
+- **Artist search** only shows artists from your own folders.
+- **Pairing codes** can be typed with the space and in any case.
+- **Importing a migration** no longer leaves the database closed.
+- **Subsonic:** `createBookmark` works, and last-played from Subsonic clients
+  is stored in milliseconds like everywhere else (old values are converted
+  once).
+- **Smart playlist save** without songs answers 400 instead of crashing.
+- **Random songs** respects the duration window for a single pick too.
+- **Admins** always see the server speaker when it is enabled.
+- **TV app** rejects an expired login instead of accepting it.
+- **Sonos titles** keep emoji.
+- **Translations.** About 400 texts in the player and the admin pages were
+  still English in every language; they now follow the chosen language.
+  Switching language also redraws Playing Now, Sonos radio and every other
+  page, and Files keeps its folder.
+- **Pinned start page.** Only pages that can be pinned open on start; an old
+  pin to a page that cannot be pinned opens Home.
+- **Locked admin API** now also blocks the orphaned-folder purge.
+- **Expired share links** say "This link has expired" instead of "not found".
+- **Mobile app quality setting** works: a lower quality now transcodes, and
+  seeking and the remaining time work on transcoded songs.
+- **Pages blocked by the security policy:** broken cover images on shared
+  playlists and in the mobile app, and the download button on shared
+  playlists, work again (no inline scripts any more).
+- **/server-remote** explains that Server Audio is off instead of showing a
+  page that cannot work.
+- **Rooms:** a room command that is refused no longer makes you the room's
+  listener.
+- **Sonos test play** is for admins only.
+- **Search after changing an album version** finds the new version name.
+- **Playlists (.m3u)** in File Explorer are checked against the library root,
+  so a playlist that links to another folder of the same library opens.
+- **Album-art recompression** no longer logs an error for every non-image file.
+- **A resumed scan that crashes** no longer leaves a stuck entry in the scan
+  progress.
+- **ReplayGain "undo reset"** keeps its backup when analysis starts on its own
+  after a scan.
+- **Public sites such as f-droid.org** are no longer blocked as "private" by
+  the outgoing-request check; the check now also closes a DNS-rebinding gap.
+- **Cover art in tags:** radio recordings, YouTube downloads, Discogs covers,
+  the Tag Workshop and the admin tag editor share one way to write tags and
+  covers. Opus/Ogg files now get and keep their cover.
+- **Album-art suggestions** run in small steps, so other background work no
+  longer waits minutes behind them.
+- **AI DJ** learns new genres right after a scan.
+- **AcoustID:** new admin button to retry files that were not found.
+- **Timers** for telemetry, weekly backup and smart playlists no longer start
+  again after a restart from the admin page; custom webhooks time out after
+  10 seconds.
+- **Transcoded streams** always send their Content-Type.
+- **Regular users can set their own Subsonic password and scrobble switches.**
+  The player's Subsonic page called admin-only routes, so it only worked for
+  admins. New `POST /api/v1/user/subsonic-password` and
+  `/api/v1/user/subsonic-scrobble` act on the signed-in user only.
+- **Auto-DJ with several child folders.** Picking two sub-folders of one
+  library (or a sub-folder plus another library) now plays from exactly those
+  folders, in the web player, smart playlists and rooms
+  (`includeFilepathPrefixes`).
+- **Podcasts resume where you left off.** The player saves the position every
+  15 seconds and on pause, and continues from it next time; finished episodes
+  stay marked as played.
+- **Radio recordings survive a page reload.** The record button and timer come
+  back for a recording that is still running. Recordings and YouTube downloads
+  in a child folder now play from the right path.
+- **Sleep timer "end of song"** no longer lets crossfade or gapless start the
+  next song, and also works while controlling a room or a cast.
+- **Media keys** play and pause the room you control, not only the browser.
+- **Logging out** reloads the page, so nothing of the previous user stays
+  in memory.
+- **Repeat-one in a room** counts each play in Wrapped, and handing a song to a
+  room at 0:00 no longer counts it twice.
+- **DLNA** serves folders whose names contain `( ) ! *` and spaces correctly,
+  including time-seek.
+- **Server restart from the admin page** no longer fails on the LAN HTTP port
+  (`EADDRINUSE`).
+- **Deleting a user** now removes all their data (playlists, settings,
+  history, podcasts, radio, Subsonic keys, passkeys), so a new user with the
+  same name starts clean.
+- **Background workers** (ReplayGain, BPM, genre, tag workshop, AcoustID,
+  MusicBrainz) share one controller: they pause during a scan instead of
+  fighting for the database, really stop when asked, and all MusicBrainz
+  lookups together stay within one request per second. See
+  `workerAutostart` in `docs/json_config.md`.
+- **Duplicate Workshop:** recordings with the same tags but different lengths
+  are no longer reported as duplicates (the duration was missing from the
+  audio fingerprint).
+- **Mobile and TV apps** now record Wrapped statistics; the TV app also
+  counts plays.
+- **Server Speaker for non-admins.** Users with the cast permission can now
+  see and use the Server Speaker output; it used to be probed through an
+  admin-only route.
+- **Plays of unscanned files.** Playing a file the scanner had not indexed yet
+  never recorded the play. It is now indexed on the spot.
+- **Artist index.** With one folder in "children only" mode, artists from all
+  other folders disappeared from the Artists page. Run an artist rebuild once
+  after updating.
+- **Jukebox remote, Server Remote and QR pages** work again; they were broken
+  or blocked by the browser's security policy.
+- **Playlists.** "New playlist" and "Save queue" no longer run twice; "Add
+  all" on For You works again; adding several songs reports failures.
+- **Webhooks** now has a sidebar entry when the admin enables Discord or
+  custom webhooks.
+- **Player.** Keyboard volume and shuffle behave like the buttons (also in
+  rooms and while casting); picking a Deezer cover no longer restarts the
+  song; songs reached by crossfade or gapless get the same history and Auto-DJ
+  handling; the seek bubble shows the right time in rooms; Now Playing shows
+  the same albums as the artist page.
+- **Similar songs** treat keys 12 and 1 as neighbours and recognise all key
+  spellings.
+- **Album grouping.** "Backfill folder metadata" no longer splits folder
+  albums; album ids are recomputed once on the next start.
+- **DLNA search** with criteria failed every time; it works again.
+- **Admin.** The "Max concurrent scans" Edit button did nothing; it opens its
+  dialog again.
+- **Sonos.** A seek timeout now answers correctly instead of erroring; all
+  Sonos requests share one client with a response size limit and a strict
+  local-network check.
+- Under the hood: many copied helpers were merged into shared modules (folder
+  and child-folder lookup, album-art thumbnails and file names, file hashing,
+  Camelot keys, artist credits, lyrics cache, Discogs headers, ReplayGain,
+  Sonos requests) so they can no longer drift apart.
 - The waveform stood still while a Velvet Room played: its played part was
   coloured from the browser's own (paused) audio. It now follows the room's
   position, like the progress ball and the time.

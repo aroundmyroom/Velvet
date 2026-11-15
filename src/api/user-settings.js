@@ -1,6 +1,18 @@
 import Joi from 'joi';
 import winston from 'winston';
 import * as db from '../db/manager.js';
+import * as config from '../state/config.js';
+import * as admin from '../util/admin.js';
+import WebError from '../util/web-error.js';
+import { joiValidate } from '../util/validation.js';
+
+async function saveSubsonicScrobble(username, { scrobbleLastfm, scrobbleLb }) {
+  if (!config.program.users[username]) { throw new WebError('Per-user settings need a user account', 403); }
+  const fields = {};
+  if (scrobbleLastfm !== undefined) fields['subsonic-scrobble-lastfm'] = scrobbleLastfm;
+  if (scrobbleLb     !== undefined) fields['subsonic-scrobble-lb']     = scrobbleLb;
+  await config.updateUserFields(username, fields);
+}
 
 export function setup(velvet) {
   // GET /api/v1/user/settings  — load prefs + queue for the authenticated user
@@ -29,5 +41,20 @@ export function setup(velvet) {
       winston.warn(`[user-settings] Failed to save settings for ${username}: ${e?.message || e}`);
       return res.status(500).json({ error: 'failed to save settings' });
     }
+  });
+
+  velvet.post('/api/v1/user/subsonic-password', async (req, res) => {
+    joiValidate(Joi.object({ password: Joi.string().required() }), req.body);
+    await admin.editSubsonicPassword(req.user.username, req.body.password);
+    res.json({});
+  });
+
+  velvet.post('/api/v1/user/subsonic-scrobble', async (req, res) => {
+    joiValidate(Joi.object({
+      scrobbleLastfm: Joi.boolean().optional(),
+      scrobbleLb:     Joi.boolean().optional(),
+    }), req.body);
+    await saveSubsonicScrobble(req.user.username, req.body);
+    res.json({});
   });
 }

@@ -1,4 +1,4 @@
-**Smart Playlists** *(GitHub Copilot, 2026-03-22)*
+**Smart Playlists**
 
 Dynamic filter-based playlists that query the library on demand. All routes require authentication. Users can only read and modify their own smart playlists.
 
@@ -17,6 +17,7 @@ See [docs/smart-playlists.md](../smart-playlists.md) for the full user-facing gu
   "playlists": [
     {
       "id": 1,
+      "user": "alice",
       "name": "Evening Chill",
       "filters": { "genres": ["Electronic"], "minRating": 6, "freshPicks": true, ... },
       "sort": "random",
@@ -26,6 +27,8 @@ See [docs/smart-playlists.md](../smart-playlists.md) for the full user-facing gu
   ]
 }
 ```
+
+Sorted by name (case-insensitive). `created` is Unix seconds.
 
 ---
 
@@ -52,9 +55,11 @@ Executes a filter and returns matching songs without saving anything.
 }
 ```
 
+`total` is the number of songs returned (at most `limit`). `metadata` holds `artist`, `hash`, `album`, `track`, `disk`, `title`, `year`, `album-art`, `rating`, `play-count`, `last-played`, `genre`, `replaygain-track-db`, `duration`.
+
 **Notes:**
 - When the client has `freshPicks: true` in filters, it passes `sort: "random"` in the request.
-- `selectedVpaths` is resolved server-side: child vpaths are translated to a `filepathPrefix` instead of a vpath exclusion, because child files are stored under the parent vpath in the DB.
+- `selectedVpaths` is resolved server-side: a selected child vpath becomes a filepath-prefix whitelist on its parent (unless the parent is selected too), because child files are stored under the parent vpath in the DB. Unselected root vpaths are excluded.
 - Genre display names are reverse-mapped to raw DB strings automatically (handles multi-value genre fields like `"Pop/Rock, Disco"`).
 
 ---
@@ -107,11 +112,11 @@ Returns only the count of songs that match the filter. Used for the live "X song
 * **URL:** `PUT /api/v1/smart-playlists/:id`
 * **Auth:** required
 
-**Body:** Same as save. All fields required.
+**Body:** Same as save (`name` and `filters` required; `sort` and `limit` fall back to their defaults when omitted).
 
 **Response `200`:** `{}`
 
-**Error `404`:** Playlist not found or belongs to another user.
+**Error `404`:** Playlist not found or belongs to another user. **Error `409`:** the new name is already used.
 
 ---
 
@@ -146,9 +151,9 @@ Returns only the count of songs that match the filter. Used for the live "X song
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `genres` | `string[]` | `[]` | Display genre names to include. Empty = all genres. |
-| `yearFrom` | `number\|null` | `null` | Earliest release year (inclusive). |
-| `yearTo` | `number\|null` | `null` | Latest release year (inclusive). |
-| `minRating` | `0\|2\|4\|6\|8\|10` | `0` | Minimum DB rating. `0` = any. |
+| `yearFrom` | `number\|null` | `null` | Earliest release year (inclusive), 1000–9999. |
+| `yearTo` | `number\|null` | `null` | Latest release year (inclusive), 1000–9999. |
+| `minRating` | integer 0–10 | `0` | Minimum DB rating (the UI sends `0`, `2`, `4`, `6`, `8`, `10` = any, 1★…5★). |
 | `playedStatus` | `"any"\|"never"\|"played"` | `"any"` | Filter by play history. |
 | `minPlayCount` | `number` | `0` | When `playedStatus="played"`, require at least this many plays. |
 | `starred` | `boolean` | `false` | Only include starred songs. |

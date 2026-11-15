@@ -238,17 +238,15 @@ export function setup(velvet) {
     if (!req.user['allow-radio-recording']) return res.status(403).json({ error: 'Recording not enabled for this user' });
 
     const id = req.params.id;
-    // If the schedule is currently recording, stop it
+    try {
+      // Deleting checks ownership, so only the owner's live recording is stopped
+      if (!db.deleteRadioSchedule(id, req.user.username)) return res.status(404).json({ error: 'Schedule not found' });
+    } catch {
+      return res.status(500).json({ error: 'Internal error' });
+    }
     const info = scheduledActive.get(id);
     if (info) { stopStreamRecording(info.recordingId).catch(() => {}); scheduledActive.delete(id); }
-
-    try {
-      const deleted = db.deleteRadioSchedule(id, req.user.username);
-      if (!deleted) return res.status(404).json({ error: 'Schedule not found' });
-      res.json({});
-    } catch {
-      res.status(500).json({ error: 'Internal error' });
-    }
+    res.json({});
   });
 
   // PATCH /api/v1/radio/schedules/:id/enable — toggle enabled state

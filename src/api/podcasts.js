@@ -11,12 +11,19 @@ import * as db from '../db/manager.js';
 import { isPrivateHost, safeFetch } from '../util/ssrf-check.js';
 import { resolvePathWithinRoot } from '../util/path-security.js';
 
+const ART_MAX_BYTES = 10 * 1024 * 1024;
+const FEED_MAX_BYTES = 20 * 1024 * 1024;
+const EPISODE_MAX_BYTES = 2 * 1024 * 1024 * 1024;
+const EPISODE_TIMEOUT_MS = 60 * 60 * 1000;
+
 function _parseDuration(v) {
-  if (!v && v !== 0) return 0;
-  if (!Number.isNaN(v)) return Number.parseInt(v, 10);
-  const parts = String(v).split(':').map(Number);
-  if (parts.length === 3) return parts[0] * 3600 + parts[1] * 60 + (parts[2] || 0);
-  if (parts.length === 2) return parts[0] * 60 + (parts[1] || 0);
+  const s = String(v ?? '').trim();
+  if (s === '') return 0;
+  if (Number.isFinite(Number(s))) return Math.floor(Number(s));
+  const parts = s.split(':').map(Number);
+  if (parts.some(n => !Number.isFinite(n))) return 0;
+  if (parts.length === 3) return parts[0] * 3600 + parts[1] * 60 + Math.floor(parts[2]);
+  if (parts.length === 2) return parts[0] * 60 + Math.floor(parts[1]);
   return 0;
 }
 
@@ -32,10 +39,7 @@ async function _cacheArt(imgUrl) {
       const cached = path.join(artDir, `podcast-${hash}.${urlExt}`);
       if (existsSync(cached)) return `podcast-${hash}.${urlExt}`;
     }
-    const ac = new AbortController();
-    const timer = setTimeout(() => ac.abort(), 10000);
-    const r = await safeFetch(imgUrl, { signal: ac.signal });
-    clearTimeout(timer);
+    const r = await safeFetch(imgUrl, { timeoutMs: 10_000, maxBytes: ART_MAX_BYTES });
     if (!r.ok) return null;
     const ct = r.headers.get('content-type') || '';
     if (!ct.startsWith('image/')) return null;
@@ -46,7 +50,7 @@ async function _cacheArt(imgUrl) {
     if (existsSync(fullPath)) return filename;
     const buf = await r.arrayBuffer();
     await writeFile(fullPath, Buffer.from(buf));
-    for (const prefix of ['zs-', 'zl-']) {
+    for (const prefix of ['zs-', 'zl-', 'zm-']) {
       const thumb = path.join(artDir, prefix + filename);
       if (existsSync(thumb)) unlink(thumb, () => {});
     }
@@ -178,23 +182,14 @@ async function _fetchAndParse(url) {
   const parsed = new URL(url);
   if (isPrivateHost(parsed.hostname)) throw new Error('That URL is not allowed');
 
-  const ac = new AbortController();
-  const timer = setTimeout(() => ac.abort(), 15000);
-  let r;
-  try {
-    r = await safeFetch(url, {
-      signal: ac.signal,
-      headers: { 'User-Agent': 'Velvet/5 PodcastClient', 'Accept': 'application/rss+xml, application/xml, text/xml, */*' }
-    });
-    clearTimeout(timer);
-  } catch (e) {
-    clearTimeout(timer);
-    throw new Error('Failed to fetch feed: ' + (e?.message || 'network error'), { cause: e });
-  }
-
+  const fail = e => { throw new Error('Failed to fetch feed: ' + (e?.message || 'network error'), { cause: e }); };
+  const r = await safeFetch(url, {
+    timeoutMs: 15_000,
+    maxBytes: FEED_MAX_BYTES,
+    headers: { 'User-Agent': 'Velvet/5 PodcastClient', 'Accept': 'application/rss+xml, application/xml, text/xml, */*' }
+  }).catch(fail);
   if (!r.ok) throw new Error(`Feed returned HTTP ${r.status}`);
-  const text = await r.text();
-  return _parseRss(text);
+  return _parseRss(await r.text().catch(fail));
 }
 
 export function setup(velvet) {
@@ -297,7 +292,7 @@ export function setup(velvet) {
 
     if (feed.img && !/^https?:\/\//i.test(feed.img)) {
       if (db.getPodcastFeedImgUsageCount(feed.img) === 0) {
-        for (const prefix of ['', 'zs-', 'zl-']) {
+        for (const prefix of ['', 'zs-', 'zl-', 'zm-']) {
           const artPath = _resolveAlbumArtPath(prefix + feed.img);
           if (artPath) {
             try { unlink(artPath, () => {}); } catch (e) { console.debug('[velvet]', e?.message ?? e); }
@@ -361,8 +356,16 @@ export function setup(velvet) {
     const feed = db.getPodcastFeed(value.feedId, req.user.username);
     if (!feed) return res.status(404).json({ error: 'Feed not found' });
 
-    db.saveEpisodeProgress(value.episodeId, value.feedId, value.position, value.played ?? false);
+    db.saveEpisodeProgress(value.episodeId, value.feedId, value.position, value.played);
     res.json({});
+  });
+
+  velvet.get('/api/v1/podcast/episode/:id/progress', (req, res) => {
+    const id = Number.parseInt(req.params.id, 10);
+    if (!Number.isFinite(id)) return res.status(400).json({ error: 'Invalid episode id' });
+    const ep = db.getPodcastEpisode(id);
+    if (!ep || !db.getPodcastFeed(ep.feed_id, req.user.username)) return res.status(404).json({ error: 'Episode not found' });
+    res.json({ episodeId: ep.id, feedId: ep.feed_id, play_position: ep.play_position || 0, played: !!ep.played, duration_secs: ep.duration_secs || 0 });
   });
 
   // POST /api/v1/podcast/episode/save — download episode audio to the server's AudioBooks folder
@@ -436,16 +439,12 @@ function _findAudioBooksVpath(username) {
 }
 
 async function _fetchEpisodeAudio(audioUrl, urlExt) {
-  const ac    = new AbortController();
-  const timer = setTimeout(() => ac.abort(), 120000);
   let dlRes;
   try {
     dlRes = await safeFetch(audioUrl, {
-      signal: ac.signal, headers: { 'User-Agent': 'Velvet/5 PodcastClient' }
+      timeoutMs: EPISODE_TIMEOUT_MS, maxBytes: EPISODE_MAX_BYTES, headers: { 'User-Agent': 'Velvet/5 PodcastClient' }
     });
-    clearTimeout(timer);
   } catch {
-    clearTimeout(timer);
     return { dlRes: null, ext: urlExt || 'mp3' };
   }
   let ext = urlExt || 'mp3';

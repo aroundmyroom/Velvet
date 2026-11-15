@@ -4,7 +4,7 @@
 
 ## Dependencies
 
-- Node.js v22 or greater ([nodejs.org](https://nodejs.org/en/download/package-manager/))
+- Node.js v22.5 or newer (`package.json` `engines`; the Docker image uses Node 24) ([nodejs.org](https://nodejs.org/en/download/package-manager/))
 - npm
 - git
 
@@ -13,11 +13,11 @@
 ```shell
 git clone https://github.com/aroundmyroom/Velvet.git
 cd Velvet
-npm install --only=prod
+npm install --omit=dev
 node cli-boot-wrapper.js
 ```
 
-When you upgrade a Node-based install later, rerun `npm install --only=prod` after `git pull` so updated production dependencies are installed locally.
+When you upgrade a Node-based install later, rerun `npm install --omit=dev` after `git pull` so updated production dependencies are installed locally.
 
 Open **http://localhost:3000** — on a fresh install with no users the admin panel is accessible without login.
 
@@ -68,7 +68,7 @@ pm2 startup
 
 ```shell
 git pull
-npm install --only=prod
+npm install --omit=dev
 systemctl restart music.service   # or: pm2 restart all
 ```
 
@@ -105,7 +105,7 @@ git checkout -B main origin/main
 git reset --hard origin/main
 
 # 5. Refresh dependencies and restart
-npm install --only=prod
+npm install --omit=dev
 systemctl restart music.service     # or: pm2 restart all
 ```
 
@@ -118,7 +118,7 @@ Your `save/conf/default.json`, `save/db/velvet.sqlite`, logs, backups, caches, a
 > git clone https://github.com/aroundmyroom/Velvet.git ~/Velvet
 > cp -r /path/to/old-clone/save ~/Velvet/
 > cp -r /path/to/old-clone/image-cache /path/to/old-clone/waveform-cache ~/Velvet/   # optional caches
-> cd ~/Velvet && npm install --only=prod
+> cd ~/Velvet && npm install --omit=dev
 > # then update WorkingDirectory= in /etc/systemd/system/music.service to the new path:
 > systemctl daemon-reload && systemctl restart music.service
 > ```

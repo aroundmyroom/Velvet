@@ -54,7 +54,7 @@ export function detectCharts(rows, { minFiles = 30, maxDepth = 3, max = 150 } = 
     .slice(0, max);
 }
 
-export function chartTokens(text) {
+function chartTokens(text) {
   return String(text || '').toLowerCase().split(/[^\p{L}\p{N}]+/u).filter(t => t && !STOP.has(t));
 }
 const isYearish = t => /^(19|20)\d{2}$|^\d0s$|^'\d0$/.test(t);

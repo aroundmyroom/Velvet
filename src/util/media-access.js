@@ -1,29 +1,33 @@
-export function getMediaVpathFromPath(reqPath) {
+import { userOwnsChildPath } from './vpath.js';
+import { resolvePathWithinRoot } from './path-security.js';
+
+function parseMediaPath(reqPath) {
   const parts = String(reqPath || '').split('/').filter(Boolean);
-  if (parts.length === 0) return null;
   try {
-    return decodeURIComponent(parts[0]);
+    return { vpath: decodeURIComponent(parts[0] ?? ''), relPath: parts.slice(1).map(decodeURIComponent).join('/') };
   } catch {
     return null;
   }
 }
 
 export function canAccessMediaVpath(reqPath, user, folders) {
-  const vpath = getMediaVpathFromPath(reqPath);
-  if (!vpath) return false;
-  if (!folders || !Object.hasOwn(folders, vpath)) return false;
-  if (Array.isArray(user?.vpaths) && user.vpaths.includes(vpath)) return true;
-  // Allow child-only users: check if the user has a child vpath whose root is
-  // under this vpath's root, and the requested path falls within that child's prefix.
-  if (!Array.isArray(user?.vpaths) || !folders[vpath]?.root) return false;
-  const parentRoot = folders[vpath].root.replace(/\/?$/, '/');
-  const parts = String(reqPath || '').split('/').filter(Boolean);
-  let relPath;
-  try { relPath = parts.slice(1).map(p => decodeURIComponent(p)).join('/'); } catch { return false; }
-  return user.vpaths.some(childName => {
-    const childRoot = folders[childName]?.root?.replace(/\/?$/, '/');
-    if (!childRoot || !childRoot.startsWith(parentRoot) || childRoot === parentRoot) return false;
-    const childPrefix = childRoot.slice(parentRoot.length);
-    return relPath === childPrefix.replace(/\/$/, '') || relPath.startsWith(childPrefix);
-  });
+  const parsed = parseMediaPath(reqPath);
+  if (!parsed || !folders || !Object.hasOwn(folders, parsed.vpath)) return false;
+  if (!Array.isArray(user?.vpaths)) return false;
+  if (user.vpaths.includes(parsed.vpath)) return true;
+  if (!folders[parsed.vpath]?.root) return false;
+  return userOwnsChildPath(user, parsed.vpath, parsed.relPath, folders);
+}
+
+// -> { vpath, relPath, filePath } or { status } (400 bad encoding, 404 unknown vpath / no file part, 403 outside the root)
+export function resolveMediaPath(reqPath, folders) {
+  const parsed = parseMediaPath(reqPath);
+  if (!parsed) return { status: 400 };
+  const root = folders && Object.hasOwn(folders, parsed.vpath) ? folders[parsed.vpath]?.root : null;
+  if (!root || !parsed.relPath) return { status: 404 };
+  try {
+    return { ...parsed, filePath: resolvePathWithinRoot(root, parsed.relPath) };
+  } catch {
+    return { status: 403 };
+  }
 }

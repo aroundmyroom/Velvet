@@ -8,18 +8,31 @@ import * as VelvetServer from '../server.js';
 import * as dbQueue from '../db/task-queue.js';
 import * as logger from '../logger.js';
 import * as db from '../db/manager.js';
-import * as syncthing from '../state/syncthing.js';
 import { getDirname } from './esm-helpers.js';
 import WebError from './web-error.js';
 
 const __dirname = getDirname(import.meta.url);
 
-export async function loadFile(file) {
-  return JSON.parse(await fs.readFile(file, 'utf-8'));
+function _requireUser(username) {
+  if (!config.program.users[username]) { throw new WebError(`'${username}' does not exist`, 404); }
 }
 
-export function saveFile(saveData, file) {
-  return fs.writeFile(file, JSON.stringify(saveData, null, 2), 'utf8');
+function editUserFields(username, fields) {
+  _requireUser(username);
+  return config.updateUserFields(username, fields);
+}
+
+async function _setTopLevel(key, val) {
+  await config.updateConfigFile(c => { c[key] = val; });
+  config.program[key] = val;
+}
+
+async function _setSection(section, key, val) {
+  await config.updateConfigFile(c => {
+    if (!c[section]) { c[section] = {}; }
+    c[section][key] = val;
+  });
+  config.program[section][key] = val;
 }
 
 export async function addDirectory(directory, vpath, velvet, opts = {}) {
@@ -32,94 +45,62 @@ export async function addDirectory(directory, vpath, velvet, opts = {}) {
     isExcluded = false,
     artistsOn = true,
   } = opts;
-  // confirm directory is real
-  const stat = await fs.stat(directory);
-  if (!stat.isDirectory()) { throw new Error(`${directory} is not a directory`); }
+  const root = config.normaliseFolderRoot(directory);
+  const stat = await fs.stat(root);
+  if (!stat.isDirectory()) { throw new Error(`${root} is not a directory`); }
 
   if (config.program.folders[vpath]) { throw new Error(`'${vpath}' is already loaded into memory`); }
 
-  // This extra step is so we can handle the process like a SQL transaction
-    // The new var is a copy so the original program isn't touched
-    // Once the file save is complete, the new user will be added
-  const memClone = structuredClone(config.program.folders);
-  memClone[vpath] = { root: directory };
-  if (isExcluded) { memClone[vpath].type = 'excluded'; }
-  else if (isAudioBooks) { memClone[vpath].type = 'audio-books'; }
-  if (isRecording) {
-    memClone[vpath].type = 'recordings';
-  }
+  const folder = { root };
+  if (isExcluded) { folder.type = 'excluded'; }
+  else if (isAudioBooks) { folder.type = 'audio-books'; }
+  if (isRecording) { folder.type = 'recordings'; }
   // Only use 'youtube' type when youtube-only (not combined with radio recordings)
-  if (isYoutube && !isRecording) {
-    memClone[vpath].type = 'youtube';
-  }
-  if ((isRecording || isYoutube) && allowRecordDelete) {
-    memClone[vpath].allowRecordDelete = true;
-  }
+  if (isYoutube && !isRecording) { folder.type = 'youtube'; }
+  if ((isRecording || isYoutube) && allowRecordDelete) { folder.allowRecordDelete = true; }
   // Artist Library inclusion flag (default ON): when false, this folder's data
   // is excluded from artists_normalized rebuild and artist-facing features.
-  memClone[vpath].artistsOn = artistsOn !== false;
+  folder.artistsOn = artistsOn !== false;
 
-  // add directory to config file
-  const loadConfig = await loadFile(config.configFile);
-  loadConfig.folders = memClone;
+  await config.updateConfigFile(c => {
+    c.folders = { ...c.folders, [vpath]: folder };
+    if (autoAccess === true) {
+      for (const user of Object.values(c.users || {})) { user.vpaths = [...(user.vpaths || []), vpath]; }
+    }
+  });
+
+  config.program.folders[vpath] = structuredClone(folder);
   if (autoAccess === true) {
-    const memCloneUsers = structuredClone(config.program.users);
-    Object.values(memCloneUsers).forEach(user => {
-      user.vpaths.push(vpath);
-    });
-    loadConfig.users = memCloneUsers;
-  }
-  await saveFile(loadConfig, config.configFile);
-
-  // add directory to program
-  config.program.folders[vpath] = memClone[vpath];
-
-  if (autoAccess === true) {
-    Object.values(config.program.users).forEach(user => {
-      user.vpaths.push(vpath);
-    });
+    for (const user of Object.values(config.program.users)) { user.vpaths = [...(user.vpaths || []), vpath]; }
   }
 
-  // add directory to server routing
   // audio/flac is the correct MIME type; audio/x-flac causes DEMUXER_ERROR_NO_SUPPORTED_STREAMS in Chromium.
   const setMediaHeaders = (res, filePath) => {
     if (filePath.toLowerCase().endsWith('.flac')) res.setHeader('Content-Type', 'audio/flac');
   };
   const routeVpath = vpath.replace(/[()[\]?+*!:]/g, '\\$&');
-  velvet.use(`/media/${routeVpath}/`, express.static(directory, { setHeaders: setMediaHeaders }));
+  velvet.use(`/media/${routeVpath}/`, express.static(root, { setHeaders: setMediaHeaders }));
 }
 
 export async function removeDirectory(vpath) {
   if (!config.program.folders[vpath]) { throw new Error(`'${vpath}' not found`); }
 
-  const memCloneFolders = structuredClone(config.program.folders);
-  delete memCloneFolders[vpath];
-
-  const memCloneUsers = structuredClone(config.program.users);
-  Object.values(memCloneUsers).forEach(user => {
-    if (user.vpaths.includes(vpath)) {
-      user.vpaths.splice(user.vpaths.indexOf(vpath), 1);
+  await config.updateConfigFile(c => {
+    if (c.folders) { delete c.folders[vpath]; }
+    for (const user of Object.values(c.users || {})) {
+      if (user.vpaths?.includes(vpath)) { user.vpaths.splice(user.vpaths.indexOf(vpath), 1); }
     }
   });
 
-  const loadConfig = await loadFile(config.configFile);
-  loadConfig.folders = memCloneFolders;
-  loadConfig.users = memCloneUsers;
-  await saveFile(loadConfig, config.configFile);
-
   db.removeFilesByVpath(vpath);
-  db.saveFilesDB();
 
-  // reboot server
   VelvetServer.reboot();
 }
 
 export async function addUser(username, password, admin, vpaths) {
   if (config.program.users[username]) { throw new WebError(`'${username}' already exists`, 409); }
 
-  // hash password
   const hash = await auth.hashPassword(password);
-
   const newUser = {
     vpaths: vpaths,
     password: hash.hashPassword,
@@ -127,351 +108,160 @@ export async function addUser(username, password, admin, vpaths) {
     admin: admin
   };
 
-  // This extra step is so we can handle the process like a SQL transaction
-    // The new var is a copy so the original program isn't touched
-    // Once the file save is complete, the new user will be added
-  const memClone = structuredClone(config.program.users);
-  memClone[username] = newUser;
+  await config.updateConfigFile(c => {
+    if (c.users?.[username]) { throw new WebError(`'${username}' already exists`, 409); }
+    c.users = { ...c.users, [username]: newUser };
+  });
 
-  const loadConfig = await loadFile(config.configFile);
-  loadConfig.users = memClone;
-  await saveFile(loadConfig, config.configFile);
-
-  config.program.users[username] = newUser;
-
-  // NOTE(pending): add user from scrobbler
+  config.program.users[username] = structuredClone(newUser);
 }
 
 export async function deleteUser(username) {
-  if (!config.program.users[username]) { throw new WebError(`'${username}' does not exist`, 404); }
+  _requireUser(username);
 
-  const memClone = structuredClone(config.program.users);
-  delete memClone[username];
-
-  const loadConfig = await loadFile(config.configFile);
-  loadConfig.users = memClone;
-  await saveFile(loadConfig, config.configFile);
+  await config.updateConfigFile(c => { if (c.users) { delete c.users[username]; } });
 
   delete config.program.users[username];
 
-  db.removeUserMetadataByUser(username);
-  db.saveUserDB();
-
-  db.removePlaylistsByUser(username);
-  db.saveUserDB();
-
-  db.removeSharedPlaylistsByUser(username);
-  db.saveUserDB();
-
-  // NOTE(pending): Remove user from scrobbler
+  db.deleteAllUserData(username);
 }
 
+// Bumping tokenVersion invalidates every token issued to this user before now.
 export async function editUserPassword(username, password) {
-  if (!config.program.users[username]) { throw new WebError(`'${username}' does not exist`, 404); }
-
+  _requireUser(username);
   const hash = await auth.hashPassword(password);
-
-  const memClone = structuredClone(config.program.users);
-  memClone[username].password = hash.hashPassword;
-  memClone[username].salt = hash.salt;
-
-  const loadConfig = await loadFile(config.configFile);
-  loadConfig.users = memClone;
-  await saveFile(loadConfig, config.configFile);
-
-  config.program.users[username].password = hash.hashPassword;
-  config.program.users[username].salt = hash.salt;
+  const tokenVersion = (config.program.users[username].tokenVersion || 0) + 1;
+  await editUserFields(username, { password: hash.hashPassword, salt: hash.salt, tokenVersion });
 }
 
-export async function editSubsonicPassword(username, password) {
-  if (!config.program.users[username]) { throw new WebError(`'${username}' does not exist`, 404); }
-
-  const memClone = structuredClone(config.program.users);
-  memClone[username]['subsonic-password'] = password;
-
-  const loadConfig = await loadFile(config.configFile);
-  loadConfig.users = memClone;
-  await saveFile(loadConfig, config.configFile);
-
-  config.program.users[username]['subsonic-password'] = password;
+export async function revokeUserTokens(username) {
+  _requireUser(username);
+  await editUserFields(username, { tokenVersion: (config.program.users[username].tokenVersion || 0) + 1 });
 }
 
-export async function editUserVPaths(username, vpaths) {
-  if (!config.program.users[username]) { throw new WebError(`'${username}' does not exist`, 404); }
-
-  const memClone = structuredClone(config.program.users);
-  memClone[username].vpaths = vpaths;
-
-  const loadConfig = await loadFile(config.configFile);
-  loadConfig.users = memClone;
-  await saveFile(loadConfig, config.configFile);
-
-  config.program.users[username].vpaths = vpaths;
+export function editSubsonicPassword(username, password) {
+  return editUserFields(username, { 'subsonic-password': password });
 }
 
-export async function editUserAccess(username, admin) {
-  if (!config.program.users[username]) { throw new WebError(`'${username}' does not exist`, 404); }
-
-  const memClone = structuredClone(config.program.users);
-  memClone[username].admin = admin;
-
-  const loadConfig = await loadFile(config.configFile);
-  loadConfig.users = memClone;
-  await saveFile(loadConfig, config.configFile);
-
-  config.program.users[username].admin = admin;
+export function editUserVPaths(username, vpaths) {
+  return editUserFields(username, { vpaths });
 }
 
-export async function setUserLastFM(username, lastfmUser, lastfmPassword) {
-  if (!config.program.users[username]) { throw new WebError(`'${username}' does not exist`, 404); }
-
-  const memClone = structuredClone(config.program.users);
-  memClone[username]['lastfm-user'] = lastfmUser;
-  memClone[username]['lastfm-password'] = lastfmPassword;
-
-  const loadConfig = await loadFile(config.configFile);
-  loadConfig.users = memClone;
-  await saveFile(loadConfig, config.configFile);
-
-  config.program.users[username]['lastfm-user'] = lastfmUser;
-  config.program.users[username]['lastfm-password'] = lastfmPassword;
+export function editUserAccess(username, admin) {
+  return editUserFields(username, { admin });
 }
 
 export async function editPort(port) {
   if (config.program.port === port) { return; }
-
-  const loadConfig = await loadFile(config.configFile);
-  loadConfig.port = port;
-  await saveFile(loadConfig, config.configFile);
-
-  // reboot server
+  await config.updateConfigFile(c => { c.port = port; });
   VelvetServer.reboot();
 }
 
 export async function editMaxRequestSize(maxRequestSize) {
   if (config.program.maxRequestSize === maxRequestSize) { return; }
-
-  const loadConfig = await loadFile(config.configFile);
-  loadConfig.maxRequestSize = maxRequestSize;
-  await saveFile(loadConfig, config.configFile);
-
-  // reboot server
+  await config.updateConfigFile(c => { c.maxRequestSize = maxRequestSize; });
   VelvetServer.reboot();
 }
 
-export async function editUpload(val) {
-  const loadConfig = await loadFile(config.configFile);
-  loadConfig.noUpload = val;
-  await saveFile(loadConfig, config.configFile);
-
-  config.program.noUpload = val;
+export function editUpload(val) {
+  return _setTopLevel('noUpload', val);
 }
 
-export async function editUi(val) {
-  const loadConfig = await loadFile(config.configFile);
-  loadConfig.ui = val;
-  await saveFile(loadConfig, config.configFile);
-
-  config.program.ui = val;
+export function editUi(val) {
+  return _setTopLevel('ui', val);
 }
-
 
 export async function editAddress(val) {
-  const loadConfig = await loadFile(config.configFile);
-  loadConfig.address = val;
-  await saveFile(loadConfig, config.configFile);
-
+  await config.updateConfigFile(c => { c.address = val; });
   VelvetServer.reboot();
 }
 
-export async function editSecret(val) {
-  const loadConfig = await loadFile(config.configFile);
-  loadConfig.secret = val;
-  await saveFile(loadConfig, config.configFile);
-
-  config.program.secret = val;
+export function editSecret(val) {
+  return _setTopLevel('secret', val);
 }
 
 export async function editScanInterval(val) {
-  const loadConfig = await loadFile(config.configFile);
-  if (!loadConfig.scanOptions) { loadConfig.scanOptions = {}; }
-  loadConfig.scanOptions.scanInterval = val;
-  await saveFile(loadConfig, config.configFile);
-
-  config.program.scanOptions.scanInterval = val;
-
-  // update timer
+  await _setSection('scanOptions', 'scanInterval', val);
   dbQueue.resetScanInterval();
 }
 
 export async function editScanStartTime(val) {
   // val is "HH:MM" string or null/empty to clear
   const normalised = (val && /^\d{1,2}:\d{2}$/.test(val.trim())) ? val.trim() : null;
-  const loadConfig = await loadFile(config.configFile);
-  if (!loadConfig.scanOptions) { loadConfig.scanOptions = {}; }
-  loadConfig.scanOptions.scanStartTime = normalised;
-  await saveFile(loadConfig, config.configFile);
-
-  config.program.scanOptions.scanStartTime = normalised;
-
-  // reset timer with new start time
+  await _setSection('scanOptions', 'scanStartTime', normalised);
   dbQueue.resetScanInterval();
 }
 
-export async function editSkipImg(val) {
-  const loadConfig = await loadFile(config.configFile);
-  if (!loadConfig.scanOptions) { loadConfig.scanOptions = {}; }
-  loadConfig.scanOptions.skipImg = val;
-  await saveFile(loadConfig, config.configFile);
-
-  config.program.scanOptions.skipImg = val;
+export function editSkipImg(val) {
+  return _setSection('scanOptions', 'skipImg', val);
 }
 
-export async function editBootScanDelay(val) {
-  const loadConfig = await loadFile(config.configFile);
-  if (!loadConfig.scanOptions) { loadConfig.scanOptions = {}; }
-  loadConfig.scanOptions.bootScanDelay = val;
-  await saveFile(loadConfig, config.configFile);
-
-  config.program.scanOptions.bootScanDelay = val;
+export function editBootScanDelay(val) {
+  return _setSection('scanOptions', 'bootScanDelay', val);
 }
 
-export async function editBootScanEnabled(val) {
-  const loadConfig = await loadFile(config.configFile);
-  if (!loadConfig.scanOptions) { loadConfig.scanOptions = {}; }
-  loadConfig.scanOptions.bootScanEnabled = val;
-  await saveFile(loadConfig, config.configFile);
-
-  config.program.scanOptions.bootScanEnabled = val;
+export function editBootScanEnabled(val) {
+  return _setSection('scanOptions', 'bootScanEnabled', val);
 }
 
-export async function editMaxConcurrentTasks(val) {
-  const loadConfig = await loadFile(config.configFile);
-  if (!loadConfig.scanOptions) { loadConfig.scanOptions = {}; }
-  loadConfig.scanOptions.maxConcurrentTasks = val;
-  await saveFile(loadConfig, config.configFile);
-
-  config.program.scanOptions.maxConcurrentTasks = val;
+export function editMaxConcurrentTasks(val) {
+  return _setSection('scanOptions', 'maxConcurrentTasks', val);
 }
 
-export async function editAlbumVersionTags(val) {
-  const loadConfig = await loadFile(config.configFile);
-  loadConfig.albumVersionTags = val;
-  await saveFile(loadConfig, config.configFile);
-  config.program.albumVersionTags = val;
+export function editAlbumVersionTags(val) {
+  return _setTopLevel('albumVersionTags', val);
 }
 
-export async function editAlbumCategoryFolders(val) {
-  const loadConfig = await loadFile(config.configFile);
-  loadConfig.albumCategoryFolders = val;
-  await saveFile(loadConfig, config.configFile);
-  config.program.albumCategoryFolders = val;
+export function editAlbumCategoryFolders(val) {
+  return _setTopLevel('albumCategoryFolders', val);
 }
 
-export async function editCompressImages(val) {
-  const loadConfig = await loadFile(config.configFile);
-  if (!loadConfig.scanOptions) { loadConfig.scanOptions = {}; }
-  loadConfig.scanOptions.compressImage = val;
-  await saveFile(loadConfig, config.configFile);
-
-  config.program.scanOptions.compressImage = val;
+export function editCompressImages(val) {
+  return _setSection('scanOptions', 'compressImage', val);
 }
 
-export async function editAllowId3Edit(val) {
-  const loadConfig = await loadFile(config.configFile);
-  if (!loadConfig.scanOptions) { loadConfig.scanOptions = {}; }
-  loadConfig.scanOptions.allowId3Edit = val;
-  await saveFile(loadConfig, config.configFile);
-
-  config.program.scanOptions.allowId3Edit = val;
+export function editAllowId3Edit(val) {
+  return _setSection('scanOptions', 'allowId3Edit', val);
 }
 
-export async function editMaxRecordingMinutes(val) {
-  const loadConfig = await loadFile(config.configFile);
-  if (!loadConfig.scanOptions) { loadConfig.scanOptions = {}; }
-  loadConfig.scanOptions.maxRecordingMinutes = val;
-  await saveFile(loadConfig, config.configFile);
-
-  config.program.scanOptions.maxRecordingMinutes = val;
+export function editMaxRecordingMinutes(val) {
+  return _setSection('scanOptions', 'maxRecordingMinutes', val);
 }
 
-export async function editMaxZipMb(val) {
-  const loadConfig = await loadFile(config.configFile);
-  if (!loadConfig.scanOptions) { loadConfig.scanOptions = {}; }
-  loadConfig.scanOptions.maxZipMb = val;
-  await saveFile(loadConfig, config.configFile);
-
-  config.program.scanOptions.maxZipMb = val;
+export function editMaxZipMb(val) {
+  return _setSection('scanOptions', 'maxZipMb', val);
 }
 
-export async function editAllowRadioRecording(username, val) {
-  const loadConfig = await loadFile(config.configFile);
-  if (!loadConfig.users?.[username]) { throw new WebError(`User '${username}' not found`, 404); }
-  loadConfig.users[username]['allow-radio-recording'] = val;
-  await saveFile(loadConfig, config.configFile);
-
-  config.program.users[username]['allow-radio-recording'] = val;
+export function editAllowRadioRecording(username, val) {
+  return editUserFields(username, { 'allow-radio-recording': val });
 }
 
-export async function editAllowYoutubeDownload(username, val) {
-  const loadConfig = await loadFile(config.configFile);
-  if (!loadConfig.users?.[username]) { throw new WebError(`User '${username}' not found`, 404); }
-  loadConfig.users[username]['allow-youtube-download'] = val;
-  await saveFile(loadConfig, config.configFile);
-
-  config.program.users[username]['allow-youtube-download'] = val;
+export function editAllowYoutubeDownload(username, val) {
+  return editUserFields(username, { 'allow-youtube-download': val });
 }
 
-export async function editAllowAiDj(username, val) {
-  const loadConfig = await loadFile(config.configFile);
-  if (!loadConfig.users?.[username]) { throw new WebError(`User '${username}' not found`, 404); }
-  loadConfig.users[username]['allow-ai-dj'] = val;
-  await saveFile(loadConfig, config.configFile);
-
-  config.program.users[username]['allow-ai-dj'] = val;
+export function editAllowAiDj(username, val) {
+  return editUserFields(username, { 'allow-ai-dj': val });
 }
 
-export async function editAllowUpload(username, val) {
-  const loadConfig = await loadFile(config.configFile);
-  if (!loadConfig.users?.[username]) { throw new WebError(`User '${username}' not found`, 404); }
-  loadConfig.users[username]['allow-upload'] = val;
-  await saveFile(loadConfig, config.configFile);
-
-  config.program.users[username]['allow-upload'] = val;
+export function editAllowUpload(username, val) {
+  return editUserFields(username, { 'allow-upload': val });
 }
 
-export async function editAllowServerRemote(username, val) {
-  const loadConfig = await loadFile(config.configFile);
-  if (!loadConfig.users?.[username]) { throw new WebError(`User '${username}' not found`, 404); }
-  loadConfig.users[username]['allow-server-remote'] = val;
-  await saveFile(loadConfig, config.configFile);
-  config.program.users[username]['allow-server-remote'] = val;
+export function editAllowServerRemote(username, val) {
+  return editUserFields(username, { 'allow-server-remote': val });
 }
 
-export async function editAllowMpvCast(username, val) {
-  const loadConfig = await loadFile(config.configFile);
-  if (!loadConfig.users?.[username]) { throw new WebError(`User '${username}' not found`, 404); }
-  loadConfig.users[username]['allow-mpv-cast'] = val;
-  await saveFile(loadConfig, config.configFile);
-  config.program.users[username]['allow-mpv-cast'] = val;
+export function editAllowMpvCast(username, val) {
+  return editUserFields(username, { 'allow-mpv-cast': val });
 }
 
-export async function editScanErrorRetention(hours) {
-  const loadConfig = await loadFile(config.configFile);
-  if (!loadConfig.scanOptions) { loadConfig.scanOptions = {}; }
-  loadConfig.scanOptions.scanErrorRetentionHours = hours;
-  await saveFile(loadConfig, config.configFile);
-
-  config.program.scanOptions.scanErrorRetentionHours = hours;
+export function editScanErrorRetention(hours) {
+  return _setSection('scanOptions', 'scanErrorRetentionHours', hours);
 }
 
 export async function editWriteLogs(val) {
-  const loadConfig = await loadFile(config.configFile);
-  loadConfig.writeLogs = val;
-  await saveFile(loadConfig, config.configFile);
-
-  config.program.writeLogs = val;
-
+  await _setTopLevel('writeLogs', val);
   if (val === false) {
     logger.reset();
   } else {
@@ -480,24 +270,14 @@ export async function editWriteLogs(val) {
 }
 
 export async function editLogRetention(val) {
-  const loadConfig = await loadFile(config.configFile);
-  loadConfig.logRetention = val;
-  await saveFile(loadConfig, config.configFile);
-
-  config.program.logRetention = val;
-
-  // Re-initialise the file transport with the new maxFiles value so it takes
-  // effect immediately (DailyRotateFile reads maxFiles at creation time).
+  await _setTopLevel('logRetention', val);
+  // DailyRotateFile reads maxFiles at creation time, so rebuild the transport.
   if (config.program.writeLogs) {
     logger.addFileLogger(config.program.storage.logsDirectory, val);
   }
 }
 
-/**
- * Delete log files in the logs directory whose date (parsed from the filename
- * `velvet-YYYY-MM-DD-HH.log`) is older than `retentionDays` days ago.
- * Returns the number of files deleted.
- */
+// Deletes velvet-YYYY-MM-DD[-HH].log files older than retentionDays; returns the count.
 export async function pruneOldLogs(retentionDays) {
   const dir = config.program.storage.logsDirectory;
   let entries;
@@ -511,11 +291,9 @@ export async function pruneOldLogs(retentionDays) {
   let deleted = 0;
 
   for (const entry of entries) {
-    // Match velvet-YYYY-MM-DD-HH.log  OR  velvet-YYYY-MM-DD.log
     const m = entry.match(/^velvet-(\d{4}-\d{2}-\d{2}(?:-\d{2})?)\.log$/);
     if (!m) continue;
 
-    // Parse date part — pad to hour granularity so Date.parse works
     const datePart = m[1].length === 10 ? m[1] + 'T00:00:00Z' : m[1].replace(/(\d{4}-\d{2}-\d{2})-(\d{2})/, '$1T$2:00:00Z');
     const fileTime = Date.parse(datePart);
     if (Number.isNaN(fileTime) || fileTime >= cutoff) continue;
@@ -529,67 +307,28 @@ export async function pruneOldLogs(retentionDays) {
   return deleted;
 }
 
-export async function enableTranscode(val) {
-  const loadConfig = await loadFile(config.configFile);
-  if (!loadConfig.transcode) { loadConfig.transcode = {}; }
-  loadConfig.transcode.enabled = val;
-  await saveFile(loadConfig, config.configFile);
-
-  config.program.transcode.enabled = val;
+export function enableTranscode(val) {
+  return _setSection('transcode', 'enabled', val);
 }
 
-export async function editDefaultCodec(val) {
-  const loadConfig = await loadFile(config.configFile);
-  if (!loadConfig.transcode) { loadConfig.transcode = {}; }
-  loadConfig.transcode.defaultCodec = val;
-  await saveFile(loadConfig, config.configFile);
-
-  config.program.transcode.defaultCodec = val;
+export function editDefaultCodec(val) {
+  return _setSection('transcode', 'defaultCodec', val);
 }
 
-export async function editDefaultBitrate(val) {
-  const loadConfig = await loadFile(config.configFile);
-  if (!loadConfig.transcode) { loadConfig.transcode = {}; }
-  loadConfig.transcode.defaultBitrate = val;
-  await saveFile(loadConfig, config.configFile);
-
-  config.program.transcode.defaultBitrate = val;
+export function editDefaultBitrate(val) {
+  return _setSection('transcode', 'defaultBitrate', val);
 }
 
-export async function editDefaultAlgorithm(val) {
-  const loadConfig = await loadFile(config.configFile);
-  if (!loadConfig.transcode) { loadConfig.transcode = {}; }
-  loadConfig.transcode.algorithm = val;
-  await saveFile(loadConfig, config.configFile);
-
-  config.program.transcode.algorithm = val;
+export function editDefaultAlgorithm(val) {
+  return _setSection('transcode', 'algorithm', val);
 }
 
-export async function lockAdminApi(val) {
-  const loadConfig = await loadFile(config.configFile);
-  loadConfig.lockAdmin = val;
-  await saveFile(loadConfig, config.configFile);
-
-  config.program.lockAdmin = val;
-}
-
-export async function enableFederation(val) {
-  const memClone = structuredClone(config.program.federation);
-  memClone.enabled = val;
-
-  const loadConfig = await loadFile(config.configFile);
-  loadConfig.federation = memClone;
-  await saveFile(loadConfig, config.configFile);
-
-  config.program.federation.enabled = val;
-  syncthing.setup();
+export function lockAdminApi(val) {
+  return _setTopLevel('lockAdmin', val);
 }
 
 export async function removeSSL() {
-  const loadConfig = await loadFile(config.configFile);
-  delete loadConfig.ssl;
-  await saveFile(loadConfig, config.configFile);
-
+  await config.updateConfigFile(c => { delete c.ssl; });
   delete config.program.ssl;
   VelvetServer.reboot();
 }
@@ -608,10 +347,7 @@ function testSSL(jsonLoad) {
 export async function setSSL(cert, key) {
   const sslObj = { key, cert };
   await testSSL(sslObj);
-  const loadConfig = await loadFile(config.configFile);
-  loadConfig.ssl = sslObj;
-  await saveFile(loadConfig, config.configFile);
-
+  await config.updateConfigFile(c => { c.ssl = sslObj; });
   config.program.ssl = sslObj;
   VelvetServer.reboot();
 }

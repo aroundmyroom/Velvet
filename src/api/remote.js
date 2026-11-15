@@ -4,6 +4,7 @@ import fs from 'node:fs/promises';
 import Joi from 'joi';
 import { nanoid } from 'nanoid';
 import jwt from 'jsonwebtoken';
+import { isTokenCurrent, signUserToken } from './auth.js';
 import { WebSocketServer } from 'ws';
 import winston from 'winston';
 import * as config from '../state/config.js';
@@ -31,6 +32,14 @@ const allowedCommands = new Set([
   'goToSong',
 ]);
 
+// Anyone holding the code (shared by QR with party guests) gets this token, so it only
+// opens the routes the remote page uses (auth.js enforces scope 'jukebox') and expires.
+const JUKEBOX_TOKEN_TTL_SEC = 12 * 60 * 60;
+
+function mintJukeboxToken(username, code) {
+  return signUserToken(username, { scope: 'jukebox', code }, { expiresIn: JUKEBOX_TOKEN_TTL_SEC });
+}
+
 export function setupAfterAuth(velvet, server) {
   const wss = new WebSocketServer({ server: server, verifyClient: (info, cb) => {
     try {
@@ -39,15 +48,11 @@ export function setupAfterAuth(velvet, server) {
         const token = url.parse(info.req.url, true).query.token;
         if (!token) { throw new Error('Token Not Found'); }
         decoded = jwt.verify(token, config.program.secret);
+        // A scoped or revoked token must not mint itself a fresh one
+        if (decoded.scope || !isTokenCurrent(decoded)) { throw new Error('Not a current login token'); }
       }
 
-      info.req.code = url.parse(info.req.url, true).query.code;
-      if (clients.has(info.req.code)) { throw new Error('Code In Use'); }
-
-      info.req.jwt = jwt.sign({
-        username: decoded?.username ?? 'velvet-user',
-        jukebox: true
-      }, config.program.secret);
+      info.req.jukeboxUser = decoded?.username ?? 'velvet-user';
       cb(true);
     } catch (err) {
       winston.error('WS Connection Failed', { stack: err });
@@ -61,9 +66,10 @@ export function setupAfterAuth(velvet, server) {
     clients.set(code, connection);
     codeStartTime.set(code, Date.now());
 
-    if (req.jwt) { codeTokenMap.set(code, req.jwt); }
+    const token = mintJukeboxToken(req.jukeboxUser, code);
+    codeTokenMap.set(code, token);
 
-    connection.send(JSON.stringify({ code: code, token: req.jwt ? req.jwt : false }));
+    connection.send(JSON.stringify({ code: code, token }));
 
     // user sent message
     connection.on('message', (_message) => {
@@ -101,6 +107,11 @@ export function setupAfterAuth(velvet, server) {
       file:    Joi.string().optional()
     });
     joiValidate(schema, req.body);
+
+    const claims = req.token ? jwt.decode(req.token) : null;
+    if (claims?.scope === 'jukebox' && claims.code !== req.body.code) {
+      throw new WebError('Forbidden', 403);
+    }
 
     if (!clients.has(req.body.code)) {
       throw new WebError('Code Not Found', 404);
@@ -170,13 +181,14 @@ export function setupBeforeAuth(velvet) {
     const clientCode = req.params.remoteId;
     const invalid = !clients.has(clientCode) || !codeTokenMap.has(clientCode);
 
-    let sharePage = await fs.readFile(path.join(config.program.webAppDirectory, 'remote/index.html'), 'utf-8');
-    sharePage = sharePage.replaceAll('../', '../../');
-    sharePage = sharePage.replace(
-      '<script></script>',
-      `<script>var remoteProperties = ${JSON.stringify(invalid
-        ? { error: true }
-        : { code: clientCode, error: false, token: codeTokenMap.get(clientCode) }).replaceAll('<', String.raw`\u003c`)}</script>`
+    const data = invalid
+      ? { error: true }
+      : { code: clientCode, error: false, token: codeTokenMap.get(clientCode) };
+    const page = await fs.readFile(path.join(config.program.webAppDirectory, 'remote/index.html'), 'utf-8');
+    const dataJson = JSON.stringify(data).replace(/</g, '\\u003c');
+    const sharePage = page.replace(
+      '<script type="application/json" id="remote-data"></script>',
+      `<script type="application/json" id="remote-data">${dataJson}</script>`
     );
     res.send(sharePage);
   });

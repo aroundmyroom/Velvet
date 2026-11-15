@@ -1,4 +1,4 @@
-**Languages Configuration and Availability** *(v6.9.0-velvet)*
+**Languages Configuration and Availability**
 ----
 Controls which UI languages are available and exposes the active allowlist to public clients.
 
@@ -63,7 +63,8 @@ Controls which UI languages are available and exposes the active allowlist to pu
 
 * **Error Response:**
 
-  * **Code:** 403 — `{ "error": "Admin only" }`
+  * **Code:** 403 — `{ "error": "Admin access required" }`
+  * **Code:** 405 — `{ "error": "Admin API Disabled" }` when `lockAdmin` is on
 
 ---
 
@@ -104,7 +105,8 @@ Controls which UI languages are available and exposes the active allowlist to pu
 * **Error Response:**
 
   * **Code:** 400 — Joi validation error.
-  * **Code:** 403 — `{ "error": "Admin only" }`
+  * **Code:** 403 — `{ "error": "Admin access required" }`
+  * **Code:** 405 — `{ "error": "Admin API Disabled" }` when `lockAdmin` is on
 
 * **Notes**
 

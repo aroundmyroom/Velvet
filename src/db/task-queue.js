@@ -10,6 +10,7 @@ import * as db from '../db/manager.js';
 import * as scanProgress from '../state/scan-progress.js';
 import { ffprobeBin } from '../util/ffmpeg-bootstrap.js';
 import { scanStarted, scanEnded } from '../state/scan-lock.js';
+import { childPrefixWithin, parentVpathOf } from '../util/vpath.js';
 
 const __dirname = getDirname(import.meta.url);
 
@@ -19,14 +20,19 @@ const __dirname = getDirname(import.meta.url);
 // next scan for the same vpath, the same scanId is reused so files already
 // confirmed in the interrupted run are recognized by sID===scanId and skipped,
 // and completed directories are bypassed entirely in the filesystem walk.
-const SCAN_STATE_DIR = path.join(__dirname, '../../save/scan-state');
+// The checkpoints live next to the database directory (save/scan-state by default).
+function scanStateDir() {
+  return path.join(path.dirname(path.resolve(config.program.storage.dbDirectory)), 'scan-state');
+}
 const RESUME_MAX_AGE_MS = 48 * 60 * 60 * 1000; // 48 h
 
 // ── Scheduled-scan once-per-calendar-day guard ───────────────────────────────
 // Persisted so the rule survives server restarts: if the daily scan already
 // fired today, neither a restart nor a resetScanInterval() call can fire it
 // again until midnight rolls over.
-const SCHEDULED_DATE_FILE = path.join(SCAN_STATE_DIR, 'scheduled-fired-date.txt');
+function _scheduledDateFile() {
+  return path.join(scanStateDir(), 'scheduled-fired-date.txt');
+}
 
 function _todayDateStr() {
   const d = new Date();
@@ -34,40 +40,37 @@ function _todayDateStr() {
 }
 
 function _readScheduledFiredDate() {
-  try { return fs.readFileSync(SCHEDULED_DATE_FILE, 'utf8').trim() || null; } catch { return null; }
+  try { return fs.readFileSync(_scheduledDateFile(), 'utf8').trim() || null; } catch { return null; }
 }
 
 function _writeScheduledFiredDate(dateStr) {
   try {
-    if (!fs.existsSync(SCAN_STATE_DIR)) fs.mkdirSync(SCAN_STATE_DIR, { recursive: true });
-    fs.writeFileSync(SCHEDULED_DATE_FILE, dateStr, 'utf8');
+    fs.mkdirSync(scanStateDir(), { recursive: true });
+    fs.writeFileSync(_scheduledDateFile(), dateStr, 'utf8');
   } catch (e) { console.debug('[velvet]', e?.message ?? e); }
 }
 
-// Initialised on module load; kept in-sync by the scheduler callbacks.
-let _lastScheduledScanDate = _readScheduledFiredDate();
-
 /**
  * Called by the scheduled-scan timeout. Fires scanAll() only once per
- * calendar day. Records today's date both in memory and on disk so that
- * a server restart later in the day cannot re-trigger the scan.
+ * calendar day. Records today's date on disk so that a server restart later
+ * in the day cannot re-trigger the scan. Returns whether today's run fired.
  */
-function _fireScheduledScan() {
+export function fireScheduledScan() {
   const today = _todayDateStr();
-  if (_lastScheduledScanDate === today) {
-    winston.info('[scheduler] Scheduled scan already fired today — skipping until tomorrow 15:00');
-    return;
+  if (_readScheduledFiredDate() === today) {
+    winston.info('[scheduler] Scheduled scan already fired today — skipping until tomorrow');
+    return false;
   }
-  _lastScheduledScanDate = today;
   _writeScheduledFiredDate(today);
   if (runningTasks.size === 0) {
     scanAll();
   }
+  return true;
 }
 
 function _getScanStatePath(vpath) {
   const safe = vpath.replaceAll(/[^a-zA-Z0-9_-]/g, '_');
-  return path.join(SCAN_STATE_DIR, `${safe}.json`);
+  return path.join(scanStateDir(), `${safe}.json`);
 }
 
 function _readScanState(vpath) {
@@ -85,7 +88,7 @@ function _readScanState(vpath) {
 
 function _writeScanState(vpath, scanId) {
   try {
-    if (!fs.existsSync(SCAN_STATE_DIR)) fs.mkdirSync(SCAN_STATE_DIR, { recursive: true });
+    fs.mkdirSync(scanStateDir(), { recursive: true });
     const p = _getScanStatePath(vpath);
     // Preserve completedDirs if the file already exists (scanner writes those)
     let completedDirs = [];
@@ -101,10 +104,6 @@ export function deleteScanState(vpath) {
     fs.unlinkSync(p);
     winston.debug(`[scanner] Scan checkpoint removed for "${vpath}"`);
   } catch { /* file already gone */ }
-}
-
-export function getScanStatePath(vpath) {
-  return _getScanStatePath(vpath);
 }
 
 /** Returns vpaths that have a valid (non-expired) scan checkpoint file. */
@@ -168,7 +167,7 @@ function _startClockAlignedScan(parsed) {
     const delay = _nextScanAt - Date.now();
     scanIntervalTimer = setTimeout(() => {
       _nextScanAt = null;
-      _fireScheduledScan();
+      fireScheduledScan();
       scheduleNext();
     }, delay);
   };
@@ -188,32 +187,7 @@ function addScanTask(vpath) {
 
 // Returns true if vpathB's root is a subdirectory of vpathA's root.
 function isChildOf(vpathA, vpathB) {
-  const a = config.program.folders[vpathA].root.replace(/\/?$/, '/');
-  const b = config.program.folders[vpathB].root.replace(/\/?$/, '/');
-  return b.startsWith(a) && a !== b;
-}
-
-function _normalizedRoot(folders, vpath) {
-  return (folders[vpath]?.root || '').replace(/\/?$/, '/');
-}
-
-function _detectParentVpath(vpath, folders = config.program.folders) {
-  const myRoot = _normalizedRoot(folders, vpath);
-  if (!myRoot) return null;
-
-  let parent = null;
-  let parentLen = -1;
-  for (const other of Object.keys(folders)) {
-    if (other === vpath) continue;
-    const otherRoot = _normalizedRoot(folders, other);
-    if (!otherRoot) continue;
-    if (!myRoot.startsWith(otherRoot) || myRoot === otherRoot) continue;
-    if (otherRoot.length > parentLen) {
-      parent = other;
-      parentLen = otherRoot.length;
-    }
-  }
-  return parent;
+  return childPrefixWithin(vpathA, vpathB, config.program.folders) !== null;
 }
 
 export function getScanHierarchy(folders = config.program.folders) {
@@ -223,7 +197,7 @@ export function getScanHierarchy(folders = config.program.folders) {
   const childrenByParent = {};
 
   for (const vpath of all) {
-    const parent = _detectParentVpath(vpath, folders);
+    const parent = parentVpathOf(vpath, folders);
     parents[vpath] = parent;
     if (parent) {
       if (!childrenByParent[parent]) childrenByParent[parent] = [];
@@ -244,12 +218,14 @@ function childVpaths() {
   return new Set(Object.keys(config.program.folders).filter(v => !rootSet.has(v)));
 }
 
+// Radio recordings, YouTube downloads and excluded folders are kept out of the music library
+const UNSCANNED_TYPES = new Set(['recordings', 'youtube', 'excluded']);
+const isUnscanned = (vpath) => UNSCANNED_TYPES.has(config.program.folders[vpath]?.type);
+
 function scanAll() {
   const children = childVpaths();
   Object.keys(config.program.folders).forEach((vpath) => {
-    if (config.program.folders[vpath]?.type === 'recordings') { return; } // recordings folders are never scanned
-    if (config.program.folders[vpath]?.type === 'excluded') { return; } // excluded folders are never scanned
-    if (!children.has(vpath)) { addScanTask(vpath); }
+    if (!isUnscanned(vpath) && !children.has(vpath)) { addScanTask(vpath); }
   });
 }
 
@@ -337,7 +313,7 @@ function runScan(scanObj) {
     winston.info(`File scan completed with code ${code}`);
     // Delete checkpoint on clean exit — prevents spurious resume on next scan
     if (code === 0) deleteScanState(scanObj.vpath);
-    scanProgress.finish(scanObj.id);
+    scanProgress.finish(scanId);
     db.clearAaFileForDirCache();
     runningTasks.delete(forkedScan);
     vpathLimiter.delete(scanObj.vpath);
@@ -397,21 +373,14 @@ async function runOrphanCleanup() {
 }
 
 export function scanVPath(vPath) {
-  if (config.program.folders[vPath]?.type === 'recordings') { return; } // recordings folders are never scanned
+  if (isUnscanned(vPath)) { return; }
   addScanTask(vPath);
 }
 
-export { scanAll, isChildOf };
+export { scanAll };
 
 export function isScanning() {
   return runningTasks.size > 0;
-}
-
-export function getAdminStats() {
-  return {
-    taskQueue,
-    vpaths: [...vpathLimiter]
-  };
 }
 
 export function getScanningVpaths() {

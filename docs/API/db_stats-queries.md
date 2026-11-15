@@ -1,6 +1,6 @@
-**Query Play Statistics** *(documented by GitHub Copilot, 2026-02-27)*
+**Query Play Statistics**
 ----
-  Three endpoints to query play-history data for the authenticated user.
+  Endpoints to query recently added songs and the play history of the authenticated user.
   All return arrays of song metadata objects in the standard format.
 
 ---
@@ -21,12 +21,43 @@
   |---|---|---|---|
   | `limit` | `integer` | Yes | Maximum number of songs to return (min 1). |
   | `ignoreVPaths` | `string[]` | No | Exclude songs from these virtual paths. |
+  | `excludeFilepathPrefixes` | `{ vpath, prefix }[]` | No | Exclude songs under these prefixes. |
 
 * **Success Response:**
 
   * **Code:** 200
-  * **Content:** Array of [song metadata objects](#song-metadata-object) sorted
-    by scan timestamp descending (most recently added first).
+  * **Content:** Array of [song metadata objects](#song-metadata-object), each with an extra `ts` field (time the file was added, Unix seconds). Only songs from the 7 most recent calendar days that had additions are returned, newest first.
+
+---
+
+### Recently Added — grouped by day
+
+* **URL:** `/api/v1/db/recent/added/by-day`
+* **Method:** `POST`
+* **JSON Body** (all optional)
+
+  | Field | Type | Description |
+  |---|---|---|
+  | `maxDays` | `integer` | 1–30, default 7 — number of days with additions to return. |
+  | `maxFolders` | `integer` | 1–1000, default 700 — total number of folder cards. |
+  | `ignoreVPaths` | `string[]` | Exclude these virtual paths. |
+  | `excludeFilepathPrefixes` | `{ vpath, prefix }[]` | Exclude songs under these prefixes. |
+
+* **Success Response:** 200
+
+  ```json
+  [
+    {
+      "date": "2026-11-14",
+      "dayLabel": "Saturday (14-11)",
+      "folders": [
+        { "dir": "Albums/Artist - Album", "label": "Artist - Album", "artist": "Artist", "art": "abc.jpg", "ts": 1763100000, "songs": [ { "filepath": "…", "metadata": { … } } ] }
+      ]
+    }
+  ]
+  ```
+
+  Disc sub-folders (`CD 1`, `Disc 2`, `Side A`…) are collapsed into one folder card. A folder only lists the songs added on the same day as its newest song.
 
 ---
 
@@ -46,6 +77,7 @@
   |---|---|---|---|
   | `limit` | `integer` | Yes | Maximum number of songs to return (min 1). |
   | `ignoreVPaths` | `string[]` | No | Exclude songs from these virtual paths. |
+  | `excludeFilepathPrefixes` | `{ vpath, prefix }[]` | No | Exclude songs under these prefixes. |
 
 * **Success Response:**
 
@@ -71,6 +103,7 @@
   |---|---|---|---|
   | `limit` | `integer` | Yes | Maximum number of songs to return (min 1). |
   | `ignoreVPaths` | `string[]` | No | Exclude songs from these virtual paths. |
+  | `excludeFilepathPrefixes` | `{ vpath, prefix }[]` | No | Exclude songs under these prefixes. |
 
 * **Success Response:**
 
@@ -82,11 +115,11 @@
 
 ### Song Metadata Object
 
-All three endpoints return arrays of objects in this shape:
+These endpoints return objects in this shape (all fields are listed in [db_metadata.md](db_metadata.md)):
 
 ```json
 {
-  "filepath": "/Music/Artist/Album/01 Track.flac",
+  "filepath": "Music/Artist/Album/01 Track.flac",
   "metadata": {
     "artist": "Artist",
     "album": "Album",
@@ -98,28 +131,29 @@ All three endpoints return arrays of objects in this shape:
     "hash": "md5hash",
     "rating": 8,
     "play-count": 12,
-    "last-played": 1740000000,
-    "replaygain-track": -7.2,
+    "last-played": 1740000000000,
+    "replaygain-track-db": -7.2,
     "duration": 237.431
-  }
+  },
+  "rg": null
 }
 ```
 
 | Field | Description |
 |---|---------|
-| `filepath` | Virtual path — `/<vpath>/relative/path/to/file.ext` |
-| `album-art` | Filename inside the `image-cache` directory, or `null`. |
+| `filepath` | Player path — `<vpath>/relative/path/to/file.ext` |
+| `album-art` | Filename inside the album-art cache directory, or `null`. |
 | `rating` | Integer 0–10, or `null`. See [`/api/v1/db/rate-song`](db_rate-song.md). |
 | `play-count` | Times the song has been played by this user, or `null`. |
-| `last-played` | Unix timestamp (seconds) of last play, or `null`. |
-| `replaygain-track` | ReplayGain track gain in dB, or `null`. |
+| `last-played` | Unix timestamp in **milliseconds** of the last play, or `null`. |
+| `replaygain-track-db` | ReplayGain track gain tag in dB, or `null`. |
 | `duration` | Track length in seconds (float, e.g. `237.431`), or `null` for tracks not yet rescanned. |
 
 ---
 
-### Log a Play *(GitHub Copilot, 2026-03-27)*
+### Log a Play
 
-Records a play against the authenticated user immediately — increments `play-count` and updates `last-played` timestamp.  This endpoint is called by the player unconditionally for every non-radio, non-podcast track and is **independent of scrobbling** (Last.fm / ListenBrainz).  Recently Played and Most Played therefore work even when no external scrobbling service is configured.
+Records a play against the authenticated user immediately — increments `play-count` and sets `last-played` to now. The web player calls it when a track starts, for every track that is not a radio stream or podcast episode, and it is **independent of scrobbling** (Last.fm / ListenBrainz). Recently Played and Most Played therefore work even when no external scrobbling service is configured.
 
 * **URL**
 
@@ -133,15 +167,13 @@ Records a play against the authenticated user immediately — increments `play-c
 
   | Field | Type | Required | Description |
   |---|---|---|---|
-  | `filePath` | `string` | Yes | Full virtual path of the song (e.g. `/Music/Artist/song.flac`). External URLs (`http://…`) are rejected with `{ ok: false }`. |
+  | `filePath` | `string` | Yes | Player filepath of the song (e.g. `Music/Artist/song.flac`). External URLs (`http://…`) are rejected with `{ ok: false }`. |
 
 * **Success Response:**
 
   * **Code:** 200
-  * **Content:** `{ "ok": true }` — or `{ "ok": false }` when the file cannot be resolved in the DB.
+  * **Content:** `{ "ok": true }` — or `{ "ok": false }` when the file cannot be resolved.
 
 * **Notes:**
-  * Radio streams and podcast episodes are never passed to this endpoint.
-  * If the file has no existing `user_metadata` row one is created with `pc = 1`.
-  * If a row already exists `pc` is incremented and `lp` is updated.
-  * Changes are flushed to disk immediately via `db.saveUserDB()`.
+  * A file that is on disk but not yet in the DB is indexed on demand first.
+  * If the file has no `user_metadata` row for the user, one is created with `pc = 1`; otherwise `pc` is incremented. `lp` is set to `Date.now()`.

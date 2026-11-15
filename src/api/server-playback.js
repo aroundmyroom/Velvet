@@ -21,7 +21,15 @@ import os from 'node:os';
 import winston from 'winston';
 import * as config from '../state/config.js';
 import * as db from '../db/manager.js';
-import { resolveTrackGain } from './db.js';
+import * as vpath from '../util/vpath.js';
+import { locateMedia } from '../util/media-locate.js';
+import { rgGainDb } from '../util/replaygain.js';
+import { clampGainDb } from '../sendspin/audio.js';
+import { canCastToServer, canUseServerRemote } from '../util/permissions.js';
+
+class FileNotAvailableError extends Error {
+  constructor() { super('File not available'); this.status = 404; }
+}
 
 // ── Socket path ────────────────────────────────────────────────────────────
 const sockPath = path.join(os.tmpdir(), `mpv-velvet-${process.pid}.sock`);
@@ -98,6 +106,8 @@ function _resolveSafeBinary(bin, fallback) {
   }
 }
 
+const mpvBinary = () => _resolveSafeBinary(config.program.serverAudio?.mpvBin, 'mpv');
+
 function _resetHeartbeat() {
   clearTimeout(_heartbeatTimer);
   _heartbeatTimer = setTimeout(() => {
@@ -150,7 +160,7 @@ function _safeMixerControl(name) {
 function runCmd(kind, options = {}) {
   try {
     const timeout = Number.isFinite(options.timeout) ? options.timeout : 5000;
-    const mpvBin = _resolveSafeBinary(config.program.serverAudio?.mpvBin, 'mpv');
+    const mpvBin = mpvBinary();
     let safeBin = null;
     let safeArgs = [];
 
@@ -237,7 +247,7 @@ function parseMixerState(output) {
 }
 
 function getLinuxAudioHealth() {
-  const mpvBin = _resolveSafeBinary(config.program.serverAudio?.mpvBin, 'mpv');
+  const mpvBin = mpvBinary();
   const mpvVer = runCmd(RUN_CMD_KIND.MPV_VERSION);
   const amixerVer = runCmd(RUN_CMD_KIND.AMIXER_VERSION);
   const aplayVer = runCmd(RUN_CMD_KIND.APLAY_VERSION);
@@ -343,7 +353,7 @@ function bestEffortPrepareLinuxAudio() {
 export function bootMpv() {
   if (mpvProc?.exitCode === null) return; // already running
 
-  const mpvBin = _resolveSafeBinary(config.program.serverAudio?.mpvBin, 'mpv');
+  const mpvBin = mpvBinary();
 
   // Clean up any stale socket from a previous run
   try { fs.unlinkSync(sockPath); } catch (e) { console.debug('[velvet]', e?.message ?? e); }
@@ -523,7 +533,7 @@ function handleIpcMessage(msg) {
 }
 
 // ── Status ─────────────────────────────────────────────────────────────────
-export async function getStatus() {
+async function getStatus() {
   const running   = isRunning();
   const connected = ipcSock && !ipcSock.destroyed;
 
@@ -574,59 +584,55 @@ export async function getStatus() {
 }
 
 // ── File path resolution ───────────────────────────────────────────────────
-function resolveAbsPath(relPath) {
-  const normPath = relPath.replace(/^\//, ''); // strip leading slash if present
-  const folders = config.program.folders || {};
-  for (const [vname, folder] of Object.entries(folders)) {
-    if (normPath === vname || normPath.startsWith(vname + '/')) {
-      const rel = normPath.slice(vname.length + 1);
-      const abs = path.join(folder.root, rel);
-      try {
-        fs.accessSync(abs, fs.constants.R_OK);
-        return abs;
-      } catch (e) { console.debug('[velvet]', e?.message ?? e); }
-    }
+function locateForUser(relPath, user) {
+  const l = locateMedia(relPath, user);
+  if (!l) return null;
+  try { fs.accessSync(l.file, fs.constants.R_OK); } catch { return null; }
+  return l;
+}
+
+function _findDbRow(loc, user) {
+  for (const c of vpath.dbLocationCandidates(loc.info, user)) {
+    const row = db.findFileByPath(c.relPath, c.vpath);
+    if (row) return { row, dbVpath: c.vpath, dbRel: c.relPath };
   }
   return null;
 }
 
 // ── Queue management ───────────────────────────────────────────────────────
-function _loadDbTechMeta(relPath) {
-  try {
-    const parts = relPath.split('/');
-    const row   = db.findFileByPath(parts.slice(1).join('/'), parts[0]);
-    if (row) return { bitrate: row.bitrate || null, sampleRate: row.sample_rate || null, channels: row.channels || null };
-  } catch (e) { console.debug('[velvet]', e?.message ?? e); }
-  return { bitrate: null, sampleRate: null, channels: null };
+function _resolveRgGain(row, meta) {
+  return clampGainDb(rgGainDb(row, { mode: meta.rgMode, preamp: meta.rgPreamp, clip: meta.rgClip !== false }));
 }
 
-function _resolveRgGain(relPath, meta) {
-  try {
-    const parts  = relPath.split('/');
-    const row    = db.findFileByPath(parts.slice(1).join('/'), parts[0]);
-    if (!row) return null;
-    const mode   = meta.rgMode === 'album' ? 'album' : 'track';
-    const preamp = Number(meta.rgPreamp) || 0;
-    const clip   = meta.rgClip !== false;
-    const rg     = resolveTrackGain(row, mode);
-    if (rg?.gain == null) return null;
-    let db_val = Number(rg.gain) + preamp;
-    if (clip && rg.peak != null) {
-      const headroom = -Number(rg.peak);
-      if (db_val > headroom) db_val = headroom;
-    }
-    return db_val;
-  } catch { return null; }
+function _locateOrThrow(relPath, user) {
+  const loc = locateForUser(String(relPath).replace(/^\/+/, ''), user);
+  if (!loc) throw new FileNotAvailableError();
+  return loc;
 }
 
-export async function addToQueue(relPath, meta = {}) {
-  relPath = relPath.replace(/^\/+/, '');
-  const abs = resolveAbsPath(relPath);
-  if (!abs) throw new Error('File not found: ' + relPath);
+// After backend restart, the first cast request can arrive before mpv is
+// fully running/connected. Auto-boot and wait briefly so queue/add actually
+// loads into mpv instead of silently queueing only in memory.
+async function _ensureMpv() {
+  if ((!isRunning() || !ipcSock || ipcSock.destroyed) && config.program.serverAudio?.enabled) {
+    bootMpv();
+    await waitForIpcConnected(5000);
+  }
+  if (!isRunning() || !ipcSock || ipcSock.destroyed) {
+    throw new Error('Server Audio is not running');
+  }
+}
+
+async function addToQueue(relPath, meta, user, loc = _locateOrThrow(relPath, user)) {
+  relPath = String(relPath).replace(/^\/+/, '');
+  await _ensureMpv();
+  const abs = loc.file;
+  const found = _findDbRow(loc, user);
+  const row = found?.row ?? null;
 
   const { bitrate, sampleRate, channels } = meta.bitrate || meta['sample-rate']
     ? { bitrate: meta.bitrate || null, sampleRate: meta['sample-rate'] || null, channels: meta.channels || null }
-    : _loadDbTechMeta(relPath);
+    : { bitrate: row?.bitrate || null, sampleRate: row?.sample_rate || null, channels: row?.channels || null };
 
   const entry = {
     relPath,
@@ -637,33 +643,29 @@ export async function addToQueue(relPath, meta = {}) {
     bitrate,
     'sample-rate': sampleRate,
     channels,
-    gainDb: meta.rgEnabled === false ? null : _resolveRgGain(relPath, meta),
+    gainDb: meta.rgEnabled === false || !row ? null : _resolveRgGain(row, meta),
+    dbVpath: found?.dbVpath ?? loc.dbVpath,
+    dbRel: found?.dbRel ?? loc.dbRel,
     historyUser: meta.historyUser || null,
     historySessionId: meta.historySessionId || null,
     historyEventId: null,
   };
 
+  // Queued before loadfile: mpv's file-loaded event reads the entry's gain
   serverQueue.push(entry);
+  try {
+    await ipcCommand(['loadfile', abs, 'append-play']);
+  } catch (e) {
+    serverQueue.splice(serverQueue.indexOf(entry), 1);
+    throw e;
+  }
 
   const seekTo = Number(meta.seekTo) || 0;
   if (seekTo > 1) _pendingSeek = Math.floor(seekTo);
-
-  // After backend restart, the first cast request can arrive before mpv is
-  // fully running/connected. Auto-boot and wait briefly so queue/add actually
-  // loads into mpv instead of silently queueing only in memory.
-  if ((!isRunning() || !ipcSock || ipcSock.destroyed) && config.program.serverAudio?.enabled) {
-    bootMpv();
-    await waitForIpcConnected(5000);
-  }
-
-  if (!isRunning() || !ipcSock || ipcSock.destroyed) {
-    throw new Error('Server Audio is not running');
-  }
-  await ipcCommand(['loadfile', abs, 'append-play']);
   return serverQueue.length - 1;
 }
 
-export async function clearQueue() {
+async function clearQueue() {
   await finishActivePlayback(false);
   _pendingSeek = null; // cancel any pending seek from a previous load
   _clearHeartbeat();   // no client casting anymore
@@ -679,13 +681,9 @@ export async function clearQueue() {
   }
 }
 
-async function logServerPlaybackStart(user, filepath, overrideSource = 'server-playback', sessionId = null) {
-  if (!user?.username || !filepath) return null;
-  const relPath = String(filepath).replace(/^\/+/, '');
-  const parts = relPath.split('/');
-  if (parts.length < 2) return null;
-
-  const fileRow = db.findFileByPath(parts.slice(1).join('/'), parts[0]);
+async function logServerPlaybackStart(user, entry, overrideSource = 'server-playback', sessionId = null) {
+  if (!user?.username || !entry?.dbVpath) return null;
+  const fileRow = db.findFileByPath(entry.dbRel, entry.dbVpath);
   if (!fileRow?.hash) return null;
 
   return db.recordPlaybackStart({
@@ -723,7 +721,7 @@ async function startActivePlayback(entry) {
   await finishActivePlayback(false);
   const eventId = entry.historyEventId ?? await logServerPlaybackStart(
     { username: entry.historyUser },
-    entry.relPath,
+    entry,
     'server-playback',
     entry.historySessionId,
   );
@@ -737,7 +735,7 @@ async function startActivePlayback(entry) {
   };
 }
 
-export async function removeAtIndex(index) {
+async function removeAtIndex(index) {
   if (index < 0 || index >= serverQueue.length) throw new Error('Index out of range');
   serverQueue.splice(index, 1);
 
@@ -749,7 +747,7 @@ export async function removeAtIndex(index) {
   }
 }
 
-export async function playAtIndex(index) {
+async function playAtIndex(index) {
   if (index < 0 || index >= serverQueue.length) throw new Error('Index out of range');
   currentIndex = index;
   if (isRunning() && ipcSock && !ipcSock.destroyed) {
@@ -757,7 +755,7 @@ export async function playAtIndex(index) {
   }
 }
 
-export async function cycleLoop() {
+async function cycleLoop() {
   const status = await getStatus();
   let next;
   if (status.loopMode === 'none') { next = 'one'; }
@@ -772,7 +770,30 @@ export async function cycleLoop() {
 }
 
 // ── Express API (auth-protected) ───────────────────────────────────────────
+function playbackGuard(req, res, next) {
+  if (!canCastToServer(req.user) && !canUseServerRemote(req.user)) return res.status(403).json({ error: 'Server Audio is not allowed for this user' });
+  next();
+}
+
+function adminOnly(req, res, next) {
+  if (req.user?.admin !== true) return res.status(403).json({ error: 'Admin only' });
+  next();
+}
+
+function sendAddError(res, e) {
+  res.status(e instanceof FileNotAvailableError ? 404 : 400).json({ error: e.message });
+}
+
 export function setup(velvet) {
+  // GET /api/v1/server-playback/available — what the player needs to offer the Server Speaker output
+  velvet.get('/api/v1/server-playback/available', (req, res) => {
+    const enabled = config.program.serverAudio?.enabled === true;
+    res.json({ enabled, running: enabled && isRunning(), allowed: canCastToServer(req.user) });
+  });
+
+  velvet.use('/api/v1/server-playback', playbackGuard);
+  velvet.use(['/api/v1/server-playback/detect', '/api/v1/server-playback/audio-health', '/api/v1/server-playback/test-tone'], adminOnly);
+
   // GET /api/v1/server-playback/status
   velvet.get('/api/v1/server-playback/status', async (req, res) => {
     try { res.json(await getStatus()); }
@@ -784,27 +805,30 @@ export function setup(velvet) {
     const { filepath, title, artist, album, albumArt, seekTo, rgEnabled, rgMode, rgPreamp, rgClip } = req.body;
     if (!filepath) return res.status(400).json({ error: 'filepath required' });
     try {
-      const index = await addToQueue(filepath, { title, artist, album, albumArt, seekTo: seekTo || 0, rgEnabled, rgMode, rgPreamp, rgClip, historyUser: req.user?.username, historySessionId: `server-playback:${req.user.username}:${Date.now()}` });
+      const index = await addToQueue(filepath, { title, artist, album, albumArt, seekTo: seekTo || 0, rgEnabled, rgMode, rgPreamp, rgClip, historyUser: req.user?.username, historySessionId: `server-playback:${req.user.username}:${Date.now()}` }, req.user);
       _resetHeartbeat(); // a song was loaded — start the watchdog
       res.json({ index });
-    } catch (e) { res.status(400).json({ error: e.message }); }
+    } catch (e) { sendAddError(res, e); }
   });
 
   // POST /api/v1/server-playback/queue/add-many  { files: [{ filepath, title, artist, album, albumArt, seekTo, rgEnabled, rgMode, rgPreamp, rgClip }] }
   velvet.post('/api/v1/server-playback/queue/add-many', async (req, res) => {
     const { files } = req.body;
     if (!Array.isArray(files) || files.length === 0) return res.status(400).json({ error: 'files array required' });
+    if (files.some(f => !f?.filepath)) return res.status(400).json({ error: 'each file must have filepath' });
     try {
+      // All or nothing: every file is located and mpv is up before the first one is queued
+      const locs = files.map(f => _locateOrThrow(f.filepath, req.user));
+      await _ensureMpv();
       const indices = [];
       const historySessionId = `server-playback:${req.user.username}:${Date.now()}`;
-      for (const f of files) {
+      for (const [i, f] of files.entries()) {
         const { filepath, title, artist, album, albumArt, seekTo, rgEnabled, rgMode, rgPreamp, rgClip } = f;
-        if (!filepath) return res.status(400).json({ error: 'each file must have filepath' });
-        indices.push(await addToQueue(filepath, { title, artist, album, albumArt, seekTo: seekTo || 0, rgEnabled, rgMode, rgPreamp, rgClip, historyUser: req.user?.username, historySessionId }));
+        indices.push(await addToQueue(filepath, { title, artist, album, albumArt, seekTo: seekTo || 0, rgEnabled, rgMode, rgPreamp, rgClip, historyUser: req.user?.username, historySessionId }, req.user, locs[i]));
       }
       _resetHeartbeat();
       res.json({ indices });
-    } catch (e) { res.status(400).json({ error: e.message }); }
+    } catch (e) { sendAddError(res, e); }
   });
 
   // POST /api/v1/server-playback/play  { file: { filepath, title, artist, album, albumArt, seekTo, rgEnabled, rgMode, rgPreamp, rgClip } }
@@ -816,11 +840,11 @@ export function setup(velvet) {
       await clearQueue();
       const { filepath, title, artist, album, albumArt, seekTo, rgEnabled, rgMode, rgPreamp, rgClip } = f;
       const historySessionId = `server-playback:${req.user.username}:${Date.now()}`;
-      await addToQueue(filepath, { title, artist, album, albumArt, seekTo: seekTo || 0, rgEnabled, rgMode, rgPreamp, rgClip, historyUser: req.user?.username, historySessionId });
+      await addToQueue(filepath, { title, artist, album, albumArt, seekTo: seekTo || 0, rgEnabled, rgMode, rgPreamp, rgClip, historyUser: req.user?.username, historySessionId }, req.user);
       await playAtIndex(0);
       _resetHeartbeat();
       res.json({});
-    } catch (e) { res.status(400).json({ error: e.message }); }
+    } catch (e) { sendAddError(res, e); }
   });
 
   // POST /api/v1/server-playback/heartbeat — client pings this while casting
@@ -917,7 +941,7 @@ export function setup(velvet) {
   // POST /api/v1/server-playback/volume  { volume }
   velvet.post('/api/v1/server-playback/volume', async (req, res) => {
     const { volume } = req.body;
-    if (volume === undefined) return res.status(400).json({ error: 'volume required' });
+    if (volume == null || !Number.isFinite(Number(volume))) return res.status(400).json({ error: 'volume must be a number' });
     try {
       const v = Math.max(0, Math.min(130, Number(volume)));
       _currentVolumePct = v; // persist for re-apply on track change
@@ -939,6 +963,9 @@ export function setup(velvet) {
   // All fields are optional; only provided ones are updated.
   velvet.post('/api/v1/server-playback/reapply-gain', async (req, res) => {
     const { gainDb, volumePct, balance } = req.body;
+    if ([gainDb, volumePct, balance].some(v => v != null && !Number.isFinite(Number(v)))) {
+      return res.status(400).json({ error: 'gainDb, volumePct and balance must be numbers' });
+    }
     try {
       if (volumePct != null) _currentVolumePct = Math.max(0, Math.min(130, Number(volumePct)));
       if (balance  != null) _currentBalance   = Math.max(-1, Math.min(1, Number(balance)));
@@ -946,7 +973,7 @@ export function setup(velvet) {
         // Update stored gainDb on the current queue entry so the next
         // file-loaded event uses the new value.
         const entry = serverQueue[currentIndex] ?? serverQueue.at(-1);
-        if (entry && gainDb !== undefined) entry.gainDb = gainDb == null ? null : Number(gainDb);
+        if (entry && gainDb !== undefined) entry.gainDb = gainDb == null ? null : clampGainDb(Number(gainDb));
         const resolvedGainDb = entry?.gainDb ?? null;
         const chain = _buildAfChain(resolvedGainDb, _currentBalance);
         await ipcCommand(['af', 'set', chain]).catch(() => {});
@@ -959,7 +986,7 @@ export function setup(velvet) {
 
   // GET /api/v1/server-playback/detect — check mpv availability
   velvet.get('/api/v1/server-playback/detect', (req, res) => {
-    const mpvBin = config.program.serverAudio?.mpvBin || 'mpv';
+    const mpvBin = mpvBinary();
     child_process.execFile(mpvBin, ['--version'], { timeout: 5000 }, (err, stdout) => {
       if (err) return res.json({ found: false, version: null, path: mpvBin });
       const m = (stdout || '').match(/mpv\s+(\S+)/i);
@@ -987,9 +1014,6 @@ export function setup(velvet) {
   // POST /api/v1/server-playback/audio-health/fix — best-effort unmute + volume set
   velvet.post('/api/v1/server-playback/audio-health/fix', (req, res) => {
     try {
-      if (req.user?.admin !== true) {
-        return res.status(403).json({ error: 'Admin only' });
-      }
       if (process.platform !== 'linux') {
         return res.status(400).json({ error: 'Audio fix is Linux-only.' });
       }
@@ -1040,25 +1064,19 @@ export function setup(velvet) {
 
 // ── server-remote HTML route (before auth) ────────────────────────────────
 export function setupBeforeAuth(velvet) {
-  velvet.get('/server-remote', (req, res) => {
-    const saEnabled = config.program.serverAudio?.enabled;
-    if (!saEnabled) {
-      return res.type('html').send(
-        '<!doctype html><html><head><meta charset="utf-8">' +
-        '<meta name="viewport" content="width=device-width,initial-scale=1">' +
-        '<title>Server Audio</title>' +
-        '<style>body{font-family:system-ui,sans-serif;background:#1a1a2e;color:#e4e4e4;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0}' +
-        '.box{max-width:420px;padding:40px;text-align:center}h1{color:#a78bfa;margin-bottom:12px}' +
-        'p{color:#8888b0;line-height:1.6;margin-bottom:24px}a{color:#a78bfa;text-decoration:none}a:hover{text-decoration:underline}</style></head>' +
-        '<body><div class="box"><h1>Server Audio</h1>' +
-        '<p>Server Audio playback is not enabled.<br>Go to the <a href="/admin">Admin Panel</a> → <b>Server Audio</b> to enable it, then reload this page.</p>' +
-        '<a href="/admin">Admin Panel</a> &nbsp;·&nbsp; <a href="/">Normal Mode</a></div></body></html>'
-      );
-    }
-    const filePath = path.join(config.program.webAppDirectory, 'server-remote', 'index.html');
-    res.sendFile(filePath, err => {
-      if (err && !res.headersSent) res.status(500).send('Server remote page not found.');
-    });
+  velvet.get(['/server-remote', '/server-remote/', '/server-remote/index.html'], (req, res, next) => {
+    if (config.program.serverAudio?.enabled) return next();
+    res.type('html').send(
+      '<!doctype html><html><head><meta charset="utf-8">' +
+      '<meta name="viewport" content="width=device-width,initial-scale=1">' +
+      '<title>Server Audio</title>' +
+      '<style>body{font-family:system-ui,sans-serif;background:#1a1a2e;color:#e4e4e4;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0}' +
+      '.box{max-width:420px;padding:40px;text-align:center}h1{color:#a78bfa;margin-bottom:12px}' +
+      'p{color:#8888b0;line-height:1.6;margin-bottom:24px}a{color:#a78bfa;text-decoration:none}a:hover{text-decoration:underline}</style></head>' +
+      '<body><div class="box"><h1>Server Audio</h1>' +
+      '<p>Server Audio playback is not enabled.<br>Go to the <a href="/admin">Admin Panel</a> → <b>Server Audio</b> to enable it, then reload this page.</p>' +
+      '<a href="/admin">Admin Panel</a> &nbsp;·&nbsp; <a href="/">Normal Mode</a></div></body></html>'
+    );
   });
 }
 

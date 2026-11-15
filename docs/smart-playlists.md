@@ -41,40 +41,14 @@ Typical use: set genre filters to your taste, leave the max songs at 50, enable 
 
 `artist` (default), `album`, `year_asc`, `year_desc`, `rating`, `play_count`, `last_played`, `random`
 
+## Subsonic
+
+Saved smart playlists also show up as read-only playlists for Subsonic
+clients (see [subsonic.md](subsonic.md)); edit them in Velvet.
+
 ## API
 
-All routes require authentication (token in query string or cookie).
-
-### `GET /api/v1/smart-playlists`
-Returns all saved smart playlists for the current user.
-
-**Response:** `{ playlists: [{ id, name, filters, sort, limit_n, created }] }`
-
-### `POST /api/v1/smart-playlists/run`
-Executes a smart playlist filter and returns matching songs (without saving).
-
-**Body:** `{ filters, sort, limit }`  
-**Response:** `{ songs: [...], total: N }`
-
-### `POST /api/v1/smart-playlists/count`
-Returns a count of matching songs (for the live preview counter).
-
-**Body:** `{ filters }`  
-**Response:** `{ count: N }`
-
-### `POST /api/v1/smart-playlists`
-Saves a new named smart playlist.
-
-**Body:** `{ name, filters, sort, limit }`  
-**Response:** `{ id, name }`
-
-### `PUT /api/v1/smart-playlists/:id`
-Updates an existing smart playlist.
-
-**Body:** `{ name, filters, sort, limit }`
-
-### `DELETE /api/v1/smart-playlists/:id`
-Deletes a smart playlist.
+All routes require authentication. `limit` is 1–1000 (default 100); saving a name that already exists answers `409`. The full request/response reference (bodies, responses, filters schema) is in [API/smart-playlists.md](API/smart-playlists.md); the route list is in [API.md](API.md#smart-playlists-velvet).
 
 ## Database schema
 

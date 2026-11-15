@@ -1,165 +1,102 @@
-/**
- * On-Demand Album Index — Integration Tests
- * Tests DB queries for album discovery and filtering
- */
+'use strict';
 
 const { describe, it, before, after } = require('node:test');
-const assert = require('node:assert');
-const { DatabaseSync } = require('node:sqlite');
-const path = require('path');
-const fs = require('fs');
+const assert = require('node:assert/strict');
+const fs = require('node:fs/promises');
+const os = require('node:os');
+const path = require('node:path');
 
-describe('On-Demand Album Index', () => {
-  let db;
-  const testDbPath = path.join('/tmp', 'velvet-test-album.sqlite');
+describe('indexFileOnDemand (src/util/on-demand-index.js)', () => {
+  let workDir, libDir, config, manager, indexFileOnDemand, computeFileHash, fixtureTrack;
 
-  before(() => {
-    if (fs.existsSync(testDbPath)) fs.unlinkSync(testDbPath);
-    db = new DatabaseSync(testDbPath);
-
-    // Schema
-    db.exec(`
-      CREATE TABLE files (
-        id INTEGER PRIMARY KEY,
-        filepath TEXT NOT NULL,
-        title TEXT,
-        artist TEXT,
-        album TEXT,
-        album_artist TEXT,
-        vpath TEXT,
-        modified INTEGER,
-        ts INTEGER,
-        duration INTEGER,
-        type TEXT
-      )
-    `);
-
-    // Test data: 3 albums, 2 artists
-    const songs = [
-      { title: 'Track 1', artist: 'John Doe', album: 'Album A', album_artist: 'John Doe', filepath: 'Music/john-doe/album-a/track1.mp3' },
-      { title: 'Track 2', artist: 'John Doe', album: 'Album A', album_artist: 'John Doe', filepath: 'Music/john-doe/album-a/track2.mp3' },
-      { title: 'Track 3', artist: 'Jane Smith', album: 'Album B', album_artist: 'Jane Smith', filepath: 'Music/jane-smith/album-b/track3.mp3' },
-      { title: 'Track 4', artist: 'John Doe', album: 'Album C', album_artist: 'John Doe', filepath: 'Music/john-doe/album-c/track4.mp3' },
-    ];
-
-    const insert = db.prepare(`
-      INSERT INTO files (title, artist, album, album_artist, filepath, vpath, modified, ts, duration, type)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `);
-
-    for (const song of songs) {
-      insert.run(
-        song.title, song.artist, song.album, song.album_artist, song.filepath,
-        'Music', Date.now(), Math.floor(Date.now() / 1000), 180000, 'music'
-      );
-    }
+  const pathInfo = (vpath, basePath, relativePath) => ({
+    vpath, basePath, relativePath, fullPath: path.join(basePath, relativePath),
   });
 
-  after(() => {
-    db.close();
-    if (fs.existsSync(testDbPath)) fs.unlinkSync(testDbPath);
+  before(async () => {
+    const { ensureFixtures } = await import('../helpers/fixtures.mjs');
+    fixtureTrack = path.join(await ensureFixtures(), 'Artist A', 'Album X', '01 - Track One.mp3');
+
+    workDir = await fs.mkdtemp(path.join(os.tmpdir(), 'ondemand-'));
+    libDir = path.join(workDir, 'lib');
+    await fs.mkdir(path.join(libDir, 'sub'), { recursive: true });
+    const configPath = path.join(workDir, 'config.json');
+    await fs.writeFile(configPath, JSON.stringify({
+      folders: { Lib: { root: libDir }, Child: { root: path.join(libDir, 'sub') } },
+      db: { clearSharedInterval: 0 },
+      storage: {
+        dbDirectory: path.join(workDir, 'db'),
+        albumArtDirectory: path.join(workDir, 'art'),
+        logsDirectory: path.join(workDir, 'logs'),
+      },
+    }));
+
+    config = await import('../../src/state/config.js');
+    await config.setup(configPath);
+    manager = await import('../../src/db/manager.js');
+    await manager.initDB();
+    ({ indexFileOnDemand } = await import('../../src/util/on-demand-index.js'));
+    ({ computeFileHash } = await import('../../src/util/file-hash.js'));
   });
 
-  describe('Album grouping', () => {
-
-    it('should list distinct albums', () => {
-      const query = db.prepare(`
-        SELECT DISTINCT album, album_artist, COUNT(*) as track_count
-        FROM files
-        WHERE vpath = ?
-        GROUP BY album, album_artist
-        ORDER BY album_artist, album
-      `);
-      const albums = query.all('Music');
-      assert.strictEqual(albums.length, 3);
-      assert(albums.some(a => a.album === 'Album A' && a.track_count === 2));
-    });
-    it('should count tracks per album correctly', () => {
-      const query = db.prepare(`
-        SELECT album, COUNT(*) as track_count
-        FROM files
-        WHERE album = ?
-        GROUP BY album
-      `);
-      const result = query.get('Album A');
-      assert.strictEqual(result.track_count, 2);
-    });
+  after(async () => {
+    await fs.rm(workDir, { recursive: true, force: true });
   });
 
-  describe('Artist filtering', () => {
-    it('should filter albums by artist', () => {
-      const query = db.prepare(`
-        SELECT DISTINCT album
-        FROM files
-        WHERE album_artist = ?
-        ORDER BY album
-      `);
-      const albums = query.all('John Doe');
-      assert.strictEqual(albums.length, 2);
-      assert(albums.some(a => a.album === 'Album A'));
-      assert(albums.some(a => a.album === 'Album C'));
-    });
+  it('indexes an unscanned file under its own ROOT vpath with the scanner hash and tags', async () => {
+    const dest = path.join(libDir, 'root-track.mp3');
+    await fs.copyFile(fixtureTrack, dest);
 
-    it('should get all tracks in an album', () => {
-      const query = db.prepare(`
-        SELECT title, artist
-        FROM files
-        WHERE album = ?
-        ORDER BY title
-      `);
-      const tracks = query.all('Album A');
-      assert.strictEqual(tracks.length, 2);
-    });
+    const row = await indexFileOnDemand(pathInfo('Lib', libDir, 'root-track.mp3'));
+    assert.ok(row);
+    assert.equal(row.vpath, 'Lib');
+    assert.equal(row.filepath, 'root-track.mp3');
+    assert.equal(row.hash, await computeFileHash(dest));
+    assert.equal(row.title, 'Track One');
+    assert.equal(row.artist, 'Artist A');
+    assert.equal(row.album, 'Album X');
+
+    const stored = manager.findFileByPath('root-track.mp3', 'Lib');
+    assert.ok(stored, 'row must be in the files table');
+    assert.match(stored.hash, /^[a-f0-9]{32}$/);
   });
 
-  describe('vpath filtering', () => {
-    it('should respect vpath boundaries', () => {
-      const query = db.prepare(`
-        SELECT COUNT(*) as cnt
-        FROM files
-        WHERE vpath = ?
-      `);
-      const result = query.get('Music');
-      assert.strictEqual(result.cnt, 4);
-    });
+  it('stores a file played through a child vpath under the parent ROOT with the child prefix', async () => {
+    await fs.copyFile(fixtureTrack, path.join(libDir, 'sub', 'child-track.mp3'));
 
-    it('should return 0 for non-existent vpath', () => {
-      const query = db.prepare(`
-        SELECT COUNT(*) as cnt
-        FROM files
-        WHERE vpath = ?
-      `);
-      const result = query.get('NonExistent');
-      assert.strictEqual(result.cnt, 0);
-    });
+    const row = await indexFileOnDemand(pathInfo('Child', path.join(libDir, 'sub'), 'child-track.mp3'));
+    assert.equal(row.vpath, 'Lib');
+    assert.equal(row.filepath, 'sub/child-track.mp3');
+    assert.ok(manager.findFileByPath('sub/child-track.mp3', 'Lib'));
+    assert.equal(manager.findFileByPath('child-track.mp3', 'Child'), null, 'no row under the child vpath name');
   });
 
-  describe('Album art metadata', () => {
-    it('should handle albums without art gracefully', () => {
-      const query = db.prepare(`
-        SELECT album, COUNT(*) as track_count
-        FROM files
-        WHERE album = ? AND vpath = ?
-        GROUP BY album
-      `);
-      const result = query.get('Album A', 'Music');
-      assert(result);
-      assert.strictEqual(result.track_count, 2);
-    });
+  it('returns the existing row instead of inserting a duplicate on a second play', async () => {
+    const info = pathInfo('Lib', libDir, 'root-track.mp3');
+    const before = manager.countFilesByVpath('Lib');
+    const again = await indexFileOnDemand(info);
+    assert.equal(again.filepath, 'root-track.mp3');
+    assert.equal(manager.countFilesByVpath('Lib'), before);
   });
 
-  describe('Performance baseline', () => {
-    it('should group 4 songs into albums in <1ms', () => {
-      const start = performance.now();
-      const query = db.prepare(`
-        SELECT DISTINCT album, COUNT(*) as track_count
-        FROM files
-        WHERE vpath = ?
-        GROUP BY album
-      `);
-      query.all('Music');
-      const elapsed = performance.now() - start;
-      assert(elapsed < 1, `Query took ${elapsed}ms, expected <1ms`);
-    });
+  it('inserts one row when the same new file is played twice at once', async () => {
+    await fs.copyFile(fixtureTrack, path.join(libDir, 'race-track.mp3'));
+    const info = pathInfo('Lib', libDir, 'race-track.mp3');
+    const before = manager.countFilesByVpath('Lib');
+    const [a, b] = await Promise.all([indexFileOnDemand(info), indexFileOnDemand(info)]);
+    assert.equal(a.filepath, 'race-track.mp3');
+    assert.equal(b.filepath, 'race-track.mp3');
+    assert.equal(manager.countFilesByVpath('Lib'), before + 1);
+  });
+
+  it('returns null for a missing file', async () => {
+    assert.equal(await indexFileOnDemand(pathInfo('Lib', libDir, 'does-not-exist.mp3')), null);
+  });
+
+  it('returns null for a path that escapes the vpath root', async () => {
+    const outside = path.join(workDir, 'outside.mp3');
+    await fs.copyFile(fixtureTrack, outside);
+    assert.equal(await indexFileOnDemand(pathInfo('Lib', libDir, '../outside.mp3')), null);
+    assert.equal(manager.findFileByPath('../outside.mp3', 'Lib'), null);
   });
 });

@@ -2,23 +2,22 @@
  * mb-text-search-worker.mjs
  * Worker thread: MusicBrainz text-search fallback for files with acoustid_status = 'not_found'.
  * Queries the MB search API (1 req/s) using existing title + artist tags.
- * On a good match (score >= 70) stores the MBID and triggers mb-enrich-worker to enrich it.
- * Always marks found matches as tag_status = 'needs_review' — never 'confirmed'.
+ * On a match (score >= 70) it stores the MBID with mb_text_search_status = 'found' and clears
+ * mb_enrichment_status, so mb-enrich-worker picks the file up; tags change only after review in the Tag Workshop.
  */
 import { workerData, parentPort } from 'node:worker_threads';
-import { DatabaseSync } from 'node:sqlite';
+import { openWorkerDb } from '../db/worker-connection.js';
 import https from 'node:https';
+import { MB_USER_AGENT, mbAcquire } from './mb-client.mjs';
+import { sleep, stopRequested, dbWriteWithRetry, runBatchQueue } from './worker-helpers.mjs';
 
 const { dbPath } = workerData;
 
-const RATE_DELAY_MS  = 1100;    // stay safely under MB's 1 req/s limit
 const BATCH_SIZE     = 50;
 const IDLE_WAIT_MS   = 60_000;
 const HTTP_TIMEOUT_MS = 25_000;
-const USER_AGENT     = 'Velvet/1.0 (https://github.com/aroundmyroom/Velvet; admin-contact@music.aroundtheworld.net)';
 
 const SCORE_STORE_MIN  = 70;   // minimum score to store a result
-const SCORE_ACCEPT_MIN = 95;   // scores above this are "high confidence" (still needs_review)
 
 // Placeholder title/artist patterns — these are not worth querying
 const TITLE_PLACEHOLDER  = /^(track|track\s*\d+|song|audio|untitled|unknown|no title|\d+)$/i;
@@ -29,8 +28,7 @@ function cleanTitle(raw) {
   return raw.replace(/^[A-Za-z]?\d+[-.\s]+/i, '').trim() || raw.trim(); // NOSONAR S5869 — false positive: \s (whitespace) and . (period) are distinct, no duplicates
 }
 
-const db = new DatabaseSync(dbPath, { timeout: 60_000 });
-db.exec('PRAGMA journal_mode=WAL; PRAGMA busy_timeout=60000');
+const db = openWorkerDb(dbPath, { busyTimeoutMs: 60_000 });
 
 const _getQueue = db.prepare(`
   SELECT filepath, vpath, title, artist, duration
@@ -87,8 +85,6 @@ const _getStats = db.prepare(`
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
-function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
-
 /** Translate a raw network/HTTP error into a plain-language message for display. */
 function friendlyError(err) {
   const msg = err?.message ?? 'Unknown error';
@@ -100,33 +96,18 @@ function friendlyError(err) {
   return msg.slice(0, 200);
 }
 
-const DB_RETRY_ATTEMPTS = 60;
-const DB_RETRY_DELAY_MS = 3_000;
-
-async function dbWriteWithRetry(fn) {
-  for (let i = 0; i < DB_RETRY_ATTEMPTS; i++) {
-    try {
-      return fn();
-    } catch (err) {
-      const msg = err?.message ?? '';
-      const locked = msg.includes('database is locked') || msg.includes('SQLITE_BUSY');
-      if (!locked || i === DB_RETRY_ATTEMPTS - 1) throw err;
-      if (_stopping) throw err;
-      await sleep(DB_RETRY_DELAY_MS);
-    }
-  }
-}
 
 /**
  * Search MusicBrainz for a recording by artist + title.
  * Returns the parsed JSON response or throws.
  */
-function mbSearch(artist, title) {
+async function mbSearch(artist, title) {
+  await mbAcquire();
   return new Promise((resolve, reject) => {
     const q = `artist:${JSON.stringify(artist)} AND recording:${JSON.stringify(cleanTitle(title))}`;
     const url = `https://musicbrainz.org/ws/2/recording/?query=${encodeURIComponent(q)}&fmt=json&limit=5`;
     const timer = setTimeout(() => { req.destroy(new Error('MB search timeout')); }, HTTP_TIMEOUT_MS);
-    const req = https.get(url, { headers: { 'User-Agent': USER_AGENT } }, res => {
+    const req = https.get(url, { headers: { 'User-Agent': MB_USER_AGENT } }, res => {
       clearTimeout(timer);
       if (res.statusCode !== 200) {
         res.resume();
@@ -154,7 +135,7 @@ async function mbSearchWithRetry(artist, title) {
     catch (err) {
       const msg = err?.message ?? '';
       const transient = msg.includes('503') || msg.includes('429') || msg.includes('timeout');
-      if (!transient || i === delays.length || _stopping) throw err;
+      if (!transient || i === delays.length || stopRequested()) throw err;
       await sleep(delays[i]);
     }
   }
@@ -229,41 +210,9 @@ async function processFile(row) {
 
 // ── Main loop ─────────────────────────────────────────────────────────────────
 
-let _stopping = false;
-
-async function run() {
-  // Reset pending rows left from an interrupted previous run
-  await dbWriteWithRetry(() => _resetPending.run());
-
-  parentPort.postMessage({ type: 'ready' });
-
-  while (!_stopping) {
-    const batch = _getQueue.all(BATCH_SIZE);
-
-    if (batch.length === 0) {
-      parentPort.postMessage({ type: 'status', stats: _getStats.get(), idle: true });
-      for (let i = 0; i < IDLE_WAIT_MS / 1000 && !_stopping; i++) {
-        await sleep(1000);
-      }
-      continue;
-    }
-
-    for (const row of batch) {
-      if (_stopping) break;
-      await processFile(row);
-      await sleep(RATE_DELAY_MS);
-    }
-
-    parentPort.postMessage({ type: 'status', stats: _getStats.get(), idle: false });
-  }
-
-  parentPort.postMessage({ type: 'stopped', stats: _getStats.get() });
-}
-
-parentPort.on('message', msg => {
-  if (msg === 'stop') _stopping = true;
-});
-
-await run().catch(err => {
+await runBatchQueue({
+  resetPending: _resetPending, getQueue: _getQueue, getStats: _getStats,
+  batchSize: BATCH_SIZE, idleWaitMs: IDLE_WAIT_MS, processFile,
+}).catch(err => {
   parentPort.postMessage({ type: 'error', message: err.message });
 });

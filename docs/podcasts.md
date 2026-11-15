@@ -6,32 +6,37 @@ Velvet includes a full server-side podcast feed subscription system. Users subsc
 
 ## Navigation
 
-The **Listen** section in the sidebar contains:
+The **Streams & Feeds** section in the sidebar contains:
 
 | Button | View |
 |---|---|
-| **Podcasts** | All subscribed feeds as a card grid |
-| **Feeds** | Subscribe / manage podcast feeds |
-| **Radio Streams** | Live radio (shown when enabled) |
+| **Audio Content** | Your `audio-books`, `recordings` and `youtube` folders |
+| **Podcast Feeds** | Subscribe to feeds and manage them (card grid) |
+| **YouTube** | YouTube download (when allowed) |
+| **Radio Streams** | Live radio (shown when radio is enabled) |
+| **Sonos Radio** | Sonos radio (when Sonos is set up) |
 
-The Listen section is only visible when at least one of the following is true:
-- A radio station is configured
-- At least one podcast feed is subscribed
-- An `audio-books` folder is configured
+Podcast Feeds is always available, so the section is always shown: you need
+it to add your first feed.
+
+The subscribed feeds also appear as a shelf on the **Shortcuts** view (see
+[home-view.md](home-view.md)).
 
 ---
 
 ## Feed Card Grid
 
-Each subscribed feed is shown as a card with:
+The **Podcast Feeds** view has a subscribe form (RSS URL, optional name,
+**Preview** before **Subscribe**) and the subscribed feeds. Each feed is shown
+as a card with:
 - Cover art (downloaded and cached locally)
 - Feed title, author
-- Episode count + last refreshed timestamp
-- **Refresh** button — re-fetches the RSS and upserts any new episodes
-- **Rename** button — set a custom display name for the feed
+- Episode count, date of the latest episode and last refreshed timestamp
+- **Refresh** button — re-fetches the RSS and adds new episodes
+- **Rename** button — edit the display name and the feed URL
 - **Unsubscribe** button — removes the feed and all its episodes; cached cover art is deleted if no other feed references it
 
-Cards can be **drag-reordered** using the six-dot handle that appears on hover. The new order is persisted immediately.
+Cards can be **drag-reordered** using the drag handle. The new order is saved immediately.
 
 ---
 
@@ -40,7 +45,7 @@ Cards can be **drag-reordered** using the six-dot handle that appears on hover. 
 Clicking a feed card opens the episode list for that feed:
 - Episodes sorted newest first
 - Each row shows: title, publish date, duration, a **Save** button, and a **Play** button
-- Click **Play** to stream the episode through the standard player bar (seek, volume, crossfade all work normally)
+- Click **Play** to stream the episode through the standard player bar; an episode you were part-way through resumes where you left off
 - Click **Save** (↓ icon) to download and save the episode audio to the server's AudioBooks/Podcasts folder (see below)
 - A back arrow returns to the feed card grid
 
@@ -52,10 +57,10 @@ The **Save** button on each episode row downloads the episode audio file directl
 
 ### How it works
 1. The button sends `POST /api/v1/podcast/episode/save` with `feedId` and `episodeId`.
-2. The server finds the first `audio-books` vpath the user has access to.
+2. The server takes the first `audio-books` vpath in the user's vpath list.
 3. A subfolder named after the podcast feed title is created inside that vpath root if it doesn't exist.
-4. The episode audio is streamed (not buffered in RAM) from the remote CDN to disk.
-5. On success a toast shows the saved filename; on error a red toast shows the reason.
+4. The episode audio is streamed (not buffered in RAM) from the remote CDN to disk (2-minute timeout to start the download).
+5. The server answers `{ savedTo: "<vpath>/<Feed Title>/<file>" }`; the player shows a toast with the file name, or a red toast with the reason.
 
 ### Saved file path
 ```
@@ -64,9 +69,10 @@ The **Save** button on each episode row downloads the episode audio file directl
 Example: `Audiobooks & Podcasts/Global News Podcast/2026-06-17 Global News Podcast.mp3`
 
 ### File naming rules
-- Feed title and episode title are sanitised: path-special characters (`/ \ : * ? " < > |`) stripped, repeated `..` collapsed, leading/trailing whitespace removed.
+- Feed title and episode title are sanitised: path-special characters (`/ \ : * ? " < > |`) stripped, runs of dots collapsed to one, whitespace collapsed and trimmed.
 - Feed subfolder name capped at 80 characters; episode name capped at 100 characters.
-- File extension comes from the URL path (`.mp3`, `.m4a`, `.ogg`, etc.); if not present, falls back to the `Content-Type` header; defaults to `.mp3`.
+- The date prefix is left out when the episode has no publish date.
+- File extension comes from the URL path (`mp3`, `m4a`, `ogg`, `flac`, `opus`, `aac`, `wav`); if not present, from the `Content-Type` header; defaults to `.mp3`.
 
 ### Button states
 | State | Appearance |
@@ -86,12 +92,22 @@ The button resets to idle after 4 seconds so the episode can be saved again if n
 
 ## Playback
 
-Podcast episodes play through the existing player. The audio URL from the RSS `<enclosure>` or `<ppg:enclosureSecure>` element (BBC/HTTPS) is streamed via the server-side radio stream proxy (`GET /api/v1/radio/stream`) for full same-origin Web Audio API compatibility.
+Podcast episodes play through the existing player. The audio URL from the RSS `<enclosure>`, `<ppg:enclosureSecure>` (BBC/HTTPS) or audio `<media:content>` element is streamed via the server-side radio stream proxy (`GET /api/v1/radio/stream`) for full same-origin Web Audio API compatibility.
 
-Because a podcast episode uses an external URL as its filepath, the following normally-automatic player actions are **silently skipped**:
+Progress is saved to the server (`POST /api/v1/podcast/episode/progress`)
+every 15 seconds while playing, on pause and when you switch to another
+track; an episode that plays to the end is marked played. Resuming starts
+from the saved position unless the episode is marked played, is within 2
+seconds of the start, or within 30 seconds of the end.
+
+Listening time is recorded for **Your Stats** (podcast card) with
+`podcast-start` / `podcast-end` events — see [your-stats.md](your-stats.md).
+Episodes are not logged as song plays and never appear in Recently Played.
+
+Because a podcast episode uses an external URL as its filepath, the following normally-automatic player actions are **skipped**:
 - Waveform fetch
 - Song rating (star) save
-- Last.fm scrobbling (no filepath in DB)
+- Scrobbling (Last.fm, ListenBrainz) and webhooks
 
 ---
 
@@ -119,31 +135,39 @@ The server uses `fast-xml-parser` v5 to parse RSS 2.0 feeds. Supported feed type
 
 When subscribing (or on refresh when art is not yet cached), the server:
 
-1. Downloads the cover art URL from `<itunes:image href>` or `<image><url>`
+1. Downloads the cover art URL from `<itunes:image href>` or `<image><url>` (10 s timeout)
 2. Validates the `Content-Type` is `image/*`
-3. Saves it as `podcast-{md5hash}.{ext}` in the album-art directory
+3. Saves it as `podcast-{sha256 of the URL}.{ext}` in the album-art directory
 4. The filename stored in the DB is relative; the client resolves it via `/album-art/{filename}`
 
-Art is shared: if two feeds happen to have the same image URL, they share the same cached file. The file is deleted only when the last feed referencing it is unsubscribed.
+On refresh the art is only downloaded again when the cached file is missing
+from disk.
 
-The orphan-cleanup script (`cleanup-albumart.mjs`) recognises `podcast-*` filenames as live references and never deletes them.
+Art is shared: if two feeds happen to have the same image URL, they share the same cached file. The file (and its `zs-`/`zl-`/`zm-` thumbnails) is deleted only when the last feed referencing it is unsubscribed.
 
 ---
 
 ## SSRF Protection
 
-All outbound fetch calls (RSS fetch, art download) pass through `_ssrfCheck(hostname)`, which blocks:
-- `localhost`, `::1`
-- `127.x.x.x`
-- RFC-1918 private ranges: `10.x.x.x`, `192.168.x.x`, `172.16–31.x.x`
+All outbound fetches (RSS, art, episode download) use `isPrivateHost()` and
+`safeFetch()` from `src/util/ssrf-check.js`. They block:
+- `localhost` / `*.localhost`, `0.x.x.x`, `127.x.x.x`
+- private ranges `10.x.x.x`, `192.168.x.x`, `172.16–31.x.x`
+- link-local `169.254.x.x` (cloud metadata)
+- IPv6 `::1`, `::`, `fc00::/7`, `fe80::/10` and IPv4-mapped forms of the above
+- host names that resolve (DNS) to any of these addresses
 
-Any URL matching these ranges returns `400 {"error":"That URL is not allowed"}`.
+Redirects are followed up to 5 hops, each hop checked again; only `http`/`https` is allowed.
+
+A private address given directly in a feed URL returns `400 {"error":"That URL is not allowed"}`; one reached through DNS or a redirect returns `400` with the fetch error.
+
+Every fetch also has a size cap and a time limit that cover the whole body: feeds 20 MB / 15 s, artwork 10 MB / 10 s, episode downloads 2 GiB / 60 min. A larger body or a slower server aborts the fetch.
 
 ---
 
 ## Database Schema
 
-Two tables are created on first boot (both SQLite and in-memory Loki backends):
+Two tables are created on first boot:
 
 ### `podcast_feeds`
 
@@ -180,7 +204,7 @@ Index: `idx_pf_user` on `(user)`.
 | `play_position` | REAL | Resume position in seconds |
 | `created_at` | INTEGER | Unix timestamp |
 
-Unique constraint: `(feed_id, guid)` — prevents duplicate episodes on refresh. Upsert uses `INSERT OR IGNORE` so existing episode progress (`played`, `play_position`) is never overwritten when refreshing.
+Unique constraint: `(feed_id, guid)` — prevents duplicate episodes on refresh. The upsert (`ON CONFLICT … DO UPDATE`) refreshes an existing episode's title, description, audio URL, date, duration and art, but never touches its progress (`played`, `play_position`). An item without a `<guid>` uses its audio URL as the guid.
 
 Index: `idx_pe_feed_id` on `(feed_id)`.
 
@@ -188,203 +212,4 @@ Index: `idx_pe_feed_id` on `(feed_id)`.
 
 ## REST API
 
-All podcast endpoints require authentication (JWT token via `?token=` query param or `Authorization: Bearer` header). Users can only read and modify their own feeds and episodes.
-
----
-
-### `GET /api/v1/podcast/preview`
-
-Preview a feed URL without saving it. Used by the Subscribe form to show feed metadata before committing.
-
-**Query params:**
-
-| Param | Required | Description |
-|---|---|---|
-| `url` | yes | RSS feed URL (`http://` or `https://` only) |
-
-**Response `200`:**
-```json
-{
-  "title": "Global News Podcast",
-  "description": "The latest world news from BBC...",
-  "author": "BBC World Service",
-  "language": "en",
-  "imgUrl": "https://...",
-  "episodeCount": 257
-}
-```
-
-**Errors:**
-- `400 {"error":"url is required"}` — no URL provided
-- `400 {"error":"Invalid URL"}` — malformed URL
-- `400 {"error":"That URL is not allowed"}` — SSRF-blocked address
-- `400 {"error":"Feed returned HTTP 404"}` — upstream HTTP error
-- `400 {"error":"Not a valid RSS 2.0 feed"}` — XML parsed but no `<rss><channel>`
-- `400 {"error":"No audio episodes found in this feed"}` — feed has items but none have an audio enclosure
-
----
-
-### `GET /api/v1/podcast/feeds`
-
-Returns the authenticated user's subscribed feeds, ordered by `sort_order` ascending.
-
-**Response `200`:** Array of feed objects:
-```json
-[
-  {
-    "id": 1,
-    "user": "alice",
-    "url": "https://podcasts.files.bbci.co.uk/p02nq0gn.rss",
-    "title": "Global News Podcast",
-    "description": "...",
-    "img": "podcast-7ae645a6b74fafe23cf9262a1a999e6e.jpg",
-    "author": "BBC World Service",
-    "language": "en",
-    "last_fetched": 1742500000,
-    "created_at": 1742490000,
-    "sort_order": 0,
-    "episode_count": 257
-  }
-]
-```
-
-`img` is a relative filename; retrieve the art at `/album-art/{img}`.
-
----
-
-### `POST /api/v1/podcast/feeds`
-
-Subscribe to a new feed.
-
-**Body:**
-```json
-{ "url": "https://example.com/feed.rss", "name": "Optional custom name" }
-```
-
-| Field | Required | Validation |
-|---|---|---|
-| `url` | yes | `http`/`https`, max 2048 chars |
-| `name` | no | Max 200 chars; overrides the feed's own title if provided |
-
-**Behaviour:**
-1. SSRF check on the URL
-2. Fetch + parse the RSS (15 s timeout, follows redirects)
-3. Download and cache feed cover art
-4. Insert feed row + all episodes into the DB
-5. Return the newly created feed object (same shape as the list endpoint)
-
-**Errors:** same as `/preview`, plus `400` if the feed URL is already subscribed.
-
----
-
-### `PUT /api/v1/podcast/feeds/reorder`
-
-Persist a new drag-reorder sequence.
-
-**Body:**
-```json
-{ "ids": [3, 1, 2] }
-```
-
-`ids` is the complete ordered array of feed IDs belonging to the requesting user. The server sets `sort_order = position_index` for each ID. IDs not belonging to the user are ignored.
-
-**Response `200`:** `{}`
-
----
-
-### `PATCH /api/v1/podcast/feeds/:id`
-
-Rename a feed.
-
-**Body:**
-```json
-{ "title": "My Custom Name" }
-```
-
-**Response `200`:** Updated feed object.
-
-**Errors:**
-- `404 {"error":"Feed not found"}` — feed doesn't exist or belongs to another user
-
----
-
-### `DELETE /api/v1/podcast/feeds/:id`
-
-Unsubscribe from a feed. Cascades: all episodes for that feed are deleted. If no other feed references the same cover art file, the cached image is deleted from disk.
-
-**Response `200`:** `{}`
-
-**Errors:**
-- `404 {"error":"Feed not found"}`
-
----
-
-### `POST /api/v1/podcast/feeds/:id/refresh`
-
-Re-fetch the RSS and upsert any new episodes. Existing episodes are never overwritten (their `played`/`play_position` values are preserved). Updates `last_fetched`.
-
-**Response `200`:** Updated feed object (with refreshed `episode_count` and `last_fetched`).
-
-**Errors:**
-- `404 {"error":"Feed not found"}`
-- `400` — upstream fetch or parse error
-
----
-
-### `GET /api/v1/podcast/episodes/:feedId`
-
-Returns all episodes for a feed, sorted by `pub_date DESC, id DESC` (newest first).
-
-The feed must belong to the requesting user.
-
-**Response `200`:** Array of episode objects:
-```json
-[
-  {
-    "id": 42,
-    "feed_id": 1,
-    "guid": "https://example.com/episodes/ep42",
-    "title": "Episode 42: Something Interesting",
-    "description": "Plain text description...",
-    "audio_url": "https://media.example.com/ep42.mp3",
-    "pub_date": 1742400000,
-    "duration_secs": 2847,
-    "img": null,
-    "played": 0,
-    "play_position": 0,
-    "created_at": 1742490000
-  }
-]
-```
-
-**Errors:**
-- `404 {"error":"Feed not found"}`
-
----
-
-### `POST /api/v1/podcast/episode/progress`
-
-Save playback progress for an episode (resume position and played flag).
-
-**Body:**
-```json
-{
-  "episodeId": 42,
-  "feedId": 1,
-  "position": 183.5,
-  "played": false
-}
-```
-
-| Field | Required | Description |
-|---|---|---|
-| `episodeId` | yes | Episode `id` |
-| `feedId` | yes | Feed `id` — used to verify ownership |
-| `position` | yes | Current playback position in seconds (float) |
-| `played` | no | Boolean; defaults to `false` |
-
-**Response `200`:** `{}`
-
-**Errors:**
-- `400` — validation failure
-- `404 {"error":"Feed not found"}` — feed doesn't exist or belongs to another user
+All podcast endpoints require authentication, and users can only read and modify their own feeds and episodes. The full request/response reference is in [API/podcasts.md](API/podcasts.md); the route list is in [API.md](API.md#podcasts-velvet).

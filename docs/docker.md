@@ -87,7 +87,7 @@ docker compose up -d         # recreate the container
 
 That's it — your `save/` folder (config, database, logs) and music volume are mounted from the host, so no data is lost.
 
-> **Pinned to a specific version?** Update the tag in `compose.yaml` (e.g. `v0.0.1`), then run the same three commands.
+> **Pinned to a specific version?** Update the tag in `compose.yaml` (e.g. `v0.9.3`), then run the same three commands.
 > Check the [GitHub releases page](https://github.com/aroundmyroom/Velvet/releases) for the latest tag.
 
 ---
@@ -103,7 +103,7 @@ docker pull ghcr.io/aroundmyroom/velvet:latest
 Or pin to a specific release:
 
 ```shell
-docker pull ghcr.io/aroundmyroom/velvet:v0.9.3
+docker pull ghcr.io/aroundmyroom/velvet:v0.10.0
 ```
 
 ### compose.yaml (ghcr.io — recommended)
@@ -162,7 +162,7 @@ No manual steps are needed — tagging a release is enough.
 
 | Volume | What it stores | Required? |
 |---|---|---|
-| `/app/save` | Config file (`save/conf/default.json`), SQLite database (`save/db/velvet.sqlite`), logs, sync state | **Yes** — without this, all data is lost on container restart |
+| `/app/save` | Config file (`save/conf/default.json`), SQLite database (`save/db/velvet.sqlite`), logs | **Yes** — without this, all data is lost on container restart |
 | `/music` (or any host path) | Your music files — must be added to the config as a folder (see below) | Yes, unless music is already inside the image |
 | `/app/waveform-cache` | Pre-computed waveforms (regenerated if missing, but takes time) | Recommended |
 | `/app/image-cache` | Cached album art, podcast art, radio logos | Recommended |
@@ -308,9 +308,9 @@ After creating at least one user, the server requires login and the no-auth bypa
 
 ---
 
-## Updating
+## Updating a source build
 
-Pull the latest changes, rebuild the image, and restart:
+If you built the image yourself (see *Build from source*), pull the latest changes, rebuild the image, and restart:
 
 ```shell
 git pull

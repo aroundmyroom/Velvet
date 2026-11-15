@@ -1,7 +1,7 @@
-**Get Rated Songs** *(POST variant added by GitHub Copilot, 2026-02-27)*
+**Get Rated Songs**
 ----
   Returns all songs that the authenticated user has given a rating to (any
-  rating value > 0). Used by the v2 "Rated Songs" view.
+  rating value > 0).
 
 * **URL (preferred)**
 
@@ -23,6 +23,7 @@
   | Field | Type | Required | Description |
   |---|---|---|---|
   | `ignoreVPaths` | `string[]` | No | Exclude songs from these virtual paths. |
+  | `excludeFilepathPrefixes` | `{ vpath, prefix }[]` | No | Exclude songs under these prefixes. |
 
   ```json
   { "ignoreVPaths": ["Audiobooks"] }
@@ -39,7 +40,7 @@
   ```json
   [
     {
-      "filepath": "/Music/Artist/Album/01 Track.flac",
+      "filepath": "Music/Artist/Album/01 Track.flac",
       "metadata": {
         "artist": "Artist",
         "album": "Album",
@@ -54,7 +55,7 @@
 
 * **Legacy GET variant**
 
-  `GET /api/v1/db/rated` — same response, no body, no `ignoreVPaths` support.
+  `GET /api/v1/db/rated` — same response, no body, no filters.
   Kept for backward compatibility. Use the POST variant for new code.
 
 * **Notes**

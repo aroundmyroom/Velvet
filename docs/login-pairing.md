@@ -11,21 +11,29 @@ Velvet also supports — see below for which one to use where.
 
 ## On the device you're signing in (e.g. the TV)
 
+Pairing is offered on the sign-in screen of the **Velvet TV** app (Samsung
+Tizen) and the mobile web app (`/mobile`). The main web player's sign-in
+form has no pairing option.
+
 1. Open the sign-in screen. Enter the **Server URL** as usual — you still
    need this, since the device has to know which Velvet server to talk to.
 2. Instead of filling in a username and password, select **Pair with phone
-   instead**.
-3. A short code appears on screen, e.g. `S29 6A3`.
+   instead** (TV app) or **Pair with another device instead** (mobile app).
+3. A six-character code appears on screen, shown in two groups of three,
+   e.g. `S29 6A3`. The device checks every 2 seconds whether it has been
+   approved.
 
-On the **Velvet TV** app for Samsung Tizen, this is right on the sign-in
-screen — see [docs/tizen-tv.md](tizen-tv.md#3-first-run--connecting-to-your-server)
+For the TV app, see [docs/tizen-tv.md](tizen-tv.md#3-first-run--connecting-to-your-server)
 for the exact steps and remote-control navigation.
 
 ## On a device that's already signed in (your phone, laptop, ...)
 
 1. Open Velvet in a browser, sign in as usual if you aren't already.
-2. Go to **User Settings**, and find the **Pair a Device** section.
-3. Type in the code shown on the other device and select **Approve**.
+2. Go to **User Settings**, and find the **Pair a Device** section (in the
+   mobile web app: the **You** screen).
+3. Type in the six characters shown on the other device (spaces, upper
+   and lower case all work — `ABC DEF` and `abcdef` are the same code)
+   and select **Approve**.
 
 The other device signs itself in within a couple of seconds — nothing more
 to do there.
@@ -34,7 +42,13 @@ to do there.
 
 - **The code is single-use and expires after 5 minutes.** If it expires
   before you approve it, go back to the device and start over — it'll show
-  a fresh code.
+  a fresh code. Codes never contain `0`, `O`, `1` or `I`, so they are easy to
+  read off a screen.
+- Pending codes live only in the server's memory; a server restart cancels
+  them.
+- Starting a pairing is limited to 10 per minute per IP address, and the
+  server holds at most 1000 pending codes. Over either limit the device gets
+  "Too many pairing requests, try again later" (`429`).
 - **You approve as yourself.** The device ends up signed in as whichever
   Velvet account approved the code — there's no separate "device account".
   If you want the TV to only see certain libraries, approve from an account
@@ -44,6 +58,13 @@ to do there.
   else to learn where your Velvet server is.
 - Approving is its own action — declining is simply not entering the code,
   or letting it expire.
+- A wrong or expired code is answered after a short delay (0.8 s) and
+  logged on the server, to slow down guessing.
+
+The endpoints are `POST /api/v1/auth/pair/start` and
+`GET /api/v1/auth/pair/status?pairId=` (both without login, used by the
+device) and `POST /api/v1/auth/pair/approve` `{ code }` (needs a signed-in
+user) — see `docs/API.md`.
 
 ## Passkeys vs. pairing
 

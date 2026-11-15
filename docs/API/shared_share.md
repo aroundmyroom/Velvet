@@ -1,7 +1,6 @@
-**Share API** *(added by GitHub Copilot, 2026-02-27)*
+**Share API**
 ----
-  Three endpoints for creating, listing, and revoking shared playlist links.
-  Replaces the legacy `/shared/make-shared` endpoint.
+  Endpoints for creating, listing, revoking and opening shared playlist links.
 
 ---
 
@@ -27,11 +26,11 @@
   | Field | Type | Required | Description |
   |---|---|---|---|
   | `playlist` | `string[]` | Yes | Array of virtual file paths to include in the shared playlist. |
-  | `time` | `integer` | No | Expiry in days from now. Omit for a permanent (non-expiring) link. |
+  | `time` | `integer` | No | Expiry in days from now (positive integer). Omit for a permanent (non-expiring) link. |
 
   ```json
   {
-    "playlist": ["/Music/Artist/01 Track.flac", "/Music/Artist/02 Track.flac"],
+    "playlist": ["Music/Artist/01 Track.flac", "Music/Artist/02 Track.flac"],
     "time": 14
   }
   ```
@@ -43,7 +42,7 @@
   ```json
   {
     "playlistId": "aBcDeFgHiJ",
-    "playlist": ["/Music/Artist/01 Track.flac"],
+    "playlist": ["Music/Artist/01 Track.flac", "Music/Artist/02 Track.flac"],
     "user": "alice",
     "expires": 1742000000,
     "token": "eyJhbGciOi..."
@@ -54,7 +53,38 @@
   |---|---|
   | `playlistId` | 10-character nanoid. Use to build the share URL: `/shared/<playlistId>`. |
   | `expires` | Unix timestamp of expiry, or `null` for permanent links. |
-  | `token` | JWT used by remote clients to access the shared files. |
+  | `token` | JWT used by remote clients to access the shared files. It only grants access to the files in this playlist (plus `/api/v1/db/metadata`, `/api/v1/download/shared` and album art). |
+
+---
+
+### Get a Shared Playlist (public)
+
+* **URL**
+
+  `/api/v1/shared/:playlistId`
+
+* **Method:**
+
+  `GET`
+
+* **Auth required:** No
+
+* **Success Response:**
+
+  * **Code:** 200
+
+  ```json
+  {
+    "token": "eyJhbGciOi...",
+    "playlist": ["Music/Artist/01 Track.flac", "Music/Artist/02 Track.flac"]
+  }
+  ```
+
+* **Error Response:**
+
+  * **Code:** 404 — `{ "error": "Playlist Not Found" }`
+  * **Code:** 410 — `{ "error": "Share Link Expired" }`
+  * **Code:** 401 — `{ "error": "Invalid Share Link" }` (the stored token does not verify)
 
 ---
 
@@ -133,12 +163,13 @@
 
   | Condition | HTTP Status | Response |
   |---|---|---|
-  | Valid, non-expired link | 200 | `shared/index.html` with playlist data injected. |
+  | Valid, non-expired link | 200 | `shared/index.html` with `{ token, playlist }` injected as a JSON data block (`<script type="application/json" id="sh-data">`). |
   | Expired JWT | **410 Gone** | Styled HTML error page: *"This link has expired"* |
-  | Unknown / revoked ID | **404 Not Found** | Styled HTML error page: *"Link not found"* |
+  | Unknown / revoked ID | **404 Not Found** | Styled HTML error page: *"Playlist not found"* |
 
-  Both error states return the `shared/index.html` shell with a full-screen
-  overlay injected into `<body>` (dark theme, purple icon, human-readable
-  message). `sharedPlaylist` is set to `null` in the page script to prevent
-  JS errors. Previously these cases returned a raw `{ "error": "Server Error" }`
-  JSON response in the browser.
+  Both error states return the normal `shared/index.html` page with
+  `{ "error": "expired" }` or `{ "error": "not-found" }` in the `sh-data` block
+  instead of playlist data; `shared/app.js` then shows the message in the
+  visitor's language (`shared-page.*` keys). A link whose stored token does not
+  verify also shows *"Playlist not found"* (404). A trailing slash redirects (301)
+  to the URL without it.

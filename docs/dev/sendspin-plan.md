@@ -1,8 +1,27 @@
 # Velvet Rooms — Sendspin server: plan and progress log
 
-Branch `feat/sendspin`, worktree `/home/velvet-work/sendspin`. Never merged to
-`main` before the owner has validated it. Production (`/home/velvet`) is not
-touched.
+**Status: built and on `main`.** Developed on branch `feat/sendspin`
+(worktree `/home/velvet-work/sendspin`), merged and released in v0.9.0
+("Velvet Rooms: multi-room playback on Sendspin speakers"). Every phase in the
+table below is built. Added after the merge (not in the progress log below):
+
+- v0.9.0: `POST /api/v1/admin/sendspin/devices/add` — dial a speaker by LAN
+  address when mDNS misses it.
+- v0.9.1: streams work with ffmpeg builds that probe raw pipes.
+- v0.9.2: one 8-band EQ per room (`src/sendspin/eq.js`, applied in the master
+  decode; `GET`/`PUT /api/v1/rooms/:id/eq`).
+- v0.9.3: Auto-DJ runs on the server per room (`GET`/`PUT
+  /api/v1/rooms/:id/autodj`, `RoomManager.setAutoDj`, picks via
+  `src/autodj/library.js`); the browser only switches it on and hands over its
+  Auto-DJ settings. The Sonos lead is now measured, not a fixed delay (see
+  the Sonos notes below).
+- After v0.9.3: a room scrobbles, counts plays and records Wrapped stats on the
+  server for whoever last controlled it (`src/api/room-listen.js`,
+  `RoomManager.setListener`).
+
+The rest of this file is the plan and the branch log as written during
+development. User guide: [docs/rooms.md](../rooms.md). API contract:
+[docs/API/rooms.md](../API/rooms.md).
 
 ## Goal
 
@@ -53,7 +72,17 @@ deps). REST glue in `src/api/sendspin.js`. Config under
 | `src/sendspin/rooms.js` | Groups (rooms), server-side queue (Server Audio model), group volume/mute algorithm, `switch`, controller commands, metadata, artwork (`sharp`), colour | 1 / 2 |
 | `src/sendspin/visualizer.js` | `visualizer@v1`: one analysis per room on the master PCM (FFT, A-weighting, bands, onset curve, beat tracker), per-member types/rate/spectrum, buffer accounting, stream/start/clear/end | 4 |
 | `src/sendspin/pairing.js` | CPace (`CPACE-X25519-SHA512`) + the three pairing methods | 3 |
+| `src/sendspin/trust-store.js` | Pairing records, approvals, staged pairing PSKs, source approval (`trust-store.json`) | 3 |
+| `src/sendspin/service.js` | `RoomsService`: lifecycle of `SendspinServer` + `RoomManager`, restart on settings, Device/Room views | 1 |
+| `src/sendspin/artwork.js` | Album art for speakers (resize with `sharp`) and colour palette | 1 |
+| `src/sendspin/source.js` | `source@v1` line-in: `SourceManager`, drift resampler | 4 |
+| `src/sendspin/sonos.js` | Sonos speakers that follow a room (live MP3 stream, SOAP) | 4 |
+| `src/sendspin/eq.js` | 8-band EQ per room (ffmpeg filter chain + limiter) | added v0.9.2 |
 | `src/api/sendspin.js` | REST for admin (devices, approve, pair, rooms) and player (room picker, queue control) | 1 |
+| `src/api/room-listen.js` | Scrobbles, play counts and Wrapped events for room playback | added after v0.9.3 |
+| `src/api/rooms-import.js` | Restores `save/sendspin/` from a migration import and restarts Rooms | 1 |
+
+All modules in this table exist in the code.
 
 Clock: the server is the time base. `now()` = `process.hrtime.bigint() / 1000n`
 (monotonic µs). Clients do the filtering; the server only answers
@@ -376,6 +405,12 @@ export class SourceManager extends EventEmitter {
 // rooms.js additions: playLive(id, { sourceId, name, feed(track) }), stopLive(id, sourceId?); 'live-ended'(roomId, sourceId);
 //   view.live = { sourceId, name } | null. GroupStream.play({ live(opts) }) = live epoch: lead without required_lead_time_ms.
 // sonos.js  (Sonos followers: not Sendspin, not sample-synced; one live MP3 radio stream per Sonos session)
+// NOTE (current code): the fixed per-Sonos `delayMs` below was replaced by a measured lead plus a hand fine-tune
+//   `trimMs` (-1000..1000). Constants today: SONOS_RATE 48000, SONOS_START_LEAD_MS 2000, MAX_SONOS_LEAD_MS 8000,
+//   MAX_SONOS_TRIM_MS 1000, SONOS_CAL_* (calibration timing), SONOS_IDLE_MS 30000, MAX_SONOS_PER_ROOM 8.
+//   RoomSonos.add({ uuid, name, ip, base, trimMs }), setTrim(uuid, ms); RoomManager.addSonos(id, { ..., trimMs }),
+//   setSonosTrim(id, uuid, ms); rooms.json rooms[].sonos = [{ uuid, name, ip, base, trimMs }]. The lines below are
+//   the original design.
 export const SONOS_RATE /*48000*/, DEFAULT_SONOS_DELAY_MS /*2000*/, MAX_SONOS_DELAY_MS /*5000*/, SONOS_IDLE_MS /*30000*/,
   MAX_SONOS_PER_ROOM /*8*/, SONOS_ID_PREFIX /*'sonos:'*/, STREAM_PATH /*'/api/v1/rooms/sonos-stream/'*/;
 export function createSonosSoap({ port = 1400, allowHost = isPrivateLan, timeoutMs }) -> (ip, 'AVTransport'|'RenderingControl', action, innerXml) -> Promise<xml>;
@@ -588,16 +623,17 @@ is parked, because the reference daemon reports unavailable until its clock sync
 
 ## Phases
 
-| # | Content | Done when |
-|---|---|---|
-| 0 | noise + wire + keys + connection + minimal PCM stream | `sendspin daemon` connects, handshakes with the Sentinel PSK and plays a file sent by Velvet |
-| 1 | One room: discovery both ways, admin device list (approve/name/forget), PCM + FLAC, gapless, seek, volume/mute, metadata, artwork, room picker in the player, REST + docs + 12 locales | a queue plays end to end on a test speaker from the Velvet UI |
-| 2 | Multi-room: groups UI, common send-ahead, late join, group volume/mute algorithm, `switch`, controller role → queue, colour role, AI DJ "play in room" | two test speakers play one queue in sync; controller commands work |
-| 3 | Pairing (CPace, three methods), trust store, conformance adapter | conformance scenarios pass for the Velvet server row |
-| 4 | Extras (after owner validation): visualizer (beat from BPM analysis), Opus, source role, Sonos as a room member | — |
+| # | Content | Done when | Status |
+|---|---|---|---|
+| 0 | noise + wire + keys + connection + minimal PCM stream | `sendspin daemon` connects, handshakes with the Sentinel PSK and plays a file sent by Velvet | Built |
+| 1 | One room: discovery both ways, admin device list (approve/name/forget), PCM + FLAC, gapless, seek, volume/mute, metadata, artwork, room picker in the player, REST + docs + 12 locales | a queue plays end to end on a test speaker from the Velvet UI | Built |
+| 2 | Multi-room: groups UI, common send-ahead, late join, group volume/mute algorithm, `switch`, controller role → queue, colour role, AI DJ "play in room" | two test speakers play one queue in sync; controller commands work | Built, except: no AI DJ-specific room code exists; an AI DJ queue reaches a room only like any other queue |
+| 3 | Pairing (CPace, three methods), trust store, conformance adapter | conformance scenarios pass for the Velvet server row | Built (`test/conformance/velvet-adapter/`) |
+| 4 | Extras (after owner validation): visualizer (beat from BPM analysis), Opus, source role, Sonos as a room member | — | Built (all four) |
 
-Sonos does not speak Sendspin; the one Sonos device is used only to check that
-the existing Sonos cast still works (regression).
+Sonos does not speak Sendspin. The first plan used the Sonos only to check that
+the existing Sonos cast still works; phase 4 then added Sonos speakers that
+follow a room (`src/sendspin/sonos.js`), which is built.
 
 ## Phase 1 design (orchestrator decisions)
 
@@ -636,15 +672,22 @@ queue because speakers send `next`/`previous`/`play` themselves.
   - admin: `GET /api/v1/admin/sendspin/status` (enabled, server id, port,
     devices with state: unknown/approved/paired/pairing/mismatch/
     other-server/in-use-elsewhere/offline), `POST …/devices/approve|revoke|
-    rename|forget|connect`, `POST …/devices/pair-token` (pairing PSK),
-    later `…/pair-code`; `POST …/settings` (enable, name, port).
-  - player: `GET /api/v1/rooms` (rooms + members + live state),
-    `POST /api/v1/rooms` (create from speakers), `PATCH /api/v1/rooms/:id`
-    (rename, members), `DELETE /api/v1/rooms/:id`,
-    `POST /api/v1/rooms/:id/play` `{ songs: [filepath], index, positionMs }`,
-    `…/add`, `…/pause`, `…/resume`, `…/next`, `…/previous`, `…/seek`,
+    rename|forget|connect|add|unpair`, `POST …/devices/pair-token` (pairing
+    PSK, body field `pairingToken`), `…/devices/pair-code/start|submit|cancel`
+    + `GET …/devices/pair-code/status`, `POST …/devices/source|source-auto`
+    (line-in); `POST …/settings` (enable, name, port).
+  - player: `GET /api/v1/rooms` (rooms + sources), `POST /api/v1/rooms`
+    (create from speakers), `PATCH /api/v1/rooms/:id` (rename, members),
+    `DELETE /api/v1/rooms/:id`,
+    `POST /api/v1/rooms/:id/play` `{ songs: [filepath], djs?, index, positionMs, paused? }`
+    (+ ReplayGain fields), `…/add`, `…/jump`, `…/remove`, `…/move`,
+    `…/reorder`, `…/pause`, `…/resume`, `…/next`, `…/previous`, `…/seek`,
     `…/volume` (group or per speaker), `…/mute`, `…/stop`, `…/repeat`,
-    `…/shuffle`, `GET /api/v1/rooms/:id/state` (polled by the remote UI, ~1 s).
+    `…/shuffle`, `GET …/:id/queue`, `GET|PUT …/:id/eq`, `GET|PUT …/:id/autodj`,
+    `…/line-in[/stop]`, `GET /api/v1/rooms/sonos` + `POST|PATCH|DELETE
+    …/:id/sonos[/:uuid]`, `GET /api/v1/rooms/:id/state` (polled by the remote
+    UI, `_roomPoll` in `webapp/app.js`). All of these are built; full list in
+    [docs/API/rooms.md](../API/rooms.md).
 - Velvet glue: `config.program.sendspin` (`enabled` false by default, `name`,
   `port` 8927, `bind`), boot/stop in `src/server.js`, server key + trust store
   in the backup set (`src/api/backup.js`), file paths resolved through the
@@ -667,6 +710,9 @@ second test instance on another port for the owner.
 
 ## Rules for everyone working on this branch
 
+(Historical: these were the rules while the branch was open. The branch is
+merged; new work follows the normal CI/CD line in `CLAUDE.md`.)
+
 - Work only in `/home/velvet-work/sendspin`. Never touch `/home/velvet`.
 - Project rules from `CLAUDE.md` apply: no comments unless the WHY is
   non-obvious, i18n for every string (12 locales), new endpoints in
@@ -679,6 +725,9 @@ second test instance on another port for the owner.
 - Commit locally with Conventional Commits; never push.
 
 ## Progress log
+
+Written on the branch, before the merge. Later changes are listed at the top of
+this file.
 
 - 2026-11-12 — branch, worktree, reference repos, Python 3.13 venv with
   `aiosendspin` + `sendspin` CLI set up. Plan written.

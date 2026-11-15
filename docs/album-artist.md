@@ -34,7 +34,7 @@ The `artist` and `album_artist` fields serve different purposes depending on con
 
 | Context | Rule | Rationale |
 |---|---|---|
-| **Album detail track list** (albums-browse) | `album_artist \|\| artist` | Keeps VA compilations under one artist; all tracks show the album owner |
+| **Album detail track list** (albums-browse) | `album_artist \|\| artist` | Keeps VA compilations under one artist; the track artist column only shows when it differs from the album's artist |
 | **Queue / player bar — default** | `artist \|\| album_artist` | Shows the performer ("Wham!"), not the album grouping label |
 | **Queue / player bar — toggle ON** | `album_artist \|\| artist` *(albumsOnly vpaths only)* | User-configured; see [Queue Artist Display toggle](#queue-artist-display-toggle) below |
 | **Subsonic album card** (buildAlbum) | `album_artist \|\| artist` | Album-level grouping, same as iTunes/MediaMonkey |
@@ -86,7 +86,7 @@ Turn this on if your Album Library tracks have correct `ALBUMARTIST` / `TPE2` ta
 | Area | Behaviour |
 |---|---|
 | Auto-DJ similar-artists | Always uses `song.artist` (track artist) for similarity lookups |
-| Scrobbling (Last.fm / ListenBrainz) | Always uses `song.artist` |
+| Scrobbling (Last.fm / ListenBrainz) | Always uses the track `artist` from the DB |
 | Subsonic song/album objects | Governed by separate `buildSong()` / `buildAlbum()` rules |
 | Non-albumsOnly vpaths | Always `artist \|\| album_artist` regardless of toggle |
 
@@ -145,7 +145,7 @@ On first server start after upgrading, the FTS table is automatically rebuilt (t
 
 ### `getSong` / `getMusicDirectory`
 
-`albumArtist` is included in song objects when it differs from `artist`. When they are the same, it is omitted (per OpenSubsonic spec to avoid redundancy).
+`albumArtist` is included in song objects when it differs from `artist`; when they are the same, it is omitted. The OpenSubsonic field `displayAlbumArtist` is set whenever the file has an album artist.
 
 ### `getAlbum`
 

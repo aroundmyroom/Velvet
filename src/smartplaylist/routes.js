@@ -13,7 +13,7 @@
 
 import Joi from 'joi';
 import { BETA_SMART_PLAYLIST } from '../beta-flags.js';
-import * as db from '../db/sqlite-backend.js';
+import * as db from '../db/manager.js';
 import { currentSlot, triggerGeneration, startCron } from './playlist-generator.js';
 
 const VALID_SLOTS = ['morning', 'afternoon', 'evening', 'night'];
@@ -25,8 +25,7 @@ function joiValidate(schema, data) {
 }
 
 export function setup(velvet) {
-  // Start the hourly background cron for playlist generation
-  startCron();
+  if (BETA_SMART_PLAYLIST) startCron();
 
   // ── User: fetch generated playlist ───────────────────────────────────────
   velvet.get('/api/v1/smartplaylist/generated', (req, res) => {
@@ -77,7 +76,6 @@ export function setup(velvet) {
     }
     // Sentinel null entry that marks the playlist as existing
     db.createPlaylistEntry({ name, filepath: null, user: req.user.username });
-    db.saveUserDB();
 
     res.json({ saved: tracks.length, name });
   });

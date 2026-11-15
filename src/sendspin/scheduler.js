@@ -2,22 +2,24 @@ import { EventEmitter } from 'node:events';
 import {
   createEncoder, decodeQueue, samplesToUs, MASTER_BYTES_PER_SAMPLE, OPUS_SAMPLE_RATES, opusPreRoll,
 } from './audio.js';
-import { AUDIO_HEADER_LEN } from './wire.js';
+import { AUDIO_HEADER_LEN, sameFormat } from './wire.js';
+
+export { sameFormat };
 
 export const MIN_LEAD_FLOOR_MS = 50;
-export const MAX_LEAD_MS = 10_000;
-export const SAFETY_MS = 50;
-export const LATE_JOIN_MIN_LEAD_MS = 100;
-export const JOIN_MARGIN_MS = 150;
-export const LOW_WATER_MS = 2_000;
-export const READ_AHEAD_MS = 15_000;
-export const HISTORY_KEEP_MS = 1_000;
+const MAX_LEAD_MS = 10_000;
+const SAFETY_MS = 50;
+const LATE_JOIN_MIN_LEAD_MS = 100;
+const JOIN_MARGIN_MS = 150;
+const LOW_WATER_MS = 2_000;
+const READ_AHEAD_MS = 15_000;
+const HISTORY_KEEP_MS = 1_000;
 // A tail change keeps this much beyond the send-ahead: room for one whole chunk (<= 150 ms) before the cut.
-export const SPLICE_MARGIN_MS = 200;
+const SPLICE_MARGIN_MS = 200;
 // How often a member held back only by bytes still queued in its socket is re-checked.
-export const SOCKET_POLL_MS = 10;
-export const MASTER_CHANNELS = 2;
-export const DEFAULT_MASTER_RATE = 48_000;
+const SOCKET_POLL_MS = 10;
+const MASTER_CHANNELS = 2;
+const DEFAULT_MASTER_RATE = 48_000;
 
 export function serverNow() {
   return Number(process.hrtime.bigint() / 1000n);
@@ -28,11 +30,6 @@ export function producible(f) {
   return (f.codec === 'pcm' || f.codec === 'flac') && (f.bit_depth === 16 || f.bit_depth === 24)
     && (f.channels === 1 || f.channels === 2) && Number.isInteger(f.sample_rate)
     && f.sample_rate >= 8000 && f.sample_rate <= 192_000;
-}
-
-export function sameFormat(a, b) {
-  return Boolean(a && b) && a.codec === b.codec && a.sample_rate === b.sample_rate
-    && a.channels === b.channels && (a.codec === 'opus' || a.bit_depth === b.bit_depth);
 }
 
 // bit_depth is ignored for opus but stream/start still carries one; 16 as aiosendspin sends.

@@ -1,8 +1,10 @@
 import crypto from 'node:crypto';
 import http from 'node:http';
+import net from 'node:net';
 import { spawn } from 'node:child_process';
 import { PassThrough } from 'node:stream';
 import { ffmpegBin } from '../util/ffmpeg-bootstrap.js';
+import { xmlEscape } from '../util/xml.js';
 import { MASTER_BYTES_PER_SAMPLE } from './audio.js';
 
 // A Sonos speaker cannot speak Sendspin and cannot be sample-synced. It follows a room instead: Velvet serves the
@@ -14,21 +16,21 @@ import { MASTER_BYTES_PER_SAMPLE } from './audio.js';
 
 export const SONOS_RATE = 48_000;
 export const SONOS_START_LEAD_MS = 2_000;
-export const MAX_SONOS_LEAD_MS = 8_000;
+const MAX_SONOS_LEAD_MS = 8_000;
 export const MAX_SONOS_TRIM_MS = 1_000;
-export const SONOS_CAL_FIRST_MS = 3_000;
-export const SONOS_CAL_RETRY_MS = 2_000;
+const SONOS_CAL_FIRST_MS = 3_000;
+const SONOS_CAL_RETRY_MS = 2_000;
 // A Sonos trims its start-up buffer in jumps during the first minutes: measure often then, rarely after.
-export const SONOS_CAL_EARLY_MS = 5_000;
-export const SONOS_CAL_EARLY_FOR_MS = 180_000;
-export const SONOS_CAL_EVERY_MS = 30_000;
+const SONOS_CAL_EARLY_MS = 5_000;
+const SONOS_CAL_EARLY_FOR_MS = 180_000;
+const SONOS_CAL_EVERY_MS = 30_000;
 const CAL_PRE_EDGE_US = 120_000;
 const CAL_WINDOW_US = 2_500_000;
 const CAL_MAX_GAP_US = 80_000;
 const CAL_TOLERANCE_US = 60_000;
 const CAL_MAX_TRIES = 15;
-export const SONOS_IDLE_MS = 30_000;
-export const SONOS_TICK_MS = 20;
+const SONOS_IDLE_MS = 30_000;
+const SONOS_TICK_MS = 20;
 export const MAX_SONOS_PER_ROOM = 8;
 export const SONOS_ID_PREFIX = 'sonos:';
 export const STREAM_PATH = '/api/v1/rooms/sonos-stream/';
@@ -46,13 +48,12 @@ const SERVICES = {
   [RC]: { type: 'urn:schemas-upnp-org:service:RenderingControl:1', path: '/MediaRenderer/RenderingControl/Control' },
 };
 
-// eslint-disable-next-line no-control-regex
-const XML_BAD = /[\x00-\x08\x0B\x0C\x0E-\x1F\uD800-\uDFFF￾￿]/g;
-export const xmlEsc = (s) => String(s ?? '').replaceAll(XML_BAD, '').replaceAll('&', '&amp;').replaceAll('<', '&lt;')
-  .replaceAll('>', '&gt;')
-  .replaceAll('"', '&quot;');
 
-export const isPrivateLan = (ip) => /^(10\.|172\.(1[6-9]|2\d|3[01])\.|192\.168\.)\d{1,3}\.\d{1,3}(\.\d{1,3})?$/.test(String(ip));
+export function isPrivateLan(ip) {
+  if (!net.isIPv4(String(ip))) return false;
+  const [a, b] = String(ip).split('.').map(Number);
+  return a === 10 || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168);
+}
 const isLoopback = (ip) => ip === '::1' || /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(ip);
 export function sonosStreamPeerAllowed(remoteAddress, { loopback = false } = {}) {
   const peer = String(remoteAddress || '').replace(/^::ffff:/, '');
@@ -60,39 +61,71 @@ export function sonosStreamPeerAllowed(remoteAddress, { loopback = false } = {})
 }
 export const isSonosUuid = (s) => typeof s === 'string' && /^RINCON_[0-9A-Fa-f]{12,20}$/.test(s);
 
-export function createSonosSoap({ port = 1400, allowHost = isPrivateLan, timeoutMs = 6000 } = {}) {
-  return (ip, service, action, inner = '') => new Promise((resolve, reject) => {
+export function sonosSoapRequest({
+  ip, port = 1400, path, serviceType, action, inner = '', instanceId = true, timeoutMs = 6000, maxBytes = 256 * 1024, allowHost = isPrivateLan,
+}) {
+  return new Promise((resolve, reject) => {
     if (!allowHost(ip)) {
       reject(new Error(`${ip} is not a private LAN address`));
       return;
     }
-    const svc = SERVICES[service];
     const body = '<?xml version="1.0" encoding="utf-8"?><s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/"'
       + ' s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/"><s:Body>'
-      + `<u:${action} xmlns:u="${svc.type}"><InstanceID>0</InstanceID>${inner}</u:${action}></s:Body></s:Envelope>`;
+      + `<u:${action} xmlns:u="${serviceType}">${instanceId ? '<InstanceID>0</InstanceID>' : ''}${inner}</u:${action}></s:Body></s:Envelope>`;
     const req = http.request({
-      hostname: ip, port, path: svc.path, method: 'POST',
-      headers: { 'Content-Type': 'text/xml; charset="utf-8"', 'Content-Length': Buffer.byteLength(body), soapaction: `"${svc.type}#${action}"` },
+      hostname: ip, port, path, method: 'POST',
+      headers: { 'Content-Type': 'text/xml; charset="utf-8"', 'Content-Length': Buffer.byteLength(body), soapaction: `"${serviceType}#${action}"` },
     }, (res) => {
       let data = '';
       res.setEncoding('utf8');
       res.on('data', (c) => {
-        if (data.length < 64 * 1024) data += c;
+        if (data.length < maxBytes) data += c.slice(0, maxBytes - data.length);
       });
       res.on('end', () => {
-        if (res.statusCode >= 400) {
-          const code = data.match(/<errorCode>(\d+)<\/errorCode>/i)?.[1];
-          const upnp = code ? ` (UPnP ${code})` : '';
-          reject(new Error(`Sonos ${action} HTTP ${res.statusCode}${upnp}`));
-        } else {
+        if (res.statusCode < 400) {
           resolve(data);
+          return;
         }
+        const code = data.match(/<errorCode>(\d+)<\/errorCode>/i)?.[1] ?? null;
+        const desc = data.match(/<errorDescription>([^<]+)<\/errorDescription>/i)?.[1] ?? '';
+        const codeTag = code ? ' code=' + code : '';
+        const err = new Error(`Sonos SOAP ${action} HTTP ${res.statusCode}${codeTag}: ${desc || data.slice(0, 800)}`);
+        if (code) err.code = code;
+        reject(err);
       });
     });
     req.on('error', reject);
-    req.setTimeout(timeoutMs, () => req.destroy(new Error(`Sonos ${action} timed out`)));
+    req.setTimeout(timeoutMs, () => req.destroy(new Error(`Sonos timeout on ${action}`)));
     req.end(body);
   });
+}
+
+export function sonosHttpGet({ ip, port = 1400, path, timeoutMs = 5000, maxBytes = 256 * 1024, allowHost = isPrivateLan }) {
+  return new Promise((resolve, reject) => {
+    if (!allowHost(ip)) {
+      reject(new Error(`${ip} is not a private LAN address`));
+      return;
+    }
+    const req = http.request({ hostname: ip, port, path, method: 'GET' }, (res) => {
+      let body = '';
+      res.setEncoding('utf8');
+      res.on('data', (c) => {
+        body += c;
+        if (body.length > maxBytes) req.destroy(new Error(`Sonos GET ${path} exceeded ${maxBytes} bytes`));
+      });
+      res.on('end', () => resolve({ status: res.statusCode, body }));
+    });
+    req.on('error', reject);
+    req.setTimeout(timeoutMs, () => req.destroy(new Error(`Sonos timeout on GET ${path}`)));
+    req.end();
+  });
+}
+
+export function createSonosSoap({ port = 1400, allowHost = isPrivateLan, timeoutMs = 6000 } = {}) {
+  return (ip, service, action, inner = '') => {
+    const svc = SERVICES[service];
+    return sonosSoapRequest({ ip, port, path: svc.path, serviceType: svc.type, action, inner, timeoutMs, maxBytes: 64 * 1024, allowHost });
+  };
 }
 
 export function mp3Encoder({ ffmpeg = ffmpegBin(), bitrate = '320k' } = {}) {
@@ -114,10 +147,10 @@ export function rawEncoder() {
 }
 
 export function radioDidl({ title, artUrl = null }) {
-  const art = artUrl ? `<upnp:albumArtURI>${xmlEsc(artUrl)}</upnp:albumArtURI>` : '';
+  const art = artUrl ? `<upnp:albumArtURI>${xmlEscape(artUrl)}</upnp:albumArtURI>` : '';
   return '<DIDL-Lite xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:upnp="urn:schemas-upnp-org:metadata-1-0/upnp/"'
     + ' xmlns:r="urn:schemas-rinconnetworks-com:metadata-1-0/" xmlns="urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/">'
-    + `<item id="R:0/0/0" parentID="R:0/0" restricted="true"><dc:title>${xmlEsc(title)}</dc:title>${art}`
+    + `<item id="R:0/0/0" parentID="R:0/0" restricted="true"><dc:title>${xmlEscape(title)}</dc:title>${art}`
     + '<upnp:class>object.item.audioItem.audioBroadcast</upnp:class>'
     + '<desc id="cdudn" nameSpace="urn:schemas-rinconnetworks-com:metadata-1-0/">SA_RINCON65031_</desc></item></DIDL-Lite>';
 }
@@ -400,7 +433,7 @@ class Feed {
   }
 }
 
-export const sonosId = (uuid) => SONOS_ID_PREFIX + uuid;
+const sonosId =(uuid) => SONOS_ID_PREFIX + uuid;
 
 // GetPositionInfo's RelTime ("H:MM:SS") in whole seconds; null when absent or NOT_IMPLEMENTED.
 export function parseRelTime(body) {
@@ -778,7 +811,7 @@ export class RoomSonos {
     const didl = radioDidl({ title: [i.roomName, 'Velvet Rooms'].join(' · '), artUrl: url.replace(/\.mp3$/, '.jpg') });
     try {
       await this.#bridge.soap(f.ip, AVT, 'SetAVTransportURI',
-        `<CurrentURI>${xmlEsc(transportUri(url))}</CurrentURI><CurrentURIMetaData>${xmlEsc(didl)}</CurrentURIMetaData>`);
+        `<CurrentURI>${xmlEscape(transportUri(url))}</CurrentURI><CurrentURIMetaData>${xmlEscape(didl)}</CurrentURIMetaData>`);
       if (f.session !== s) return;
       await this.#bridge.soap(f.ip, AVT, 'Play', '<Speed>1</Speed>');
       if (f.session !== s) return;

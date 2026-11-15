@@ -143,9 +143,9 @@ Two scripts, each independently useful:
 - **`contrib/shared/velvet-install.sh`** — the real installer. Installs
   Node.js (via NodeSource, skipped if a compatible version is already
   present), clones Velvet at a release tag, runs `npm ci --omit=dev`, writes
-  the `velvet` system user and a `systemd` unit matching the one
-  [`docs/install.md`](install.md) documents for bare-metal, and enables the
-  service. This script has **no dependency on Proxmox, Incus, or
+  the `velvet` system user and a `velvet.service` `systemd` unit (like the
+  one [`docs/install.md`](install.md) documents for bare-metal, plus
+  `EnvironmentFile=-/etc/velvet.env`), and enables the service. This script has **no dependency on Proxmox, Incus, or
   community-scripts at all** — it works on any plain Debian box, root shell,
   one command:
   ```shell
@@ -196,8 +196,9 @@ Two supported options:
 
 1. **Privileged container.** Simplest — no UID remapping, host ownership is
    what the container sees too. Choose "privileged" in the wizard's advanced
-   settings (`var_unprivileged=0`). This is what the wizard's quick defaults
-   assume.
+   settings (`var_unprivileged=0`). The wizard's defaults create an
+   unprivileged container (`var_unprivileged=1`), so you have to pick this
+   on purpose.
 2. **Unprivileged, with an explicit UID mapping.** More isolated, more setup:
    map the container's `velvet` UID to the host UID that owns your music
    folder (`pct set <CTID> --features ...` / Incus `raw.idmap`, see the

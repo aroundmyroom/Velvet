@@ -6,9 +6,10 @@ from that brief without any model call. You can skip the first call and send a
 brief of your own, edit the brief Claude wrote before building, or rebuild the
 same brief for another take.
 
-All calls need a user token (`x-access-token`). Everything answers `404`
-until an admin has set `aiAssist.enabled` and `aiAssist.queueBuilder`, and for
-a user whose admin switched AI DJ off (`allow-ai-dj: false`).
+All calls need a user token (`x-access-token`). The `brief` and `build` calls
+answer `404` until an admin has set `aiAssist.enabled` and
+`aiAssist.queueBuilder`, and for a user whose admin switched AI DJ off
+(`allow-ai-dj: false`); `status` then answers `enabled: false`.
 
 ## 1. Is it on?
 
@@ -89,6 +90,8 @@ whole library the user may see is in scope.
   repeats a year from one of its titles has that range dropped.
 - Limits: 2–600 characters; one brief per user every 3 seconds (`429
   throttled`), 200 per user per day (`429 daily`).
+- `409 { error, code }` when the model call fails in a way the server reports
+  (an AI-assist error) or its answer cannot be used (`code: "invalid"`).
 
 ### The brief, field by field
 
@@ -137,7 +140,8 @@ Content-Type: application/json
 { "brief": { ...the brief, edited or not... } }
 ```
 
-Same optional scope fields as above. One build per user per second.
+Same optional scope fields as above. One build per user per second (`429
+throttled`).
 
 ```json
 {
@@ -177,7 +181,6 @@ every other song endpoint, so they go straight into the queue or
 | `chartPicked` `{ name, chart, from, to, found, asked }` | The chart and positions played, and how many of those positions exist in the library. |
 | `chartUnknown` `{ name }` | No chart folder matches that name; the brief was built as a normal set instead. |
 | `chartEmpty` `{ name, from, to }` | The chart exists but no song in those positions passed the other filters. |
-| `keysDropped`, `releaseDropped` | The key or version filter was relaxed because the pool was too small. |
 | `empty` | Nothing in scope. |
 
 `400` for a brief that does not validate (unknown `energy`, more than 25
@@ -207,6 +210,7 @@ await post('/api/v1/playlist/save', { title: brief.title, songs: set.songs.map(s
 Only the listener's text and a summary of the library (genre names, biggest
 artists, top-level folder names, decade and tempo counts) go to Anthropic;
 the summary is cached for ten minutes. The chosen songs, user names and play
-history never leave the server. Each brief costs about $0.002 on Haiku 5.5
-(about $0.0003 once the summary is cached) and counts against the monthly
-budget set by the admin.
+history never leave the server. With a self-hosted model configured under
+*Advanced*, the same text and summary go to that endpoint instead. Each
+Anthropic call counts against the monthly budget set by the admin (default
+model `claude-haiku-5-5`, default budget $2 a month).

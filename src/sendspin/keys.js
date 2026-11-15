@@ -1,11 +1,10 @@
 import crypto from 'node:crypto';
 import fsp from 'node:fs/promises';
 import path from 'node:path';
-import { generateStaticKeyPair, publicKeyFromPrivate } from './noise.js';
+import { generateStaticKeyPair, publicKeyFromPrivate, sha256 } from './noise.js';
 
-export const KEY_ID_LENGTH = 43;
-export const PSK_ID_LABEL = Buffer.from('sendspin-psk-id-v1', 'utf8');
-export const SENTINEL_PSK = crypto.createHash('sha256').update('sendspin-sentinel-psk-v1', 'utf8').digest();
+const PSK_ID_LABEL = Buffer.from('sendspin-psk-id-v1', 'utf8');
+export const SENTINEL_PSK = sha256(Buffer.from('sendspin-sentinel-psk-v1', 'utf8'));
 export const PSK_CATEGORY = Object.freeze({ LONG_TERM: 'lt', PAIRING: 'pr', SENTINEL: 'sn' });
 export const SERVER_KEY_FILE = 'server-key.json';
 
@@ -27,7 +26,7 @@ export function isKeyId(id) {
 
 export function pskId(psk) {
   if (!Buffer.isBuffer(psk) || psk.length !== 32) throw new TypeError('PSK must be a 32-byte Buffer');
-  return crypto.createHash('sha256').update(PSK_ID_LABEL).update(psk).digest('base64url');
+  return sha256(PSK_ID_LABEL, psk).toString('base64url');
 }
 
 export const SENTINEL_PSK_ID = pskId(SENTINEL_PSK);

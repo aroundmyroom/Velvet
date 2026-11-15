@@ -29,8 +29,6 @@ import * as logger from './logger.js';
 import * as transcode from './api/transcode.js';
 import * as dbManager from './db/manager.js';
 import * as dbQueue from './db/task-queue.js';
-import * as syncthing from './state/syncthing.js';
-import * as federationApi from './api/federation.js';
 import * as scannerApi from './api/scanner.js';
 import * as subsonicApi from './api/subsonic.js';
 import * as userSettingsApi from './api/user-settings.js';
@@ -65,19 +63,22 @@ import * as authPairApi from './api/auth-pair.js';
 import * as updateApi from './api/update.js';
 import * as networkMountApi from './api/network-mount.js';
 import * as queueApi from './api/queue.js';
+import * as autodjApi from './api/autodj.js';
 import * as smartPlaylistMlApi from './smartplaylist/routes.js';
 import WebError, { isClientRefusal } from './util/web-error.js';
 import { sanitizeFilename } from './util/validation.js';
 import { ensureFfmpeg } from './util/ffmpeg-bootstrap.js';
-import { canAccessMediaVpath } from './util/media-access.js';
+import { canAccessMediaVpath, resolveMediaPath } from './util/media-access.js';
 import { resolvePathWithinRoot } from './util/path-security.js';
 import { classifyBootError, bootErrorMessage } from './util/boot-errors.js';
+import { onShutdown, installSignalHandlers, PHASE } from './state/shutdown.js';
 
 const require = createRequire(import.meta.url);
 const packageJson = require('../package.json');
 
 let velvet;
 let server;
+let localHttpServer = null;
 
 // ── Module-scope helpers ─────────────────────────────────────────────────────
 // Phone detection: a "phone" is a small handheld with a mobile-class user agent.
@@ -102,6 +103,24 @@ function flacId3Skip(buf) {
                   ((buf[8] & 0x7f) << 7)  |  (buf[9] & 0x7f);
   return 10 + tagSize + (hasFooter ? 10 : 0);
 }
+
+// Album art is never a 404: art that is in the DB but missing from disk (cache cleared,
+// partial scan, manual deletion) gets a neutral SVG placeholder instead of a broken image.
+const ALBUM_ART_FALLBACK_SVG = Buffer.from(
+  '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1 1">' +
+  '<rect width="1" height="1" fill="#1e1e2e"/>' +
+  '<circle cx=".5" cy=".5" r=".28" fill="none" stroke="#45475a" stroke-width=".06"/>' +
+  '<circle cx=".5" cy=".5" r=".08" fill="#45475a"/>' +
+  '</svg>'
+);
+function sendArtFallback(res) {
+  res.set('Content-Type', 'image/svg+xml');
+  res.set('Cache-Control', 'no-store');
+  res.end(ALBUM_ART_FALLBACK_SVG);
+}
+
+const _ART_SEND_OPTS = { maxAge: '365d', immutable: true };
+const _artExists = f => fs.promises.access(f).then(() => true, () => false);
 
 export async function serveIt(configFile) {
   velvet = express();
@@ -150,6 +169,9 @@ export async function serveIt(configFile) {
     await _runBootHold(category, err, dbDir);
     return; // _runBootHold retries serveIt() when the problem clears
   }
+  onShutdown('http', PHASE.HTTP, _closeHttpServers);
+  onShutdown('db', PHASE.DB, () => dbManager.close());
+  installSignalHandlers();
 
   // ── Phone detection ──────────────────────────────────────────────────────
   // A "phone" is a small handheld with a mobile-class user agent. Tablets
@@ -209,7 +231,6 @@ export async function serveIt(configFile) {
   // Classic UI has been removed. /classic returns 410 Gone.
   velvet.get('/classic', (_req, res) => res.status(410).send('<p>Classic UI has been removed.</p>'));
   velvet.get('/login', (_req, res) => res.redirect(301, '/'));
-  velvet.get('/login/', (_req, res) => res.redirect(301, '/'));
   velvet.get('/login/index.html', (_req, res) => res.redirect(301, '/'));
 
   // ── Phone-only PWA at root ────────────────────────────────────────────────
@@ -251,6 +272,9 @@ export async function serveIt(configFile) {
   // Mount admin panel (webapp/admin/) at /admin — must be before general static
   velvet.use('/admin', express.static(path.join(config.program.webAppDirectory, 'admin')));
 
+  // Before the static mount, so /server-remote shows the "not enabled" page while Server Audio is off
+  serverPlaybackApi.setupBeforeAuth(velvet);
+
   // Give access to public folder
   velvet.use('/', express.static(config.program.webAppDirectory));
 
@@ -264,7 +288,6 @@ export async function serveIt(configFile) {
 
   // Public APIs
   remoteApi.setupBeforeAuth(velvet, server);
-  serverPlaybackApi.setupBeforeAuth(velvet);
   sharedApi.setupBeforeSecurity(velvet);
 
   // Subsonic REST API — has its own auth, must be before authApi.setup()
@@ -288,23 +311,7 @@ export async function serveIt(configFile) {
     res.json({ enabled: config.program.languages?.enabled || _ALL_LANG_CODES });
   });
 
-  // Public — artist placeholder image (no auth: used in <img src> throughout the player)
-  const _ARTIST_PLACEHOLDER_FILE    = path.join(process.cwd(), 'save', 'conf', 'artist-placeholder.jpg');
-  const _ARTIST_PLACEHOLDER_FILE_OLD = path.join(process.cwd(), 'image-cache', 'artist-placeholder.jpg');
-  const _ARTIST_PLACEHOLDER_DEFAULT = path.join(config.program.webAppDirectory, 'assets', 'img', 'unknownartist.webp');
-  // One-time migration: move placeholder from old image-cache/ location to save/conf/
-  if (!fs.existsSync(_ARTIST_PLACEHOLDER_FILE) && fs.existsSync(_ARTIST_PLACEHOLDER_FILE_OLD)) {
-    try {
-      fs.renameSync(_ARTIST_PLACEHOLDER_FILE_OLD, _ARTIST_PLACEHOLDER_FILE);
-      winston.info('Migrated artist-placeholder.jpg from image-cache/ to save/conf/');
-    } catch (e) { console.debug('[velvet]', e?.message ?? e); }
-  }
-  velvet.get('/api/v1/artists/placeholder', (_req, res) => {
-    if (fs.existsSync(_ARTIST_PLACEHOLDER_FILE)) {
-      return res.sendFile(_ARTIST_PLACEHOLDER_FILE);
-    }
-    res.sendFile(_ARTIST_PLACEHOLDER_DEFAULT);
-  });
+  artistsBrowseApi.setupPublic(velvet);
 
   // Public — Sonos UPnP event callback. The speaker POSTs NOTIFY here and cannot
   // authenticate; the handler only accepts private-LAN peers with a subscription ID
@@ -325,6 +332,7 @@ export async function serveIt(configFile) {
   authPasskeyApi.setup(velvet);
   authPairApi.setup(velvet);
   dbApi.setup(velvet);
+  autodjApi.setup(velvet);
   playlistApi.setup(velvet);
   downloadApi.setup(velvet);
   fileExplorerApi.setup(velvet);
@@ -370,32 +378,11 @@ export async function serveIt(configFile) {
   import('./util/rsgain-bootstrap.js').then(m => m.ensureRsgain()).catch(e => winston.warn('[rsgain-bootstrap] startup prefetch failed: ' + e.message));
   remoteApi.setupAfterAuth(velvet, server);
   sharedApi.setupAfterSecurity(velvet);
-  syncthing.setup();
-  federationApi.setup(velvet);
 
   // Versioned APIs
   velvet.get('/api/', (req, res) => res.json({ "server": packageJson.version, "apiVersions": ["1"] }));
 
-  // album art folder
-  // Rule: NEVER return 404. If the file is in the DB but missing from disk
-  // (cache cleared, partial scan, manual deletion) serve a neutral SVG placeholder
-  // so the browser shows something consistent instead of a broken-image icon.
-  const ALBUM_ART_FALLBACK_SVG = Buffer.from(
-    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1 1">' +
-    '<rect width="1" height="1" fill="#1e1e2e"/>' +
-    '<circle cx=".5" cy=".5" r=".28" fill="none" stroke="#45475a" stroke-width=".06"/>' +
-    '<circle cx=".5" cy=".5" r=".08" fill="#45475a"/>' +
-    '</svg>'
-  );
-  function sendArtFallback(res) {
-    res.set('Content-Type', 'image/svg+xml');
-    res.set('Cache-Control', 'no-store');
-    res.end(ALBUM_ART_FALLBACK_SVG);
-  }
-
-  const _ART_SEND_OPTS = { maxAge: '365d', immutable: true };
-  const _artExists = f => fs.promises.access(f).then(() => true, () => false);
-
+  // album art folder — never 404, see sendArtFallback
   velvet.get('/album-art/:file', async (req, res) => {
     // Cached art can include remote SVG station logos — never let it run script if opened directly
     res.setHeader('Content-Security-Policy', "default-src 'none'; style-src 'unsafe-inline'; sandbox");
@@ -451,23 +438,12 @@ export async function serveIt(configFile) {
   // This middleware intercepts any /media/…/*.flac request, detects the
   // ID3 preamble, and serves the file from the fLaC offset with correct
   // Content-Length / Content-Range so seeking still works.
-  // Non-ID3 files are passed straight through to express.static below.
+  // Non-ID3 files are passed straight through to the sendFile middleware below.
 
   velvet.use('/media/', async (req, res, next) => {
     if (!req.path.toLowerCase().endsWith('.flac')) return next();
-    // Reconstruct the absolute file path from the vpath + relative path.
-    const parts = req.path.split('/').filter(Boolean);
-    if (parts.length < 2) return next();
-    const vpath = decodeURIComponent(parts[0]);
-    const folder = config.program.folders[vpath]?.root;
-    if (!folder) return next();
-    const relPath = parts.slice(1).map(p => decodeURIComponent(p)).join('/');
-    let filePath;
-    try {
-      filePath = resolvePathWithinRoot(folder, relPath);
-    } catch {
-      return next();
-    }
+    const { filePath } = resolveMediaPath(req.path, config.program.folders);
+    if (!filePath) return next();
 
     try {
       // Read just the first 10 bytes to check for ID3 preamble.
@@ -476,7 +452,7 @@ export async function serveIt(configFile) {
       await fh.read(hdr, 0, 10, 0);
       await fh.close();
       const skip = flacId3Skip(hdr);
-      if (skip === 0) return next(); // clean fLaC file — let express.static handle it
+      if (skip === 0) return next();
 
       const stat = await fs.promises.stat(filePath);
       const effectiveSize = stat.size - skip;
@@ -486,11 +462,12 @@ export async function serveIt(configFile) {
       res.setHeader('Accept-Ranges', 'bytes');
 
       if (rangeHeader) {
-        const m = rangeHeader.match(/bytes=(\d*)-(\d*)/);
-        if (!m) { res.status(416).end(); return; }
-        const start = m[1] ? Number.parseInt(m[1], 10) : 0;
-        const end   = m[2] ? Number.parseInt(m[2], 10) : effectiveSize - 1;
-        if (start > effectiveSize - 1) {
+        const m = rangeHeader.match(/^bytes=(\d*)-(\d*)$/);
+        if (!m || (!m[1] && !m[2])) { res.status(416).end(); return; }
+        // 'bytes=-N' is a suffix range: the last N bytes
+        const start = m[1] ? Number.parseInt(m[1], 10) : Math.max(0, effectiveSize - Number.parseInt(m[2], 10));
+        const end   = m[1] && m[2] ? Number.parseInt(m[2], 10) : effectiveSize - 1;
+        if (start > effectiveSize - 1 || end < start) {
           res.setHeader('Content-Range', `bytes */${effectiveSize}`);
           res.status(416).end(); return;
         }
@@ -505,7 +482,7 @@ export async function serveIt(configFile) {
         fs.createReadStream(filePath, { start: skip }).pipe(res);
       }
     } catch {
-      next(); // file not found / unreadable → let express.static return 404
+      next();
     }
   });
 
@@ -515,47 +492,15 @@ export async function serveIt(configFile) {
     if (filePath.toLowerCase().endsWith('.flac')) res.setHeader('Content-Type', 'audio/flac');
   };
 
-  // Express static matching does not decode a mount path, so a client that
-  // correctly sends a vpath's spaces as %20 misses its literal static mount.
+  // The vpath segment is URL-decoded here, so a folder name with spaces sent as
+  // %20 still resolves (a literal express.static mount would miss it).
   velvet.use('/media/', (req, res, next) => {
-    const parts = req.path.split('/').filter(Boolean);
-    if (parts.length < 2) return next();
-
-    let mediaVpath;
-    let relativePath;
-    try {
-      mediaVpath = decodeURIComponent(parts[0]);
-      relativePath = parts.slice(1).map(decodeURIComponent).join('/');
-    } catch {
-      return next();
-    }
-
-    const mediaRoot = config.program.folders[mediaVpath]?.root;
-    if (!mediaRoot) return next();
-
-    let filePath;
-    try {
-      filePath = resolvePathWithinRoot(mediaRoot, relativePath);
-    } catch {
-      return next();
-    }
-
-    setMediaHeaders(res, filePath);
-    return res.sendFile(filePath, error => {
+    const media = resolveMediaPath(req.path, config.program.folders);
+    if (!media.filePath) return next();
+    setMediaHeaders(res, media.filePath);
+    return res.sendFile(media.filePath, error => {
       if (error && !res.headersSent) next(error);
     });
-  });
-
-  const escapeMediaVpathRoute = value => value.replace(/[()[\]?+*!:]/g, '\\$&');
-
-  Object.keys(config.program.folders).forEach(key => {
-    // Express 5 route parser treats these characters as tokens unless escaped.
-    // Escaping keeps legacy/imported folder names from crashing server boot.
-    const routeVpath = escapeMediaVpathRoute(key);
-    velvet.use(
-      '/media/' + routeVpath + '/',
-      express.static(config.program.folders[key].root, { setHeaders: setMediaHeaders })
-    );
   });
 
   // error handling
@@ -668,8 +613,11 @@ export async function serveIt(configFile) {
   // Optional plain-HTTP listener for local devices (e.g. Sonos) that can't use HTTPS
   // Only started when running in HTTPS mode AND localHttpPort is configured.
   if (config.program.ssl?.cert && config.program.localHttpPort) {
-    const localHttpServer = http.createServer();
+    localHttpServer = http.createServer();
     localHttpServer.on('request', velvet);
+    localHttpServer.on('error', err => {
+      winston.error(`Local HTTP port ${config.program.localHttpPort} failed (${err.code || 'unknown'}): ${err.message}`);
+    });
     localHttpServer.listen(config.program.localHttpPort, config.program.address, () => {
       winston.info(`Local HTTP port for LAN devices: http://localhost:${config.program.localHttpPort}`);
     });
@@ -756,17 +704,21 @@ export function reboot() {
     transcode.reset();
     dbQueue.reset();
 
-    if (config.program.federation.enabled === false) {
-      syncthing.kill2();
-    }
-
-    // Close the server
-    server.close(() => {
-      serveIt(config.configFile);
-    });
+    const closing = [server, localHttpServer].filter(Boolean)
+      .map(srv => new Promise(resolve => srv.close(() => resolve())));
+    localHttpServer = null;
+    Promise.all(closing).then(() => serveIt(config.configFile));
   } catch (err) {
     winston.error('Reboot Failed', { stack: err });
     process.exit(1);
+  }
+}
+
+function _closeHttpServers() {
+  for (const srv of [server, localHttpServer]) {
+    if (!srv) continue;
+    srv.close();
+    srv.closeAllConnections?.();
   }
 }
 
@@ -866,32 +818,25 @@ function _setupExpressMiddleware(app) {
   });
 
   // Remove trailing slashes — needed for relative URLs on the webapp
+  // Leading slashes/backslashes collapse to one, so '//evil.com//' can't become a protocol-relative redirect.
   app.get('{*path}', (req, res, next) => {
     if (req.path.endsWith('//')) {
-      const matchEnd = req.path.match(/(\/)+$/g);
-      const queryString = req.url.match(/(\?.*)/g) === null ? '' : req.url.match(/(\?.*)/g);
-      return res.redirect(302, req.path.slice(0, (matchEnd[0].length - 1) * -1) + queryString);
+      const q = req.url.indexOf('?');
+      const target = '/' + req.path.replace(/^[/\\]+/, '').replace(/\/+$/, '/');
+      return res.redirect(302, target + (q === -1 ? '' : req.url.slice(q)));
     }
     next();
   });
 
-  // Admin panel auth guard
-  app.get('/admin', (req, res, next) => {
+  // Admin panel auth guard: a revoked token (password change, sign-out everywhere) is refused too
+  app.get(['/admin', '/admin/index.html'], (req, res, next) => {
     if (config.program.lockAdmin === true) return res.send('<p>Admin Page Disabled</p>');
     if (Object.keys(config.program.users).length === 0) return next();
     try {
       const decoded = jwt.verify(req.cookies['x-access-token'], config.program.secret);
-      if (config.program.users[decoded.username]?.admin !== true) return res.redirect(302, '/');
-      next();
-    } catch { return res.redirect(302, '/'); }
-  });
-
-  app.get('/admin/index.html', (req, res, next) => {
-    if (config.program.lockAdmin === true) return res.send('<p>Admin Page Disabled</p>');
-    if (Object.keys(config.program.users).length === 0) return next();
-    try {
-      const decoded = jwt.verify(req.cookies['x-access-token'], config.program.secret);
-      if (config.program.users[decoded.username]?.admin !== true) return res.redirect(302, '/');
+      if (decoded.shareToken === true || !authApi.isTokenCurrent(decoded) || config.program.users[decoded.username]?.admin !== true) {
+        return res.redirect(302, '/');
+      }
       next();
     } catch { return res.redirect(302, '/'); }
   });

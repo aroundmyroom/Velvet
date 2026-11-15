@@ -1,8 +1,8 @@
-import sharp from 'sharp';
 import Joi from 'joi';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import mime from 'mime-types';
+import { writeArtWithThumbs } from '../util/art-cache.js';
 
 let loadJson;
 try {
@@ -38,16 +38,16 @@ async function run() {
   for (const file of files) {
     let filepath;
     try {
+      if (file.startsWith('zs-') || file.startsWith('zl-') || file.startsWith('zm-')) { continue; }
+      const mimeType = mime.lookup(path.extname(file));
+      if (!mimeType || !mimeType.startsWith('image')) { continue; }
       filepath = path.join(loadJson.albumArtDirectory, file);
       const stat = await fs.stat(filepath);
       if (stat.isDirectory()) { continue; }
-      const mimeType = mime.lookup(path.extname(file));
-      if (!mimeType.startsWith('image')) { continue; }
-      if (file.startsWith('zs-') || file.startsWith('zl-') || file.startsWith('zm-')) { continue; }
 
-      await sharp(filepath).resize(256, 256, { fit: 'inside', withoutEnlargement: true }).toFile(path.join(loadJson.albumArtDirectory, 'zl-' + file));
-      await sharp(filepath).resize(92,  92,  { fit: 'inside', withoutEnlargement: true }).toFile(path.join(loadJson.albumArtDirectory, 'zs-' + file));
-      await sharp(filepath).resize(512, 512, { fit: 'inside', withoutEnlargement: true }).toFile(path.join(loadJson.albumArtDirectory, 'zm-' + file));
+      if (!await writeArtWithThumbs(loadJson.albumArtDirectory, await fs.readFile(filepath), file)) {
+        console.log('error on file: ' + filepath + ' (could not decode, original copied as thumbnail)');
+      }
     } catch (error) {
       console.log('error on file: ' + filepath);
       console.error(error);

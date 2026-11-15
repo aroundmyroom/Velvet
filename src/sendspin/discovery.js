@@ -6,15 +6,15 @@ import os from 'node:os';
 import winston from 'winston';
 
 // eslint-disable-next-line sonarjs/no-hardcoded-ip -- the mDNS group is fixed by RFC 6762
-export const MDNS_ADDRESS = '224.0.0.251';
+const MDNS_ADDRESS = '224.0.0.251';
 // eslint-disable-next-line sonarjs/no-hardcoded-ip -- the mDNS group is fixed by RFC 6762
-export const MDNS_ADDRESS6 = 'ff02::fb';
-export const MDNS_PORT = 5353;
+const MDNS_ADDRESS6 = 'ff02::fb';
+const MDNS_PORT = 5353;
 export const CLIENT_SERVICE = '_sendspin._tcp.local';
 export const SERVER_SERVICE = '_sendspin-server._tcp.local';
-export const SERVICES_META = '_services._dns-sd._udp.local';
+const SERVICES_META = '_services._dns-sd._udp.local';
 export const TYPE = Object.freeze({ A: 1, PTR: 12, TXT: 16, AAAA: 28, SRV: 33, ANY: 255 });
-export const MAX_PATH_LENGTH = 256;
+const MAX_PATH_LENGTH = 256;
 
 const CLASS_IN = 1;
 const FLUSH = 0x8000;
@@ -49,7 +49,7 @@ function splitName(name) {
   return labels;
 }
 
-export function joinName(labels) {
+function joinName(labels) {
   return labels.map(escapeLabel).join('.');
 }
 
@@ -351,7 +351,7 @@ export function buildUrl(address, port, path, opts = {}) {
   return `ws://${host}:${port}${path}`;
 }
 
-export function localAddresses() {
+function localAddresses() {
   const out = [];
   for (const list of Object.values(os.networkInterfaces())) {
     for (const a of list ?? []) {

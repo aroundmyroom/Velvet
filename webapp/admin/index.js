@@ -60,11 +60,6 @@ const ADMINDATA = (() => {
   // shared playlists
   module.sharedPlaylists = [];
   module.sharedPlaylistUpdated = { ts: 0 };
-  // federation
-  module.federationEnabled = { val: false };
-  module.federationParams = {};
-  module.federationParamsUpdated = { ts: 0 };
-  module.federationInviteToken = { val: null };
 
   module.getSharedPlaylists = async () => {
     const res = await API.axios({
@@ -223,26 +218,6 @@ const ADMINDATA = (() => {
     module.dlnaParamsUpdated.ts = Date.now();
   }
 
-  module.getFederationParams = async () => {
-    try {
-      const res = await API.axios({
-        method: 'GET',
-        url: `${API.url()}/api/v1/federation/stats`
-      });
-
-      if (res.data.enabled === false) {
-        module.federationEnabled.val = false;
-      } else {
-        module.federationEnabled.val = true;
-        Object.keys(res.data).forEach(key=>{
-          module.federationParams[key] = res.data[key];
-        });
-      }
-    }catch { /* noop */ }
-
-    module.federationParamsUpdated.ts = Date.now();
-  }
-
   module.getVersion = async () => {
     try {
       const res = await API.axios({
@@ -279,9 +254,7 @@ ADMINDATA.getDlnaParams();
 ADMINDATA.getFolders();
 ADMINDATA.getUsers();
 ADMINDATA.getDbParams();
-ADMINDATA.getServerParams().then(() => {
-  ADMINDATA.getFederationParams();
-}).catch(() => {});
+ADMINDATA.getServerParams().catch(() => {});
 ADMINDATA.getVersion();
 ADMINDATA.getWinDrives();
 
@@ -318,9 +291,6 @@ document.addEventListener('click', function(e) {
   if (e.target.closest('.modal-close')) modVM.closeModal();
 });
 
-// Intialize Clipboard
-const _clipboard = new ClipboardJS('.fed-copy-button'); // eslint-disable-line no-unused-vars
-
 // ── Confirm dialog helper ──────────────────────────────────────
 function adminConfirm(title, message, confirmLabel, onConfirm) {
   confirmVM.ask(title, message, confirmLabel, onConfirm);
@@ -333,6 +303,26 @@ const mHead = (title, subtitle = '') => {
 };
 const mFoot = (saveExpr = "t('admin.modal.btnSave')", pendingExpr = "t('admin.modal.btnSaving')") =>
   `<div class="modal-footer-row"><button class="btn-flat" type="button" @click="closeModal">{{ t('admin.modal.btnCancel') }}</button><button class="btn" type="submit" :disabled="submitPending === true">{{ submitPending === false ? ${saveExpr} : ${pendingExpr} }}</button></div>`;
+
+const postAdmin = (path, data) => API.axios({ method: 'POST', url: `${API.url()}${path}`, data });
+
+async function saveModalForm(vm, save, { successKey = 'admin.common.updatedSuccessfully', errorKey = 'admin.common.updateFailed' } = {}) {
+  try {
+    vm.submitPending = true;
+    await save();
+    modVM.closeModal();
+    iziToast.success({ title: vm.t(successKey), position: 'topCenter', timeout: 3500 });
+  } catch {
+    iziToast.error({ title: vm.t(errorKey), position: 'topCenter', timeout: 3500 });
+  } finally {
+    vm.submitPending = false;
+  }
+}
+
+const saveSingleParam = (vm, { path, data, target, key, successKey }) => saveModalForm(vm, async () => {
+  await postAdmin(path, data);
+  Vue.set(target, key, data[key]);
+}, { successKey });
 
 // Global mixin: provides closeModal() to every component
 Vue.mixin({
@@ -633,7 +623,7 @@ const artistAlbumsDiagView = Vue.component('artist-albums-diag-view', {
         const r = await API.axios({ method: 'GET', url: `${API.url()}/api/v1/admin/diagnostics/artist-albums`, params: { artist: q } });
         this.result = r.data;
       } catch (e) {
-        this.error = e?.response?.data?.error || e.message || 'Request failed';
+        this.error = e?.response?.data?.error || e.message || this.t('admin.common.failed');
       } finally {
         this.loading = false;
       }
@@ -711,40 +701,37 @@ const artistAlbumsDiagView = Vue.component('artist-albums-diag-view', {
   },
   template: `
     <div class="admin-panel-wrap">
-      <h2 class="admin-section-title">Artist Albums</h2>
+      <h2 class="admin-section-title">{{ t('admin.nav.artistAlbums') }}</h2>
 
-      <!-- Album Category Folders -->
       <div class="admin-card" style="margin-bottom:24px;padding:16px 18px;">
-        <div class="admin-label" style="margin-bottom:6px;font-size:.95rem;">Album Category Folders</div>
+        <div class="admin-label" style="margin-bottom:6px;font-size:.95rem;">{{ t('admin.artistAlbums.categoryFolders') }}</div>
         <album-category-folders-card></album-category-folders-card>
       </div>
 
       <hr style="border:none;border-top:1px solid var(--border);margin:0 0 20px;">
 
-      <div class="admin-label" style="margin-bottom:8px;">Artist Albums Diagnostic</div>
-      <p class="admin-desc" style="margin-bottom:12px">
-        Enter an artist name to find out why some albums may be missing from their artist view.
-      </p>
+      <div class="admin-label" style="margin-bottom:8px;">{{ t('admin.artistAlbums.diagTitle') }}</div>
+      <p class="admin-desc" style="margin-bottom:12px">{{ t('admin.artistAlbums.diagDesc') }}</p>
       <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:18px">
         <input
           v-model="artistQuery"
           class="admin-input"
           style="flex:1;max-width:360px"
-          placeholder="e.g. Riverside"
+          :placeholder="t('admin.artistAlbums.queryPlaceholder')"
           @keyup.enter="runDiag"
         />
         <button class="admin-btn" :disabled="loading || !artistQuery.trim()" @click="runDiag">
-          {{ loading ? 'Running…' : 'Run Diagnostic' }}
+          {{ loading ? t('admin.artistAlbums.running') : t('admin.artistAlbums.run') }}
         </button>
         <template v-if="result">
-          <button class="admin-btn admin-btn-secondary" @click="exportText" title="Download as plain text file">
-            ↓ Export .txt
+          <button class="admin-btn admin-btn-secondary" @click="exportText" :title="t('admin.artistAlbums.exportTxtTitle')">
+            ↓ {{ t('admin.artistAlbums.exportTxt') }}
           </button>
-          <button class="admin-btn admin-btn-secondary" @click="exportJson" title="Download as JSON file">
-            ↓ Export .json
+          <button class="admin-btn admin-btn-secondary" @click="exportJson" :title="t('admin.artistAlbums.exportJsonTitle')">
+            ↓ {{ t('admin.artistAlbums.exportJson') }}
           </button>
-          <button class="admin-btn admin-btn-secondary" @click="copyJson" title="Copy full JSON to clipboard">
-            {{ copied ? '✓ Copied!' : 'Copy JSON' }}
+          <button class="admin-btn admin-btn-secondary" @click="copyJson" :title="t('admin.artistAlbums.copyJsonTitle')">
+            {{ copied ? '✓ ' + t('admin.artistAlbums.copied') : t('admin.artistAlbums.copyJson') }}
           </button>
         </template>
       </div>
@@ -752,70 +739,61 @@ const artistAlbumsDiagView = Vue.component('artist-albums-diag-view', {
       <div v-if="error" style="color:var(--danger);margin-bottom:12px">{{ error }}</div>
 
       <template v-if="result">
-        <!-- Summary banner -->
         <div class="admin-card" style="margin-bottom:16px;padding:12px 16px">
           <div style="display:flex;gap:24px;flex-wrap:wrap">
-            <div><span style="color:var(--t3);font-size:12px">Distinct effective-artist values</span><br><strong>{{ result.summary.totalEffectiveValues }}</strong></div>
-            <div><span style="color:var(--t3);font-size:12px">Covered by normalised variants</span><br><strong style="color:var(--accent)">{{ result.summary.coveredByVariants }}</strong></div>
-            <div><span style="color:var(--t3);font-size:12px">Orphaned values (not covered)</span><br><strong :style="result.summary.orphanedValues > 0 ? 'color:var(--danger)' : ''">{{ result.summary.orphanedValues }}</strong></div>
-            <div><span style="color:var(--t3);font-size:12px">Hidden albums (orphaned)</span><br><strong :style="result.summary.orphanedAlbumCount > 0 ? 'color:var(--danger)' : ''">{{ result.summary.orphanedAlbumCount }}</strong></div>
+            <div><span style="color:var(--t3);font-size:12px">{{ t('admin.artistAlbums.sumEffective') }}</span><br><strong>{{ result.summary.totalEffectiveValues }}</strong></div>
+            <div><span style="color:var(--t3);font-size:12px">{{ t('admin.artistAlbums.sumCovered') }}</span><br><strong style="color:var(--accent)">{{ result.summary.coveredByVariants }}</strong></div>
+            <div><span style="color:var(--t3);font-size:12px">{{ t('admin.artistAlbums.sumOrphaned') }}</span><br><strong :style="result.summary.orphanedValues > 0 ? 'color:var(--danger)' : ''">{{ result.summary.orphanedValues }}</strong></div>
+            <div><span style="color:var(--t3);font-size:12px">{{ t('admin.artistAlbums.sumHidden') }}</span><br><strong :style="result.summary.orphanedAlbumCount > 0 ? 'color:var(--danger)' : ''">{{ result.summary.orphanedAlbumCount }}</strong></div>
           </div>
         </div>
 
-        <!-- Normalized entry -->
         <div class="admin-card" style="margin-bottom:16px;padding:12px 16px">
-          <div class="admin-label" style="margin-bottom:6px">Normalized Index Entry</div>
+          <div class="admin-label" style="margin-bottom:6px">{{ t('admin.artistAlbums.normalizedEntry') }}</div>
           <template v-if="result.normalizedEntry">
-            <div style="margin-bottom:4px"><span style="color:var(--t3)">Canonical name: </span><strong>{{ result.normalizedEntry.canonicalName }}</strong></div>
-            <div style="margin-bottom:4px"><span style="color:var(--t3)">Song count: </span>{{ result.normalizedEntry.songCount }}</div>
-            <div style="margin-bottom:4px"><span style="color:var(--t3)">Known vpaths: </span>{{ result.normalizedEntry.vpaths.join(', ') || '(none)' }}</div>
-            <div style="margin-bottom:2px;color:var(--t3)">Raw variants queried in artist view:</div>
+            <div style="margin-bottom:4px"><span style="color:var(--t3)">{{ t('admin.artistAlbums.canonicalName') }} </span><strong>{{ result.normalizedEntry.canonicalName }}</strong></div>
+            <div style="margin-bottom:4px"><span style="color:var(--t3)">{{ t('admin.artistAlbums.songCount') }} </span>{{ result.normalizedEntry.songCount }}</div>
+            <div style="margin-bottom:4px"><span style="color:var(--t3)">{{ t('admin.artistAlbums.knownVpaths') }} </span>{{ result.normalizedEntry.vpaths.join(', ') || t('admin.artistAlbums.none') }}</div>
+            <div style="margin-bottom:2px;color:var(--t3)">{{ t('admin.artistAlbums.rawVariants') }}</div>
             <ul style="margin:4px 0 0 16px;padding:0">
               <li v-for="v in result.normalizedEntry.rawVariants" :key="v" style="font-size:13px;font-family:monospace">{{ v }}</li>
             </ul>
           </template>
-          <div v-else style="color:var(--danger)">Artist not found in normalized index — no artist card will be shown in the Artists view.</div>
+          <div v-else style="color:var(--danger)">{{ t('admin.artistAlbums.notFound') }}</div>
         </div>
 
-        <!-- Orphaned albums (root cause!) -->
         <template v-if="result.orphanAlbums.length">
           <div class="admin-card" style="margin-bottom:16px;padding:12px 16px;border:1px solid var(--danger)">
-            <div class="admin-label" style="color:var(--danger);margin-bottom:8px">⚠ Orphaned artist values — albums hidden from artist view</div>
-            <p style="font-size:13px;color:var(--t2);margin-bottom:10px">
-              These effective COALESCE(album_artist, artist) values exist in the database but are NOT included in the
-              artist's rawVariants list. Any album whose tracks have these values will be invisible in the artist view.
-            </p>
+            <div class="admin-label" style="color:var(--danger);margin-bottom:8px">⚠ {{ t('admin.artistAlbums.orphanTitle') }}</div>
+            <p style="font-size:13px;color:var(--t2);margin-bottom:10px">{{ t('admin.artistAlbums.orphanDesc') }}</p>
             <div v-for="o in result.orphanAlbums" :key="o.effective" style="margin-bottom:12px">
               <div style="font-family:monospace;font-size:13px;background:var(--bg2);padding:4px 8px;border-radius:4px;margin-bottom:4px">
-                {{ o.effective }} <span style="color:var(--t3)">({{ o.track_count }} tracks)</span>
+                {{ o.effective }} <span style="color:var(--t3)">({{ t('admin.artistAlbums.tracks', { count: o.track_count }) }})</span>
               </div>
               <ul style="margin:0 0 0 16px;padding:0">
                 <li v-for="a in o.albums" :key="a.dir" style="font-size:12px;color:var(--t2)">
-                  {{ a.album || '(no album tag)' }} — <span style="color:var(--t3)">{{ a.vpath }}/{{ a.dir }}</span>
+                  {{ a.album || t('admin.artistAlbums.noAlbumTag') }} — <span style="color:var(--t3)">{{ a.vpath }}/{{ a.dir }}</span>
                 </li>
               </ul>
             </div>
-            <p style="font-size:12px;color:var(--t3);margin-top:8px">
-              Fix: ensure the album_artist tag on these files matches exactly one of the rawVariants above, or re-scan after correcting the tags.
-            </p>
+            <p style="font-size:12px;color:var(--t3);margin-top:8px">{{ t('admin.artistAlbums.orphanFix') }}</p>
           </div>
         </template>
 
-        <!-- Albums per variant -->
         <div class="admin-card" style="padding:12px 16px">
-          <div class="admin-label" style="margin-bottom:8px">Albums per normalized variant</div>
+          <div class="admin-label" style="margin-bottom:8px">{{ t('admin.artistAlbums.perVariant') }}</div>
           <template v-if="result.normalizedEntry">
             <div v-for="(albums, variant) in result.albumsByVariant" :key="variant" style="margin-bottom:10px">
               <div style="font-family:monospace;font-size:13px;background:var(--bg2);padding:3px 8px;border-radius:3px;margin-bottom:4px">{{ variant }}</div>
-              <div v-if="!albums.length" style="font-size:12px;color:var(--t3);margin-left:12px">No albums</div>
+              <div v-if="!albums.length" style="font-size:12px;color:var(--t3);margin-left:12px">{{ t('admin.artistAlbums.noAlbums') }}</div>
               <ul v-else style="margin:0 0 0 16px;padding:0">
                 <li v-for="a in albums" :key="a.dir" style="font-size:12px;color:var(--t2)">
-                  {{ a.album || '(no album tag)' }} <span style="color:var(--t3)">[{{ a.vpath }}]</span>
+                  {{ a.album || t('admin.artistAlbums.noAlbumTag') }} <span style="color:var(--t3)">[{{ a.vpath }}]</span>
                 </li>
               </ul>
             </div>
           </template>
-          <div v-else style="color:var(--t3);font-size:13px">No normalized entry found — no albums to show.</div>
+          <div v-else style="color:var(--t3);font-size:13px">{{ t('admin.artistAlbums.noEntry') }}</div>
         </div>
       </template>
     </div>
@@ -1236,7 +1214,7 @@ const scanErrorsView = Vue.component('scan-errors-view', {
                       <div class="se-detail-grid">
                         <div class="se-detail-section">
                           <div class="se-detail-label">{{ t('admin.scanErrors.detailFullPath') }}</div>
-                          <div class="se-detail-value se-detail-path" @click="copyPath(err.filepath)" title="Click to copy">
+                          <div class="se-detail-value se-detail-path" @click="copyPath(err.filepath)" :title="t('admin.scanErrors.clickToCopy')">
                             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
                             {{err.filepath || '—'}}
                           </div>
@@ -1293,9 +1271,9 @@ const scanErrorsView = Vue.component('scan-errors-view', {
                         <div class="se-detail-fix-row" v-else-if="err.fixed_at && err.fix_action !== 'unrecoverable'">
                           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--se-green,#4caf50)" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
                           <span class="se-fix-done-txt">
-                            Fixed {{relTime(err.fixed_at)}}
+                            {{ t('admin.scanErrors.fixedAt', { time: relTime(err.fixed_at) }) }}
                             <span v-if="err.fix_action" style="opacity:.65;margin-left:.35rem">({{fixActionLabel(err.fix_action)}})</span>
-                            <span v-if="err.confirmed_at" class="se-confirmed-chip">&#10003; Rescan confirmed OK {{relTime(err.confirmed_at)}}</span>
+                            <span v-if="err.confirmed_at" class="se-confirmed-chip">&#10003; {{ t('admin.scanErrors.rescanConfirmed', { time: relTime(err.confirmed_at) }) }}</span>
                             <span v-else style="opacity:.5;margin-left:.5rem;font-size:.8em">{{ t('admin.scanErrors.fixRescanWaiting') }}</span>
                           </span>
                         </div>
@@ -1556,7 +1534,7 @@ const foldersView = Vue.component('folders-view', {
                   :placeholder="t('admin.folders.pathPlaceholder')"
                   style="cursor:pointer;flex:1;margin-bottom:0;"
                   readonly />
-                <button type="button" class="btn" @click="addFolderDialog()" style="flex-shrink:0;height:38px;align-self:center;" title="Open folder browser">
+                <button type="button" class="btn" @click="addFolderDialog()" style="flex-shrink:0;height:38px;align-self:center;" :title="t('admin.folders.browseTitle')">
                   <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 48 48" style="vertical-align:middle;margin-right:4px;"><path fill="#FFA000" d="M38 12H22l-4-4H8c-2.2 0-4 1.8-4 4v24c0 2.2 1.8 4 4 4h31c1.7 0 3-1.3 3-3V16c0-2.2-1.8-4-4-4z"/><path fill="#FFCA28" d="M42.2 18H15.3c-1.9 0-3.6 1.4-3.9 3.3L8 40h31.7c1.9 0 3.6-1.4 3.9-3.3l2.5-14c.5-2.4-1.4-4.7-3.9-4.7z"/></svg>{{ t('admin.folders.btnBrowse') }}
                 </button>
               </div>
@@ -1822,7 +1800,7 @@ const foldersView = Vue.component('folders-view', {
                 <span style="font-size:11px;color:var(--t3);flex-shrink:0;min-width:60px;padding-top:2px;">{{ t('admin.folders.labelAccessRow') }}</span>
                 <div style="display:flex;flex-wrap:wrap;gap:4px;align-items:center;">
                   <span v-for="uname in admin_users" :key="'admin-'+uname"
-                        title="Admin — always has full access to all folders"
+                        :title="t('admin.folders.adminFullAccess')"
                         style="display:inline-block;padding:1px 7px;border-radius:8px;font-size:11px;background:rgba(245,158,11,.12);border:1px solid rgba(245,158,11,.3);color:#f59e0b;font-weight:600;">
                     ★ {{uname}}
                   </span>
@@ -1848,7 +1826,7 @@ const foldersView = Vue.component('folders-view', {
                   <label style="font-size:12px;font-weight:600;color:var(--t2);display:block;margin-bottom:4px;">{{ t('admin.folders.editLabelPath') }}</label>
                   <div style="display:flex;gap:6px;">
                     <input v-model="editForm.root" type="text" class="settings-select" style="flex:1;font-family:monospace;font-size:.82rem;" />
-                    <button class="btn-small" type="button" @click="pickEditFolder(k)" title="Browse">…</button>
+                    <button class="btn-small" type="button" @click="pickEditFolder(k)" :title="t('admin.folders.btnBrowse')">…</button>
                   </div>
                   <small style="color:var(--t3);font-size:.78rem;">{{ t('admin.folders.editPathHint') }}</small>
                 </div>
@@ -2994,10 +2972,7 @@ const dbView = Vue.component('db-view', {
     return {
       dbParams: ADMINDATA.dbParams,
       dbStats: null,
-      sharedPlaylists: ADMINDATA.sharedPlaylists,
-      sharedPlaylistsTS: ADMINDATA.sharedPlaylistUpdated,
       isPullingStats: false,
-      isPullingShared: false,
       scanProgress: [],
       resumable: [],
       spPollTimer: null,
@@ -3059,7 +3034,7 @@ const dbView = Vue.component('db-view', {
                     <tr>
                       <td><b>{{ t('admin.db.labelMaxConcurrentScans') }}</b> {{dbParams.maxConcurrentTasks}}</td>
                       <td>
-                        <a v-on:click="openModal('edit-max-scan-modal')" class="btn-sm btn-sm-edit">{{ t('admin.common.edit') }}</a>
+                        <a v-on:click="openModal('edit-max-scans-modal')" class="btn-sm btn-sm-edit">{{ t('admin.common.edit') }}</a>
                       </td>
                     </tr>
                     <tr>
@@ -3080,16 +3055,12 @@ const dbView = Vue.component('db-view', {
             </div>
           </div>
         </div>
-        <!-- Album Version Tag Fields card -->
         <div class="row">
           <div class="col s12">
             <div class="card">
               <div class="card-content">
-                <span class="card-title">Album Version Tag Fields</span>
-                <p style="color:var(--t2);font-size:.88rem;margin-bottom:12px;">
-                  Ordered list of tag field names checked during scanning to find album version/edition text.
-                  First non-empty match wins. After changing this list, rescan your library to apply.
-                </p>
+                <span class="card-title">{{ t('admin.albumVersionTags.title') }}</span>
+                <p style="color:var(--t2);font-size:.88rem;margin-bottom:12px;">{{ t('admin.albumVersionTags.desc') }}</p>
                 <album-version-tags-card></album-version-tags-card>
               </div>
             </div>
@@ -3114,26 +3085,23 @@ const dbView = Vue.component('db-view', {
                     <div class="sp-header">
                       <span class="sp-live-dot"></span>
                       <span class="sp-vpath">{{sp.vpath}}</span>
-                      <span v-if="sp.countingFound > 0 && sp.scanned === 0" class="sp-counting-badge">Counting&hellip;</span>
-                      <span v-else-if="sp.pct !== null" class="sp-pct-badge">{{sp.pct}}%</span>
-                      <span v-else class="sp-firstscan-badge">first scan</span>
+                      <span v-if="sp.pct !== null" class="sp-pct-badge">{{sp.pct}}%</span>
+                      <span v-else class="sp-firstscan-badge">{{ t('admin.db.scanFirstScan') }}</span>
                       <span class="sp-spacer"></span>
-                      <span v-if="sp.etaSec" class="sp-eta">est. {{formatEta(sp.etaSec)}}</span>
+                      <span v-if="sp.etaSec" class="sp-eta">{{ t('admin.db.scanEta', { eta: formatEta(sp.etaSec) }) }}</span>
                       <span v-if="sp.filesPerSec" class="sp-rate">{{sp.filesPerSec}}/s</span>
                     </div>
                     <div class="sp-track">
-                      <div v-if="sp.countingFound > 0 && sp.scanned === 0" class="sp-fill-indeterminate"></div>
-                      <div v-else-if="sp.pct !== null" class="sp-fill" :style="{width: sp.pct + '%'}"></div>
+                      <div v-if="sp.pct !== null" class="sp-fill" :style="{width: sp.pct + '%'}"></div>
                       <div v-else class="sp-fill-indeterminate"></div>
                     </div>
                     <div class="sp-counts">
-                      <span v-if="sp.countingFound > 0 && sp.scanned === 0">{{sp.countingFound.toLocaleString()}} files found&hellip;</span>
-                      <span v-else-if="sp.expected">{{sp.scanned.toLocaleString()}} / {{sp.expected.toLocaleString()}} files checked</span>
-                      <span v-else>{{sp.scanned.toLocaleString()}} files checked</span>
-                      <span class="sp-elapsed">elapsed: {{formatElapsed(sp.elapsedSec)}}</span>
+                      <span v-if="sp.expected">{{ t('admin.db.scanFilesChecked', { scanned: sp.scanned.toLocaleString(), expected: sp.expected.toLocaleString() }) }}</span>
+                      <span v-else>{{ t('admin.db.scanFilesCheckedCount', { count: sp.scanned.toLocaleString() }) }}</span>
+                      <span class="sp-elapsed">{{ t('admin.db.scanElapsed') }} {{formatElapsed(sp.elapsedSec)}}</span>
                     </div>
                     <div v-if="sp.added > 0" class="sp-counts" style="margin-top:.2rem;color:var(--accent,#26a69a)">
-                      <span>{{sp.added.toLocaleString()}} added to DB</span>
+                      <span>{{ t('admin.db.scanAddedToDB', { count: sp.added.toLocaleString() }) }}</span>
                     </div>
                     <div v-if="sp.currentFile" class="sp-current-file">
                       <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg>
@@ -3265,7 +3233,7 @@ const dbView = Vue.component('db-view', {
 
                 </div>
                 <div v-else-if="dbStats" style="color:var(--t2);font-size:.88rem;margin-top:.75rem">
-                  {{(dbStats.fileCount||0).toLocaleString()}} files indexed &mdash; restart the server to see full statistics.
+                  {{ t('admin.db.filesIndexedRestart', { count: (dbStats.fileCount||0).toLocaleString() }) }}
                 </div>
               </div>
             </div>
@@ -3277,8 +3245,7 @@ const dbView = Vue.component('db-view', {
               <div class="card-content">
                 <span class="card-title">{{ t('admin.library.orphanedVpaths') }}</span>
                 <p style="color:var(--t2);font-size:.88rem;margin-bottom:12px;">
-                  When a library folder is renamed or removed from config, old rows may remain in the database.
-                  Use this to detect and clean them up.
+                  {{ t('admin.library.orphanedDesc') }}
                 </p>
                 <a class="btn" v-on:click="purgeOrphaned">{{ t('admin.library.purgeOrphaned') }}</a>
               </div>
@@ -3410,84 +3377,6 @@ const dbView = Vue.component('db-view', {
         this.isPullingStats = false;
       }
     },
-    sharedLinkUrl: function(id) {
-      return window.location.origin + '/shared/' + id;
-    },
-    sharedExpiry: function(v) {
-      if (!v.expires) { return this.t('admin.db.labelNeverExpires'); }
-      if (v.expires * 1000 < Date.now()) { return this.t('admin.db.labelExpired'); }
-      return this.t('admin.db.labelExpires', { date: new Date(v.expires * 1000).toLocaleDateString() });
-    },
-    copySharedLink: function(playlistId, evt) {
-      const url = this.sharedLinkUrl(playlistId);
-      navigator.clipboard.writeText(url).then(() => {
-        const btn = evt.currentTarget;
-        const orig = btn.textContent;
-        btn.textContent = '\u2713 ' + this.t('admin.db.btnCopied');
-        setTimeout(() => { btn.textContent = orig; }, 1800);
-      }).catch(() => {
-        iziToast.warning({ title: this.t('player.toast.copyFailed'), position: 'topCenter', timeout: 2000 });
-      });
-    },
-    loadShared: async function() {
-      try {
-        this.isPullingShared = true;
-        await ADMINDATA.getSharedPlaylists();
-      } catch {
-        iziToast.error({
-          title: this.t('admin.db.toastFailedPullData'),
-          position: 'topCenter',
-          timeout: 3500
-        });
-      } finally {
-        this.isPullingShared = false;
-      }
-    },
-    deletePlaylist: async function(playlistObj) {
-            adminConfirm(`Delete playlist <b>${playlistObj.playlistId}</b>?`, '', 'Delete', async () => {
-        try {
-                      await ADMINDATA.deleteSharedPlaylist(playlistObj);
-                    } catch {
-                      iziToast.error({
-                        title: this.t('admin.db.toastFailedDeletePlaylist'),
-                        position: 'topCenter',
-                        timeout: 3500
-                      });
-                    }
-      });
-    },
-    deleteUnxpShared: async function() {
-            adminConfirm(`Delete all playlists without expiration dates?`, '', 'Delete', async () => {
-        try {
-                      this.isPullingShared = true;
-                      await ADMINDATA.deleteUnxpShared();
-                      await ADMINDATA.getSharedPlaylists();
-                    } catch {
-                      iziToast.error({
-                        title: this.t('admin.db.toastFailedDeleteSharedPlaylists'),
-                        position: 'topCenter',
-                        timeout: 3500
-                      });
-                    } finally {
-                      this.isPullingShared = false;
-                    }
-      });
-    },
-    deleteExpiredShared: async function() {
-      try {
-        this.isPullingShared = true;
-        await ADMINDATA.deleteExpiredShared();
-        await ADMINDATA.getSharedPlaylists();
-      } catch {
-        iziToast.error({
-          title: this.t('admin.db.toastFailedPullData'),
-          position: 'topCenter',
-          timeout: 3500
-        });
-      } finally {
-        this.isPullingShared = false;
-      }
-    },
     scanDB: async function() {
       try {
         // Clear any interrupted scan checkpoint first — start fresh from the beginning
@@ -3536,7 +3425,7 @@ const dbView = Vue.component('db-view', {
       }
     },
     recompressImages: function() {
-            adminConfirm(`<b>Compress All Images?</b>`, 'This process will run in the background', 'Start', async () => {
+            adminConfirm(`<b>${this.t('admin.db.confirmCompressAllTitle')}</b>`, this.t('admin.db.confirmCompressAllMsg'), this.t('admin.common.start'), async () => {
         try {
                       const res = await API.axios({
                         method: 'POST',
@@ -3545,13 +3434,13 @@ const dbView = Vue.component('db-view', {
 
                       if (res.data.started === true) {
                         iziToast.success({
-                          title: 'Process Started',
+                          title: this.t('admin.db.toastProcessStarted'),
                           position: 'topCenter',
                           timeout: 3500
                         });
                       } else {
                         iziToast.warning({
-                          title: 'Image Compression In Progress',
+                          title: this.t('admin.db.toastCompressionRunning'),
                           position: 'topCenter',
                           timeout: 3500
                         });
@@ -3559,7 +3448,7 @@ const dbView = Vue.component('db-view', {
 
                     } catch {
                       iziToast.error({
-                        title: 'Failed',
+                        title: this.t('admin.common.failed'),
                         position: 'topCenter',
                         timeout: 3500
                       });
@@ -3567,7 +3456,8 @@ const dbView = Vue.component('db-view', {
       });
     },
     toggleCompressImage: function() {
-            adminConfirm(`<b>${this.dbParams.compressImage === true ? 'Disable' : 'Enable'} Compress Images?</b>`, '', `${this.dbParams.compressImage === true ? 'Disable' : 'Enable'}`, () => {
+            const on = this.dbParams.compressImage === true;
+            adminConfirm(`<b>${this.t(on ? 'admin.db.confirmCompressImageDisable' : 'admin.db.confirmCompressImageEnable')}</b>`, '', this.t(on ? 'admin.common.disable' : 'admin.common.enable'), () => {
         API.axios({
                       method: 'POST',
                       url: `${API.url()}/api/v1/admin/db/params/compress-image`,
@@ -3583,7 +3473,7 @@ const dbView = Vue.component('db-view', {
                       });
                     }).catch(() => {
                       iziToast.error({
-                        title: 'Failed',
+                        title: this.t('admin.common.failed'),
                         position: 'topCenter',
                         timeout: 3500
                       });
@@ -3592,11 +3482,9 @@ const dbView = Vue.component('db-view', {
     },
     toggleAllowId3Edit: function() {
             adminConfirm(
-        `<b>${this.dbParams.allowId3Edit ? 'Disable' : 'Enable'} ID3 Tag Editing?</b>`,
-        this.dbParams.allowId3Edit
-          ? 'Admins will no longer be able to edit ID3 tags in the Now Playing modal.'
-          : 'Allows admins to edit ID3 tags (title, artist, album, year, genre…) in the Now Playing modal. Tags are written directly to the file via ffmpeg.',
-        this.dbParams.allowId3Edit ? 'Disable' : 'Enable',
+        `<b>${this.t(this.dbParams.allowId3Edit ? 'admin.db.confirmId3EditDisable' : 'admin.db.confirmId3EditEnable')}</b>`,
+        this.t(this.dbParams.allowId3Edit ? 'admin.db.id3EditDisableMsg' : 'admin.db.id3EditEnableMsg'),
+        this.t(this.dbParams.allowId3Edit ? 'admin.common.disable' : 'admin.common.enable'),
         () => {
           API.axios({
                         method: 'POST',
@@ -3606,7 +3494,7 @@ const dbView = Vue.component('db-view', {
                         Vue.set(ADMINDATA.dbParams, 'allowId3Edit', !this.dbParams.allowId3Edit);
                         iziToast.success({ title: this.t('admin.common.updatedSuccessfully'), position: 'topCenter', timeout: 3500 });
                       }).catch(() => {
-                        iziToast.error({ title: 'Failed', position: 'topCenter', timeout: 3500 });
+                        iziToast.error({ title: this.t('admin.common.failed'), position: 'topCenter', timeout: 3500 });
                       });
         }
       );
@@ -3614,11 +3502,9 @@ const dbView = Vue.component('db-view', {
     toggleBootScanEnabled: function() {
       const enabling = !this.dbParams.bootScanEnabled;
       adminConfirm(
-        `<b>${enabling ? 'Enable' : 'Disable'} Boot Scan?</b>`,
-        enabling
-          ? 'The database will be scanned automatically when the server starts.'
-          : 'The database will NOT be scanned on startup. You can still trigger a manual scan at any time.',
-        enabling ? 'Enable' : 'Disable',
+        `<b>${this.t(enabling ? 'admin.db.confirmBootScanEnable' : 'admin.db.confirmBootScanDisable')}</b>`,
+        this.t(enabling ? 'admin.db.bootScanEnableMsg' : 'admin.db.bootScanDisableMsg'),
+        this.t(enabling ? 'admin.common.enable' : 'admin.common.disable'),
         () => {
           API.axios({
             method: 'POST',
@@ -3626,7 +3512,7 @@ const dbView = Vue.component('db-view', {
             data: { bootScanEnabled: enabling }
           }).then(() => {
             Vue.set(ADMINDATA.dbParams, 'bootScanEnabled', enabling);
-            iziToast.success({ title: this.t('admin.common.updated'), position: 'topCenter', timeout: 3500 });
+            iziToast.success({ title: this.t('admin.common.updatedSuccessfully'), position: 'topCenter', timeout: 3500 });
           }).catch(() => {
             iziToast.error({ title: this.t('admin.common.failed'), position: 'topCenter', timeout: 3500 });
           });
@@ -3634,7 +3520,8 @@ const dbView = Vue.component('db-view', {
       );
     },
     toggleSkipImg: function() {
-            adminConfirm(`<b>${this.dbParams.skipImg === true ? 'Disable' : 'Enable'} Image Skip?</b>`, '', `${this.dbParams.skipImg === true ? 'Disable' : 'Enable'}`, () => {
+            const on = this.dbParams.skipImg === true;
+            adminConfirm(`<b>${this.t(on ? 'admin.db.confirmSkipImgDisable' : 'admin.db.confirmSkipImgEnable')}</b>`, '', this.t(on ? 'admin.common.disable' : 'admin.common.enable'), () => {
         API.axios({
                       method: 'POST',
                       url: `${API.url()}/api/v1/admin/db/params/skip-img`,
@@ -3650,7 +3537,7 @@ const dbView = Vue.component('db-view', {
                       });
                     }).catch(() => {
                       iziToast.error({
-                        title: 'Failed',
+                        title: this.t('admin.common.failed'),
                         position: 'topCenter',
                         timeout: 3500
                       });
@@ -3674,12 +3561,12 @@ const dbView = Vue.component('db-view', {
               const res = await API.axios({ method: 'POST', url: `${API.url()}/api/v1/admin/db/purge-orphaned-vpaths`, data: { dryRun: false } });
               iziToast.success({ title: this.t('admin.library.purgeOrphanedDone', { count: res.data.deleted }), position: 'topCenter', timeout: 4000 });
             } catch {
-              iziToast.error({ title: 'Failed to purge orphaned rows', position: 'topCenter', timeout: 3500 });
+              iziToast.error({ title: this.t('admin.library.purgeOrphanedFailed'), position: 'topCenter', timeout: 3500 });
             }
           }
         );
       } catch {
-        iziToast.error({ title: 'Failed to check for orphaned vpaths', position: 'topCenter', timeout: 3500 });
+        iziToast.error({ title: this.t('admin.library.checkOrphanedFailed'), position: 'topCenter', timeout: 3500 });
       }
     },
     openModal: function(modalView) {
@@ -3775,7 +3662,7 @@ const sharedPlaylistsView = Vue.component('shared-playlists-view', {
       }
     },
     deletePlaylist: async function(playlistObj) {
-      adminConfirm(`Delete playlist <b>${playlistObj.playlistId}</b>?`, '', 'Delete', async () => {
+      adminConfirm(this.t('admin.db.confirmDeletePlaylistTitle', { id: _esc(playlistObj.playlistId) }), '', this.t('admin.db.confirmDeletePlaylistLabel'), async () => {
         try {
           await ADMINDATA.deleteSharedPlaylist(playlistObj);
         } catch {
@@ -3784,7 +3671,7 @@ const sharedPlaylistsView = Vue.component('shared-playlists-view', {
       });
     },
     deleteUnxpShared: async function() {
-      adminConfirm(`Delete all playlists without expiration dates?`, '', 'Delete', async () => {
+      adminConfirm(this.t('admin.db.confirmDeleteNoExpiryTitle'), '', this.t('admin.db.confirmDeleteNoExpiryLabel'), async () => {
         try {
           this.isPullingShared = true;
           await ADMINDATA.deleteUnxpShared();
@@ -3817,6 +3704,8 @@ const backupView = Vue.component('backup-view', {
       backups: [],
       isLoading: true,
       isCreating: false,
+      isPruning: false,
+      logRetentions: ['1d', '3d', '7d', '14d', '30d'],
       params: ADMINDATA.serverParams,
       paramsTS: ADMINDATA.serverParamsUpdated,
     };
@@ -3851,7 +3740,7 @@ const backupView = Vue.component('backup-view', {
                       <td style="font-family:monospace;font-size:.85rem;">{{b.filename}}</td>
                       <td>{{formatBytes(b.size)}}</td>
                       <td>{{formatDate(b.mtime)}}</td>
-                      <td><a class="btn-sm btn-sm-download" title="Download" style="cursor:pointer;" @click="downloadBackup(b.filename)">{{ t('admin.backup.btnDownload') }}</a></td>
+                      <td><a class="btn-sm btn-sm-download" :title="t('admin.backup.btnDownload')" style="cursor:pointer;" @click="downloadBackup(b.filename)">{{ t('admin.backup.btnDownload') }}</a></td>
                     </tr>
                   </tbody>
                 </table>
@@ -3882,6 +3771,15 @@ const backupView = Vue.component('backup-view', {
                     <td><a v-on:click="toggleWriteLogs" class="btn-sm btn-sm-edit">edit</a></td>
                   </tr>
                   <tr>
+                    <td>
+                      <label for="log-retention-select"><b>{{ t('admin.logs.labelRetention') }}</b></label>
+                      <select id="log-retention-select" class="browser-default" style="display:inline-block;width:auto;margin-left:.5rem;" :value="params.logRetention" @change="saveLogRetention($event.target.value)">
+                        <option v-for="r in logRetentions" :key="r" :value="r">{{ t('admin.logs.retentionDays', { n: Number.parseInt(r, 10) }) }}</option>
+                      </select>
+                    </td>
+                    <td style="color:var(--t2);font-size:.82rem">{{ t('admin.logs.retentionHint') }}</td>
+                  </tr>
+                  <tr>
                     <td><b>{{ t('admin.logs.labelLogsDirectory') }}</b> {{params.storage.logsDirectory}}</td>
                     <td style="color:var(--t2);font-size:.82rem">{{ t('admin.settings.editInConfigHint') }}</td>
                   </tr>
@@ -3890,6 +3788,7 @@ const backupView = Vue.component('backup-view', {
             </div>
             <div class="card-action">
               <a v-on:click="downloadLogs()" class="btn">{{ t('admin.logs.btnDownload') }}</a>
+              <button class="btn btn-flat" type="button" :disabled="isPruning" @click="pruneLogs()">{{ t('admin.logs.btnPrune') }}</button>
             </div>
           </div>
         </div>
@@ -3965,7 +3864,8 @@ const backupView = Vue.component('backup-view', {
       }
     },
     toggleWriteLogs: function() {
-      adminConfirm(`<b>${this.params.writeLogs === true ? 'Disable' : 'Enable'} Writing Logs To Disk?</b>`, '', `${this.params.writeLogs === true ? 'Disable' : 'Enable'}`, () => {
+      const on = this.params.writeLogs === true;
+      adminConfirm(`<b>${this.t(on ? 'admin.logs.confirmWriteLogsDisable' : 'admin.logs.confirmWriteLogsEnable')}</b>`, '', this.t(on ? 'admin.common.disable' : 'admin.common.enable'), () => {
         API.axios({
           method: 'POST',
           url: `${API.url()}/api/v1/admin/config/write-logs`,
@@ -3974,9 +3874,28 @@ const backupView = Vue.component('backup-view', {
           Vue.set(ADMINDATA.serverParams, 'writeLogs', !this.params.writeLogs);
           iziToast.success({ title: this.t('admin.common.updatedSuccessfully'), position: 'topCenter', timeout: 3500 });
         }).catch(() => {
-          iziToast.error({ title: 'Failed', position: 'topCenter', timeout: 3500 });
+          iziToast.error({ title: this.t('admin.common.failed'), position: 'topCenter', timeout: 3500 });
         });
       });
+    },
+    saveLogRetention: async function(value) {
+      try {
+        await API.axios({ method: 'POST', url: `${API.url()}/api/v1/admin/config/log-retention`, data: { logRetention: value } });
+        Vue.set(ADMINDATA.serverParams, 'logRetention', value);
+        iziToast.success({ title: this.t('admin.common.updatedSuccessfully'), position: 'topCenter', timeout: 3500 });
+      } catch {
+        iziToast.error({ title: this.t('admin.common.updateFailed'), position: 'topCenter', timeout: 3500 });
+      }
+    },
+    pruneLogs: async function() {
+      this.isPruning = true;
+      try {
+        const res = await API.axios({ method: 'POST', url: `${API.url()}/api/v1/admin/logs/prune` });
+        iziToast.success({ title: this.t('admin.logs.toastPruned', { n: res.data.deleted }), position: 'topCenter', timeout: 3500 });
+      } catch {
+        iziToast.error({ title: this.t('admin.common.failed'), position: 'topCenter', timeout: 3500 });
+      }
+      this.isPruning = false;
     },
   }
 });
@@ -4171,131 +4090,6 @@ const migrateView = Vue.component('migrate-view', {
   }
 });
 
-const rpnView = Vue.component('rpn-view', {
-  data() {
-    return {
-      activeTab: 'standard',
-      submitPending: false
-    };
-  },
-  template: `
-    <div class="container">
-      <div class="row">
-        <div class="col s12">
-          <h1>Velvet RPN</h1>
-          <div class="card">
-            <div class="tabs">
-              <div class="tab"><button :class="{active: activeTab==='standard'}" @click="activeTab='standard'">Standard</button></div>
-              <div class="tab"><button :class="{active: activeTab==='advanced'}" @click="activeTab='advanced'">Advanced</button></div>
-            </div>
-            <div id="test1" v-show="activeTab==='standard'">
-              <form @submit.prevent="standardLogin">
-                <div class="card-content">
-                  <span class="card-title">Login</span>
-                  <div class="row">
-                    <div class="col s12 m6">
-                      <div class="row">
-                        <div class="input-field col s12">
-                          <input id="rpn-simple-username" required type="text">
-                          <label for="rpn-simple-username">Username</label>
-                        </div>
-                      </div>
-                      <div class="row">
-                        <div class="input-field col s12">
-                          <input id="rpn-simple-password" required type="password">
-                          <label for="rpn-simple-password">Password</label>
-                        </div>
-                      </div>
-                    </div>
-                    <div class="col s12 m6 hide-on-small-only">
-                      <div class="row">
-                        <h5 class="center-align">Help Support Velvet</h5>
-                      </div>
-                      <div class="row">
-                        <div class="col s2"></div>
-                        <a target="_blank" href="https://velvet.io/reverse-proxy-network" class="btn blue">Sign Up</a>
-                        <div class="col s2"></div>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-                <div class="card-action">
-                  <button class="btn" type="submit" :disabled="submitPending === true">
-                    {{submitPending === false ? 'Login to RPN' : 'Pending...'}}
-                  </button>
-                </div>
-              </form>
-            </div>
-            <div id="test2" v-show="activeTab==='advanced'">
-              <form @submit.prevent="advancedLogin">
-                <div class="card-content">
-                  <span class="card-title">Config</span>
-                  <div class="row">
-                    <div class="col s12 m12 l6">
-                      <div class="row">
-                        <div class="input-field col s12">
-                          <input id="rpn-advanced-address" required type="text">
-                          <label for="rpn-advanced-address">Server Address</label>
-                        </div>
-                      </div>
-                      <div class="row">
-                        <div class="input-field col s12">
-                          <input id="rpn-advanced-port" required type="number" type="number" min="2" max="65535">
-                          <label for="rpn-advanced-port">Port</label>
-                        </div>
-                      </div>
-                      <div class="row">
-                        <div class="input-field col s12">
-                          <input id="rpn-advanced-domain" required type="text">
-                          <label for="rpn-advanced-domain">Server Domain</label>
-                        </div>
-                      </div>
-                      <div class="row">
-                        <div class="input-field col s12">
-                          <input id="rpn-advanced-password" required type="password">
-                          <label for="rpn-advanced-password">Server Key</label>
-                        </div>
-                      </div>
-                    </div>
-                    <div class="col s12 m12 l6">
-                      <h5>
-                        <a target="_blank" href="https://github.com/fog-machine/tunnel-server">
-                          Check the docs to learn how to deploy your own server
-                        </a>
-                      </h5>
-                    </div>
-                  </div>
-                </div>
-                <div class="card-action">
-                  <button class="btn" type="submit" :disabled="submitPending === true">
-                    {{submitPending === false ? 'Connect To Server' : 'Connecting...'}}
-                  </button>
-                </div>
-              </form>
-            </div>
-          </div>
-        </div>
-      </div>
-      <div class="row">
-        <h4>Features</h4>
-        <ul class="browser-default">
-          <li>Choose your own domain @ https://your-name.velvet.io</li>
-          <li>Automatic SSL Encryption for your server</li>
-          <li>'Hole Punching' software guarantees your server stays online as long as you have a working internet connection</li>
-          <li>IP Obfuscation hides your IP address and adds an additional layer of security</li>  
-        </ul>
-      </div>
-    </div>`,
-  methods: {
-    standardLogin: function() {
-      console.log('STAND')
-    },
-    advancedLogin: function() {
-      console.log('ADV')
-    }
-  }
-});
-
 const infoView = Vue.component('info-view', {
   data() {
     return {
@@ -4339,7 +4133,7 @@ const infoView = Vue.component('info-view', {
               <span class="card-title">{{t('admin.info.telemetryTitle')}}</span>
               <p style="color:var(--t2);margin-bottom:.75rem;">{{t('admin.info.telemetryDesc')}}</p>
               <p style="color:var(--t2);margin-bottom:.5rem;font-size:.85rem;"><strong style="color:var(--t1);">{{t('admin.info.telemetryDataTitle')}}</strong></p>
-              <pre style="background:var(--raised);border:1px solid var(--border);border-radius:6px;padding:.65rem .9rem;font-size:.78rem;color:var(--t2);margin:0 0 1rem;overflow-x:auto;">{"id":"&lt;random UUID, generated once on first boot&gt;","version":"&lt;current version&gt;","platform":"linux","runtime":"docker","lastSeen":"2026-04-04T12:34:49.943Z"}</pre>
+              <pre style="background:var(--raised);border:1px solid var(--border);border-radius:6px;padding:.65rem .9rem;font-size:.78rem;color:var(--t2);margin:0 0 1rem;overflow-x:auto;">{{ JSON.stringify({ id: '<' + t('admin.info.telemetrySampleId') + '>', version: '<' + t('admin.info.telemetrySampleVersion') + '>', platform: 'linux', runtime: 'docker', lastSeen: '2026-04-04T12:34:49.943Z' }) }}</pre>
               <p style="color:var(--t2);font-size:.85rem;margin-bottom:0;">{{t('admin.info.telemetryPrivacy')}}</p>
             </div>
           </div>
@@ -4571,18 +4365,18 @@ const sonosView = Vue.component('sonos-view', {
               <template v-for="r in rooms" :key="r.uuid || r.ip">
               <tr style="border-bottom:1px solid var(--border2);">
                 <td style="padding:.4rem .5rem;font-weight:500;">
-                  <span v-if="defaultRoom && defaultRoom.ip === r.ip" style="color:var(--accent);margin-right:.35rem;" title="Default cast target">★</span>{{ r.name }}
+                  <span v-if="defaultRoom && defaultRoom.ip === r.ip" style="color:var(--accent);margin-right:.35rem;" :title="t('admin.sonos.defaultCastTarget')">★</span>{{ r.name }}
                 </td>
                 <td style="padding:.4rem .5rem;font-family:monospace;font-size:.82rem;">{{ r.ip }}</td>
                 <td style="padding:.4rem .5rem;opacity:.7;">{{ r.model }}</td>
                 <td style="padding:.4rem .5rem;opacity:.7;">{{ r.groupName || '—' }}</td>
                 <td style="padding:.4rem .5rem;white-space:nowrap;">
-                  <button class="btn btn-small" style="font-size:.75rem;padding:.2rem .5rem;margin-right:.25rem;" :disabled="testing" @click="testIp = r.ip; testResult = null; testPlay()">▶ Test</button>
+                  <button class="btn btn-small" style="font-size:.75rem;padding:.2rem .5rem;margin-right:.25rem;" :disabled="testing" @click="testIp = r.ip; testResult = null; testPlay()">▶ {{ t('admin.sonos.btnTest') }}</button>
                   <button class="btn btn-small" :disabled="savingDefault" style="font-size:.75rem;padding:.2rem .5rem;margin-right:.25rem;" :style="defaultRoom && defaultRoom.ip === r.ip ? 'opacity:.4;cursor:default;' : ''" @click="saveDefault(r)">
                     <span v-if="savingDefault && testIp === r.ip">{{ this.t('admin.sonos.savingDefault') }}</span>
                     <span v-else>★ {{ this.t('admin.sonos.setDefault') }}</span>
                   </button>
-                  <button class="btn btn-small" style="font-size:.75rem;padding:.2rem .4rem;" :style="infoRoom === r.ip ? 'background:var(--primary);color:#fff;' : ''" @click="fetchDeviceInfo(r)" title="Device info">
+                  <button class="btn btn-small" style="font-size:.75rem;padding:.2rem .4rem;" :style="infoRoom === r.ip ? 'background:var(--primary);color:#fff;' : ''" @click="fetchDeviceInfo(r)" :title="t('admin.sonos.deviceInfo')">
                     <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" style="display:inline;vertical-align:middle;"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
                   </button>
                 </td>
@@ -4599,7 +4393,7 @@ const sonosView = Vue.component('sonos-view', {
                     <div v-if="infoData.wifi"><span style="opacity:.55;">Network:</span> <strong>{{ infoData.wifi }}</strong><span v-if="infoData.wifiMode" style="opacity:.5;"> · {{ infoData.wifiMode }}</span></div>
                     <div v-if="infoData.battery && infoData.battery.supported"><span style="opacity:.55;">Battery:</span> <strong :style="infoData.battery.level <= 20 ? 'color:#f97316' : infoData.battery.level <= 50 ? 'color:#facc15' : ''">{{ infoData.battery.powerSource === 'USB_POWER' ? '⚡' : '🔋' }} {{ infoData.battery.level }}%</strong><span v-if="!/^(good|green|ok|okay|normal)$/i.test(infoData.battery.health)" style="opacity:.5;"> · {{ infoData.battery.health.replaceAll(/_/g,' ').toLowerCase() }}</span><span v-if="infoData.battery.temperature && infoData.battery.temperature !== 'NORMAL'" style="opacity:.5;"> ⚠&#xFE0E; {{ infoData.battery.temperature.replaceAll(/_/g,' ').toLowerCase() }}</span></div>
                   </div>
-                  <div v-else style="font-size:.82rem;color:var(--red);">Failed to load</div>
+                  <div v-else style="font-size:.82rem;color:var(--red);">{{ t('admin.common.loadFailed') }}</div>
                 </td>
               </tr>
               </template>
@@ -6091,273 +5885,6 @@ const transcodeView = Vue.component('transcode-view', {
   }
 });
 
-const federationMainPanel = Vue.component('federation-main-panel', { // activeTab-patched
-  data() {
-    return {
-      params: ADMINDATA.federationParams,
-      paramsTS: ADMINDATA.federationParamsUpdated,
-      enabled: ADMINDATA.federationEnabled,
-      syncthingUrl: "",
-      activeTab: 'federation',
-      enablePending: false,
-
-      currentToken: '',
-      inviteServerUrl: '',
-      parsedTokenData: null,
-      submitPending: false
-    };
-  },
-  template: `
-    <div>
-      <div class="tabs">
-        <div class="tab"><button :class="{active: activeTab==='federation'}" @click="activeTab='federation'">{{t('admin.federation.tabFederation')}}</button></div>
-        <div class="tab"><button :class="{active: activeTab==='syncthing'}" @click="activeTab='syncthing'; setSyncthingUrl()">{{t('admin.federation.tabSyncthing')}}</button></div>
-      </div>
-      <div id="sync-tab-1" v-show="activeTab==='federation'">
-        <div class="container">
-          <div class="row">
-            <div class="col s12">
-              <div class="card">
-                <div class="card-content">
-                  <span class="card-title">{{t('admin.federation.title')}}</span>
-                  <table>
-                    <tbody>
-                      <tr>
-                        <td><b>{{t('admin.federation.labelDeviceId')}}</b> {{params.deviceId}}</td>
-                      </tr>
-                    </tbody>
-                  </table>
-                  <button type="button" class="btn-flat btn-small" style="margin-top:.25rem;" @click="openFederationGenerateInviteModal()">{{t('admin.federation.btnGenerateInvite')}}</button>
-                </div>
-                <div class="card-action flow-root">
-                  <a v-on:click="enableFederation()" v-bind:class="{ 'red': enabled.val }" class="btn">{{enabled.val ? t('admin.federation.btnDisable') : t('admin.federation.btnEnable')}}</a>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-        <div class="big-container">
-          <div class="row">
-            <div class="col s12">
-              <div class="card">
-                <div class="card-content">
-                  <span class="card-title">{{t('admin.federation.acceptInviteTitle')}}</span>
-                  <div class="row">
-                    <div class="col s12 m12 l6">
-                      <div class="row">
-                        <div class="col s12">
-                          <label for="fed-invite-token">{{t('admin.federation.labelToken')}}</label>
-                          <textarea id="fed-invite-token" v-model="currentToken" style="height: auto;" rows="4" cols="60" :placeholder="t('admin.federation.tokenPlaceholder')"></textarea>
-                        </div>
-                      </div>
-                      <div class="input-field" style="margin-top:.5rem;">
-                        <label for="fed-invite-url">{{t('admin.federation.labelServerUrl')}}</label>
-                        <input id="fed-invite-url" v-model="inviteServerUrl" type="text" placeholder="https://your-server.example.com">
-                      </div>
-                    </div>
-                    <div class="col s12 m12 l6">
-                      <form @submit.prevent="acceptInvite" v-if="parsedTokenData !== null">
-                        <p>{{t('admin.federation.labelSelectFolders')}}</p>
-                        <div v-for="(item, key, index) in parsedTokenData.vPaths">
-                          <label>
-                            <input type="checkbox" checked/>
-                            <span>{{key}}</span>
-                          </label>
-                        </div>
-                        <button class="btn" type="submit" :disabled="submitPending === true">
-                          {{submitPending === false ? t('admin.federation.btnAcceptInvite') : t('admin.federation.btnWorking')}}
-                        </button>
-                      </form>
-                      <div v-else>
-                        <p>{{t('admin.federation.tokenHint')}}</p>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
-      <div id="sync-tab-2" v-show="activeTab==='syncthing'">
-        <iframe id="syncthing-iframe" :src="syncthingUrl"></iframe>
-      </div>
-    </div>`,
-  watch: {
-    'currentToken': function(val, preVal) {
-      try {
-        if (!val) { 
-          this.parsedTokenData = null;
-          return;
-        }
-
-        const decoded = jwt_decode(val);
-        this.parsedTokenData = decoded;
-      } catch(err) {
-        console.log(err)
-        this.parsedTokenData = null;
-      }
-    }
-  },
-  methods: {
-    editName: async function() {
-
-    },
-    acceptInvite: async function() {
-      try {
-        const postData = {
-          invite: this.currentToken,
-          paths: {}
-        };
-    
-        await API.axios({
-          method: 'POST',
-          url: `${API.url()}/api/v1/federation/invite/accept`,
-          data: postData
-        });
-      } catch {
-        iziToast.error({
-          title: this.t('admin.federation.toastFailedAccept'),
-          position: 'topCenter',
-          timeout: 3500
-        });
-      }
-
-  //   var folderNames = {};
-
-  //   var decoded = jwt_decode($('#federation-invitation-code').val());
-  //   Object.keys(decoded.vPaths).forEach(function(key) {
-  //     if($("input[type=checkbox][value="+decoded.vPaths[key]+"]").is(":checked")){
-  //       folderNames[key] = $("#" + decoded.vPaths[key]).val();
-  //     }
-  //   });
-
-  //   if (Object.keys(folderNames).length === 0) {
-  //     iziToast.error({
-  //       title: 'No directories selected',
-  //       position: 'topCenter',
-  //       timeout: 3500
-  //     });
-  //   }
-
-    // var sendThis = {
-    //   invite: $('#federation-invitation-code').val(),
-    //   paths: folderNames
-    // };
-
-  //   API.acceptFederationInvite(sendThis, function(res, err){
-  //     if (err !== false) {
-  //       boilerplateFailure(res, err);
-  //       return;
-  //     }
-
-  //     iziToast.success({
-  //       title: 'Federation Successful!',
-  //       position: 'topCenter',
-  //       timeout: 3500
-  //     });
-  //   });
-    },
-    setSyncthingUrl: function() {
-      if (this.syncthingUrl !== '') { return; }
-      this.syncthingUrl = '/api/v1/syncthing-proxy/?token=' + API.token();
-    },
-    openFederationGenerateInviteModal: function() {
-      modVM.currentViewModal = 'federation-generate-invite-modal';
-      modVM.openModal();
-    },
-    enableFederation: function() {
-      adminConfirm(
-        this.enabled.val === true ? this.t('admin.federation.confirmDisableTitle') : this.t('admin.federation.confirmEnableTitle'),
-        '',
-        this.enabled.val === true ? this.t('admin.common.disable') : this.t('admin.common.enable'),
-        async () => {
-        try {
-          this.enablePending = true;
-          await API.axios({
-            method: 'POST',
-            url: `${API.url()}/api/v1/admin/federation/enable`,
-            data: { enable: !this.enabled.val }
-          });
-          Vue.set(ADMINDATA.federationEnabled, 'val', !this.enabled.val);
-          iziToast.success({
-            title: this.enabled.val === true ? this.t('admin.federation.toastEnabled') : this.t('admin.federation.toastDisabled'),
-            position: 'topCenter',
-            timeout: 3500
-          });
-        } catch {
-          iziToast.error({
-            title: this.t('admin.federation.toastToggleFailed'),
-            position: 'topCenter',
-            timeout: 3500
-          });
-        } finally {
-          this.enablePending = false;
-        }
-      }
-      );
-    }
-  }
-});
-
-const federationView = Vue.component('federation-view', {
-  data() {
-    return {
-      paramsTS: ADMINDATA.federationParamsUpdated,
-      enabled: ADMINDATA.federationEnabled,
-      enablePending: false,
-    };
-  },
-  template: `
-    <div v-if="paramsTS.ts === 0" class="row">
-      <svg class="spinner" width="65px" height="65px" viewBox="0 0 66 66" xmlns="http://www.w3.org/2000/svg"><circle class="spinner-path" fill="none" stroke-width="6" stroke-linecap="round" cx="33" cy="33" r="30"></circle></svg>
-    </div>
-    <div v-else-if="enabled.val === false" class="row">
-      <div class="container">
-        <div class="powered-by-row">
-          <span class="powered-by-label">{{t('admin.federation.poweredBy')}}</span>
-          <svg xmlns="http://www.w3.org/2000/svg" class="syncthing-logo" viewBox="0 0 429 117.3"><linearGradient id="a" gradientUnits="userSpaceOnUse" x1="58.666" y1="117.332" x2="58.666" y2="0"><stop offset="0" stop-color="#0882c8"/><stop offset="1" stop-color="#26b6db"/></linearGradient><circle fill="url(#a)" cx="58.7" cy="58.7" r="58.7"/><circle fill="none" stroke="#FFF" stroke-width="6" stroke-miterlimit="10" cx="58.7" cy="58.5" r="43.7"/><path fill="#FFF" d="M94.7 47.8c4.7 1.6 9.8-.9 11.4-5.6 1.6-4.7-.9-9.8-5.6-11.4-4.7-1.6-9.8.9-11.4 5.6-1.6 4.7.9 9.8 5.6 11.4z"/><path fill="none" stroke="#FFF" stroke-width="6" stroke-miterlimit="10" d="M97.6 39.4l-30.1 25"/><path fill="#FFF" d="M77.6 91c-.4 4.9 3.2 9.3 8.2 9.8 5 .4 9.3-3.2 9.8-8.2.4-4.9-3.2-9.3-8.2-9.8-5-.4-9.4 3.2-9.8 8.2z"/><path fill="none" stroke="#FFF" stroke-width="6" stroke-miterlimit="10" d="M86.5 91.8l-19-27.4"/><path fill="#FFF" d="M60 69.3c2.7 4.2 8.3 5.4 12.4 2.7 4.2-2.7 5.4-8.3 2.7-12.4-2.7-4.2-8.3-5.4-12.4-2.7-4.2 2.6-5.4 8.2-2.7 12.4z"/><g><path fill="#FFF" d="M21.2 61.4c-4.3-2.5-9.8-1.1-12.3 3.1-2.5 4.3-1.1 9.8 3.1 12.3 4.3 2.5 9.8 1.1 12.3-3.1s1.1-9.7-3.1-12.3z"/><path fill="none" stroke="#FFF" stroke-width="6" stroke-miterlimit="10" d="M16.6 69.1l50.9-4.7"/></g><g fill="#0891D1"><path d="M163.8 50.2c-.6-.7-6.3-4.1-11.4-4.1-3.4 0-5.2 1.2-5.2 3.5 0 2.9 3.2 3.7 8.9 5.2 8.2 2.2 13.3 5 13.3 12.9 0 9.7-7.8 13-16 13-6.2 0-13.1-2-18.2-5.3l4.3-8.6c.8.8 7.5 5 14 5 3.5 0 5.2-1.1 5.2-3.2 0-3.2-4.4-4-10.3-5.8-7.9-2.4-11.5-5.3-11.5-11.8 0-9 7.2-13.9 15.7-13.9 6.1 0 11.6 2.5 15.4 4.7l-4.2 8.4zM175 85.1c1.7.5 3.3.8 4.4.8 2 0 3.3-1.5 4.2-5.5l-11.9-31.5h9.8l7.4 23.3 6.3-23.3h8.9L192 85.5c-1.7 5.3-6.2 8.7-11.8 8.8-1.7 0-3.5-.2-5.3-.9v-8.3zM239.3 80.3h-9.6V62.6c0-4.1-1.7-5.9-4.3-5.9-2.6 0-5.8 2.3-7 5.6v18.1h-9.6V48.8h8.6v5.3c2.3-3.7 6.8-5.9 12.2-5.9 8.2 0 9.5 6.7 9.5 11.9v20.2zM261.6 48.2c7.2 0 12.3 3.4 14.8 8.3l-9.4 2.8c-1.2-1.9-3.1-3-5.5-3-4 0-7 3.2-7 8.2 0 5 3.1 8.3 7 8.3 2.4 0 4.6-1.3 5.5-3.1l9.4 2.9c-2.3 4.9-7.6 8.3-14.8 8.3-10.6 0-16.9-7.7-16.9-16.4s6.2-16.3 16.9-16.3zM302.1 78.7c-2.6 1.1-6.2 2.3-9.7 2.3-4.7 0-8.8-2.3-8.8-8.4V56.1h-4v-7.3h4v-10h9.6v10h6.4v7.3h-6.4v13.1c0 2.1 1.2 2.9 2.8 2.9 1.4 0 3-.6 4.2-1.1l1.9 7.7zM337.2 80.3h-9.6V62.6c0-4.1-1.8-5.9-4.6-5.9-2.3 0-5.5 2.2-6.7 5.6v18.1h-9.6V36.5h9.6v17.6c2.3-3.7 6.3-5.9 10.9-5.9 8.5 0 9.9 6.5 9.9 11.9v20.2zM343.4 45.2v-8.7h9.6v8.7h-9.6zm0 35.1V48.8h9.6v31.5h-9.6zM389.9 80.3h-9.6V62.6c0-4.1-1.7-5.9-4.3-5.9-2.6 0-5.8 2.3-7 5.6v18.1h-9.6V48.8h8.6v5.3c2.3-3.7 6.8-5.9 12.2-5.9 8.2 0 9.5 6.7 9.5 11.9v20.2zM395.5 64.6c0-9.2 6-16.3 14.6-16.3 4.7 0 8.4 2.2 10.6 5.8v-5.2h8.3v29.3c0 9.6-7.5 15.5-18.2 15.5-6.8 0-11.5-2.3-15-6.3l5.1-5.2c2.3 2.6 6 4.3 9.9 4.3 4.6 0 8.6-2.4 8.6-8.3v-3.1c-1.9 3.5-5.9 5.3-10 5.3-8.3.1-13.9-7.1-13.9-15.8zm23.9 3.9v-6.6c-1.3-3.3-4.2-5.5-7.1-5.5-4.1 0-7 4-7 8.4 0 4.6 3.2 8 7.5 8 2.9 0 5.3-1.8 6.6-4.3z"/></g></svg>
-        </div>
-        <a v-on:click="enableFederation()" class="btn-large">{{t('admin.federation.btnEnable')}}</a>
-      </div>
-    </div>
-    <federation-main-panel v-else>
-    </federation-main-panel>`,
-  methods: {
-    enableFederation: async function() {
-      try {
-        this.enablePending = true;
-
-        await API.axios({
-          method: 'POST',
-          url: `${API.url()}/api/v1/admin/federation/enable`,
-          data: {
-            enable: !this.enabled.val,
-          }
-        });
-
-        // update frontend data
-        Vue.set(ADMINDATA.federationEnabled, 'val', !this.enabled.val);
-  
-        iziToast.success({
-          title: this.enabled.val === true ? this.t('admin.federation.toastEnabled') : this.t('admin.federation.toastDisabled'),
-          position: 'topCenter',
-          timeout: 3500
-        });
-      } catch {
-        iziToast.error({
-          title: this.t('admin.federation.toastToggleFailed'),
-          position: 'topCenter',
-          timeout: 3500
-        });
-      }finally {
-        this.enablePending = false;
-      }
-    }
-  }
-});
-
-
 const lockView = Vue.component('lock-view', {
   data() {
     return {};
@@ -6579,63 +6106,6 @@ const listenBrainzView = Vue.component('listenbrainz-view', {
   }
 });
 
-const discordWebhookView = Vue.component('discord-webhook-view', {
-  data() {
-    return { enabled: false, url: '', pending: false };
-  },
-  template: `
-    <div class="container">
-      <div class="row">
-        <div class="col s12">
-          <div class="card">
-            <div class="card-content">
-              <span class="card-title">{{ t('admin.discordWebhook.title') }}</span>
-              <p style="margin-bottom:1rem;">{{ t('admin.discordWebhook.desc') }}</p>
-              <table><tbody>
-                <tr>
-                  <td style="width:140px"><b>{{ t('admin.discordWebhook.labelEnable') }}</b></td>
-                  <td><input type="checkbox" v-model="enabled" style="margin:0;width:auto;height:auto;" /> {{ t('admin.discordWebhook.checkboxEnable') }}</td>
-                </tr>
-                <tr>
-                  <td><b>{{ t('admin.discordWebhook.labelUrl') }}</b></td>
-                  <td><input v-model="url" type="text" :placeholder="t('admin.discordWebhook.urlPlaceholder')" autocomplete="off" data-form-type="other" data-lpignore="true" data-1p-ignore data-bwignore spellcheck="false" style="margin:0;width:100%;max-width:520px" /></td>
-                </tr>
-                <tr>
-                  <td></td>
-                  <td style="font-size:0.82rem;color:#999;">{{ t('admin.discordWebhook.urlHint') }}</td>
-                </tr>
-              </tbody></table>
-            </div>
-            <div class="card-action">
-              <button class="btn" v-on:click="save()" :disabled="pending">
-                {{ pending ? t('admin.common.saving') : t('admin.common.save') }}
-              </button>
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>`,
-  async mounted() {
-    try {
-      const res = await API.axios({ method: 'GET', url: `${API.url()}/api/v1/admin/discord-webhook/config` });
-      this.enabled = res.data.enabled === true;
-      this.url     = res.data.url || '';
-    } catch (e) { console.debug('[velvet]', e?.message ?? e); }
-  },
-  methods: {
-    save: async function() {
-      this.pending = true;
-      try {
-        await API.axios({ method: 'POST', url: `${API.url()}/api/v1/admin/discord-webhook/config`, data: { enabled: this.enabled, url: this.url } });
-        iziToast.success({ title: this.t('admin.discordWebhook.toastSaved'), position: 'topCenter', timeout: 3000 });
-      } catch(err) {
-        const msg = err?.response?.data?.error || this.t('admin.discordWebhook.toastFailed');
-        iziToast.error({ title: msg, position: 'topCenter', timeout: 4000 });
-      } finally { this.pending = false; }
-    }
-  }
-});
-
 const customWebhooksView = Vue.component('custom-webhooks-view', {
   data() {
     return {
@@ -6658,7 +6128,7 @@ const customWebhooksView = Vue.component('custom-webhooks-view', {
 
               <!-- Discord webhook slot -->
               <div style="border:1px solid #ddd;border-radius:6px;padding:1rem;margin-bottom:1rem;">
-                <div style="font-weight:600;margin-bottom:.75rem;">Discord Webhook</div>
+                <div style="font-weight:600;margin-bottom:.75rem;">{{ t('admin.discordWebhook.title') }}</div>
                 <table><tbody>
                   <tr>
                     <td style="width:140px"><b>{{ t('admin.customWebhooks.labelEnable') }}</b></td>
@@ -7129,6 +6599,9 @@ const acoustidView = Vue.component('acoustid-view', {
               <button v-if="stats.errors > 0" class="btn btn-flat" v-on:click="resetErrors()" style="margin-left:0;border-color:#e57373;color:#e57373;">
                 {{ t('admin.acoustid.btnRetryErrors', { count: stats.errors }) }}
               </button>
+              <button v-if="stats.not_found > 0" class="btn btn-flat" v-on:click="resetNotFound()" :disabled="running" style="margin-left:0;">
+                {{ t('admin.acoustid.btnRetryNotFound', { count: stats.not_found }) }}
+              </button>
             </div>
           </div>
 
@@ -7216,6 +6689,15 @@ const acoustidView = Vue.component('acoustid-view', {
       try {
         const res = await API.axios({ method: 'POST', url: `${API.url()}/api/v1/acoustid/reset-errors` });
         iziToast.success({ title: this.t('admin.acoustid.toastErrorsReset', { count: res.data.reset || 0 }), position: 'topCenter', timeout: 3000 });
+        await this.loadStatus();
+      } catch(err) {
+        iziToast.error({ title: err?.response?.data?.error || err.message || 'Failed', position: 'topCenter', timeout: 3000 });
+      }
+    },
+    async resetNotFound() {
+      try {
+        const res = await API.axios({ method: 'POST', url: `${API.url()}/api/v1/acoustid/reset-not-found` });
+        iziToast.success({ title: this.t('admin.acoustid.toastNotFoundReset', { count: res.data.reset || 0 }), position: 'topCenter', timeout: 3000 });
         await this.loadStatus();
       } catch(err) {
         iziToast.error({ title: err?.response?.data?.error || err.message || 'Failed', position: 'topCenter', timeout: 3000 });
@@ -8020,14 +7502,7 @@ const rgWorkshopView = Vue.component('rg-workshop-view', {
       this.msg = '';
       try {
         const res = await API.axios({ method: 'POST', url: `${API.url()}/api/v1/admin/rg/reset-failed` });
-        const reset  = res.data.reset  || 0;
-        const purged = res.data.purged || 0;
-        if (purged > 0 && reset > 0)
-          this.msg = this.t('admin.rg.msgResetAndPurged', { reset, purged });
-        else if (purged > 0)
-          this.msg = this.t('admin.rg.msgPurged', { count: purged });
-        else
-          this.msg = this.t('admin.rg.msgReset', { count: reset });
+        this.msg = this.t('admin.rg.msgReset', { count: res.data.reset });
         await this.loadStatus();
       } catch(e) { this.msg = e.message || 'Error'; }
     },
@@ -8598,7 +8073,7 @@ const bpmWorkshopView = Vue.component('bpm-workshop-view', {
               <div style="border:1px solid var(--border);border-radius:8px;padding:1rem;margin-bottom:1rem;">
                 <b style="display:block;margin-bottom:.4rem;">{{ t('admin.bpmAnalysis.genreCorrectTitle') }}</b>
                 <p style="margin:.3rem 0 .7rem;font-size:.84rem;color:#aaa;">{{ t('admin.bpmAnalysis.genreCorrectDesc') }}</p>
-                <div v-if="essentia.running" style="margin-bottom:.6rem;font-size:.82rem;color:#f59e0b;">⚠ Stop the Essentia worker first to use this tool.</div>
+                <div v-if="essentia.running" style="margin-bottom:.6rem;font-size:.82rem;color:#f59e0b;">⚠ {{ t('admin.bpmAnalysis.stopEssentiaFirst') }}</div>
                 <!-- Trigger row -->
                 <div style="display:flex;gap:.5rem;flex-wrap:wrap;align-items:center;margin-bottom:.6rem;">
                   <button class="btn btn-small btn-flat" @click="genreCorrectDryRun" :disabled="essentia.running || genreCorrect.pending">
@@ -8620,10 +8095,10 @@ const bpmWorkshopView = Vue.component('bpm-workshop-view', {
                     </div>
                     <div style="display:flex;gap:.5rem;align-items:center;flex-wrap:wrap;">
                       <button class="btn btn-small" @click="genreCorrectApplySelected" :disabled="essentia.running || genreCorrect.pending || !genreCorrectSelectedCount()">
-                        Apply selected ({{ genreCorrectSelectedCount() }})
+                        {{ t('admin.bpmAnalysis.genreCorrectApplySelected', { count: genreCorrectSelectedCount() }) }}
                       </button>
-                      <button class="btn btn-small btn-flat" @click="genreCorrectToggleAll(true)" :disabled="genreCorrect.pending">Select all</button>
-                      <button class="btn btn-small btn-flat" @click="genreCorrectToggleAll(false)" :disabled="genreCorrect.pending">Deselect all</button>
+                      <button class="btn btn-small btn-flat" @click="genreCorrectToggleAll(true)" :disabled="genreCorrect.pending">{{ t('admin.art.btnSelectAll') }}</button>
+                      <button class="btn btn-small btn-flat" @click="genreCorrectToggleAll(false)" :disabled="genreCorrect.pending">{{ t('admin.art.btnDeselectAll') }}</button>
                     </div>
                   </div>
                   <!-- Per-family groups -->
@@ -8632,20 +8107,20 @@ const bpmWorkshopView = Vue.component('bpm-workshop-view', {
                        style="margin-bottom:.75rem;">
                     <div style="display:flex;align-items:center;gap:.6rem;margin-bottom:.25rem;">
                       <b style="font-size:.85rem;color:#e0e0e0;text-transform:uppercase;letter-spacing:.04em;">{{ fname }}</b>
-                      <span style="font-size:.78rem;color:#888;">{{ genreCorrectFamilyRows(fname).length }} tracks &nbsp; {{ fdata.halved }}↓ {{ fdata.doubled }}↑</span>
-                      <button class="btn btn-small btn-flat" @click="genreCorrectToggleFamily(fname, true)" style="padding:1px 6px;font-size:.74rem;">✓ all</button>
-                      <button class="btn btn-small btn-flat" @click="genreCorrectToggleFamily(fname, false)" style="padding:1px 6px;font-size:.74rem;">✗ none</button>
+                      <span style="font-size:.78rem;color:#888;">{{ t('admin.artistAlbums.tracks', { count: genreCorrectFamilyRows(fname).length }) }} &nbsp; {{ fdata.halved }}↓ {{ fdata.doubled }}↑</span>
+                      <button class="btn btn-small btn-flat" @click="genreCorrectToggleFamily(fname, true)" style="padding:1px 6px;font-size:.74rem;">✓ {{ t('admin.bpmAnalysis.genreCorrectFamilyAll') }}</button>
+                      <button class="btn btn-small btn-flat" @click="genreCorrectToggleFamily(fname, false)" style="padding:1px 6px;font-size:.74rem;">✗ {{ t('admin.bpmAnalysis.genreCorrectFamilyNone') }}</button>
                     </div>
                     <div style="max-height:220px;overflow-y:auto;border:1px solid var(--border);border-radius:4px;">
                       <table style="width:100%;border-collapse:collapse;font-size:.78rem;">
                         <thead style="position:sticky;top:0;background:var(--raised2);z-index:1;">
                           <tr style="color:#888;">
                             <th style="padding:3px 4px;width:24px;"></th>
-                            <th style="text-align:left;padding:3px 6px;font-weight:normal;">Artist</th>
-                            <th style="text-align:left;padding:3px 6px;font-weight:normal;">Title</th>
-                            <th style="text-align:left;padding:3px 6px;font-weight:normal;">Genre tag</th>
-                            <th style="text-align:right;padding:3px 6px;font-weight:normal;">Was</th>
-                            <th style="text-align:right;padding:3px 6px;font-weight:normal;">New</th>
+                            <th style="text-align:left;padding:3px 6px;font-weight:normal;">{{ t('admin.playStats.colArtist') }}</th>
+                            <th style="text-align:left;padding:3px 6px;font-weight:normal;">{{ t('admin.playStats.colTitle') }}</th>
+                            <th style="text-align:left;padding:3px 6px;font-weight:normal;">{{ t('admin.ai.colGenre') }}</th>
+                            <th style="text-align:right;padding:3px 6px;font-weight:normal;">{{ t('admin.bpmAnalysis.genreCorrectColWas') }}</th>
+                            <th style="text-align:right;padding:3px 6px;font-weight:normal;">{{ t('admin.bpmAnalysis.genreCorrectColNew') }}</th>
                           </tr>
                         </thead>
                         <tbody>
@@ -10150,9 +9625,7 @@ const genreEnricherView = Vue.component('genre-enricher-view', {
                                  @keydown.enter="$event.target.blur()"
                                  :placeholder="t('admin.genreEnricher.currentGenrePlaceholder')"
                                  :title="t('admin.genreEnricher.currentGenreHint')"
-                                 style="width:100%;font-size:.82rem;background:transparent;color:#bbb;border:1px solid transparent;padding:1px 4px;border-radius:3px;"
-                                 onfocus="this.style.borderColor='var(--border)';this.style.background='var(--raised2)';"
-                                 onblur="this.style.borderColor='transparent';this.style.background='transparent';">
+                                 class="ge-genre-input">
                         </td>
                         <td style="padding:4px 6px;color:#4caf50;"
                             :style="row.lastfm_genre ? 'cursor:pointer;' : ''"
@@ -10313,7 +9786,7 @@ const dupWorkshopView = Vue.component('dup-workshop-view', {
           await this.loadFolders();
         }
       } catch (e) {
-        this.loadErr = e.message ?? 'Failed to load status';
+        this.loadErr = e.message ?? this.t('admin.common.loadFailed');
       }
     },
     async loadSongs() {
@@ -10344,7 +9817,7 @@ const dupWorkshopView = Vue.component('dup-workshop-view', {
         this.status = { state: 'scanning', summary: null, lastScan: null };
         this._poll();
       } catch (e) {
-        iziToast.error({ title: 'Scan failed', message: e.message, position: 'topCenter', timeout: 4000 });
+        iziToast.error({ title: this.t('admin.dupWorkshop.scanFailed'), message: e.message, position: 'topCenter', timeout: 4000 });
       } finally { this.pending = false; }
     },
     async cancelScan() {
@@ -10414,14 +9887,14 @@ const dupWorkshopView = Vue.component('dup-workshop-view', {
         const r = await this._post('api/v1/admin/dup-workshop/delete', { filepaths: paths });
         const deleted = r.deleted?.length ?? 0;
         const failed  = r.failed?.length  ?? 0;
-        if (deleted) iziToast.success({ title: `${deleted} file(s) deleted`, position: 'topCenter', timeout: 3000 });
-        if (failed)  iziToast.error({ title: `${failed} file(s) could not be deleted`, position: 'topCenter', timeout: 4000 });
+        if (deleted) iziToast.success({ title: this.t('admin.dupWorkshop.deletedCount', { n: deleted }), position: 'topCenter', timeout: 3000 });
+        if (failed)  iziToast.error({ title: this.t('admin.dupWorkshop.errDeleteFailed', { n: failed }), position: 'topCenter', timeout: 4000 });
         if (deleted) {
           await this.loadSongs();
           await this.loadStatus();
         }
       } catch (e) {
-        iziToast.error({ title: 'Delete failed', message: e.message, position: 'topCenter', timeout: 4000 });
+        iziToast.error({ title: this.t('admin.playStats.toastDeleteFailed'), message: e.message, position: 'topCenter', timeout: 4000 });
       } finally { this.pending = false; }
     },
     fmtDur(s) {
@@ -10459,9 +9932,9 @@ const dupWorkshopView = Vue.component('dup-workshop-view', {
 
       <!-- Status summary after scan -->
       <div v-if="done && status.summary" style="background:var(--card2);border-radius:8px;padding:.75rem 1rem;margin-bottom:1.25rem;font-size:.875rem;display:flex;gap:1.5rem;flex-wrap:wrap;">
-        <span><strong>{{ status.summary.groups }}</strong> duplicate groups found</span>
-        <span style="color:var(--t2);">{{ status.summary.files }} removable files</span>
-        <span style="color:var(--t2);">Last scan: {{ status.lastScan ? new Date(status.lastScan).toLocaleString() : '—' }}</span>
+        <strong>{{ t('admin.dupWorkshop.summaryGroups', { groups: status.summary.groups }) }}</strong>
+        <span style="color:var(--t2);">{{ t('admin.dupWorkshop.summaryFiles', { files: status.summary.files }) }}</span>
+        <span style="color:var(--t2);">{{ t('admin.dupWorkshop.lastScan', { time: status.lastScan ? new Date(status.lastScan).toLocaleString() : '—' }) }}</span>
       </div>
 
       <!-- Pre-scan idle notice -->
@@ -10505,19 +9978,19 @@ const dupWorkshopView = Vue.component('dup-workshop-view', {
             <label style="display:inline-flex;align-items:center;gap:.5rem;margin-top:.4rem;color:var(--t1);">
               {{ this.t('admin.dupWorkshop.thresholdLabel') }}: <strong>{{ threshold }}%</strong>
               <input type="range" min="50" max="100" step="1" v-model.number="threshold" style="width:100px;" @change="onMatchChange('similar')">
-              <span style="color:var(--t2);font-size:.75rem;">(max duration gap: {{ _secThresh() }}s per 4-min track)</span>
+              <span style="color:var(--t2);font-size:.75rem;">{{ t('admin.dupWorkshop.maxDurationGap', { sec: _secThresh() }) }}</span>
             </label>
           </template>
         </div>
 
         <!-- Bulk action bar -->
         <div v-if="queuedCount>0" style="display:flex;align-items:center;gap:.75rem;margin-bottom:.75rem;padding:.5rem .75rem;background:var(--card2);border-radius:6px;">
-          <span style="font-size:.875rem;">{{ queuedCount }} file(s) queued for deletion</span>
+          <span style="font-size:.875rem;">{{ t('admin.dupWorkshop.queuedCount', { n: queuedCount }) }}</span>
           <button v-if="deleteEnabled" class="btn btn-danger btn-sm" @click="openConfirm" :disabled="pending">
             {{ this.t('admin.dupWorkshop.btnDeleteQueued', { n: queuedCount }) }}
           </button>
           <button class="btn btn-secondary btn-sm" @click="deselectAll">{{ this.t('admin.dupWorkshop.btnDeselect') }}</button>
-          <span v-if="!deleteEnabled" style="font-size:.8rem;color:var(--t2);">Enable deletions above first</span>
+          <span v-if="!deleteEnabled" style="font-size:.8rem;color:var(--t2);">{{ t('admin.dupWorkshop.enableDeleteFirst') }}</span>
         </div>
 
         <!-- Empty -->
@@ -10575,7 +10048,7 @@ const dupWorkshopView = Vue.component('dup-workshop-view', {
       <!-- ── Folders tab ─────────────────────────────────────────────────── -->
       <div v-if="done && tab==='folders'">
         <div style="font-size:.8125rem;color:var(--t2);margin-bottom:.875rem;padding:.5rem .75rem;background:var(--card2);border-radius:6px;line-height:1.5;">
-          Folders where <strong>every track has 100% identical audio content</strong> (matched by audio fingerprint / file hash) — even if the folder names, artist tags or album tags are completely different. Use this to find duplicate album rips stored in different locations.
+          {{ t('admin.dupWorkshop.foldersDesc') }}
         </div>
 
         <div v-if="!folderGroups.length" style="color:var(--t2);font-size:.875rem;padding:1rem 0;">
@@ -11895,13 +11368,13 @@ const artistsAdminView = Vue.component('artists-admin-view', {
         <div style="font-size:.82rem;color:var(--t2);">{{ t('admin.artists.hydrationSessionFixed') }} <b>{{ hydratedThisSession == null ? 0 : hydratedThisSession }}</b></div>
         <div style="font-size:.82rem;color:var(--t2);">{{ t('admin.artists.hydrationSuccessRate') }} <b>{{ hydration.stats.succeeded || 0 }}</b> / {{ hydration.stats.noImage || 0 }} / {{ hydration.stats.failed || 0 }}</div>
         <div style="font-size:.82rem;color:var(--t2);">{{ t('admin.artists.hydrationDropped') }} <b>{{ hydration.stats.dropped || 0 }}</b></div>
-        <div v-if="hydration.throughputPerMin != null" style="font-size:.82rem;color:var(--t2);">Throughput <b>{{ hydration.throughputPerMin }}</b> /min</div>
+        <div v-if="hydration.throughputPerMin != null" style="font-size:.82rem;color:var(--t2);">{{ t('admin.artists.hydrationThroughput') }} <b>{{ hydration.throughputPerMin }}</b> /min</div>
         <div style="font-size:.82rem;color:var(--t2);">{{ t('admin.artists.hydrationDiscogs') }} <b :style="discogsReady ? 'color:var(--ok,#16a34a);' : 'color:var(--warn,#b45309);'">{{ discogsReady ? t('admin.artists.discogsReady') : t('admin.artists.discogsNotReady') }}</b></div>
-        <div v-if="hydration.stats.lastArtist" style="font-size:.82rem;color:var(--t2);grid-column:1/-1;">Now processing: <b style="color:var(--t1);">{{ hydration.stats.lastArtist }}</b></div>
-        <div v-if="hydration.stats.lastError" style="font-size:.82rem;color:var(--warn,#b45309);grid-column:1/-1;">Last error: {{ hydration.stats.lastError }}</div>
+        <div v-if="hydration.stats.lastArtist" style="font-size:.82rem;color:var(--t2);grid-column:1/-1;">{{ t('admin.artists.hydrationNowProcessing') }} <b style="color:var(--t1);">{{ hydration.stats.lastArtist }}</b></div>
+        <div v-if="hydration.stats.lastError" style="font-size:.82rem;color:var(--warn,#b45309);grid-column:1/-1;">{{ t('admin.artists.hydrationLastError') }} {{ hydration.stats.lastError }}</div>
       </div>
       <div v-if="hydration.stats.recentLog && hydration.stats.recentLog.length" style="margin-top:8px;padding:8px 12px;border:1px solid var(--border);border-radius:8px;background:var(--surface);">
-        <div style="font-size:.78rem;font-weight:600;color:var(--t2);margin-bottom:4px;">Recent activity (last 10)</div>
+        <div style="font-size:.78rem;font-weight:600;color:var(--t2);margin-bottom:4px;">{{ t('admin.artists.hydrationRecent') }}</div>
         <div v-for="entry in [...hydration.stats.recentLog].reverse().slice(0,10)" :key="entry.ts" style="font-size:.78rem;display:flex;gap:8px;align-items:center;padding:1px 0;">
           <span :style="entry.result==='success' ? 'color:var(--ok,#16a34a);' : entry.result==='no-image' ? 'color:var(--t2);' : 'color:var(--warn,#b45309);'" style="min-width:60px;">{{ entry.result }}</span>
           <span style="color:var(--t1);">{{ entry.name }}</span>
@@ -11999,7 +11472,7 @@ const artistsAdminView = Vue.component('artists-admin-view', {
               <button class="btn" @click="applyImage(customImageUrl, 'custom')" :disabled="!customImageUrl || applying">{{ t('admin.artists.btnApply') }}</button>
             </div>
             <div v-if="customImagePreviewUrl" style="margin-top:10px;padding:10px;border:1px solid var(--border);border-radius:10px;background:var(--surface);display:flex;gap:12px;align-items:flex-start;">
-              <img v-show="!customImagePreviewError" :src="customImagePreviewUrl" @load="onCustomPreviewLoad" @error="onCustomPreviewError" alt="Custom preview" style="width:112px;height:112px;border-radius:10px;object-fit:cover;display:block;background:var(--raised);border:1px solid var(--border);flex-shrink:0;" />
+              <img v-show="!customImagePreviewError" :src="customImagePreviewUrl" @load="onCustomPreviewLoad" @error="onCustomPreviewError" :alt="t('admin.artists.customPreviewAlt')" style="width:112px;height:112px;border-radius:10px;object-fit:cover;display:block;background:var(--raised);border:1px solid var(--border);flex-shrink:0;" />
               <div style="min-width:0;display:flex;flex-direction:column;gap:6px;">
                 <div style="font-size:.82rem;font-weight:600;">{{ t('admin.artists.previewTitle') }}</div>
                 <div v-if="customImagePreviewError" style="font-size:.8rem;color:var(--warn,#b45309);line-height:1.4;">{{ t('admin.artists.previewError') }}</div>
@@ -12676,15 +12149,12 @@ const vm = new Vue({
     'sonos-view': sonosView,
     'rooms-view': roomsView,
     'dlna-view': dlnaView,
-    'federation-view': federationView,
-    'rpn-view': rpnView,
     'lock-view': lockView,
     'scan-errors-view': scanErrorsView,
     'artist-albums-diag-view': artistAlbumsDiagView,
     'wrapped-admin-view': wrappedAdminView,
     'lastfm-view': lastFMView,
     'listenbrainz-view': listenBrainzView,
-    'discord-webhook-view': discordWebhookView,
     'custom-webhooks-view': customWebhooksView,
     'discogs-view': discogsView,
     'lyrics-view': lyricsView,
@@ -12792,7 +12262,7 @@ const fileExplorerModal = Vue.component('file-explorer-modal', {
           </select>
           <button class="btn btn-small" type="button" @click="selectDirectory(currentDirectory)" :disabled="currentDirectory === null">
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
-            Select Current
+            {{ this.t('admin.modal.browseBtnSelectCurrent') }}
           </button>
         </div>
       </div>
@@ -12893,6 +12363,14 @@ const fileExplorerModal = Vue.component('file-explorer-modal', {
   }
 });
 
+// A password change or session revoke for the signed-in admin returns a fresh token; the old one no longer works.
+function keepOwnSession(token) {
+  if (!token) return;
+  API.servers[API.selectedServer].token = token;
+  localStorage.setItem('token', token);
+  localStorage.setItem('ms2_token', token);
+}
+
 const userPasswordView = Vue.component('user-password-view', {
   data() {
     return {
@@ -12911,6 +12389,7 @@ const userPasswordView = Vue.component('user-password-view', {
       passkeysLoading: false,
       newPasskeyName: '',
       passkeyStatus: '',
+      revokePending: false,
     };
   },
   mounted() {
@@ -12919,24 +12398,24 @@ const userPasswordView = Vue.component('user-password-view', {
   },
   template: `
     <form @submit.prevent="updatePassword">
-      ${mHead("{{ t('admin.modal.resetPasswordTitle') }}", '{{"User: " + currentUser.value}}')}
+      ${mHead("{{ t('admin.modal.resetPasswordTitle') }}", '{{ t("admin.modal.resetPasswordSubtitle", { username: currentUser.value }) }}')}
       <div class="modal-body">
         <div class="field-group">
-          <label for="reset-password">New Velvet Password</label>
+          <label for="reset-password">{{ t('admin.userPassword.labelNew') }}</label>
           <div class="pwd-wrap">
-            <input v-model="resetPassword" id="reset-password" :type="showResetPassword ? 'text' : 'password'" placeholder="Leave blank to keep unchanged" autocomplete="new-password">
-            <button type="button" class="pwd-toggle" @click="showResetPassword = !showResetPassword" tabindex="-1" :title="showResetPassword ? 'Hide' : 'Show'">
+            <input v-model="resetPassword" id="reset-password" :type="showResetPassword ? 'text' : 'password'" :placeholder="t('admin.userPassword.placeholder')" autocomplete="new-password">
+            <button type="button" class="pwd-toggle" @click="showResetPassword = !showResetPassword" tabindex="-1" :title="showResetPassword ? t('admin.userPassword.hide') : t('admin.userPassword.show')">
               <svg v-if="!showResetPassword" xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
               <svg v-else xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>
             </button>
           </div>
         </div>
         <div class="field-group" style="margin-top:1rem;">
-          <label for="subsonic-password">Subsonic API Password</label>
-          <div style="font-size:.78rem;color:var(--t2);margin-bottom:.35rem;">Used by Subsonic-compatible apps (Ultrasonic, DSub, Symfonium, etc.). Must be stored in plain text for MD5 token auth.</div>
+          <label for="subsonic-password">{{ t('admin.userPassword.subsonicTitle') }}</label>
+          <div style="font-size:.78rem;color:var(--t2);margin-bottom:.35rem;">{{ t('admin.userPassword.subsonicDesc') }}</div>
           <div class="pwd-wrap">
-            <input v-model="subsonicPassword" id="subsonic-password" :type="showSubsonicPassword ? 'text' : 'password'" placeholder="Leave blank to keep unchanged" autocomplete="new-password">
-            <button type="button" class="pwd-toggle" @click="showSubsonicPassword = !showSubsonicPassword" tabindex="-1" :title="showSubsonicPassword ? 'Hide' : 'Show'">
+            <input v-model="subsonicPassword" id="subsonic-password" :type="showSubsonicPassword ? 'text' : 'password'" :placeholder="t('admin.userPassword.placeholder')" autocomplete="new-password">
+            <button type="button" class="pwd-toggle" @click="showSubsonicPassword = !showSubsonicPassword" tabindex="-1" :title="showSubsonicPassword ? t('admin.userPassword.hide') : t('admin.userPassword.show')">
               <svg v-if="!showSubsonicPassword" xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
               <svg v-else xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>
             </button>
@@ -12946,7 +12425,7 @@ const userPasswordView = Vue.component('user-password-view', {
         <div class="field-group" style="margin-top:1.4rem;">
           <label>{{ t('admin.users.apiKeysTitle') }}</label>
           <div style="font-size:.78rem;color:var(--t2);margin-bottom:.5rem;">{{ t('admin.users.apiKeysDesc') }}</div>
-          <div v-if="apiKeysLoading" style="font-size:.82rem;color:var(--t2)">Loading…</div>
+          <div v-if="apiKeysLoading" style="font-size:.82rem;color:var(--t2)">{{ t('admin.common.loading') }}</div>
           <table v-else-if="apiKeys.length" style="width:100%;border-collapse:collapse;font-size:.82rem;margin-bottom:.5rem;">
             <thead><tr style="color:var(--t2)">
               <th style="text-align:left;padding:2px 8px 2px 0">{{ t('admin.users.apiKeysColLabel') }}</th>
@@ -12999,18 +12478,38 @@ const userPasswordView = Vue.component('user-password-view', {
           <div v-else style="font-size:.82rem;color:var(--t2);margin-bottom:.5rem;">{{ t('admin.users.passkeysNone') }}</div>
           <div style="font-size:.78rem;color:var(--t2)">{{ t('admin.users.passkeysAdminNote') }}</div>
         </div>
+
+        <div class="field-group" style="margin-top:1.4rem;">
+          <label>{{ t('admin.users.sessionsTitle') }}</label>
+          <div style="font-size:.78rem;color:var(--t2);margin-bottom:.5rem;">{{ t('admin.users.sessionsDesc') }}</div>
+          <button type="button" class="btn-small" :disabled="revokePending" @click="revokeSessions">{{ t('admin.users.sessionsRevoke') }}</button>
+        </div>
       </div>
       ${mFoot("t('admin.modal.btnUpdatePassword')", "t('admin.modal.btnUpdating')")}
     </form>`,
   methods: {
+    revokeSessions: function() {
+      const username = this.currentUser.value;
+      adminConfirm(`<b>${this.t('admin.users.sessionsConfirm', { username })}</b>`, '', this.t('admin.users.sessionsRevoke'), async () => {
+        this.revokePending = true;
+        try {
+          const res = await API.axios({ method: 'POST', url: `${API.url()}/api/v1/admin/users/revoke-tokens`, data: { username } });
+          keepOwnSession(res.data.token);
+          iziToast.success({ title: this.t('admin.users.sessionsRevoked'), position: 'topCenter', timeout: 3500 });
+        } catch {
+          iziToast.error({ title: this.t('admin.common.failed'), position: 'topCenter', timeout: 3500 });
+        }
+        this.revokePending = false;
+      });
+    },
     updatePassword: async function() {
       try {
         this.submitPending = true;
 
         if (!this.resetPassword && !this.subsonicPassword) {
           iziToast.warning({
-            title: 'Nothing to update',
-            message: 'Enter a new Velvet password, Subsonic password, or both.',
+            title: this.t('admin.userPassword.toastNothingToUpdate'),
+            message: this.t('admin.userPassword.toastNothingMsg'),
             position: 'topCenter',
             timeout: 3500
           });
@@ -13019,7 +12518,7 @@ const userPasswordView = Vue.component('user-password-view', {
         }
 
         if (this.resetPassword) {
-          await API.axios({
+          const res = await API.axios({
             method: 'POST',
             url: `${API.url()}/api/v1/admin/users/password`,
             data: {
@@ -13027,6 +12526,7 @@ const userPasswordView = Vue.component('user-password-view', {
               password: this.resetPassword
             }
           });
+          keepOwnSession(res.data.token);
         }
 
         if (this.subsonicPassword) {
@@ -13044,13 +12544,13 @@ const userPasswordView = Vue.component('user-password-view', {
         modVM.closeModal();
 
         iziToast.success({
-          title: 'Password Updated',
+          title: this.t('admin.modal.toastPasswordUpdated'),
           position: 'topCenter',
           timeout: 3500
         });
       }catch {
         iziToast.error({
-          title: 'Password Reset Failed',
+          title: this.t('admin.modal.toastPasswordFailed'),
           position: 'topCenter',
           timeout: 3500
         });
@@ -13080,7 +12580,7 @@ const userPasswordView = Vue.component('user-password-view', {
         this.newKeyLabel = '';
         await this.loadApiKeys();
       } catch {
-        iziToast.error({ title: 'Failed to generate API key', position: 'topCenter', timeout: 3000 });
+        iziToast.error({ title: this.t('admin.userPassword.toastApiKeyGenerateFailed'), position: 'topCenter', timeout: 3000 });
       }
     },
     revokeKey: async function(id) {
@@ -13092,7 +12592,7 @@ const userPasswordView = Vue.component('user-password-view', {
         await this.loadApiKeys();
         if (this.newlyGeneratedKey) this.newlyGeneratedKey = null;
       } catch {
-        iziToast.error({ title: 'Failed to revoke API key', position: 'topCenter', timeout: 3000 });
+        iziToast.error({ title: this.t('admin.userPassword.toastApiKeyRevokeFailed'), position: 'topCenter', timeout: 3000 });
       }
     },
     loadPasskeys: async function() {
@@ -13114,7 +12614,7 @@ const userPasswordView = Vue.component('user-password-view', {
         });
         await this.loadPasskeys();
       } catch {
-        iziToast.error({ title: 'Failed to revoke passkey', position: 'topCenter', timeout: 3000 });
+        iziToast.error({ title: this.t('admin.userPassword.toastPasskeyRevokeFailed'), position: 'topCenter', timeout: 3000 });
       }
     }
   }
@@ -13133,15 +12633,15 @@ const usersVpathsView = Vue.component('user-vpaths-view', {
   },
   template: `
     <form @submit.prevent="updateFolders">
-      ${mHead("{{ t('admin.modal.folderAccessTitle') }}", '{{"User: " + currentUser.value}}')}
+      ${mHead("{{ t('admin.modal.folderAccessTitle') }}", '{{ t("admin.modal.folderAccessSubtitle", { username: currentUser.value }) }}')}
       <div class="modal-body">
         <div class="field-group">
-          <label for="edit-user-dirs">Accessible Folders</label>
+          <label for="edit-user-dirs">{{ t('admin.userVpaths.title') }}</label>
           <select id="edit-user-dirs" :disabled="Object.keys(directories).length === 0" multiple :size="Math.max(2, Object.keys(directories).length)" v-model="selectedDirs">
-            <option disabled v-if="Object.keys(directories).length === 0">No directories available</option>
+            <option disabled v-if="Object.keys(directories).length === 0">{{ t('admin.userVpaths.noDirAvailable') }}</option>
             <option v-for="(val, key) in directories" :key="key" :value="key">{{ key }}</option>
           </select>
-          <span class="field-hint">{{ t('admin.modal.federationHoldCtrl') }}</span>
+          <span class="field-hint">{{ t('admin.modal.holdCtrl') }}</span>
         </div>
       </div>
       ${mFoot()}
@@ -13174,13 +12674,13 @@ const usersVpathsView = Vue.component('user-vpaths-view', {
           modVM.closeModal();
   
           iziToast.success({
-            title: 'User Permissions Updated',
+            title: this.t('admin.modal.toastPermissionsUpdated'),
             position: 'topCenter',
             timeout: 3500
           });
         } catch {
           iziToast.error({
-            title: 'Failed to Update Folders',
+            title: this.t('admin.modal.toastFailedUpdateFolders'),
             position: 'topCenter',
             timeout: 3500
           });
@@ -13202,13 +12702,13 @@ const userAccessView = Vue.component('user-access-view', {
   },
   template: `
     <form @submit.prevent="updateUser">
-      ${mHead("{{ t('admin.modal.userAccessTitle') }}", '{{"User: " + currentUser.value}}')}
+      ${mHead("{{ t('admin.modal.userAccessTitle') }}", '{{ t("admin.modal.userAccessSubtitle", { username: currentUser.value }) }}')}
       <div class="modal-body">
         <div style="display:flex;align-items:center;gap:.6rem;">
           <input id="user-admin-cb" type="checkbox" v-model="isAdmin" style="width:auto;margin:0;">
-          <label for="user-admin-cb" style="font-size:.95rem;color:var(--t1);">Grant admin access</label>
+          <label for="user-admin-cb" style="font-size:.95rem;color:var(--t1);">{{ t('admin.users.grantAdmin') }}</label>
         </div>
-        <p class="field-hint" style="color:var(--red);" v-if="!isAdmin">Warning: removing the last admin account will lock you out of this panel.</p>
+        <p class="field-hint" style="color:var(--red);" v-if="!isAdmin">{{ t('admin.users.lastAdminWarning') }}</p>
       </div>
       ${mFoot()}
     </form>`,
@@ -13237,13 +12737,13 @@ const userAccessView = Vue.component('user-access-view', {
           modVM.closeModal();
   
           iziToast.success({
-            title: 'User Permissions Updated',
+            title: this.t('admin.modal.toastPermissionsUpdated'),
             position: 'topCenter',
             timeout: 3500
           });
         } catch {
           iziToast.error({
-            title: 'Failed to Update User',
+            title: this.t('admin.users.toastFailedUpdate'),
             position: 'topCenter',
             timeout: 3500
           });
@@ -13257,7 +12757,6 @@ const userAccessView = Vue.component('user-access-view', {
 const editRequestSizeModal = Vue.component('edit-request-size-modal', {
   data() {
     return {
-      params: ADMINDATA.serverParams,
       submitPending: false,
       maxRequestSize: ADMINDATA.serverParams.maxRequestSize
     };
@@ -13274,40 +12773,10 @@ const editRequestSizeModal = Vue.component('edit-request-size-modal', {
       </div>
       ${mFoot("t('admin.modal.btnUpdate')", "t('admin.modal.btnUpdating')")}
     </form>`,
-  mounted: function () {
-  },
   methods: {
-    updatePort: async function() {
-      try {
-        this.submitPending = true;
-        this.maxRequestSize = this.maxRequestSize.replaceAll(' ', '');
-
-        await API.axios({
-          method: 'POST',
-          url: `${API.url()}/api/v1/admin/config/max-request-size`,
-          data: { maxRequestSize: this.maxRequestSize }
-        });
-
-        // update frontend data
-        Vue.set(ADMINDATA.serverParams, 'maxRequestSize', this.maxRequestSize);
-  
-        // close & reset the modal
-        modVM.closeModal();
-
-        iziToast.success({
-          title: this.t('admin.modal.toastMaxRequestSizeSuccess'),
-          position: 'topCenter',
-          timeout: 3500
-        });
-      } catch {
-        iziToast.error({
-          title: 'Failed to Update',
-          position: 'topCenter',
-          timeout: 3500
-        });
-      }finally {
-        this.submitPending = false;
-      }
+    updatePort() {
+      this.maxRequestSize = this.maxRequestSize.replaceAll(' ', '');
+      return saveSingleParam(this, { path: '/api/v1/admin/config/max-request-size', data: { maxRequestSize: this.maxRequestSize }, target: ADMINDATA.serverParams, key: 'maxRequestSize', successKey: 'admin.modal.toastMaxRequestSizeSuccess' });
     }
   }
 });
@@ -13316,7 +12785,6 @@ const editRequestSizeModal = Vue.component('edit-request-size-modal', {
 const editPortModal = Vue.component('edit-port-modal', {
   data() {
     return {
-      params: ADMINDATA.serverParams,
       submitPending: false,
       currentPort: ADMINDATA.serverParams.port
     };
@@ -13333,43 +12801,15 @@ const editPortModal = Vue.component('edit-port-modal', {
       </div>
       ${mFoot("t('admin.modal.btnUpdate')", "t('admin.modal.btnUpdating')")}
     </form>`,
-  mounted: function () {
-  },
   methods: {
-    updatePort: async function() {
-      try {
-        this.submitPending = true;
-
-        await API.axios({
-          method: 'POST',
-          url: `${API.url()}/api/v1/admin/config/port`,
-          data: { port: this.currentPort }
-        });
-
-        // update frontend data
-        // Vue.set(ADMINDATA.serverParams, 'port', this.currentPort);
-  
-        // close & reset the modal
-        modVM.closeModal();
-
+    updatePort() {
+      const port = this.currentPort;
+      return saveModalForm(this, async () => {
+        await postAdmin('/api/v1/admin/config/port', { port });
         setTimeout(() => {
-          window.location.href = window.location.href.replace(`:${ADMINDATA.serverParams.port}`, `:${this.currentPort}`); 
+          window.location.href = window.location.href.replace(`:${ADMINDATA.serverParams.port}`, `:${port}`);
         }, 4000);
-
-        iziToast.success({
-          title: this.t('admin.modal.toastPortUpdated'),
-          position: 'topCenter',
-          timeout: 3500
-        });
-      } catch {
-        iziToast.error({
-          title: 'Failed to Update Port',
-          position: 'topCenter',
-          timeout: 3500
-        });
-      }finally {
-        this.submitPending = false;
-      }
+      }, { successKey: 'admin.modal.toastPortUpdated', errorKey: 'admin.modal.toastPortFailed' });
     }
   }
 });
@@ -13377,7 +12817,6 @@ const editPortModal = Vue.component('edit-port-modal', {
 const editAddressModal = Vue.component('edit-address-modal', {
   data() {
     return {
-      params: ADMINDATA.dbParams,
       submitPending: false,
       editValue: ADMINDATA.serverParams.address
     };
@@ -13394,39 +12833,9 @@ const editAddressModal = Vue.component('edit-address-modal', {
       </div>
       ${mFoot("t('admin.modal.btnUpdate')", "t('admin.modal.btnUpdating')")}
     </form>`,
-  mounted: function () {
-  },
   methods: {
-    updateParam: async function() {
-      try {
-        this.submitPending = true;
-
-        await API.axios({
-          method: 'POST',
-          url: `${API.url()}/api/v1/admin/config/address`,
-          data: { address: this.editValue }
-        });
-
-        // update frontend data
-        Vue.set(ADMINDATA.serverParams, 'address', this.editValue);
-  
-        // close & reset the modal
-        modVM.closeModal();
-
-        iziToast.success({
-          title: this.t('admin.modal.toastAddressUpdated'),
-          position: 'topCenter',
-          timeout: 3500
-        });
-      } catch {
-        iziToast.error({
-          title: this.t('admin.common.updateFailed'),
-          position: 'topCenter',
-          timeout: 3500
-        });
-      }finally {
-        this.submitPending = false;
-      }
+    updateParam() {
+      return saveSingleParam(this, { path: '/api/v1/admin/config/address', data: { address: this.editValue }, target: ADMINDATA.serverParams, key: 'address', successKey: 'admin.modal.toastAddressUpdated' });
     }
   }
 });
@@ -13434,7 +12843,6 @@ const editAddressModal = Vue.component('edit-address-modal', {
 const editMaxScanModal = Vue.component('edit-max-scans-modal', {
   data() {
     return {
-      params: ADMINDATA.dbParams,
       submitPending: false,
       editValue: ADMINDATA.dbParams.maxConcurrentTasks
     };
@@ -13451,39 +12859,9 @@ const editMaxScanModal = Vue.component('edit-max-scans-modal', {
       </div>
       ${mFoot("t('admin.modal.btnUpdate')", "t('admin.modal.btnUpdating')")}
     </form>`,
-  mounted: function () {
-  },
   methods: {
-    updateParam: async function() {
-      try {
-        this.submitPending = true;
-
-        await API.axios({
-          method: 'POST',
-          url: `${API.url()}/api/v1/admin/db/params/max-concurrent-scans`,
-          data: { maxConcurrentTasks: this.editValue }
-        });
-
-        // update frontend data
-        Vue.set(ADMINDATA.dbParams, 'maxConcurrentTasks', this.editValue);
-  
-        // close & reset the modal
-        modVM.closeModal();
-
-        iziToast.success({
-          title: this.t('admin.common.updatedSuccessfully'),
-          position: 'topCenter',
-          timeout: 3500
-        });
-      } catch {
-        iziToast.error({
-          title: this.t('admin.common.updateFailed'),
-          position: 'topCenter',
-          timeout: 3500
-        });
-      }finally {
-        this.submitPending = false;
-      }
+    updateParam() {
+      return saveSingleParam(this, { path: '/api/v1/admin/db/params/max-concurrent-scans', data: { maxConcurrentTasks: this.editValue }, target: ADMINDATA.dbParams, key: 'maxConcurrentTasks' });
     }
   }
 });
@@ -13491,7 +12869,6 @@ const editMaxScanModal = Vue.component('edit-max-scans-modal', {
 const editBootScanView = Vue.component('edit-boot-scan-delay-modal', {
   data() {
     return {
-      params: ADMINDATA.dbParams,
       submitPending: false,
       editValue: ADMINDATA.dbParams.bootScanDelay
     };
@@ -13507,39 +12884,9 @@ const editBootScanView = Vue.component('edit-boot-scan-delay-modal', {
       </div>
       ${mFoot("t('admin.modal.btnUpdate')", "t('admin.modal.btnUpdating')")}
     </form>`,
-  mounted: function () {
-  },
   methods: {
-    updateParam: async function() {
-      try {
-        this.submitPending = true;
-
-        await API.axios({
-          method: 'POST',
-          url: `${API.url()}/api/v1/admin/db/params/boot-scan-delay`,
-          data: { bootScanDelay: this.editValue }
-        });
-
-        // update frontend data
-        Vue.set(ADMINDATA.dbParams, 'bootScanDelay', this.editValue);
-  
-        // close & reset the modal
-        modVM.closeModal();
-
-        iziToast.success({
-          title: this.t('admin.common.updatedSuccessfully'),
-          position: 'topCenter',
-          timeout: 3500
-        });
-      } catch {
-        iziToast.error({
-          title: this.t('admin.common.updateFailed'),
-          position: 'topCenter',
-          timeout: 3500
-        });
-      }finally {
-        this.submitPending = false;
-      }
+    updateParam() {
+      return saveSingleParam(this, { path: '/api/v1/admin/db/params/boot-scan-delay', data: { bootScanDelay: this.editValue }, target: ADMINDATA.dbParams, key: 'bootScanDelay' });
     }
   }
 });
@@ -13576,25 +12923,15 @@ const editScanIntervalView = Vue.component('edit-scan-interval-modal', {
       ${mFoot("t('admin.modal.btnUpdate')", "t('admin.modal.btnUpdating')")}
     </form>`,
   methods: {
-    updateParam: async function() {
+    updateParam() {
       if (!this.startTimeValid) return;
-      try {
-        this.submitPending = true;
-
-        await API.axios({ method: 'POST', url: `${API.url()}/api/v1/admin/db/params/scan-interval`, data: { scanInterval: Number(this.editInterval) } });
-        const stRes = await API.axios({ method: 'POST', url: `${API.url()}/api/v1/admin/db/params/scan-start-time`, data: { scanStartTime: this.editStartTime || null } });
-
+      return saveModalForm(this, async () => {
+        await postAdmin('/api/v1/admin/db/params/scan-interval', { scanInterval: Number(this.editInterval) });
+        const stRes = await postAdmin('/api/v1/admin/db/params/scan-start-time', { scanStartTime: this.editStartTime || null });
         Vue.set(ADMINDATA.dbParams, 'scanInterval', Number(this.editInterval));
         Vue.set(ADMINDATA.dbParams, 'scanStartTime', this.editStartTime || null);
         Vue.set(ADMINDATA.dbParams, 'nextScanAt', stRes.data.nextScanAt || null);
-
-        modVM.closeModal();
-        iziToast.success({ title: this.t('admin.common.updatedSuccessfully'), position: 'topCenter', timeout: 3500 });
-      } catch {
-        iziToast.error({ title: this.t('admin.common.updateFailed'), position: 'topCenter', timeout: 3500 });
-      } finally {
-        this.submitPending = false;
-      }
+      });
     }
   }
 });
@@ -13602,7 +12939,6 @@ const editScanIntervalView = Vue.component('edit-scan-interval-modal', {
 const editMaxZipMbModal = Vue.component('edit-max-zip-mb-modal', {
   data() {
     return {
-      params: ADMINDATA.dbParams,
       submitPending: false,
       editValue: ADMINDATA.dbParams.maxZipMb || 500
     };
@@ -13620,22 +12956,8 @@ const editMaxZipMbModal = Vue.component('edit-max-zip-mb-modal', {
       ${mFoot("t('admin.modal.btnUpdate')", "t('admin.modal.btnUpdating')")}
     </form>`,
   methods: {
-    updateParam: async function() {
-      try {
-        this.submitPending = true;
-        await API.axios({
-          method: 'POST',
-          url: `${API.url()}/api/v1/admin/db/params/max-zip-mb`,
-          data: { maxZipMb: this.editValue }
-        });
-        Vue.set(ADMINDATA.dbParams, 'maxZipMb', this.editValue);
-        modVM.closeModal();
-        iziToast.success({ title: this.t('admin.common.updatedSuccessfully'), position: 'topCenter', timeout: 3500 });
-      } catch {
-        iziToast.error({ title: this.t('admin.common.updateFailed'), position: 'topCenter', timeout: 3500 });
-      } finally {
-        this.submitPending = false;
-      }
+    updateParam() {
+      return saveSingleParam(this, { path: '/api/v1/admin/db/params/max-zip-mb', data: { maxZipMb: this.editValue }, target: ADMINDATA.dbParams, key: 'maxZipMb' });
     }
   }
 });
@@ -13741,10 +13063,8 @@ const serverAudioMpvBinModal = Vue.component('server-audio-mpvbin-modal', {
 const editTranscodeCodecModal = Vue.component('edit-transcode-codec-modal', {
   data() {
     return {
-      params: ADMINDATA.transcodeParams,
       submitPending: false,
-      editValue: ADMINDATA.transcodeParams.defaultCodec,
-      selectInstance: null
+      editValue: ADMINDATA.transcodeParams.defaultCodec
     };
   },
   template: `
@@ -13762,41 +13082,9 @@ const editTranscodeCodecModal = Vue.component('edit-transcode-codec-modal', {
       </div>
       ${mFoot("t('admin.modal.btnUpdate')", "t('admin.modal.btnUpdating')")}
     </form>`,
-  mounted: function () {
-  },
-  beforeDestroy: function() {
-  },
   methods: {
-    updateParam: async function() {
-      try {
-        this.submitPending = true;
-
-        await API.axios({
-          method: 'POST',
-          url: `${API.url()}/api/v1/admin/transcode/default-codec`,
-          data: { defaultCodec: this.editValue }
-        });
-
-        // update frontend data
-        Vue.set(ADMINDATA.transcodeParams, 'defaultCodec', this.editValue);
-  
-        // close & reset the modal
-        modVM.closeModal();
-
-        iziToast.success({
-          title: this.t('admin.common.updatedSuccessfully'),
-          position: 'topCenter',
-          timeout: 3500
-        });
-      } catch {
-        iziToast.error({
-          title: this.t('admin.common.updateFailed'),
-          position: 'topCenter',
-          timeout: 3500
-        });
-      }finally {
-        this.submitPending = false;
-      }
+    updateParam() {
+      return saveSingleParam(this, { path: '/api/v1/admin/transcode/default-codec', data: { defaultCodec: this.editValue }, target: ADMINDATA.transcodeParams, key: 'defaultCodec' });
     }
   }
 });
@@ -13804,10 +13092,8 @@ const editTranscodeCodecModal = Vue.component('edit-transcode-codec-modal', {
 const editTranscodeDefaultAlgorithm = Vue.component('edit-transcode-algorithm-modal', {
   data() {
     return {
-      params: ADMINDATA.transcodeParams,
       submitPending: false,
-      editValue: ADMINDATA.transcodeParams.algorithm,
-      selectInstance: null
+      editValue: ADMINDATA.transcodeParams.algorithm
     };
   },
   template: `
@@ -13824,41 +13110,9 @@ const editTranscodeDefaultAlgorithm = Vue.component('edit-transcode-algorithm-mo
       </div>
       ${mFoot("t('admin.modal.btnUpdate')", "t('admin.modal.btnUpdating')")}
     </form>`,
-  mounted: function () {
-  },
-  beforeDestroy: function() {
-  },
   methods: {
-    updateParam: async function() {
-      try {
-        this.submitPending = true;
-
-        await API.axios({
-          method: 'POST',
-          url: `${API.url()}/api/v1/admin/transcode/default-algorithm`,
-          data: { algorithm: this.editValue }
-        });
-
-        // update frontend data
-        Vue.set(ADMINDATA.transcodeParams, 'algorithm', this.editValue);
-  
-        // close & reset the modal
-        modVM.closeModal();
-
-        iziToast.success({
-          title: this.t('admin.common.updatedSuccessfully'),
-          position: 'topCenter',
-          timeout: 3500
-        });
-      } catch {
-        iziToast.error({
-          title: this.t('admin.common.updateFailed'),
-          position: 'topCenter',
-          timeout: 3500
-        });
-      }finally {
-        this.submitPending = false;
-      }
+    updateParam() {
+      return saveSingleParam(this, { path: '/api/v1/admin/transcode/default-algorithm', data: { algorithm: this.editValue }, target: ADMINDATA.transcodeParams, key: 'algorithm' });
     }
   }
 });
@@ -13866,10 +13120,8 @@ const editTranscodeDefaultAlgorithm = Vue.component('edit-transcode-algorithm-mo
 const editTranscodeDefaultBitrate = Vue.component('edit-transcode-bitrate-modal', {
   data() {
     return {
-      params: ADMINDATA.transcodeParams,
       submitPending: false,
-      editValue: ADMINDATA.transcodeParams.defaultBitrate,
-      selectInstance: null
+      editValue: ADMINDATA.transcodeParams.defaultBitrate
     };
   },
   template: `
@@ -13888,125 +13140,15 @@ const editTranscodeDefaultBitrate = Vue.component('edit-transcode-bitrate-modal'
       </div>
       ${mFoot("t('admin.modal.btnUpdate')", "t('admin.modal.btnUpdating')")}
     </form>`,
-  mounted: function () {
-  },
-  beforeDestroy: function() {
-  },
   methods: {
-    updateParam: async function() {
-      try {
-        this.submitPending = true;
-
-        await API.axios({
-          method: 'POST',
-          url: `${API.url()}/api/v1/admin/transcode/default-bitrate`,
-          data: { defaultBitrate: this.editValue }
-        });
-
-        // update frontend data
-        Vue.set(ADMINDATA.transcodeParams, 'defaultBitrate', this.editValue);
-  
-        // close & reset the modal
-        modVM.closeModal();
-
-        iziToast.success({
-          title: this.t('admin.common.updatedSuccessfully'),
-          position: 'topCenter',
-          timeout: 3500
-        });
-      } catch {
-        iziToast.error({
-          title: this.t('admin.common.updateFailed'),
-          position: 'topCenter',
-          timeout: 3500
-        });
-      }finally {
-        this.submitPending = false;
-      }
+    updateParam() {
+      return saveSingleParam(this, { path: '/api/v1/admin/transcode/default-bitrate', data: { defaultBitrate: this.editValue }, target: ADMINDATA.transcodeParams, key: 'defaultBitrate' });
     }
   }
 });
-
-const federationGenerateInvite = Vue.component('federation-generate-invite-modal', {
-  data() {
-    return {
-      submitPending: false,
-      selectInstance: null,
-      fedDirs: [],
-      directories: ADMINDATA.folders,
-      federationInviteToken: ADMINDATA.federationInviteToken
-    };
-  },
-  template: `
-    <div>
-      ${mHead("{{ t('admin.modal.federationInviteTitle') }}", "{{ t('admin.modal.federationInviteSubtitle') }}")}
-      <form @submit.prevent="generateToken">
-        <div class="modal-body">
-          <div class="field-group">
-            <label for="fed-invite-dirs">{{ t('admin.modal.federationFoldersLabel') }}</label>
-            <select id="fed-invite-dirs" :disabled="Object.keys(directories).length === 0" multiple :size="Math.max(2, Object.keys(directories).length)" v-model="fedDirs">
-              <option disabled value="" v-if="Object.keys(directories).length === 0">{{ t('admin.modal.federationNoDirectories') }}</option>
-              <option v-for="(val, key) in directories" :key="key" :value="key">{{ key }}</option>
-            </select>
-            <span class="field-hint">{{ t('admin.modal.federationHoldCtrl') }}</span>
-          </div>
-          <div class="field-group" v-if="federationInviteToken.val">
-            <label>{{ t('admin.modal.federationInviteTokenLabel') }}</label>
-            <textarea v-model="federationInviteToken.val" id="fed-textarea" rows="5" readonly style="resize:none;font-size:.82rem;font-family:monospace;"></textarea>
-            <a href="#" class="fed-copy-button btn-flat btn-small" data-clipboard-target="#fed-textarea" style="align-self:flex-start;margin-top:.25rem;">{{ t('admin.modal.federationCopyClipboard') }}</a>
-          </div>
-        </div>
-        ${mFoot("t('admin.modal.btnCreateInvite')", "t('admin.modal.btnCreating')")}
-      </form>
-    </div>`,
-  mounted: function () {
-  },
-  beforeDestroy: function() {
-  },
-  methods: {
-    generateToken: async function() {
-      try {
-        this.submitPending = true;
-        const selectedDirs = this.fedDirs;
-
-        if(selectedDirs.length === 0) {
-          iziToast.warning({
-            title: this.t('admin.modal.federationNothingToFederate'),
-            position: 'topCenter',
-            timeout: 3500
-          });
-          return;
-        }
-
-        const postData =  { vpaths: selectedDirs };
-        if (window.location.protocol === 'https:') {
-          postData.url = window.location.origin;
-        }
-
-        const res = await API.axios({
-          method: 'POST',
-          url: `${API.url()}/api/v1/federation/invite/generate`,
-          data: postData
-        });
-
-        this.federationInviteToken.val = res.data.token;
-      } catch (err) {
-        console.log(err)
-        iziToast.error({
-          title: this.t('admin.federation.toastFailedInvite'),
-          position: 'topCenter',
-          timeout: 3500
-        });
-      } finally {
-        this.submitPending = false;
-      }
-    }
-  }
-});
-
 
 const nullModal = Vue.component('null-modal', {
-  template: '<div>NULL MODAL ERROR: How did you get here?</div>'
+  template: '<div></div>'
 });
 
 // ── Album Version Tags component ─────────────────────────────────────────────
@@ -14052,7 +13194,7 @@ Vue.component('album-version-tags-card', {
         ADMINDATA.albumVersionInventory.splice(0, ADMINDATA.albumVersionInventory.length, ...res.data);
         this.inventoryLoaded = true;
       } catch {
-        iziToast.error({ title: 'Failed to load inventory', position: 'topCenter', timeout: 2500 });
+        iziToast.error({ title: this.t('admin.albumVersionTags.toastInventoryFailed'), position: 'topCenter', timeout: 2500 });
       } finally {
         this.loadingInv = false;
       }
@@ -14085,9 +13227,9 @@ Vue.component('album-version-tags-card', {
           data: { tags: this.tags }
         });
         ADMINDATA.albumVersionTags.splice(0, ADMINDATA.albumVersionTags.length, ...this.tags);
-        iziToast.success({ title: 'Album version tags saved', position: 'topCenter', timeout: 2500 });
+        iziToast.success({ title: this.t('admin.albumVersionTags.toastSaved'), position: 'topCenter', timeout: 2500 });
       } catch {
-        iziToast.error({ title: 'Save failed', position: 'topCenter', timeout: 3000 });
+        iziToast.error({ title: this.t('admin.common.saveFailed'), position: 'topCenter', timeout: 3000 });
       } finally {
         this.saving = false;
       }
@@ -14096,61 +13238,61 @@ Vue.component('album-version-tags-card', {
   template: `
     <div>
       <details style="margin-bottom:14px;background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:8px 12px;">
-        <summary style="cursor:pointer;font-size:.85rem;font-weight:600;color:var(--t2);user-select:none;">Field name reference — what to enter here</summary>
+        <summary style="cursor:pointer;font-size:.85rem;font-weight:600;color:var(--t2);user-select:none;">{{ t('admin.albumVersionTags.refSummary') }}</summary>
         <div style="margin-top:10px;font-size:.83rem;color:var(--t1);line-height:1.6;">
-          <p style="margin:0 0 8px"><b>TIT3 / SUBTITLE / DISCSUBTITLE</b> — Standard subtitle fields. Many rippers (EAC, dBpoweramp, MusicBrainz Picard) write the edition text here automatically.<br>
-          <span style="color:var(--t3)">Example value: <code>2016 Remaster</code></span></p>
+          <p style="margin:0 0 8px"><span v-html="t('admin.albumVersionTags.refSubtitleHtml')"></span><br>
+          <span style="color:var(--t3)">{{ t('admin.albumVersionTags.exampleValue') }} <code>2016 Remaster</code></span></p>
 
-          <p style="margin:0 0 6px"><b>What is TXXX?</b><br>
-          <code>TXXX</code> is a <em>user-defined</em> text frame in MP3 files (ID3v2 standard). Because the ID3 standard cannot cover every possible piece of metadata, it provides one open-ended slot where you choose both the name and the value. Each TXXX frame has two parts:</p>
+          <p style="margin:0 0 6px"><b>{{ t('admin.albumVersionTags.whatIsTxxx') }}</b><br>
+          <span v-html="t('admin.albumVersionTags.txxxDescHtml')"></span></p>
           <pre style="margin:4px 0 10px;padding:6px 10px;background:var(--bg2);border-radius:4px;font-size:.8rem;overflow-x:auto;">TXXX : EDITION  =  Deluxe Edition
-       ↑ name        ↑ value you fill in
-       (you choose)</pre>
-          <p style="margin:0 0 8px">In this field list you write it as <code>TXXX:EDITION</code> — the colon separates the frame type from the name you chose. <b>TXXX only exists in MP3.</b> For FLAC/Opus/WavPack the scanner reads the same key as a plain Vorbis/APE tag automatically.</p>
+       ↑ {{ t('admin.albumVersionTags.preName') }}        ↑ {{ t('admin.albumVersionTags.preValue') }}
+       {{ t('admin.albumVersionTags.preChoose') }}</pre>
+          <p style="margin:0 0 8px" v-html="t('admin.albumVersionTags.txxxSyntaxHtml')"></p>
 
           <table style="border-collapse:collapse;width:100%;max-width:560px;margin-bottom:10px;">
             <thead><tr style="border-bottom:1px solid var(--border)">
-              <th style="text-align:left;padding:3px 8px;color:var(--t2);">Goal</th>
-              <th style="text-align:left;padding:3px 8px;color:var(--t2);">Enter in tagger</th>
-              <th style="text-align:left;padding:3px 8px;color:var(--t2);">Add here as</th>
-              <th style="text-align:left;padding:3px 8px;color:var(--t2);">Example value</th>
+              <th style="text-align:left;padding:3px 8px;color:var(--t2);">{{ t('admin.albumVersionTags.colGoal') }}</th>
+              <th style="text-align:left;padding:3px 8px;color:var(--t2);">{{ t('admin.albumVersionTags.colTagger') }}</th>
+              <th style="text-align:left;padding:3px 8px;color:var(--t2);">{{ t('admin.albumVersionTags.colAddAs') }}</th>
+              <th style="text-align:left;padding:3px 8px;color:var(--t2);">{{ t('admin.albumVersionTags.colExample') }}</th>
             </tr></thead>
             <tbody>
-              <tr style="border-top:1px solid var(--border)"><td style="padding:3px 8px">Edition label</td><td style="padding:3px 8px;font-family:monospace;font-size:.8rem">TXXX → EDITION</td><td style="padding:3px 8px;font-family:monospace;font-size:.8rem">TXXX:EDITION</td><td style="padding:3px 8px;color:var(--t3)">Deluxe Edition</td></tr>
-              <tr style="border-top:1px solid var(--border)"><td style="padding:3px 8px">Version string</td><td style="padding:3px 8px;font-family:monospace;font-size:.8rem">TXXX → VERSION</td><td style="padding:3px 8px;font-family:monospace;font-size:.8rem">TXXX:VERSION</td><td style="padding:3px 8px;color:var(--t3)">2016 Remaster</td></tr>
-              <tr style="border-top:1px solid var(--border)"><td style="padding:3px 8px">Audio quality</td><td style="padding:3px 8px;font-family:monospace;font-size:.8rem">TXXX → QUALITY</td><td style="padding:3px 8px;font-family:monospace;font-size:.8rem">TXXX:QUALITY</td><td style="padding:3px 8px;color:var(--t3)">24bit/96kHz</td></tr>
-              <tr style="border-top:1px solid var(--border)"><td style="padding:3px 8px">Remaster info</td><td style="padding:3px 8px;font-family:monospace;font-size:.8rem">TXXX → REMASTER</td><td style="padding:3px 8px;font-family:monospace;font-size:.8rem">TXXX:REMASTER</td><td style="padding:3px 8px;color:var(--t3)">2003 Remaster</td></tr>
+              <tr style="border-top:1px solid var(--border)"><td style="padding:3px 8px">{{ t('admin.albumVersionTags.rowEdition') }}</td><td style="padding:3px 8px;font-family:monospace;font-size:.8rem">TXXX → EDITION</td><td style="padding:3px 8px;font-family:monospace;font-size:.8rem">TXXX:EDITION</td><td style="padding:3px 8px;color:var(--t3)">Deluxe Edition</td></tr>
+              <tr style="border-top:1px solid var(--border)"><td style="padding:3px 8px">{{ t('admin.albumVersionTags.rowVersion') }}</td><td style="padding:3px 8px;font-family:monospace;font-size:.8rem">TXXX → VERSION</td><td style="padding:3px 8px;font-family:monospace;font-size:.8rem">TXXX:VERSION</td><td style="padding:3px 8px;color:var(--t3)">2016 Remaster</td></tr>
+              <tr style="border-top:1px solid var(--border)"><td style="padding:3px 8px">{{ t('admin.albumVersionTags.rowQuality') }}</td><td style="padding:3px 8px;font-family:monospace;font-size:.8rem">TXXX → QUALITY</td><td style="padding:3px 8px;font-family:monospace;font-size:.8rem">TXXX:QUALITY</td><td style="padding:3px 8px;color:var(--t3)">24bit/96kHz</td></tr>
+              <tr style="border-top:1px solid var(--border)"><td style="padding:3px 8px">{{ t('admin.albumVersionTags.rowRemaster') }}</td><td style="padding:3px 8px;font-family:monospace;font-size:.8rem">TXXX → REMASTER</td><td style="padding:3px 8px;font-family:monospace;font-size:.8rem">TXXX:REMASTER</td><td style="padding:3px 8px;color:var(--t3)">2003 Remaster</td></tr>
             </tbody>
           </table>
 
-          <p style="margin:0 0 4px"><b>How to set TXXX in your tagger:</b></p>
+          <p style="margin:0 0 4px"><b>{{ t('admin.albumVersionTags.howToTitle') }}</b></p>
           <ul style="margin:0 0 6px;padding-left:18px;">
-            <li><b>Mp3tag</b>: Tag panel → click <code>+</code> → field name <code>TXXX:EDITION</code> → value <code>Deluxe Edition</code></li>
-            <li><b>foobar2000</b>: Properties → <code>…</code> button → New field → name <code>EDITION</code> → value <code>Deluxe Edition</code></li>
-            <li><b>MusicBrainz Picard</b>: Writes <code>DISCSUBTITLE</code> automatically for releases tagged as remasters</li>
+            <li v-html="t('admin.albumVersionTags.howMp3tagHtml')"></li>
+            <li v-html="t('admin.albumVersionTags.howFoobarHtml')"></li>
+            <li v-html="t('admin.albumVersionTags.howPicardHtml')"></li>
           </ul>
-          <p style="margin:0;color:var(--t3);font-size:.8rem">Fields are tried top-to-bottom. First non-empty value wins. If nothing matches, the scanner falls back to keyword detection on the album title and folder name.</p>
+          <p style="margin:0;color:var(--t3);font-size:.8rem">{{ t('admin.albumVersionTags.orderHint') }}</p>
         </div>
       </details>
       <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:12px;align-items:center;">
         <span v-for="(tag, i) in tags" :key="i" style="display:inline-flex;align-items:center;gap:2px;background:var(--surface);border:1px solid var(--border);border-radius:4px;padding:2px 6px;font-size:.82rem;font-family:monospace;">
           <span>{{tag}}</span>
-          <button @click="moveUp(i)" style="background:none;border:none;cursor:pointer;color:var(--t2);padding:0 2px;" title="Move up">↑</button>
-          <button @click="moveDown(i)" style="background:none;border:none;cursor:pointer;color:var(--t2);padding:0 2px;" title="Move down">↓</button>
-          <button @click="removeTag(i)" style="background:none;border:none;cursor:pointer;color:var(--red,#c00);padding:0 2px;" title="Remove">✕</button>
+          <button @click="moveUp(i)" style="background:none;border:none;cursor:pointer;color:var(--t2);padding:0 2px;" :title="t('admin.common.moveUp')">↑</button>
+          <button @click="moveDown(i)" style="background:none;border:none;cursor:pointer;color:var(--t2);padding:0 2px;" :title="t('admin.common.moveDown')">↓</button>
+          <button @click="removeTag(i)" style="background:none;border:none;cursor:pointer;color:var(--red,#c00);padding:0 2px;" :title="t('admin.common.remove')">✕</button>
         </span>
       </div>
       <div style="display:flex;gap:8px;margin-bottom:12px;">
-        <input v-model="newTag" @keyup.enter="addTag" type="text" placeholder="e.g. TXXX:EDITION" style="flex:1;min-width:0;padding:4px 8px;border:1px solid var(--border);border-radius:4px;background:var(--surface);color:var(--t1);font-family:monospace;font-size:.85rem;">
-        <button @click="addTag" class="btn-sm">Add</button>
-        <button @click="save" class="btn-sm" :disabled="saving">{{ saving ? 'Saving…' : 'Save Order' }}</button>
+        <input v-model="newTag" @keyup.enter="addTag" type="text" :placeholder="t('admin.albumVersionTags.placeholder')" style="flex:1;min-width:0;padding:4px 8px;border:1px solid var(--border);border-radius:4px;background:var(--surface);color:var(--t1);font-family:monospace;font-size:.85rem;">
+        <button @click="addTag" class="btn-sm">{{ t('admin.common.add') }}</button>
+        <button @click="save" class="btn-sm" :disabled="saving">{{ saving ? t('admin.common.saving') : t('admin.albumVersionTags.btnSaveOrder') }}</button>
       </div>
       <div>
         <button @click="loadInventory" class="btn-sm" :disabled="loadingInv" style="margin-bottom:8px;">
-          {{ loadingInv ? 'Loading…' : 'Show Version Source Breakdown' }}
+          {{ loadingInv ? t('admin.common.loading') : t('admin.albumVersionTags.btnBreakdown') }}
         </button>
         <table v-if="inventoryLoaded && inventory.length > 0" style="font-size:.83rem;border-collapse:collapse;width:100%;max-width:500px;">
-          <thead><tr><th style="text-align:left;padding:3px 8px;color:var(--t2);">Source</th><th style="text-align:right;padding:3px 8px;color:var(--t2);">Files</th></tr></thead>
+          <thead><tr><th style="text-align:left;padding:3px 8px;color:var(--t2);">{{ t('admin.albumVersionTags.colSource') }}</th><th style="text-align:right;padding:3px 8px;color:var(--t2);">{{ t('admin.albumVersionTags.colFiles') }}</th></tr></thead>
           <tbody>
             <tr v-for="row in inventory" :key="row.album_version_source" style="border-top:1px solid var(--border)">
               <td style="padding:3px 8px;font-family:monospace;">{{row.album_version_source}}</td>
@@ -14158,7 +13300,7 @@ Vue.component('album-version-tags-card', {
             </tr>
           </tbody>
         </table>
-        <p v-else-if="inventoryLoaded" style="font-size:.85rem;color:var(--t3);">No version data yet — rescan your library first.</p>
+        <p v-else-if="inventoryLoaded" style="font-size:.85rem;color:var(--t3);">{{ t('admin.albumVersionTags.noData') }}</p>
       </div>
     </div>`
 });
@@ -14223,9 +13365,9 @@ Vue.component('album-category-folders-card', {
           url: `${API.url()}/api/v1/admin/db/params/album-category-folders`,
           data: { folders: this.folders }
         });
-        iziToast.success({ title: 'Album category folders saved', position: 'topCenter', timeout: 2500 });
+        iziToast.success({ title: this.t('admin.artistAlbums.categorySaved'), position: 'topCenter', timeout: 2500 });
       } catch {
-        iziToast.error({ title: 'Save failed', position: 'topCenter', timeout: 3000 });
+        iziToast.error({ title: this.t('admin.common.saveFailed'), position: 'topCenter', timeout: 3000 });
       } finally {
         this.saving = false;
       }
@@ -14233,27 +13375,22 @@ Vue.component('album-category-folders-card', {
   },
   template: `
     <div>
-      <p style="color:var(--t2);font-size:.85rem;margin-bottom:14px;">
-        Folder names in this list are treated as <strong>category containers</strong>, not artist names.
-        Albums inside them are grouped under the parent artist with a category label (e.g. <em>Live</em>, <em>Compilations</em>).
-        Add names in the exact form used in your file system — both <code>[Live]</code> and <code>Live</code> are distinct entries.
-        After saving, the Albums browser will apply the new grouping immediately (no rescan needed).
-      </p>
+      <p style="color:var(--t2);font-size:.85rem;margin-bottom:14px;" v-html="t('admin.artistAlbums.categoryDescHtml')"></p>
       <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:12px;align-items:center;">
         <span v-for="(f, i) in folders" :key="i"
           style="display:inline-flex;align-items:center;gap:3px;background:var(--surface);border:1px solid var(--border);border-radius:4px;padding:2px 8px;font-size:.82rem;font-family:monospace;">
           <span>{{ f }}</span>
           <button @click="removeFolder(i)"
             style="background:none;border:none;cursor:pointer;color:var(--red,#c00);padding:0 2px;line-height:1;"
-            title="Remove">✕</button>
+            :title="t('admin.common.remove')">✕</button>
         </span>
       </div>
       <div style="display:flex;gap:8px;margin-bottom:0;">
         <input v-model="newFolder" @keyup.enter="addFolder" type="text"
-          placeholder="e.g. [Live] or Compilations"
+          :placeholder="t('admin.artistAlbums.categoryPlaceholder')"
           style="flex:1;min-width:0;padding:4px 8px;border:1px solid var(--border);border-radius:4px;background:var(--surface);color:var(--t1);font-family:monospace;font-size:.85rem;">
-        <button @click="addFolder" class="btn-sm">Add</button>
-        <button @click="save" class="btn-sm" :disabled="saving">{{ saving ? 'Saving…' : 'Save' }}</button>
+        <button @click="addFolder" class="btn-sm">{{ t('admin.common.add') }}</button>
+        <button @click="save" class="btn-sm" :disabled="saving">{{ saving ? t('admin.common.saving') : t('admin.common.save') }}</button>
       </div>
     </div>
   `,
@@ -14278,7 +13415,6 @@ const modVM = new Vue({
     'server-audio-mpvbin-modal': serverAudioMpvBinModal,
     'edit-max-scan-modal': editMaxScanModal,
     'edit-ssl-modal': editSslModal,
-    'federation-generate-invite-modal': federationGenerateInvite,
     'edit-max-zip-mb-modal': editMaxZipMbModal,
     'dir-access-test-modal': dirAccessTestModal,
     'null-modal': nullModal
@@ -14300,14 +13436,14 @@ const confirmVM = new Vue({
     show: false,
     title: '',
     message: '',
-    confirmLabel: 'Confirm',
+    confirmLabel: '',
     _onConfirm: null
   },
   methods: {
     ask(title, message, confirmLabel, onConfirm) {
       this.title = title;
       this.message = message || '';
-      this.confirmLabel = confirmLabel || 'Confirm';
+      this.confirmLabel = confirmLabel || this.t('admin.common.confirm');
       this._onConfirm = onConfirm;
       this.show = true;
     },

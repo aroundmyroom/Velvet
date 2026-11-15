@@ -3,6 +3,7 @@ import Joi from 'joi';
 import * as db from '../db/manager.js';
 import * as config from '../state/config.js';
 import { mergeGenreRows } from '../util/genre-merge.js';
+import { rootVpathOf } from '../util/vpath.js';
 
 const VALID_SORTS = ['artist', 'album', 'year_asc', 'year_desc', 'rating', 'play_count', 'last_played', 'random'];
 
@@ -44,48 +45,29 @@ const filtersSchema = Joi.object({
   freshPicks: Joi.boolean().default(false),
 });
 
-/**
- * Resolve selected vpaths to the correct DB-level ignoreVPaths + filepathPrefix.
- * Child vpaths are stored under their parent vpath in the DB, so selecting only
- * a child requires a filepathPrefix filter rather than an ignoreVPaths exclusion.
- */
+// Child vpaths are stored under their parent in the DB, so a selected child becomes
+// an includeFilepathPrefixes whitelist entry on the parent (unless the parent itself
+// is selected, which already covers it).
 function resolveVpathParams(selectedVpaths, userVpaths) {
-  if (!selectedVpaths || selectedVpaths.length === 0) {
-    return { ignoreVPaths: [], filepathPrefix: null };
-  }
+  const none = { ignoreVPaths: [], includeFilepathPrefixes: [] };
+  if (!selectedVpaths || selectedVpaths.length === 0) return none;
   const selected = selectedVpaths.filter(v => userVpaths.includes(v));
-  if (selected.length === 0 || selected.length === userVpaths.length) {
-    return { ignoreVPaths: [], filepathPrefix: null };
-  }
+  if (selected.length === 0 || selected.length === userVpaths.length) return none;
   const folders = config.program?.folders || {};
-  // Build parent-child map for this user's vpaths
-  const meta = {};
+  const parentOf = {};
+  const prefixOf = {};
   for (const vp of userVpaths) {
-    if (!folders[vp]) { meta[vp] = { parentVpath: null, filepathPrefix: null }; continue; }
-    const myRoot = folders[vp].root.replace(/\/?$/, '/');
-    const parentVpath = userVpaths.find(other =>
-      other !== vp && folders[other] &&
-      myRoot.startsWith(folders[other].root.replace(/\/?$/, '/'))
-    );
-    meta[vp] = {
-      parentVpath: parentVpath || null,
-      filepathPrefix: parentVpath ? myRoot.slice(folders[parentVpath].root.replace(/\/?$/, '/').length) : null,
-    };
+    if (!folders[vp]) continue;
+    const { vpath: rootName, prefix } = rootVpathOf(vp, folders);
+    if (rootName !== vp && userVpaths.includes(rootName)) { parentOf[vp] = rootName; prefixOf[vp] = prefix; }
   }
-  // If ALL selected vpaths are children of the same parent vpath, use filepathPrefix
-  const allChildSameParent =
-    selected.every(v => meta[v]?.parentVpath) &&
-    new Set(selected.map(v => meta[v].parentVpath)).size === 1;
-  if (allChildSameParent) {
-    const parentVpath = meta[selected[0]].parentVpath;
-    const filepathPrefix = selected.length === 1 ? meta[selected[0]].filepathPrefix : null;
-    const ignoreVPaths = userVpaths.filter(v => v !== parentVpath && !meta[v]?.parentVpath);
-    return { ignoreVPaths, filepathPrefix };
-  }
-  // Mixed selection: ignore root vpaths that are not selected and not a parent of a selected child
-  const selectedParents = new Set(selected.map(v => meta[v]?.parentVpath).filter(Boolean));
-  const ignoreVPaths = userVpaths.filter(v => !selected.includes(v) && !meta[v]?.parentVpath && !selectedParents.has(v));
-  return { ignoreVPaths, filepathPrefix: null };
+  const selectedRoots = new Set(selected.filter(v => !parentOf[v]));
+  const includeFilepathPrefixes = selected
+    .filter(v => parentOf[v] && !selectedRoots.has(parentOf[v]))
+    .map(v => ({ vpath: parentOf[v], prefix: prefixOf[v] }));
+  const keep = new Set([...selectedRoots, ...includeFilepathPrefixes.map(p => p.vpath)]);
+  const ignoreVPaths = userVpaths.filter(v => !parentOf[v] && !keep.has(v));
+  return { ignoreVPaths, includeFilepathPrefixes };
 }
 
 const runSchema = Joi.object({
@@ -123,8 +105,8 @@ function expandGenres(displayGenres, vpaths) {
 function _resolveFilters(rawFilters, vpaths) {
   // eslint-disable-next-line sonarjs/no-unused-vars
   const { selectedVpaths, freshPicks: _, ...songFilters } = rawFilters; // freshPicks is client-only
-  const { ignoreVPaths, filepathPrefix } = resolveVpathParams(selectedVpaths, vpaths);
-  return { filters: { ...songFilters, genres: expandGenres(songFilters.genres, vpaths) }, ignoreVPaths, filepathPrefix };
+  const { ignoreVPaths, includeFilepathPrefixes } = resolveVpathParams(selectedVpaths, vpaths);
+  return { filters: { ...songFilters, genres: expandGenres(songFilters.genres, vpaths) }, ignoreVPaths, includeFilepathPrefixes };
 }
 
 function _validFilters(raw) {
@@ -136,17 +118,17 @@ function _validFilters(raw) {
 export function runSavedSmartPlaylist(sp, vpaths, username) {
   const valid = _validFilters(sp.filters);
   if (!valid) return [];
-  const { filters, ignoreVPaths, filepathPrefix } = _resolveFilters(valid, vpaths);
+  const { filters, ignoreVPaths, includeFilepathPrefixes } = _resolveFilters(valid, vpaths);
   const sort = VALID_SORTS.includes(sp.sort) ? sp.sort : 'artist';
-  return db.runSmartPlaylist(filters, sort, sp.limit_n, vpaths, username, ignoreVPaths, filepathPrefix);
+  return db.runSmartPlaylist(filters, sort, sp.limit_n, vpaths, username, ignoreVPaths, null, includeFilepathPrefixes);
 }
 
 /** Number of songs a saved smart playlist currently yields (capped at its limit). */
 export function countSavedSmartPlaylist(sp, vpaths, username) {
   const valid = _validFilters(sp.filters);
   if (!valid) return 0;
-  const { filters, ignoreVPaths, filepathPrefix } = _resolveFilters(valid, vpaths);
-  const n = db.countSmartPlaylist(filters, vpaths, username, ignoreVPaths, filepathPrefix);
+  const { filters, ignoreVPaths, includeFilepathPrefixes } = _resolveFilters(valid, vpaths);
+  const n = db.countSmartPlaylist(filters, vpaths, username, ignoreVPaths, null, includeFilepathPrefixes);
   return Math.min(n, Math.min(Number(sp.limit_n) || 100, 1000));
 }
 
@@ -163,8 +145,8 @@ export function setup(velvet) {
     const { error, value } = runSchema.validate(req.body);
     if (error) return res.status(400).json({ error: error.message });
     try {
-      const { filters, ignoreVPaths, filepathPrefix } = _resolveFilters(value.filters, req.user.vpaths);
-      const rows = db.runSmartPlaylist(filters, value.sort, value.limit, req.user.vpaths, req.user.username, ignoreVPaths, filepathPrefix);
+      const { filters, ignoreVPaths, includeFilepathPrefixes } = _resolveFilters(value.filters, req.user.vpaths);
+      const rows = db.runSmartPlaylist(filters, value.sort, value.limit, req.user.vpaths, req.user.username, ignoreVPaths, null, includeFilepathPrefixes);
       const songs = rows.map(renderRow);
       res.json({ songs, total: songs.length });
     } catch (e) { console.error('[SPL run]', e.message, e.stack); res.status(500).json({ error: e.message }); }
@@ -175,8 +157,8 @@ export function setup(velvet) {
     const { error, value } = Joi.object({ filters: filtersSchema.required() }).validate(req.body);
     if (error) return res.status(400).json({ error: error.message });
     try {
-      const { filters, ignoreVPaths, filepathPrefix } = _resolveFilters(value.filters, req.user.vpaths);
-      const count = db.countSmartPlaylist(filters, req.user.vpaths, req.user.username, ignoreVPaths, filepathPrefix);
+      const { filters, ignoreVPaths, includeFilepathPrefixes } = _resolveFilters(value.filters, req.user.vpaths);
+      const count = db.countSmartPlaylist(filters, req.user.vpaths, req.user.username, ignoreVPaths, null, includeFilepathPrefixes);
       res.json({ count });
     } catch (e) { console.error('[SPL count]', e.message, e.stack); res.status(500).json({ error: e.message }); }
   });

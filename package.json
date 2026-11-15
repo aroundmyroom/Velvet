@@ -1,6 +1,6 @@
 {
   "name": "velvet",
-  "version": "0.9.3",
+  "version": "0.10.0",
   "description": "Velvet — your personal music server",
   "type": "module",
   "main": "cli-boot-wrapper.js",
@@ -46,7 +46,6 @@
     "fast-xml-parser": "5.12.0",
     "file-type": "22.3.0",
     "helmet": "^8.3.0",
-    "http-proxy": "^1.18.1",
     "joi": "^18.3.2",
     "jsonwebtoken": "^9.0.3",
     "m3u8-parser": "^7.2.1",
@@ -55,7 +54,6 @@
     "music-metadata": "^12.3.5",
     "nanoid": "^6.0.2",
     "sharp": "^0.35.5",
-    "tree-kill": "^1.2.2",
     "winston": "^3.19.0",
     "winston-daily-rotate-file": "^5.0.0",
     "ws": "^8.22.2"

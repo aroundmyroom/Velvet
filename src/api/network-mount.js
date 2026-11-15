@@ -95,9 +95,7 @@ async function readFstab() {
 }
 
 async function persistMounts() {
-  const raw = JSON.parse(await fsp.readFile(config.configFile, 'utf8'));
-  raw.networkMounts = config.program.networkMounts;
-  await fsp.writeFile(config.configFile, JSON.stringify(raw, null, 2), 'utf8');
+  await config.updateConfigFile(raw => { raw.networkMounts = config.program.networkMounts; });
 }
 
 const adminOnly = (req, res) => {

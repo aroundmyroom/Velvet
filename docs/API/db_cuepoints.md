@@ -1,10 +1,10 @@
 **Get Cue Points**
 ----
-  Returns the CUE sheet track markers for a given file.
+  Returns the CUE sheet track markers (or M4B chapters) for a given file. Used by the player seek bar.
 
 * **URL**
 
-  /db/cuepoints
+  `/api/v1/db/cuepoints`
 
 * **Method:**
 
@@ -14,12 +14,12 @@
 
   **Required:**
 
-  `fp=[string]` — the virtual filepath of the audio file (relative to the vpath root, as returned by library/search endpoints)
+  `fp=[string]` — the player filepath of the audio file, starting with the vpath (e.g. `Music/Mixes/set.flac`), as returned by library/search endpoints
 
 * **Success Response:**
 
   * **Code:** 200 <br />
-    **Content:** Array of cue point objects ordered by time
+    **Content:** an object with the cue points ordered by time
 
     ```json
     {
@@ -31,7 +31,7 @@
     }
     ```
 
-    Returns an empty array when no cue data exists for the file:
+    Returns an empty array when no cue data exists, or on any error (unknown file, no access):
 
     ```json
     { "cuepoints": [] }
@@ -47,6 +47,7 @@
 
 * **Notes**
 
-  * Data is sourced from the `cuepoints` column in the SQLite `files` table.
-  * The column is populated during library scanning from embedded CUE sheets (e.g. FLAC `CUESHEET` tag) or sidecar `.cue` files in the same directory.
-  * A result of `[]` may mean either no cue data exists OR the file has not yet been scanned for cues. Files with `cuepoints IS NULL` are processed by the scanner on the next scan pass.
+  * Data comes from the `cuepoints` column in the SQLite `files` table, filled during scanning from embedded CUE sheets or a sidecar `.cue` file.
+  * When the column is still `NULL`, the endpoint extracts on demand: M4B chapters via ffprobe, otherwise the embedded CUE sheet and then a sidecar `.cue` file. The result is stored; `'[]'` is stored when nothing was found.
+  * When `'[]'` is stored, the sidecar `.cue` file is checked again on every request, so a `.cue` added later is picked up without a rescan.
+  * A sidecar is used when it has the same base name as the audio file, or is the only `.cue` file in the folder, and has exactly one `FILE` line that refers to this audio file. At least 2 points are needed.

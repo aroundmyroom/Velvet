@@ -1,6 +1,6 @@
 import crypto from 'node:crypto';
 import Joi from 'joi';
-import jwt from 'jsonwebtoken';
+import { signUserToken } from './auth.js';
 import winston from 'winston';
 import * as config from '../state/config.js';
 import { joiValidate } from '../util/validation.js';
@@ -22,6 +22,23 @@ const CODE_LENGTH = 6;
 const _pairings = new Map();
 const _byCode = new Map();
 
+// pair/start is public: cap what an anonymous flood can make the server hold
+const MAX_PENDING = 1000;
+const STARTS_PER_IP = 10;
+const START_WINDOW_MS = 60_000;
+const _startsByIp = new Map(); // ip → { count, windowStart }
+
+function allowStart(ip, now = Date.now()) {
+  const slot = _startsByIp.get(ip);
+  if (!slot || now - slot.windowStart >= START_WINDOW_MS) {
+    _startsByIp.set(ip, { count: 1, windowStart: now });
+    return true;
+  }
+  if (slot.count >= STARTS_PER_IP) return false;
+  slot.count++;
+  return true;
+}
+
 function _generateCode() {
   let code;
   do {
@@ -39,6 +56,9 @@ export function _sweepExpired(now = Date.now()) {
       _byCode.delete(entry.code);
     }
   }
+  for (const [ip, slot] of _startsByIp) {
+    if (now - slot.windowStart >= START_WINDOW_MS) _startsByIp.delete(ip);
+  }
 }
 // unref() so an isolated import (e.g. a unit test) doesn't hang on this timer —
 // the real process is kept alive by the HTTP server regardless.
@@ -46,6 +66,7 @@ setInterval(_sweepExpired, 60_000).unref();
 
 export function startPairing() {
   _sweepExpired();
+  if (_pairings.size >= MAX_PENDING) return null;
   const pairId = crypto.randomUUID();
   const code = _generateCode();
   const entry = {
@@ -77,9 +98,9 @@ export function getPairingStatus(pairId) {
 // is exercised without booting a real config file.
 export function approvePairing(rawCode, username, deps = {}) {
   const getUser = deps.getUser || (name => config.program.users[name]);
-  const signToken = deps.signToken || (name => jwt.sign({ username: name }, config.program.secret));
+  const signToken = deps.signToken || (name => signUserToken(name));
 
-  const code = rawCode.trim().toUpperCase();
+  const code = rawCode.replaceAll(/\s/g, '').toUpperCase();
   const entry = _byCode.get(code);
   if (!entry || Date.now() > entry.expiresAt || entry.approved) return { ok: false, reason: 'invalid-or-expired' };
 
@@ -98,7 +119,9 @@ export function approvePairing(rawCode, username, deps = {}) {
 // with yet; that's the entire point of pairing.
 export function setupPublic(velvet) {
   velvet.post('/api/v1/auth/pair/start', (req, res) => {
-    res.json(startPairing());
+    const started = allowStart(req.ip) ? startPairing() : null;
+    if (!started) return res.status(429).json({ error: 'Too many pairing requests, try again later' });
+    res.json(started);
   });
 
   velvet.get('/api/v1/auth/pair/status', (req, res) => {

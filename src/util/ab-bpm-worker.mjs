@@ -8,8 +8,9 @@
  *   Parse: rhythm.bpm  +  tonal.key_key + tonal.key_scale
  */
 import { workerData, parentPort } from 'node:worker_threads';
-import { DatabaseSync } from 'node:sqlite';
+import { openWorkerDb } from '../db/worker-connection.js';
 import https from 'node:https';
+import { sleep, idle, stopRequested, dbWriteWithRetry, runWithLockRetry } from './worker-helpers.mjs';
 
 const { dbPath } = workerData;
 
@@ -19,8 +20,7 @@ const IDLE_WAIT_MS    = 60_000;
 const HTTP_TIMEOUT_MS = 8_000;  // fail fast when AB is slow/down
 const USER_AGENT      = 'Velvet/1.0 (https://github.com/aroundmyroom/Velvet)';
 
-const db = new DatabaseSync(dbPath, { timeout: 300_000 });
-db.exec('PRAGMA journal_mode=WAL; PRAGMA busy_timeout=300000');  // 5 min — covers scanner long-running transactions
+const db = openWorkerDb(dbPath, { busyTimeoutMs: 300_000 });  // 5 min — covers scanner long-running transactions
 
 // On start: reset any stuck 'pending' rows from a previous interrupted run
 const _resetPending = db.prepare(
@@ -66,26 +66,6 @@ const _getStats = db.prepare(`
 `);
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
-
-function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
-
-// DB write retry — AcoustID/scanner may hold write lock for extended periods
-const DB_RETRY_ATTEMPTS = 60;
-const DB_RETRY_DELAY_MS = 3_000;
-
-async function dbWriteWithRetry(fn) {
-  for (let i = 0; i < DB_RETRY_ATTEMPTS; i++) {
-    try {
-      return fn();
-    } catch (err) {
-      const locked = err && typeof err.message === 'string' &&
-        (err.message.includes('database is locked') || err.message.includes('SQLITE_BUSY'));
-      if (!locked || i === DB_RETRY_ATTEMPTS - 1) throw err;
-      if (_stopping) throw err;
-      await sleep(DB_RETRY_DELAY_MS);
-    }
-  }
-}
 
 /** Fetch AcousticBrainz low-level data for an MBID. Returns parsed JSON or null (404). */
 function abLookup(mbid) {
@@ -190,27 +170,23 @@ async function processFile(row) {
 
 // ── Main loop ─────────────────────────────────────────────────────────────────
 
-let _stopping = false;
-
 async function run() {
   // Reset pending rows left over from an interrupted previous run
   await dbWriteWithRetry(() => _resetPending.run());
 
   parentPort.postMessage({ type: 'ready' });
 
-  while (!_stopping) {
+  while (!stopRequested()) {
     const batch = _getQueue.all(BATCH_SIZE);
 
     if (batch.length === 0) {
       parentPort.postMessage({ type: 'status', stats: _getStats.get(), idle: true });
-      for (let i = 0; i < IDLE_WAIT_MS / 1000 && !_stopping; i++) {
-        await sleep(1000);
-      }
+      await idle(IDLE_WAIT_MS);
       continue;
     }
 
     for (const row of batch) {
-      if (_stopping) break;
+      if (stopRequested()) break;
       await processFile(row);
       await sleep(RATE_DELAY_MS);
     }
@@ -221,28 +197,4 @@ async function run() {
   parentPort.postMessage({ type: 'stopped', stats: _getStats.get() });
 }
 
-parentPort.on('message', msg => {
-  if (msg === 'stop' || msg?.type === 'stop') _stopping = true;
-});
-
-// Retry loop: if the DB is locked (scanner running a long transaction), wait and retry
-// instead of crashing.  Any other error is just reported.
-async function runWithRetry() {
-  const LOCK_RETRY_DELAY_MS = 60_000;
-  for (;;) {
-    try {
-      await run();
-      return;
-    } catch (err) {
-      const isLock = /database is locked|SQLITE_BUSY|ERR_SQLITE/i.test(err.message || '');
-      if (isLock) {
-        parentPort.postMessage({ type: 'log', message: '[bpm-ab] DB locked (scanner running) — waiting 60 s then retrying' });
-        await new Promise(r => setTimeout(r, LOCK_RETRY_DELAY_MS));
-        // continue retry loop
-      } else {
-        parentPort.postMessage({ type: 'error', message: err.message });
-      }
-    }
-  }
-}
-await runWithRetry();
+await runWithLockRetry(run, 'bpm-ab');

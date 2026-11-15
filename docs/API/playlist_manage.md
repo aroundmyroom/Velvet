@@ -1,4 +1,4 @@
-**Playlist Management** *(documented by GitHub Copilot, 2026-02-27)*
+**Playlist Management**
 ----
   Endpoints for creating playlists and adding/removing individual songs.
   For bulk save/replace operations see [`/playlist/save`](playlist_save.md).
@@ -64,12 +64,12 @@
 
   | Field | Type | Required | Description |
   |---|---|---|---|
-  | `song` | `string` | Yes | Full virtual filepath of the song to add (e.g. `/Music/Artist/song.flac`). |
-  | `playlist` | `string` | Yes | Name of an existing playlist owned by this user. |
+  | `song` | `string` | Yes | Virtual filepath of the song to add, root vpath first (e.g. `Music/Artist/song.flac`). |
+  | `playlist` | `string` | Yes | Name of the playlist. |
 
   ```json
   {
-    "song": "/Music/Daft Punk/Random Access Memories/01 Give Life Back to Music.flac",
+    "song": "Music/Daft Punk/Random Access Memories/01 Give Life Back to Music.flac",
     "playlist": "Sunday Morning Mix"
   }
   ```
@@ -82,7 +82,8 @@
 * **Notes**
 
   - Does not deduplicate — the same song can be added multiple times.
-  - The playlist must already exist; use `/playlist/new` to create it first.
+  - The server does not check that the playlist exists. Create it first with `/playlist/new`,
+    or it will not show up in `/playlist/getall` (that list is built from the playlist's header row).
 
 ---
 
@@ -120,11 +121,43 @@
 
 * **Error Response:**
 
-  * **Code:** 500 — the entry does not exist or belongs to a different user.
+  * **Code:** 403 — `{ "error": "Forbidden" }` when the entry does not exist or belongs to a different user.
 
 * **Notes**
 
   - The `id` value is included in each song object returned by `POST /api/v1/playlist/load`.
   - This endpoint removes a single entry by row ID, not by filepath — if the
-    same song appears twice in a playlist, only the one with the matching `_plid`
+    same song appears twice in a playlist, only the one with the matching `id`
     is removed.
+
+---
+
+### Reorder a Playlist
+
+* **URL**
+
+  `/api/v1/playlist/reorder`
+
+* **Method:**
+
+  `POST`
+
+* **JSON Body**
+
+  | Field | Type | Required | Description |
+  |---|---|---|---|
+  | `playlistname` | `string` | Yes | Name of the playlist. |
+  | `ids` | `integer[]` | Yes | Entry row IDs (from `/playlist/load`) in the new order. At least 1. |
+
+  ```json
+  { "playlistname": "Sunday Morning Mix", "ids": [44, 42, 43] }
+  ```
+
+* **Success Response:**
+
+  * **Code:** 200
+  * **Content:** `{ "ok": true }`
+
+* **Notes**
+
+  - Only rows of this user's playlist with that name are updated; unknown IDs are ignored.

@@ -14,7 +14,6 @@ import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import axios from 'axios';
 import Joi from 'joi';
 import * as config from '../state/config.js';
 import * as db from '../db/manager.js';
@@ -22,6 +21,8 @@ import { joiValidate } from '../util/validation.js';
 import { resolvePathWithinRoot } from '../util/path-security.js';
 import { fetchPublicUrlBuffer } from '../util/ssrf-check.js';
 import { getReleaseCoverBuf } from './discogs.js';
+import { isDiscFolder } from '../util/album-dir.js';
+import { rootVpathOf, parentVpathOf } from '../util/vpath.js';
 
 // ── Sidecar CUE check (used by /albums/detail for live re-reads) ───────────────
 /** Locate the .cue sidecar for an audio file, or return null if none found */
@@ -120,16 +121,6 @@ function _checkSidecarCue(fullPath) {
 
 // ── Constants ──────────────────────────────────────────────────────────────────
 
-// Strict disc-folder patterns:
-//   DISC_RE         — starts with keyword: "CD 1", "Disc 2", "CD-3"  ("Disconet" does NOT match)
-//   DISC_SUFFIX_RE  — ends with keyword:   "Album Title CD - 1", "Foo Disc 2"
-//                     The \b guard prevents "1CD" from matching; the $ anchor prevents
-//                     "CD Edition 2" (non-numeric suffix) from matching.
-//   NUMERIC_DISC_RE — bare number:         "1", "02"
-const DISC_RE         = /^(cd|disc)\s*[-–]?\s*\d/i;
-const DISC_SUFFIX_RE  = /\b(cd|disc)\s*[-–]?\s*\d+\s*$/i;
-const NUMERIC_DISC_RE = /^\d{1,2}$/;
-
 // Shared collators — created once, reused. Avoids per-call locale lookup which is 40-50× slower.
 const _collBase    = new Intl.Collator(undefined, { sensitivity: 'base' });             // accent+case-insensitive
 const _collNumeric = new Intl.Collator(undefined, { sensitivity: 'base', numeric: true }); // same + numeric order
@@ -176,42 +167,23 @@ export function invalidateCache() {
   _dlnaSourcesCache = null;
 }
 
-/** Build a map of vpath → parent vpath name (or null if root) */
-function _buildParentOfMap(folderEntries) {
-  const parentOf = {};
-  for (const [name, folder] of folderEntries) {
-    const myRoot = folder.root.replace(/\/?$/, '/');
-    const parent = folderEntries.find(([other, otherF]) =>
-      other !== name &&
-      myRoot.startsWith(otherF.root.replace(/\/?$/, '/')) &&
-      otherF.root.replace(/\/?$/, '/') !== myRoot
-    );
-    parentOf[name] = parent ? parent[0] : null;
-  }
-  return parentOf;
-}
-
-/** Build a source entry for a single albumsOnly vpath */
-function _makeSourceEntry(name, folder, parent, folders) {
-  if (!parent) {
-    return { vpathName: name, vpathRoot: folder.root, dbVpath: name, prefix: null, artRoot: folder.root };
-  }
-  const parentRoot = folders[parent].root.replace(/\/?$/, '/');
-  const myRoot     = folder.root.replace(/\/?$/, '/');
-  const prefix     = myRoot.slice(parentRoot.length);
-  return { vpathName: name, vpathRoot: folder.root, dbVpath: parent, prefix, artRoot: folder.root };
+// A child vpath's files are indexed under its ROOT vpath, behind its prefix.
+function _makeSourceEntry(name, folders) {
+  const { vpath: dbVpath, prefix } = rootVpathOf(name, folders);
+  return { vpathName: name, vpathRoot: folders[name].root, dbVpath, prefix: prefix || null, artRoot: folders[name].root };
 }
 
 /** Fallback: find the first root vpath with an Albums/ subdirectory on disk */
-async function _findAlbumsFallback(folderEntries, parentOf, explicitRoots) {
-  for (const [name, folder] of folderEntries) {
-    if (parentOf[name]) continue;
+async function _findAlbumsFallback(folders, explicitRoots) {
+  for (const [name, folder] of Object.entries(folders)) {
+    if (parentVpathOf(name, folders)) continue;
     const candidate = path.join(folder.root, 'Albums');
     if (explicitRoots.has(candidate)) continue;
     try {
       const stat = await fsp.stat(candidate);
       if (stat.isDirectory()) {
-        return { vpathName: name, vpathRoot: folder.root, dbVpath: name, prefix: 'Albums/', artRoot: folder.root };
+        // artRoot is the folder the prefix points at: every consumer strips the prefix before joining
+        return { vpathName: name, vpathRoot: folder.root, dbVpath: name, prefix: 'Albums/', artRoot: candidate };
       }
     } catch { /* Albums/ subdirectory not found on disk — skip this vpath */ }
   }
@@ -223,22 +195,17 @@ export async function resolveAlbumsSources() {
 
   const folders = config.program?.folders || {};
   const folderEntries = Object.entries(folders);
-  const parentOf = _buildParentOfMap(folderEntries);
 
-  const albumsOnlyNames = folderEntries
+  const sources = folderEntries
     .filter(([, f]) => f.albumsOnly === true)
-    .map(([name]) => name);
-
-  const sources = albumsOnlyNames.map(name =>
-    _makeSourceEntry(name, folders[name], parentOf[name], folders)
-  );
+    .map(([name]) => _makeSourceEntry(name, folders));
 
   // Fallback: if nothing is marked albumsOnly, find any root with an Albums/ subdir.
   // Skip roots where the Albums/ subdirectory is already explicitly registered
   // as its own vpath (regardless of that vpath's albumsOnly setting).
   if (sources.length === 0) {
     const explicitRoots = new Set(folderEntries.map(([, f]) => f.root.replace(/\/?$/, '')));
-    const fallback = await _findAlbumsFallback(folderEntries, parentOf, explicitRoots);
+    const fallback = await _findAlbumsFallback(folders, explicitRoots);
     if (fallback) sources.push(fallback);
   }
 
@@ -254,7 +221,6 @@ export async function resolveDlnaSources() {
 
   const folders = config.program?.folders || {};
   const folderEntries = Object.entries(folders);
-  const parentOf = _buildParentOfMap(folderEntries);
   const hasExplicitDlnaFlag = folderEntries.some(([, f]) => f.dlnaEnabled !== undefined);
 
   const dlnaNames = hasExplicitDlnaFlag
@@ -265,9 +231,7 @@ export async function resolveDlnaSources() {
       .filter(([, f]) => f.albumsOnly === true)
       .map(([name]) => name);
 
-  const sources = dlnaNames.map(name =>
-    _makeSourceEntry(name, folders[name], parentOf[name], folders)
-  );
+  const sources = dlnaNames.map(name => _makeSourceEntry(name, folders));
 
   _dlnaSourcesCache = sources;
   return sources;
@@ -275,7 +239,7 @@ export async function resolveDlnaSources() {
 
 // ── Pure helpers ───────────────────────────────────────────────────────────────
 
-function md5(str) {
+function sha256(str) {
   return crypto.createHash('sha256').update(str).digest('hex');
 }
 
@@ -299,10 +263,6 @@ function cleanTrackName(filename) {
   return path.basename(filename, path.extname(filename))
     .replace(/^\d+\.?\s*[-–]?\s*/, '')
     .trim() || path.basename(filename, path.extname(filename));
-}
-
-function isDiscFolder(name) {
-  return DISC_RE.test(name) || DISC_SUFFIX_RE.test(name) || NUMERIC_DISC_RE.test(name);
 }
 
 // ── DB-driven tree builder ─────────────────────────────────────────────────────
@@ -386,7 +346,7 @@ function _buildDiscList(directEntries, discEntries, source) {
 
 function buildAlbumFromData(albumData, vpathName, seriesId, source) {
   const { albumPath, artistPath, categoryLabel, directEntries, discEntries } = albumData;
-  const id          = md5(albumPath);
+  const id          = sha256(albumPath);
   const segs        = albumPath.split('/');
   const displayName = segs[segs.length - 1];
   const year        = extractYear(displayName) || null;
@@ -508,7 +468,7 @@ function _buildSeriesAndAlbums(byArtist, byAlbum, vpathName, source) {
         albums.push(buildAlbumFromData(byAlbum.get(albumPath), vpathName, null, source));
       }
     } else {
-      const seriesId       = md5(artistKey);
+      const seriesId       = sha256(artistKey);
       const seriesAlbumIds = [];
       for (const albumPath of sortedPaths) {
         const album = buildAlbumFromData(byAlbum.get(albumPath), vpathName, seriesId, source);
@@ -714,11 +674,14 @@ function _applyLiveCueFixes(album) {
 // A user may access an album source if the source's vpathName is in their strict
 // vpaths list.  Child-only users (e.g. only "12-inches", no albumsOnly flag) get
 // an empty response.
+function _maySeeSource(user, sourceVpath) {
+  return !user?.vpaths || !sourceVpath || user.vpaths.includes(sourceVpath);
+}
+
 function _filterCacheForUser(cache, user) {
   if (!user?.vpaths) return cache;
-  const allowed = new Set(user.vpaths);
-  const albums  = cache.albums.filter(a => !a.sourceVpath || allowed.has(a.sourceVpath));
-  const series  = cache.series.filter(s => !s.sourceVpath || allowed.has(s.sourceVpath));
+  const albums  = cache.albums.filter(a => _maySeeSource(user, a.sourceVpath));
+  const series  = cache.series.filter(s => _maySeeSource(user, s.sourceVpath));
   if (albums.length === cache.albums.length && series.length === cache.series.length) return cache;
   return { albums, series };
 }
@@ -785,7 +748,7 @@ export function setup(velvet) {
       // Rebuild cache if needed (e.g. after restart before first browse call)
       await _rebuildFullCacheIfNeeded();
 
-      if (!_cacheFull?.has(id)) {
+      if (!_cacheFull?.has(id) || !_maySeeSource(req.user, _cacheFull.get(id).sourceVpath)) {
         return res.status(404).json({ error: 'Album not found' });
       }
 
@@ -819,7 +782,7 @@ export function setup(velvet) {
         return res.status(400).json({ error: 'Not an image' });
       }
 
-      const sources = await resolveAlbumsSources();
+      const sources = (await resolveAlbumsSources()).filter(s => _maySeeSource(req.user, s.vpathName));
 
       for (const source of sources) {
         const artRoot  = source.artRoot;
@@ -828,12 +791,8 @@ export function setup(velvet) {
         const relP     = (source.prefix && p.startsWith(source.prefix))
           ? p.slice(source.prefix.length)
           : p;
-        const resolved     = path.resolve(artRoot, relP);
-        const rootResolved = path.resolve(artRoot);
-        // Security: stay inside this artRoot
-        if (!resolved.startsWith(rootResolved + path.sep) && resolved !== rootResolved) {
-          continue;
-        }
+        let resolved;
+        try { resolved = resolvePathWithinRoot(artRoot, relP); } catch { continue; }
         try {
           await fsp.access(resolved, fs.constants.R_OK);
           return res.sendFile(resolved);

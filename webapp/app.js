@@ -1,5 +1,5 @@
 'use strict';
-const VELVET_VERSION = '0.9.3';
+const VELVET_VERSION = '0.10.0';
 // ── SERVER IDENTITY GUARD ────────────────────────────────────────────────────
 // Detects when this browser's localStorage belongs to a different Velvet
 // instance (fresh install, IP change, reverse-proxy swap, second server).
@@ -77,6 +77,7 @@ const S = {
   allowRadioRecording: false,   // per-user: can record radio streams
   allowYoutubeDownload: false,  // per-user: can download from YouTube
   allowMpvCast: false,          // per-user: can use cast-to-server-speaker button
+  canCast: false,               // admin or allow-mpv-cast (server-playback/available `allowed`) — gates Sonos
   roomsAvailable: false,
   rooms: [],
   allowServerRemote: true,      // per-user: can access /server-remote
@@ -154,7 +155,7 @@ const S = {
   showDecades: localStorage.getItem('ms2_show_decades_' + _u) !== '0', // default ON
   outputDeviceId: localStorage.getItem('ms2_output_device_' + _u) || '',  // '' = browser default
   // Pinned start view — the library nav item shown on boot/refresh ('' = Home default)
-  pinnedView: localStorage.getItem('ms2_pinned_view_' + _u) || '',
+  pinnedView: _migratePinnedView(localStorage.getItem('ms2_pinned_view_' + _u) || ''),
   // Auto-DJ: similar-artists mode
   djSimilar: localStorage.getItem('ms2_dj_similar_' + _u) === '1',
   djDice:    localStorage.getItem('ms2_dj_dice_'    + _u) === '1',  // default OFF
@@ -379,6 +380,7 @@ let _cuePoints         = [];    // cue sheet track markers for the current file 
 let _cueTrack1Title    = '';    // title of track 1 (t=0 entry, filtered from _cuePoints)
 let _cueMarkersRendered = false; // true once tick marks have been drawn for current file
 let _abChapThrottle    = 0;     // timestamp for chapter bar 1-Hz throttle
+let _themeColorCache   = null;  // { primary, accent } read from :root; cleared on theme / album-art colour change
 let analyserL    = null;   // left-channel analyser
 let analyserR    = null;   // right-channel analyser
 let eqFilters    = [];     // 8 BiquadFilterNodes – built on first play
@@ -413,7 +415,7 @@ function _renderTimes() {
     document.getElementById('time-total').textContent    = fmt(elapsed);
     document.getElementById('np-time-cur').textContent   = '0:00';
     document.getElementById('np-time-total').textContent = fmt(elapsed);
-    _setSeekAria(0, 0, t('player.ctrl.liveStream') || 'Live stream');
+    _setSeekAria(0, 0, t('player.ctrl.liveStream'));
     return;
   }
   if (!audioEl.duration) return;
@@ -493,6 +495,62 @@ function _reloadCurrentSongAfterArtEmbed(filepath, wasPlaying, resumeAtSec) {
   audioEl.load();
 }
 
+// body: { coverUrl } or { releaseId }. ffmpeg atomically replaces the file on disk, so the
+// current song is paused first (a mid-stream disconnect otherwise) and resumed at the same spot.
+async function _npEmbedArt(filepath, body, { retryHtml, onError } = {}) {
+  const dsEl   = document.getElementById('np-discogs-section');
+  const npLeft = document.getElementById('np-left');
+  const _cacheOnly = ['wav','aiff','aif','w64'].includes((filepath || '').split('.').pop().toLowerCase());
+  const _label = _cacheOnly ? t('player.npArt.savingArt') : t('player.npArt.embeddingArt');
+  const _isCurrentSong = S.queue[S.idx]?.filepath === filepath;
+  const _wasPlaying    = _isCurrentSong && !audioEl.paused;
+  const _resumeAt      = _isCurrentSong ? audioEl.currentTime : 0;
+  if (_isCurrentSong && _wasPlaying) audioEl.pause();
+  if (dsEl) dsEl.innerHTML = _embedProgressHtml(_label, _cacheOnly);
+  npLeft?.classList.add('np-left--embedding');
+  try {
+    const result = await api('POST', 'api/v1/discogs/embed', { filepath, ...body });
+    if (result?.aaFile) {
+      S.queue.forEach(q => { if (q.filepath === filepath) q['album-art'] = result.aaFile; });
+      _syncQueueToDb(); // persist new art into server queue so tab-sync restores it correctly
+    }
+    npLeft?.classList.remove('np-left--embedding');
+    npLeft?.classList.remove('np-left--picking');
+    // Force renderNPModal to reset the discogs section by clearing the cached fp
+    if (dsEl) dsEl.dataset.songFp = '';
+    renderNPModal();
+    if (!result.cacheOnly && !result.coverFile) _npOfferFolderCover(filepath);
+    if (S.queue[S.idx]?.filepath === filepath) Player.updateBar();
+    refreshQueueUI();
+    if (_isCurrentSong) {
+      clearTimeout(_netRecoveryTimer); // prevent stall-recovery from interfering
+      toast(t('player.toast.albumArtSaved'));
+      if (result.cacheOnly) { if (_wasPlaying) audioEl.play().catch(() => {}); }
+      else _reloadCurrentSongAfterArtEmbed(filepath, _wasPlaying, _resumeAt);
+    }
+  } catch(err) {
+    npLeft?.classList.remove('np-left--embedding');
+    // The file was not changed — just resume
+    if (_isCurrentSong && _wasPlaying) audioEl.play().catch(() => {});
+    if (dsEl) dsEl.innerHTML =
+      `<span class="np-discogs-status" style="color:rgba(255,100,100,.8)">${t('player.npArt.embedFailed', { msg: esc(err?.message || t('player.misc.error')) })}</span>` +
+      (retryHtml || '') +
+      `<button class="np-discogs-cancel" id="np-discogs-back-btn" style="margin-top:4px">${t('player.npArt.back')}</button>`;
+    onError?.();
+  }
+}
+
+function _fmtRg(s) {
+  const raw = s.replaygain ?? s.rg?.trackGain ?? null;
+  if (raw == null) return null;
+  const val = raw + (S.rgPreamp || 0);
+  return `${val > 0 ? '+' : ''}${Number(val).toFixed(2)} dB`;
+}
+function _metaValueHtml(v, cls) {
+  return v != null ? `<span class="${cls}">${esc(String(v))}</span>` : `<span class="${cls} dim">—</span>`;
+}
+function _metaLabel(k) { return String(t(k) || '').replace(/:\s*$/, ''); }
+
 function artUrl(f, size) {
   if (!f) return null;
   if (/^https?:\/\//i.test(f)) return `/api/v1/radio/art?url=${encodeURIComponent(f)}&token=${S.token}`;
@@ -513,6 +571,9 @@ let _lastUserGestureAt = 0;
 // Any play event that fires during this window when the user had previously paused
 // is cancelled immediately — regardless of which code path triggered it.
 let _bootRestoring = false;
+// True while S.queue holds only the local 25-song window and the full queue is
+// still to be loaded from the DB — writing S.queue back now would truncate it.
+let _queueLazyPending = false;
 // Debug flag: opt-in only — set localStorage.ms2_dbg_boot='1' to enable.
 // Emits [BOOT] console.warn lines that trace the full restore/play/audio-graph
 // lifecycle. Used during the v7.0.6-v7.0.10 Firefox silent-graph diagnosis;
@@ -822,7 +883,7 @@ function _camelotWheelHTML(anchorCode) {
     ctr += `<text x="${cx}" y="${cy+13}" text-anchor="middle" font-size="20" font-weight="800" fill="#e06040" font-family="system-ui,sans-serif">${anchorCode}</text>`;
   } else {
     ctr += `<text x="${cx}" y="${cy-3}" text-anchor="middle" font-size="11" fill="var(--t3,#888)" font-family="system-ui,sans-serif">Camelot</text>`;
-    ctr += `<text x="${cx}" y="${cy+11}" text-anchor="middle" font-size="11" fill="var(--t3,#888)" font-family="system-ui,sans-serif">Wheel</text>`;
+    ctr += `<text x="${cx}" y="${cy+11}" text-anchor="middle" font-size="11" fill="var(--t3,#888)" font-family="system-ui,sans-serif">${t('player.autodj.camelotWheel')}</text>`;
   }
   const svgStyle = `<style>.cw-seg{transition:filter .12s,transform .12s;}.cw-seg:hover{filter:brightness(1.5);transform-box:fill-box;transform-origin:center;transform:scale(1.1);}</style>`;
   const tipDiv = `<div id="cw-tip" style="min-height:44px;display:flex;align-items:center;justify-content:center;gap:10px;padding:4px 0 2px"></div>`;
@@ -1022,8 +1083,8 @@ const _QUEUE_COMPACT_FIELDS = [
   'album-art', 'rating', 'hash', 'replaygain',
   'bitrate', 'sample-rate', 'channels', 'rg',
   'bpm', 'musical_key', 'ts',
-  'isRadio', 'isPodcast', 'stationName', 'stationId',
-  'episodeId', 'podcastId', 'streamUrl',
+  'isRadio', '_radioLinks', '_radioLinkIdx', '_radioStationId',
+  'isPodcast', '_episodeId', '_feedId',
   '_dj'
 ];
 
@@ -1143,6 +1204,24 @@ function _windowSnapshotForLocal(snap) {
   const localIdx = Math.max(0, Math.min(idx - start, slice.length - 1));
   return { ...snap, queue: slice, idx: localIdx, queueWindowStart: start, queueTotal: total };
 }
+function _buildQueueSyncPayload(playing) {
+  const capped = S.queue.length > _QUEUE_SYNC_MAX;
+  const q = capped ? S.queue.slice(Math.max(0, S.idx - 50), S.idx + (_QUEUE_SYNC_MAX - 50)) : S.queue;
+  return {
+    queue:     _compactQueueList(q),
+    idx:       capped ? Math.min(S.idx, 50) : S.idx,
+    currentFilepath: S.queue[S.idx]?.filepath || null,
+    time:      audioEl.currentTime || 0,
+    playing,
+    savedAt:   Date.now(),
+    browserId: _browserId,
+  };
+}
+function _postQueueSync(playing) {
+  api('POST', 'api/v1/user/settings', { queue: _buildQueueSyncPayload(playing) })
+    .then(() => localStorage.setItem('ms2_settings_pushed_' + S.username, new Date().toISOString()))
+    .catch(() => {});
+}
 function _syncQueueToDb() {
   if (!S.token || !S.username) return;
   // Never write to the cross-device DB queue during boot restore. A spurious
@@ -1151,25 +1230,7 @@ function _syncQueueToDb() {
   // another device — clobbering cross-device resume.
   if (_bootRestoring) return;
   clearTimeout(_syncQueueTimer);
-  _syncQueueTimer = setTimeout(() => {
-    // Cap queue to avoid PayloadTooLarge — keep current track in view
-    const q = S.queue.length > _QUEUE_SYNC_MAX
-      ? S.queue.slice(Math.max(0, S.idx - 50), S.idx + (_QUEUE_SYNC_MAX - 50))
-      : S.queue;
-    const idx = S.queue.length > _QUEUE_SYNC_MAX ? Math.min(S.idx, 50) : S.idx;
-    const compactQ = _compactQueueList(q);
-    api('POST', 'api/v1/user/settings', { queue: {
-      queue:     compactQ,
-      idx,
-      currentFilepath: S.queue[S.idx]?.filepath || null,
-      time:      audioEl.currentTime || 0,
-      playing:   !audioEl.paused,
-      savedAt:   Date.now(),
-      browserId: _browserId,
-    }})
-      .then(() => localStorage.setItem('ms2_settings_pushed_' + S.username, new Date().toISOString()))
-      .catch(() => {});
-  }, 2000);
+  _syncQueueTimer = setTimeout(() => _postQueueSync(!audioEl.paused), 2000);
 }
 // Immediate (non-debounced) DB write — use this when play state MUST be
 // persisted right away (e.g. pause event) so a quick refresh sees the
@@ -1181,28 +1242,13 @@ function _syncQueueToDbNow(playingOverride) {
   if (_bootRestoring) return;
   clearTimeout(_syncQueueTimer);
   _syncQueueTimer = null;
-  const playing = (playingOverride !== undefined) ? !!playingOverride : !audioEl.paused;
-  const q = S.queue.length > _QUEUE_SYNC_MAX
-    ? S.queue.slice(Math.max(0, S.idx - 50), S.idx + (_QUEUE_SYNC_MAX - 50))
-    : S.queue;
-  const idx = S.queue.length > _QUEUE_SYNC_MAX ? Math.min(S.idx, 50) : S.idx;
-  const compactQ = _compactQueueList(q);
-  api('POST', 'api/v1/user/settings', { queue: {
-    queue:     compactQ,
-    idx,
-    currentFilepath: S.queue[S.idx]?.filepath || null,
-    time:      audioEl.currentTime || 0,
-    playing,
-    savedAt:   Date.now(),
-    browserId: _browserId,
-  }})
-    .then(() => localStorage.setItem('ms2_settings_pushed_' + S.username, new Date().toISOString()))
-    .catch(() => {});
+  _postQueueSync(playingOverride !== undefined ? !!playingOverride : !audioEl.paused);
 }
 // Expand the in-memory queue from the DB when the local snapshot is a windowed
 // subset. Called 3 s after boot so the audio media request gets connection priority.
 async function _lazyLoadQueueFromDb() {
-  if (!S.token || !S.username || _bootRestoring || _room) return;
+  if (!S.token || !S.username || _room) { _queueLazyPending = false; return; }
+  if (_bootRestoring) { setTimeout(_lazyLoadQueueFromDb, 1000); return; }
   try {
     const r = await api('GET', 'api/v1/queue');
     if (!r || !Array.isArray(r.queue) || r.queue.length <= S.queue.length) return;
@@ -1215,8 +1261,32 @@ async function _lazyLoadQueueFromDb() {
     }
     refreshQueueUI();
     _syncQueueLabel();
-  } catch (_) {}
+  } catch (_) {} finally {
+    _queueLazyPending = false;
+  }
 }
+// Body for the unload beacon: null when the queue must not be written now
+// (boot restore, or only the local window is loaded) or when it is over the
+// sendBeacon size limit, where the browser would drop it silently.
+const _BEACON_MAX_BYTES = 60000;
+function _queueBeaconBody() {
+  if (_bootRestoring || _queueLazyPending) return null;
+  const body = JSON.stringify({ queue: _buildQueueSyncPayload(false) });
+  return new Blob([body]).size <= _BEACON_MAX_BYTES ? body : null;
+}
+// Restore the BPM, year, camelot and genre anchors from localStorage so Auto-DJ
+// chips and scoring keep their reference after a server restart or browser refresh.
+function _restoreDjAnchors() {
+  try { _bpmHistory = JSON.parse(localStorage.getItem(_djKey('bpm_history')) || 'null') || []; } catch(_) { _bpmHistory = []; }
+  if (_bpmHistory.length) _bpmAnchor = _bpmAvg(_bpmHistory);
+  try { _yearHistory = JSON.parse(localStorage.getItem(_djKey('year_history')) || 'null') || []; } catch(_) { _yearHistory = []; }
+  _yearAnchor = _yearHistory.length ? _bpmAvg(_yearHistory) : null;
+  try { _camelotAnchor = localStorage.getItem(_djKey('camelot_anchor')) || null; } catch(_) {}
+  if (_camelotAnchor) _camelotAnchorNeighbours = camelotNeighbours(_camelotAnchor);
+  try { _djGenreHistory = JSON.parse(localStorage.getItem(_djKey('genre_hist')) || 'null') || []; } catch(_) { _djGenreHistory = []; }
+  _djFamilyHistory = _djGenreHistory.slice(-8).map(_djGenreCat);
+}
+
 function restoreQueue(silent = false) {
   if (silent && _room) return;
   const key = _queueKey();
@@ -1273,14 +1343,7 @@ function restoreQueue(silent = false) {
     _currentCamelot    = toCamelot(_rq.musical_key);
     _currentNeighbours = camelotNeighbours(_currentCamelot);
   }
-  // Restore BPM history + camelot anchor from localStorage so Auto-DJ chips
-  // show the correct reference after a server restart or browser refresh.
-  try { _bpmHistory = JSON.parse(localStorage.getItem(_djKey('bpm_history')) || 'null') || []; } catch(_) { _bpmHistory = []; }
-  if (_bpmHistory.length) _bpmAnchor = _bpmAvg(_bpmHistory);
-  try { _camelotAnchor = localStorage.getItem(_djKey('camelot_anchor')) || null; } catch(_) {}
-  if (_camelotAnchor) _camelotAnchorNeighbours = camelotNeighbours(_camelotAnchor);
-  try { _djGenreHistory = JSON.parse(localStorage.getItem(_djKey('genre_hist')) || 'null') || []; } catch(_) { _djGenreHistory = []; }
-  _djFamilyHistory = _djGenreHistory.slice(-8).map(_djGenreCat);
+  _restoreDjAnchors();
   refreshQueueUI();
   _syncQueueLabel();   // render BPM/key chips with restored anchors
   // Restore Auto-DJ on/off so a refresh keeps it running if it was on. The flag is
@@ -1298,6 +1361,7 @@ function restoreQueue(silent = false) {
   // If the local snapshot is a windowed subset of the full queue, expand from DB
   // after a short delay so the audio media request gets connection priority.
   if ((data.queueTotal || 0) > data.queue.length) {
+    _queueLazyPending = true;
     setTimeout(_lazyLoadQueueFromDb, 3000);
   }
 
@@ -1399,12 +1463,9 @@ function _navCancel() {
   _historyRefreshFn = null; // leaving whatever view was active — stop live history refresh
   return _navAbort.signal;
 }
-// Shortcuts-view AbortController — aborted each time viewShortcuts() re-runs so that
-// accumulated body capture listeners from repeated visibility-change refreshes
-// don't cause even-number-of-toggles cancellation in customize mode.
+// Shortcuts-view AbortController for its delegated #content-body listeners —
+// aborted by setBody(), i.e. whenever any view (or Shortcuts itself) replaces the page.
 let _shortcutsAC = null;
-// Home-view AbortController — aborted each time viewHome() re-runs.
-let _homeAC = null;
 // Queue drag-and-drop state — module-scoped so _initQueueListeners (one-time) can close over it.
 let _qDragSrc  = null;
 let _qDragDisc = null; // disc label string when dragging an entire disc block
@@ -1419,7 +1480,7 @@ let _qvsRafP = false;   // RAF pending flag
 let _qvsVersion = 0;        // incremented on any structural queue change (add/remove/reorder)
 let _qvsBuiltVersion = -1;  // version when _qvsRows/_qvsCumH were last built
 let _qvsStartOffsets = [];  // estimated cumulative start time (s) for each queue index
-let _qvsSelected = new Set();  // set of selected queue indices (qi) for multi-select
+let _qvsSelected = new Set();  // selected queue song objects — they follow their song through removes, moves and Auto-DJ prunes
 let _qvsLastClick = -1;        // last qi clicked, for shift-range selection
 let _qSearchQuery = '';        // normalised (lowercased, diacritic-folded) active queue-search term, '' = none
 let _qvsListenersInited = false; // guard against double-registration on logout+login
@@ -1507,21 +1568,6 @@ async function rateSong(filepath, rating) {
   }, 400));
 }
 
-// ── ARTIST NORMALIZATION ──────────────────────────────────────
-// Rules:
-//   - Strip leading symbols/brackets/quotes/spaces
-//   - Strip zero-padded track prefixes (0, 01, 09, 001 … always start with 0)
-//   - Keep bare single/multi non-zero digits ("2 Brothers", "1 Alarma", "10cc")
-// Three-pass approach so bracket-wrapped numbers like "(01) Name" are handled.
-function normalizeArtist(name) {
-  const noise = /^[\s#'"`()|[\]{}_.,\-\u2013\u2014*!/\\]+/;
-  return String(name)
-    .replace(noise, '')               // pass 1: strip leading symbols/brackets
-    .replace(/^0\d*[\s.,)\]]+/, '')   // pass 2: strip zero-padded number (0, 01, 09, 001…)
-    .replace(noise, '')               // pass 3: strip any symbols now exposed
-    .toLowerCase().trim();
-}
-// Same stripping logic but preserves original case — used for display, A-Z bucket, avatar letter.
 // Extract an artist hint from a path string when the artist metadata tag is absent.
 // Album path:   "Albums/Isaac Hayes/Branded"  → "Isaac Hayes"  (parent folder)
 // Song filepath: "Albums/Isaac Hayes/Branded/01 Walk On By.flac" → "Isaac Hayes"
@@ -1545,6 +1591,13 @@ function _folderArtistFromPath(p) {
   return null;
 }
 
+// ── ARTIST NORMALIZATION ──────────────────────────────────────
+// Rules:
+//   - Strip leading symbols/brackets/quotes/spaces
+//   - Strip zero-padded track prefixes (0, 01, 09, 001 … always start with 0)
+//   - Keep bare single/multi non-zero digits ("2 Brothers", "1 Alarma", "10cc")
+// Three-pass approach so bracket-wrapped numbers like "(01) Name" are handled.
+// Preserves original case — used for display, A-Z bucket, avatar letter.
 function cleanArtistDisplay(name) {
   const noise = /^[\s#'"`()|[\]{}_.,\-\u2013\u2014*!/\\]+/;
   return String(name)
@@ -1607,16 +1660,24 @@ function _restorePrevQueue() {
 }
 
 // ── PLAYER ───────────────────────────────────────────────────
+// Fresh playback resets Auto-DJ memory. Clear the persisted copies too —
+// not just the in-memory state — so a stale (possibly oversized) ignore
+// list can't linger in localStorage or be pushed back by _syncPrefs().
+function _resetDjMemory() {
+  S.djIgnore = [];
+  S.djArtistHistory = [];
+  for (const k of ['ignore', 'artist_history', 'genre_hist']) {
+    try { localStorage.removeItem(_djKey(k)); } catch (_) { /* storage unavailable */ }
+  }
+  _djGenreHistory = []; _djFamilyHistory = [];
+  _syncPrefs();
+}
+
 const Player = {
   setQueue(songs, start) {
     _snapshotQueueForUndo(songs);
     S.queue = [...songs]; _qvsVersion++;
-    S.djIgnore = [];
-    S.djArtistHistory = [];
-    localStorage.removeItem(_djKey('artist_history'));
-    _djGenreHistory = []; _djFamilyHistory = [];
-    try { localStorage.removeItem(_djKey('genre_hist')); } catch (_) {}
-    _syncPrefs();
+    _resetDjMemory();
     const idx = start ?? 0;
     this.playAt(idx);
     // Pre-fetch waveforms for the next few upcoming songs only.
@@ -1630,16 +1691,7 @@ const Player = {
   playSingle(song) {
     _snapshotQueueForUndo([song]);
     S.queue = [song]; _qvsVersion++;
-    // Fresh playback resets Auto-DJ memory. Clear the persisted copies too —
-    // not just the in-memory state — so a stale (possibly oversized) ignore
-    // list can't linger in localStorage or be pushed back by _syncPrefs().
-    S.djIgnore = [];
-    S.djArtistHistory = [];
-    try { localStorage.removeItem(_djKey('ignore')); } catch (_) { /* ignore */ }
-    try { localStorage.removeItem(_djKey('artist_history')); } catch (_) { /* ignore */ }
-    _djGenreHistory = []; _djFamilyHistory = [];
-    try { localStorage.removeItem(_djKey('genre_hist')); } catch (_) {}
-    _syncPrefs();
+    _resetDjMemory();
     this.playAt(0);
   },
   // Add to queue; if nothing is playing yet, start immediately
@@ -1687,6 +1739,9 @@ const Player = {
     _roomHandBackMs = 0;
     // Selecting a local track takes over from a playing Sonos Favourite.
     if (_sonosFav) _exitSonosFavorite({ stopDevice: true });
+    // Before the new src resets currentTime
+    if (_podcastSong && !audioEl.ended) _savePodcastProgress();
+    _podcastSong = null;
     // Wrapped: if a song was interrupted (not naturally ended), count it as a skip
     if (_wrappedEventId && !_wrappedEndedNaturally) {
       const eid = _wrappedEventId;
@@ -1807,71 +1862,7 @@ const Player = {
     } else {
       _cuePoints = []; _cueTrack1Title = ''; ['cue-markers','np-cue-markers'].forEach(id => { const el = document.getElementById(id); if (el) el.innerHTML = ''; });
     }
-    if (!s.isRadio && !s.isPodcast) {
-      // Taken back from a room mid-song: the room already counted this play.
-      if (!_handBackMs) api('POST', 'api/v1/db/stats/log-play', { filePath: s.filepath }).catch(() => {});
-      // Wrapped: stop any active radio or podcast event, then log play-start
-      if (_wrappedRadioEventId) {
-        const eid = _wrappedRadioEventId; _wrappedRadioEventId = null;
-        api('POST', 'api/v1/wrapped/radio-stop', { eventId: eid, listenedMs: Date.now() - _wrappedRadioStartMs }).catch(() => {});
-      }
-      if (_wrappedPodcastEventId) {
-        const eid = _wrappedPodcastEventId; _wrappedPodcastEventId = null;
-        api('POST', 'api/v1/wrapped/podcast-end', { eventId: eid, playedMs: Math.round((audioEl.currentTime || 0) * 1000), completed: false }).catch(() => {});
-      }
-      _wrappedEndedNaturally = false;
-      _wrappedTrackStartOffset = 0;
-      _wrappedEventId = null;
-      api('POST', 'api/v1/wrapped/play-start', {
-        filePath:  s.filepath,
-        sessionId: _wrappedSessionId,
-        source:    _wrappedSource(),
-        dj:        _djTakeTrace(s.filepath), // undefined unless Auto-DJ picked this track
-      }).then(r => { _wrappedEventId = r?.eventId ?? null; }).catch(() => {});
-    } else if (s.isRadio) {
-      // Wrapped: stop any active music/podcast event, then log radio-start
-      if (_wrappedEventId) {
-        const eid = _wrappedEventId; _wrappedEventId = null;
-        api('POST', 'api/v1/wrapped/play-stop', { eventId: eid, playedMs: Math.max(0, Math.round(((audioEl.currentTime || 0) - _wrappedTrackStartOffset) * 1000)) }).catch(() => {});
-      }
-      if (_wrappedPodcastEventId) {
-        const eid = _wrappedPodcastEventId; _wrappedPodcastEventId = null;
-        api('POST', 'api/v1/wrapped/podcast-end', { eventId: eid, playedMs: Math.round((audioEl.currentTime || 0) * 1000), completed: false }).catch(() => {});
-      }
-      if (_wrappedRadioEventId) {
-        const eid = _wrappedRadioEventId; _wrappedRadioEventId = null;
-        api('POST', 'api/v1/wrapped/radio-stop', { eventId: eid, listenedMs: Date.now() - _wrappedRadioStartMs }).catch(() => {});
-      }
-      _wrappedRadioStartMs = Date.now();
-      _wrappedRadioEventId = null;
-      api('POST', 'api/v1/wrapped/radio-start', {
-        stationName: s.title,
-        stationId:   s._radioStationId ?? null,
-        sessionId:   _wrappedSessionId,
-      }).then(r => { _wrappedRadioEventId = r?.eventId ?? null; }).catch(() => {});
-    } else if (s.isPodcast) {
-      // Wrapped: stop any active music/radio event, then log podcast-start
-      if (_wrappedEventId) {
-        const eid = _wrappedEventId; _wrappedEventId = null;
-        api('POST', 'api/v1/wrapped/play-stop', { eventId: eid, playedMs: Math.max(0, Math.round(((audioEl.currentTime || 0) - _wrappedTrackStartOffset) * 1000)) }).catch(() => {});
-      }
-      if (_wrappedRadioEventId) {
-        const eid = _wrappedRadioEventId; _wrappedRadioEventId = null;
-        api('POST', 'api/v1/wrapped/radio-stop', { eventId: eid, listenedMs: Date.now() - _wrappedRadioStartMs }).catch(() => {});
-      }
-      if (_wrappedPodcastEventId) {
-        const eid = _wrappedPodcastEventId; _wrappedPodcastEventId = null;
-        api('POST', 'api/v1/wrapped/podcast-end', { eventId: eid, playedMs: Math.round((audioEl.currentTime || 0) * 1000), completed: false }).catch(() => {});
-      }
-      if (s._episodeId && s._feedId) {
-        _wrappedPodcastEventId = null;
-        api('POST', 'api/v1/wrapped/podcast-start', {
-          episodeId: s._episodeId,
-          feedId:    s._feedId,
-          sessionId: _wrappedSessionId,
-        }).then(r => { _wrappedPodcastEventId = r?.eventId ?? null; }).catch(() => {});
-      }
-    }
+    _reportTrackStart(s, _handBackMs);
     _scheduleScrobble(s, _handBackMs);
     // Early Auto-DJ prefetch: fetch the next DJ pick shortly after a track
     // STARTS (not only ~25-45 s before its end) so a manual NEXT press is an
@@ -1967,18 +1958,7 @@ const Player = {
       audioEl.pause();
       // Flush pause state to DB immediately (no debounce) so that a page
       // refresh or another device/tab picks up playing:false without delay.
-      clearTimeout(_syncQueueTimer);
-      _syncQueueTimer = null;
-      if (S.token && S.username) {
-        api('POST', 'api/v1/user/settings', { queue: {
-          queue: S.queue, idx: S.idx,
-          currentFilepath: S.queue[S.idx]?.filepath || null,
-          time: audioEl.currentTime || 0,
-          playing: false,
-          savedAt: Date.now(),
-          browserId: _browserId,
-        }}).catch(() => {});
-      }
+      _syncQueueToDbNow(false);
       if (S.castingToMpv) api('POST', 'api/v1/server-playback/set-pause', { paused: true }).catch(() => {});
       if (S.castingToSonos && S.sonosRoom) {
         _sonosLocalControlAt = Date.now(); // web-initiated pause — suppress device→browser state sync briefly
@@ -1991,36 +1971,17 @@ const Player = {
   next() {
     if (_room) { _roomCmd('next'); return; }
     if (!S.queue.length) return;
-    if (_wrappedPodcastEventId) {
-      const eid = _wrappedPodcastEventId; _wrappedPodcastEventId = null;
-      api('POST', 'api/v1/wrapped/podcast-end', {
-        eventId: eid, playedMs: Math.round((audioEl.currentTime || 0) * 1000), completed: false,
-      }).catch(() => {});
-    }
-    if (_wrappedRadioEventId) {
-      const eid = _wrappedRadioEventId; _wrappedRadioEventId = null;
-      api('POST', 'api/v1/wrapped/radio-stop', {
-        eventId: eid, listenedMs: Date.now() - _wrappedRadioStartMs,
-      }).catch(() => {});
-    }
-    // Shuffle is documented as inactive while Auto-DJ drives (see _shuffleStripHtml)
-    const _djDrives = S.autoDJ && _isMusicSong(S.queue[S.idx]);
-    if (S.shuffle && !_djDrives) {
-      const next = Math.floor(Math.random() * S.queue.length);
-      this.playAt(next);
-    } else if (S.repeat === 'one') {
+    _wrappedClose({ music: false });
+    const next = _nextIndexAuto();
+    if (next === -1) {
+      // Auto-DJ owns the end of the queue: a fresh DJ pick beats wrapping back to song 1 (repeat all)
+      if (_djDrivesQueue()) autoDJFetch();
+    } else if (next === S.idx && S.repeat === 'one') {
       const _rOne = S.queue[S.idx];
       audioEl.currentTime = (_rOne?._isCueSplit && (_rOne.cueOffset ?? 0) > 0) ? _rOne.cueOffset : 0;
       audioEl.play().catch(() => {});
-    } else if (S.idx < S.queue.length - 1) {
-      this.playAt(S.idx + 1);
-    } else if (_djDrives) {
-      // Auto-DJ owns the end of the queue: a fresh DJ pick always beats wrapping
-      // back to the first track (repeat all). Without this precedence, NEXT on
-      // the last track with repeat-all on jumped to song #1 instead of fetching.
-      autoDJFetch();
-    } else if (S.repeat === 'all') {
-      this.playAt(0);
+    } else {
+      this.playAt(next);
     }
   },
   prev() {
@@ -2147,8 +2108,8 @@ const Player = {
       starsEl.dataset.fp = s.filepath;
       starsEl.dataset.rating = s.rating || 0;
       _stopRadioNowPlaying();
-      // Auto-stop any active recording when switching away from radio
-      if (S.recordingActive) { _stopRecording(); }
+      // Auto-stop the recording this tab started when switching away from radio
+      if (S.recordingActive && S.recordingMeta?.startedHere) { _stopRecording(); }
     }
     // sync NP modal if open
     if (!document.getElementById('np-modal').classList.contains('hidden')) {
@@ -2182,19 +2143,99 @@ function _wrappedSource() {
   return 'manual';
 }
 
+function _wrappedClose({ music = true, radio = true, podcast = true } = {}) {
+  if (music && _wrappedEventId) {
+    const eid = _wrappedEventId; _wrappedEventId = null;
+    api('POST', 'api/v1/wrapped/play-stop', { eventId: eid, playedMs: Math.max(0, Math.round(((audioEl.currentTime || 0) - _wrappedTrackStartOffset) * 1000)) }).catch(() => {});
+  }
+  if (radio && _wrappedRadioEventId) {
+    const eid = _wrappedRadioEventId; _wrappedRadioEventId = null;
+    api('POST', 'api/v1/wrapped/radio-stop', { eventId: eid, listenedMs: Date.now() - _wrappedRadioStartMs }).catch(() => {});
+  }
+  if (podcast && _wrappedPodcastEventId) {
+    const eid = _wrappedPodcastEventId; _wrappedPodcastEventId = null;
+    api('POST', 'api/v1/wrapped/podcast-end', { eventId: eid, playedMs: Math.round((audioEl.currentTime || 0) * 1000), completed: false }).catch(() => {});
+  }
+}
+
+// Shuffle is documented as inactive while Auto-DJ drives (see _shuffleStripHtml)
+function _djDrivesQueue() { return S.autoDJ && _isMusicSong(S.queue[S.idx]); }
+
+// The index Next would play, or -1 when Next would fetch an Auto-DJ pick or do nothing.
+function _nextIndexAuto() {
+  const len = S.queue.length;
+  if (!len) return -1;
+  const djDrives = _djDrivesQueue();
+  if (S.shuffle && !djDrives) return Math.floor(Math.random() * len);
+  if (S.repeat === 'one') return S.idx;
+  if (S.idx < len - 1) return S.idx + 1;
+  if (djDrives) return -1;
+  return S.repeat === 'all' ? 0 : -1;
+}
+
+// handBackMs > 0: taken back from a room mid-song, the room already counted this play.
+let _podcastSong = null;
+let _podcastSavedAt = 0;
+const _podcastPositions = new Map();
+
+function _savePodcastProgress(played = false) {
+  const s = _podcastSong;
+  if (!s) return;
+  _podcastSavedAt = Date.now();
+  const position = played ? 0 : Math.max(0, audioEl.currentTime || 0);
+  _podcastPositions.set(s._episodeId, { position, played });
+  api('POST', 'api/v1/podcast/episode/progress', { episodeId: s._episodeId, feedId: s._feedId, position, ...(played ? { played: true } : {}) }).catch(() => {});
+}
+
+function _podcastResumeAt(ep) {
+  const saved = _podcastPositions.get(ep.id);
+  const pos = saved ? saved.position : (ep.play_position || 0);
+  const played = saved ? saved.played : !!ep.played;
+  if (played || pos <= 2) return 0;
+  if (ep.duration_secs && pos >= ep.duration_secs - 30) return 0;
+  return pos;
+}
+
+function _reportTrackStart(s, handBackMs = 0) {
+  if (!s.isRadio && !s.isPodcast) {
+    if (!handBackMs) api('POST', 'api/v1/db/stats/log-play', { filePath: s.filepath }).catch(() => {});
+    _wrappedClose({ music: false });
+    _wrappedEndedNaturally = false;
+    _wrappedTrackStartOffset = 0;
+    _wrappedEventId = null;
+    api('POST', 'api/v1/wrapped/play-start', {
+      filePath:  s.filepath,
+      sessionId: _wrappedSessionId,
+      source:    _wrappedSource(),
+      dj:        _djTakeTrace(s.filepath), // undefined unless Auto-DJ picked this track
+    }).then(r => { _wrappedEventId = r?.eventId ?? null; }).catch(() => {});
+  } else if (s.isRadio) {
+    _wrappedClose();
+    _wrappedRadioStartMs = Date.now();
+    api('POST', 'api/v1/wrapped/radio-start', {
+      stationName: s.title,
+      stationId:   s._radioStationId ?? null,
+      sessionId:   _wrappedSessionId,
+    }).then(r => { _wrappedRadioEventId = r?.eventId ?? null; }).catch(() => {});
+  } else {
+    _wrappedClose();
+    if (s._episodeId && s._feedId) {
+      _podcastSong = s;
+      _podcastSavedAt = Date.now();
+      api('POST', 'api/v1/wrapped/podcast-start', {
+        episodeId: s._episodeId,
+        feedId:    s._feedId,
+        sessionId: _wrappedSessionId,
+      }).then(r => { _wrappedPodcastEventId = r?.eventId ?? null; }).catch(() => {});
+    }
+  }
+}
+
 // \u2500\u2500 AUTO-DJ \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
 // Returns true only for regular music songs (not radio, podcast, or audiobook vpath).
 function _isMusicSong(s) {
   if (!s || s.isRadio || s.isPodcast) return false;
-  const meta = S.vpathMeta || {};
-  for (const v of S.vpaths) {
-    if ((meta[v]?.type || 'music') !== 'audio-books') continue;
-    // Standalone audiobook vpath: filepath starts with "{vpath}/"
-    if (!meta[v].parentVpath && s.filepath?.startsWith(v + '/')) return false;
-    // Child audiobook vpath: filepath starts with filepathPrefix
-    if (meta[v].parentVpath && meta[v].filepathPrefix && s.filepath?.startsWith(meta[v].filepathPrefix)) return false;
-  }
-  return true;
+  return !_isAudioBookSong(s);
 }
 // Returns true when the song comes from any audio-books vpath, false otherwise.
 function _isAudioBookSong(s) {
@@ -2597,9 +2638,6 @@ function _djNoSimilarFor(currentArtist, lookupFailed) {
 // browser's own picks and for a Velvet Room's Auto-DJ on the server.
 function _djScopeBody() {
   const selected = S.djVpaths.length > 0 ? S.djVpaths : S.vpaths;
-  // Child-vpath optimisation: if every selected vpath is a child of the
-  // same parent (stored under the parent vpath in the DB), use a
-  // filepathPrefix filter on the parent instead of ignoreVPaths.
   const meta = S.vpathMeta || {};
   const abEx = _audioBookExclusions();
   const scope = { minRating: S.djMinRating || undefined };
@@ -2612,20 +2650,22 @@ function _djScopeBody() {
     if (S.djMaxDuration > 0) scope.maxDuration = S.djMaxDuration;
     scope.allowUnknownDuration = !!S.djAllowUnknownDuration;
   }
-  const allChildSameParent =
-    selected.length > 0 &&
-    selected.every(v => meta[v]?.parentVpath) &&
-    new Set(selected.map(v => meta[v].parentVpath)).size === 1;
-  if (allChildSameParent) {
-    const parentVpath = meta[selected[0]].parentVpath;
-    const filepathPrefix = selected.length === 1 ? meta[selected[0]].filepathPrefix : null;
-    const ignoreVPaths = S.vpaths.filter(v => v !== parentVpath && !meta[v]?.parentVpath);
+  const children = selected.filter(v => meta[v]?.parentVpath);
+  if (!children.length) {
+    const ignoreVPaths = [...new Set([...S.vpaths.filter(v => !selected.includes(v)), ...abEx.ignoreVPaths])];
     if (ignoreVPaths.length > 0) scope.ignoreVPaths = ignoreVPaths;
-    if (filepathPrefix) scope.filepathPrefix = filepathPrefix;
     return scope;
   }
-  const ignoreVPaths = S.vpaths.filter(v => !selected.includes(v));
+  // Child vpaths live in the DB under their root: whitelist their prefixes inside the parent (CLAUDE.md)
+  const roots = selected.filter(v => !meta[v]?.parentVpath);
+  const prefixes = children
+    .filter(v => !roots.includes(meta[v].parentVpath))
+    .map(v => ({ vpath: meta[v].parentVpath, prefix: meta[v].filepathPrefix }));
+  const keep = new Set([...roots, ...prefixes.map(p => p.vpath)]);
+  const ignoreVPaths = S.vpaths.filter(v => !meta[v]?.parentVpath && (!keep.has(v) || abEx.ignoreVPaths.includes(v)));
   if (ignoreVPaths.length > 0) scope.ignoreVPaths = ignoreVPaths;
+  if (prefixes.length === 1 && !roots.length) scope.filepathPrefix = prefixes[0].prefix;
+  else if (prefixes.length) scope.includeFilepathPrefixes = prefixes;
   return scope;
 }
 
@@ -3026,7 +3066,8 @@ async function autoDJFetch() {
 }
 
 function setAutoDJ(on, skipAutoStart) {
-  if (on && !_isMusicSong(S.queue[S.idx])) {
+  const cur = S.queue[S.idx];
+  if (on && cur && !_isMusicSong(cur)) {
     toast(t('player.toast.djMusicOnly'));
     return;
   }
@@ -3248,7 +3289,7 @@ function _qvsRender(list, force) {
       const { qi: i, s } = row;
       const startOffset = _qvsStartOffsets[i] || 0;
       const isActive = i === S.idx;
-      const isSel = _qvsSelected.has(i);
+      const isSel = _qvsSelected.has(s);
       const isMatch = _qMatchesSearch(s);
       const estStart = (!isActive && startOffset > 0) ? ` title="~${fmt(startOffset)}"` : '';
       html.push(`<div class="q-item${isActive ? ' q-active' : ''}${s._dj ? ' q-dj' : ''}${isSel ? ' q-sel' : ''}${isMatch ? ' q-match' : ''}" data-qi="${i}" draggable="true"${estStart}>
@@ -3270,7 +3311,7 @@ function _qvsRender(list, force) {
           <div class="q-title">${isMatch ? _qHighlightMatch(s.title || s.filepath?.split('/').pop() || '?') : esc(s.title || s.filepath?.split('/').pop() || '?')}</div>
           <div class="q-artist">${isMatch ? _qHighlightMatch(_queueArtist(s) || '') : esc(_queueArtist(s) || '')}</div>
         </div>
-        <div class="q-dj-slot">${s._dj ? '<span class="q-dj-tag">Auto&#8202;DJ</span>' : ''}</div>
+        <div class="q-dj-slot">${s._dj ? `<span class="q-dj-tag">${t('player.queue.djTag')}</span>` : ''}</div>
         ${s.duration ? `<div class="q-dur">${fmt(s.duration)}</div>` : ''}
         <button class="q-remove" data-qi="${i}" title="${t('player.ctrl.queueRemove')}">
           <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
@@ -3328,12 +3369,12 @@ function refreshQueueUI() {
         <div class="qp-np-info">
           <div class="qp-np-title">${esc(cur.title || cur.filepath?.split('/').pop() || '\u2014')}</div>
           <div class="qp-np-artist">${esc(cur.artist || '')}</div>
-          ${(() => { const parts=[]; const ext=(cur.filepath||'').split('.').pop().toUpperCase(); if(ext) parts.push(ext); if(fmtKbps(cur.bitrate)) parts.push(fmtKbps(cur.bitrate)+' kbps'); if(cur['sample-rate']) parts.push((cur['sample-rate']/1000).toFixed(1).replaceAll('.0','')+' kHz'); if(cur.channels) parts.push(cur.channels===2?'Stereo':cur.channels===1?'Mono':cur.channels+'ch'); if(cur.bpm) parts.push(cur.bpm+' BPM'); if(cur.musical_key){ const _cml=toCamelot(cur.musical_key); parts.push(_cml?cur.musical_key+' ('+_cml+')':cur.musical_key); } const s=parts.join(' \u00b7 '); return s?`<div class="qp-np-tech">${esc(s)}</div>`:''; })()}
+          ${(() => { const parts=[]; const ext=(cur.filepath||'').split('.').pop().toUpperCase(); if(ext) parts.push(ext); if(fmtKbps(cur.bitrate)) parts.push(fmtKbps(cur.bitrate)+' kbps'); if(cur['sample-rate']) parts.push((cur['sample-rate']/1000).toFixed(1).replaceAll('.0','')+' kHz'); if(cur.channels) parts.push(cur.channels===2?t('player.modal.techStereo'):cur.channels===1?t('player.modal.techMono'):cur.channels+'ch'); if(cur.bpm) parts.push(cur.bpm+' BPM'); if(cur.musical_key){ const _cml=toCamelot(cur.musical_key); parts.push(_cml?cur.musical_key+' ('+_cml+')':cur.musical_key); } const s=parts.join(' \u00b7 '); return s?`<div class="qp-np-tech">${esc(s)}</div>`:''; })()}
           ${cur.rating ? `<div class="qp-np-stars" style="margin-top:3px">${starsHtml(cur.rating)}</div>` : ''}
         </div>
       </div>`;
   } else {
-    npCard.innerHTML = `<div class="qp-np-empty">Nothing playing yet — click any song to start</div>`;
+    npCard.innerHTML = `<div class="qp-np-empty">${t('player.queue.nothingPlayingHint')}</div>`;
   }
 
   // Queue items
@@ -3368,6 +3409,7 @@ function refreshQueueUI() {
       _qvsCumH[r + 1] = _qvsCumH[r] + (_qvsRows[r].type === 'sep' ? _QH_SEP : _QH_ITEM);
     }
     _qvsBuiltVersion = _qvsVersion;
+    _pruneQueueSelection();
   }
 
   // Render the virtual list FIRST so the spacer divs create scrollable
@@ -3385,6 +3427,27 @@ function refreshQueueUI() {
   _syncQueueLabel();
 }
 
+function _pruneQueueSelection() {
+  _qvsLastClick = -1;
+  if (!_qvsSelected.size) return;
+  const live = new Set(S.queue);
+  for (const s of _qvsSelected) if (!live.has(s)) _qvsSelected.delete(s);
+  _updateQueueSelBar();
+}
+
+function _queueSelectedIndices() {
+  const out = [];
+  S.queue.forEach((s, i) => { if (_qvsSelected.has(s)) out.push(i); });
+  return out;
+}
+
+function _toggleQueueSelection(qi) {
+  const s = S.queue[qi];
+  if (!s) return;
+  if (_qvsSelected.has(s)) _qvsSelected.delete(s);
+  else _qvsSelected.add(s);
+}
+
 function _updateQueueSelBar() {
   const bar = document.getElementById('q-sel-bar');
   const cnt = document.getElementById('q-sel-count');
@@ -3395,34 +3458,6 @@ function _updateQueueSelBar() {
     bar.classList.remove('hidden');
     if (cnt) cnt.textContent = t('player.queue.selected', { count: _qvsSelected.size });
   }
-}
-
-function showAddToPlaylistModalBulk(songs) {
-  const list = document.getElementById('atp-list');
-  if (!S.playlists.length) {
-    list.innerHTML = `<div class="modal-empty">No playlists yet. Create one first.</div>`;
-  } else {
-    list.innerHTML = S.playlists.map(p =>
-      `<div class="modal-pl-item" data-pl="${esc(p.name)}">
-        <svg class="modal-pl-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>
-        ${esc(p.name)}
-      </div>`
-    ).join('');
-    list.querySelectorAll('.modal-pl-item').forEach(el => {
-      el.addEventListener('click', () => {
-        const plName = el.dataset.pl;
-        hideModal('atp-modal');
-        _qvsSelected.clear(); _qvsLastClick = -1;
-        _updateQueueSelBar();
-        const queueList = document.getElementById('queue-list');
-        if (queueList) { _qvsFIdx = -1; _qvsLIdx = -1; _qvsRender(queueList, true); }
-        Promise.all(songs.map(song =>
-          api('POST', 'api/v1/playlist/add-song', { song: song.filepath, playlist: plName }).catch(() => {})
-        )).then(() => toast(t('player.toast.addedToPlaylist', { playlist: plName })));
-      });
-    });
-  }
-  showModal('atp-modal');
 }
 
 // Scroll the now-playing item into view in the virtual-scrolled queue.
@@ -3528,8 +3563,7 @@ function _initQueueListeners() {
     const qi = Number.parseInt(item.dataset.qi);
 
     if (e.target.closest('.q-num')) {
-      if (_qvsSelected.has(qi)) _qvsSelected.delete(qi);
-      else _qvsSelected.add(qi);
+      _toggleQueueSelection(qi);
       _qvsLastClick = qi;
       _updateQueueSelBar();
       _qvsFIdx = -1; _qvsLIdx = -1;
@@ -3538,8 +3572,7 @@ function _initQueueListeners() {
     }
 
     if (e.ctrlKey || e.metaKey) {
-      if (_qvsSelected.has(qi)) _qvsSelected.delete(qi);
-      else _qvsSelected.add(qi);
+      _toggleQueueSelection(qi);
       _qvsLastClick = qi;
       _updateQueueSelBar();
       _qvsFIdx = -1; _qvsLIdx = -1;
@@ -3549,7 +3582,7 @@ function _initQueueListeners() {
 
     if (e.shiftKey && _qvsLastClick >= 0) {
       const lo = Math.min(qi, _qvsLastClick), hi = Math.max(qi, _qvsLastClick);
-      for (let k = lo; k <= hi; k++) _qvsSelected.add(k);
+      for (let k = lo; k <= hi; k++) if (S.queue[k]) _qvsSelected.add(S.queue[k]);
       _qvsLastClick = qi;
       _updateQueueSelBar();
       _qvsFIdx = -1; _qvsLIdx = -1;
@@ -3706,6 +3739,10 @@ function highlightRow() {
 // ── VIEW HELPERS ──────────────────────────────────────────────
 function setTitle(t)  { document.getElementById('content-title').textContent = t; }
 function setBody(html) {
+  // #content-body is shared by every view; Shortcuts binds delegated listeners on
+  // it, which must not keep firing once another view's markup replaces it.
+  _shortcutsAC?.abort();
+  _shortcutsAC = null;
   const b = document.getElementById('content-body');
   b.classList.remove('browse-mode');
   b.innerHTML = html;
@@ -3832,7 +3869,7 @@ function _setPlaySource(type, name) {
 // ── SONG ROWS ────────────────────────────────────────────────
 function renderSongRows(songs) {
   return songs.map((s, i) => {
-    const title  = s.title  || s.filepath?.split('/').pop() || 'Unknown';
+    const title  = s.title  || s.filepath?.split('/').pop() || t('player.misc.unknown');
     const artist = s.artist || '';
     const album  = s.album  ? ` · ${s.album}` : '';
     const stars  = starsHtml(s.rating || 0);
@@ -3864,44 +3901,6 @@ function renderSongRows(songs) {
   }).join('');
 }
 
-// Like renderSongRows but shows the file path under the subtitle — used in search results
-function renderSongRowsWithPath(songs) {
-  return songs.map((s, i) => {
-    const title  = s.title  || s.filepath?.split('/').pop() || 'Unknown';
-    const artist = s.artist || '';
-    const album  = s.album  ? ` · ${s.album}` : '';
-    const stars  = starsHtml(s.rating || 0);
-    const artFile = s['album-art'] || s._folderArt || null;
-    const art     = artUrl(artFile, 's');
-    // Show path without the filename at the end for ID3-matched songs,
-    // or the full relative path for filename-matched songs
-    const pathDir = s.filepath ? s.filepath.split('/').slice(0, -1).join('\\') : '';
-    return `<div class="song-row" data-ci="${i}">
-      <div class="row-num">
-        <span class="num-val">${i + 1}</span>
-        <svg class="row-play-icon" width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><polygon points="5,3 19,12 5,21"/></svg>
-      </div>
-      <div class="row-art">
-        ${art ? `<img src="${art}" loading="lazy" data-err="noart-sm">` : noArtHtml(' no-art-sm')}
-      </div>
-      <div class="song-info">
-        <div class="song-title">${esc(title)}</div>
-        ${artist || album ? `<div class="song-sub">${esc(artist)}${esc(album)}</div>` : ''}
-        ${pathDir ? `<div class="song-path" title="${esc(s.filepath)}">📁 ${esc(pathDir)}</div>` : ''}
-      </div>
-      <div class="row-stars" data-ci="${i}">${stars}</div>
-      <div class="row-actions">
-        <button class="row-act-btn add-btn" data-ci="${i}" title="${t('player.ctrl.addToQueue')}">
-          ${icon('plus')}
-        </button>
-        <button class="row-act-btn ctx-btn" data-ci="${i}" title="${t('player.ctrl.moreOptions')}">
-          ${icon('more')}
-        </button>
-      </div>
-    </div>`;
-  }).join('');
-}
-
 // Lightweight text-only rows for search results — no album-art <img> tags.
 // On slow browsers (CleverTouch) each image triggers a network round-trip +
 // decode + layout reflow; 50 images in one innerHTML write stalls the CPU for
@@ -3909,7 +3908,7 @@ function renderSongRowsWithPath(songs) {
 function renderSearchRows(songs, offset = 0) {
   return songs.map((s, i) => {
     const ci = offset + i;
-    const title  = s.title  || s.filepath?.split('/').pop() || 'Unknown';
+    const title  = s.title  || s.filepath?.split('/').pop() || t('player.misc.unknown');
     const artist = s.artist || '';
     const album  = s.album  ? ` · ${s.album}` : '';
     const pathDir = s.filepath ? s.filepath.split('/').slice(0, -1).join('\\') : '';
@@ -3940,7 +3939,7 @@ function renderSearchRows(songs, offset = 0) {
 
 function renderMostPlayedRows(songs, maxPlays) {
   return songs.map((s, i) => {
-    const title  = s.title  || s.filepath?.split('/').pop() || 'Unknown';
+    const title  = s.title  || s.filepath?.split('/').pop() || t('player.misc.unknown');
     const artist = s.artist || '';
     const album  = s.album  ? ` · ${s.album}` : '';
     const stars  = starsHtml(s.rating || 0);
@@ -3980,12 +3979,12 @@ function renderMostPlayedRows(songs, maxPlays) {
 function showMostPlayed(songs) {
   S.curSongs = songs;
   document.getElementById('play-all-btn').onclick = () => {
-    if (songs.length) { _setPlaySource(null); Player.setQueue(songs, 0); toast(`Playing ${songs.length} songs`); }
+    if (songs.length) { _setPlaySource(null); Player.setQueue(songs, 0); toast(t('player.toast.playingSongs', { count: songs.length })); }
   };
   document.getElementById('add-all-btn').onclick = () => {
     if (songs.length) { Player.addAll(songs); }
   };
-  if (!songs.length) { setBody('<div class="empty-state">No songs found</div>'); return; }
+  if (!songs.length) { setBody(`<div class="empty-state">${t('player.misc.noSongs')}</div>`); return; }
   const maxPlays = Math.max(...songs.map(s => s._playCount || 0));
   const body = document.getElementById('content-body');
   body.innerHTML = `<div class="song-list">${renderMostPlayedRows(songs, maxPlays)}</div>`;
@@ -4044,7 +4043,7 @@ function showSongs(songs, title, zipFilename, opts = {}) {
   _exitSelectMode();
   S.curSongs = songs;
   document.getElementById('play-all-btn').onclick = () => {
-    if (songs.length) { _setPlaySource(null); Player.setQueue(songs, 0); toast(`Playing ${songs.length} songs`); }
+    if (songs.length) { _setPlaySource(null); Player.setQueue(songs, 0); toast(t('player.toast.playingSongs', { count: songs.length })); }
   };
   document.getElementById('add-all-btn').onclick = () => {
     if (songs.length) { Player.addAll(songs); }
@@ -4058,7 +4057,7 @@ function showSongs(songs, title, zipFilename, opts = {}) {
     if (zipBtn) { zipBtn.classList.add('hidden'); zipBtn.onclick = null; }
     if (selBtn) { selBtn.classList.add('hidden'); selBtn.onclick = null; }
   }
-  if (!songs.length) { setBody('<div class="empty-state">No songs found</div>'); return; }
+  if (!songs.length) { setBody(`<div class="empty-state">${t('player.misc.noSongs')}</div>`); return; }
   const body = document.getElementById('content-body');
   body.innerHTML = `<div class="song-list">${renderSongRows(songs)}</div>`;
   attachSongListEvents(body, songs, opts);
@@ -4069,6 +4068,19 @@ function showSongs(songs, title, zipFilename, opts = {}) {
 }
 
 // ── CONTEXT MENU ─────────────────────────────────────────────
+// A file can be deletable even when its root vpath is type=music, if it lives
+// inside a child vpath that has type=recordings/youtube and allowRecordDelete=true.
+// A song filepath of a child vpath starts with its parent ("Music/Recordings/…",
+// CLAUDE.md); the file explorer path of a child vpath starts with its own name.
+function canDeleteFp(fp) {
+  if (!fp) return false;
+  return Object.entries(S.vpathMeta || {}).some(([vpName, meta]) => {
+    if ((meta.type !== 'recordings' && meta.type !== 'youtube') || !meta.allowRecordDelete) return false;
+    if (fp.startsWith(vpName + '/') || fp === vpName) return true;
+    return !!(meta.parentVpath && meta.filepathPrefix && fp.startsWith(meta.parentVpath + '/' + meta.filepathPrefix));
+  });
+}
+
 function showCtxMenu(x, y) {
   const menu = document.getElementById('ctx-menu');
   menu.classList.remove('hidden');
@@ -4077,14 +4089,7 @@ function showCtxMenu(x, y) {
   menu.querySelector('.ctx-remove-pl').classList.toggle('hidden', !inPlaylist);
   // Show delete-recording only when song is from a recordings vpath with allowRecordDelete
   const song = S.ctxSong;
-  const canDelete = song?.filepath && Object.entries(S.vpathMeta || {}).some(([vpName, meta]) => {
-    if ((meta.type !== 'recordings' && meta.type !== 'youtube') || !meta.allowRecordDelete) return false;
-    if (song.filepath.startsWith(vpName + '/') || song.filepath === vpName) return true;
-    if (meta.parentVpath && meta.filepathPrefix) {
-      return song.filepath.startsWith(meta.parentVpath + '/' + meta.filepathPrefix);
-    }
-    return false;
-  });
+  const canDelete = canDeleteFp(song?.filepath);
   menu.querySelector('.ctx-delete-rec').classList.toggle('hidden', !canDelete);
   menu.querySelector('.ctx-delete-rec-divider').classList.toggle('hidden', !canDelete);
   // Show go-to-artist/album only for regular music tracks (not radio, podcast, etc.)
@@ -4188,14 +4193,8 @@ function renderNPModal() {
     _renderTimes();
   }
   // Full metadata table
-  function mv(val) {
-    return val != null ? `<span class="np-meta-v">${esc(String(val))}</span>` : `<span class="np-meta-v dim">—</span>`;
-  }
-  const _metaLabel = (k) => String(t(k) || '').replace(/:\s*$/, '');
   const starStr = s.rating ? `${'\u2605'.repeat(Math.round(s.rating/2))}${'\u2606'.repeat(5-Math.round(s.rating/2))}` : null;
-  const _rgRaw2 = s.replaygain ?? s.rg?.trackGain ?? null;
-  const _rgVal2 = _rgRaw2 != null ? _rgRaw2 + (S.rgPreamp || 0) : null;
-  const rgStr   = _rgVal2 != null ? `${_rgVal2 > 0 ? '+' : ''}${Number(_rgVal2).toFixed(2)} dB` : null;
+  const rgStr   = _fmtRg(s);
   const rows = [
     [_metaLabel('metadata.title'),      s.title],
     [_metaLabel('metadata.artist'),     s.artist],
@@ -4210,7 +4209,7 @@ function renderNPModal() {
     [_metaLabel('metadata.key'),         s.musical_key ? s.musical_key + (toCamelot(s.musical_key) ? ' (' + toCamelot(s.musical_key) + ')' : '') : null],
   ];
   document.getElementById('np-meta').innerHTML = isRadio ? '' : rows.map(([k, v]) =>
-    `<span class="np-meta-k">${k}</span>${mv(v)}`
+    `<span class="np-meta-k">${esc(k)}</span>${_metaValueHtml(v, 'np-meta-v')}`
   ).join('');
   // Filepath block
   const fpEl = document.getElementById('np-filepath');
@@ -4484,7 +4483,7 @@ function _npDiscogsById(song) {
       `<button class="np-discogs-cancel" id="np-discogs-back-btn">${t('player.npArt.cancel')}</button>` +
     `</div>` +
     `<div class="np-url-paste-row">` +
-      `<input class="np-url-paste-inp" id="np-discogs-id-inp" type="text" placeholder="discogs.com/release/12345 or ID" autocomplete="off" spellcheck="false">` +
+      `<input class="np-url-paste-inp" id="np-discogs-id-inp" type="text" placeholder="${t('player.npArt.discogsIdPlaceholder')}" autocomplete="off" spellcheck="false">` +
       `<button class="np-url-paste-go" id="np-discogs-id-go-btn">${t('player.npArt.discogsIdLoad')}</button>` +
     `</div>` +
     `<span id="np-discogs-id-status" class="np-discogs-status" style="display:none"></span>`;
@@ -4642,7 +4641,7 @@ async function _npId3ApplyTags(song) {
   } catch(e) {
     // Resume playback as-is — the file wasn't changed
     if (_isCurrentSong && _wasPlaying) audioEl.play().catch(() => {});
-    if (statusEl) { statusEl.textContent = t('player.npId3.errorSaving', { msg: esc(e?.message || 'failed') }); statusEl.style.display = ''; }
+    if (statusEl) { statusEl.textContent = t('player.npId3.errorSaving', { msg: e?.message || t('player.misc.failed') }); statusEl.style.display = ''; }
     if (applyBtn) applyBtn.disabled = false;
   }
 }
@@ -4670,8 +4669,52 @@ const EQ_PRESETS = {
   'Vocal':      [ -2, -2,  0,  2,  4,  2,  0, -2],
 };
 
+// Log scale from 40 Hz to 20 kHz — better mid-range spread, less bass dominance
+function _logBin(i, bars, binCount, sampleRate) {
+  const freq = Math.pow(2, Math.log2(40) + (Math.log2(20000) - Math.log2(40)) * i / bars);
+  return Math.min(Math.floor(freq / (sampleRate / 2) * binCount), binCount - 1);
+}
+
+function _lampIntensity(ts, lc, hold, fade) {
+  if (lc === null) return 0;
+  const age = ts - lc;
+  if (age <= hold) return 1;
+  return Math.max(0, 1 - (age - hold) / fade);
+}
+
+function _hsl2rgb(h, sl, ll) {
+  h = ((h % 360) + 360) % 360;
+  const c = (1 - Math.abs(2 * ll - 1)) * sl;
+  const x2 = c * (1 - Math.abs((h / 60) % 2 - 1));
+  const m = ll - c / 2;
+  let r = 0, g = 0, b = 0;
+  if (h < 60) { r = c; g = x2; } else if (h < 120) { r = x2; g = c; }
+  else if (h < 180) { g = c; b = x2; } else if (h < 240) { g = x2; b = c; }
+  else if (h < 300) { r = x2; b = c; } else { r = c; b = x2; }
+  return [(r + m) * 255, (g + m) * 255, (b + m) * 255];
+}
+
+function _fftBuf(buf, analyser) {
+  const n = analyser ? analyser.frequencyBinCount : 128;
+  if (buf && buf.length === n) { buf.fill(0); return buf; }
+  return new Uint8Array(n);
+}
+
+// One reusable time-domain buffer per analyser: the meters read it every frame.
+const _timeDomainBufs = new WeakMap();
+function _timeDomainData(analyser) {
+  let buf = _timeDomainBufs.get(analyser);
+  if (!buf || buf.length !== analyser.fftSize) {
+    buf = new Float32Array(analyser.fftSize);
+    _timeDomainBufs.set(analyser, buf);
+  }
+  analyser.getFloatTimeDomainData(buf);
+  return buf;
+}
+
 // ── MINI SPECTRUM (player bar) ──────────────────────────────
 const MINI_SPEC = (() => {
+  let _rawL = null, _rawR = null;
   let rafId    = null;
   let idleRaf  = null;
   let idlePhase = 0;
@@ -4730,8 +4773,7 @@ const MINI_SPEC = (() => {
     const ctx = canvas.getContext('2d');
     ctx.clearRect(0, 0, W, H);
 
-    const cs2     = getComputedStyle(document.documentElement);
-    const colIdle = cs2.getPropertyValue('--primary').trim();
+    const colIdle = _themeColors().primary;
     const isLight = document.documentElement.classList.contains('light');
     const dark    = !isLight;  // Velvet (no class) and Dark both use dark-bg rendering
     const GAP  = 1.5 * dpr;
@@ -4791,9 +4833,7 @@ const MINI_SPEC = (() => {
 
     ctx.clearRect(0, 0, W, H);
 
-    const cs     = getComputedStyle(document.documentElement);
-    const colPri = cs.getPropertyValue('--primary').trim();
-    const colAcc = cs.getPropertyValue('--accent').trim();
+    const { primary: colPri, accent: colAcc } = _themeColors();
     const isLight = document.documentElement.classList.contains('light');
     const dark    = !isLight;  // Velvet (no class) and Dark both use dark-bg rendering
     _ensurePalette(colPri, colAcc, dark);
@@ -4802,25 +4842,20 @@ const MINI_SPEC = (() => {
     ctx.fillStyle = dark ? 'rgba(255,255,255,.05)' : 'rgba(0,0,0,.10)';
     ctx.fillRect(0, H - dpr, W, dpr);
 
-    const rawL = new Uint8Array(analyserL ? analyserL.frequencyBinCount : 128);
-    const rawR = new Uint8Array(analyserR ? analyserR.frequencyBinCount : 128);
+    const rawL = _rawL = _fftBuf(_rawL, analyserL);
+    const rawR = _rawR = _fftBuf(_rawR, analyserR);
     // When draining (paused): feed silence so bars fall via ballistics
     if (!_draining && analyserL && analyserR) {
       analyserL.getByteFrequencyData(rawL);
       analyserR.getByteFrequencyData(rawR);
     }
 
-    // Log scale from 40 Hz — better mid-range spread, less bass dominance (#6)
     const sampleRate = audioCtx ? audioCtx.sampleRate : 44100;
-    function logBin(i, binCount) {
-      const freq = Math.pow(2, Math.log2(40) + (Math.log2(20000) - Math.log2(40)) * i / BARS);
-      return Math.min(Math.floor(freq / (sampleRate / 2) * binCount), binCount - 1);
-    }
 
     function side(rawData, startX, reverse, bars, pk) {
       for (let i = 0; i < BARS; i++) {
         const bi  = reverse ? (BARS - 1 - i) : i;
-        const raw = rawData[logBin(bi, rawData.length)] / 255;
+        const raw = rawData[_logBin(bi, BARS, rawData.length, sampleRate)] / 255;
         // Soft height compression — tanh-like: more headroom for peak ticks (#7)
         const v   = Math.pow(raw, 0.82);
 
@@ -4915,6 +4950,7 @@ const MINI_SPEC = (() => {
 // ── VU NEEDLE METERS (player bar) ─────────────────────────────
 const VU_NEEDLE = (() => {
   let rafId = null;
+  let _funBuf = null;
   let _mode = localStorage.getItem(_uKey('vu_mode')) || 'spec'; // 'spec' | 'needle' | 'ppm' | 'art'
   if (_mode === 'fun') _mode = 'spec'; // fun is not in the normal cycle
 
@@ -4946,6 +4982,7 @@ const VU_NEEDLE = (() => {
   const _ART_TAU   = 0.30;  // same release tau as MINI_SPEC
   let _artBarsL    = new Float32Array(_ART_NBARS);
   let _artBarsR    = new Float32Array(_ART_NBARS);
+  let _artRawL = null, _artRawR = null;
   const _ART_HOLD_MS = 1200;   // peak tick hold time before falling (same as MINI_SPEC)
   const _ART_GRAVITY = 0.7;    // peak fall acceleration (same as MINI_SPEC)
   let _artPkL      = Array.from({length: _ART_NBARS}, () => ({val:0, ts:0, vel:0}));
@@ -4971,31 +5008,26 @@ const VU_NEEDLE = (() => {
     const now = performance.now();
 
     // Fetch FFT data — silence when draining
-    const rawL = new Uint8Array(analyserL ? analyserL.frequencyBinCount : 128);
-    const rawR = new Uint8Array(analyserR ? analyserR.frequencyBinCount : 128);
+    const rawL = _artRawL = _fftBuf(_artRawL, analyserL);
+    const rawR = _artRawR = _fftBuf(_artRawR, analyserR);
     if (!draining && analyserL && analyserR) {
       analyserL.getByteFrequencyData(rawL);
       analyserR.getByteFrequencyData(rawR);
     }
 
-    // Log-frequency bin mapping — identical to MINI_SPEC
     const sampleRate = audioCtx ? audioCtx.sampleRate : 44100;
-    function logBin(i, binCount) {
-      const freq = Math.pow(2, Math.log2(40) + (Math.log2(20000) - Math.log2(40)) * i / _ART_NBARS);
-      return Math.min(Math.floor(freq / (sampleRate / 2) * binCount), binCount - 1);
-    }
     const relDecay = Math.exp(-dt / _ART_TAU);
     let anyActive = false;
 
     for (let i = 0; i < _ART_NBARS; i++) {
       // L side: reversed — bar 0 = treble (far left), bar NBARS-1 = bass (centre)
       const biL  = _ART_NBARS - 1 - i;
-      const vL   = Math.pow(rawL[logBin(biL, rawL.length)] / 255, 0.82);
+      const vL   = Math.pow(rawL[_logBin(biL, _ART_NBARS, rawL.length, sampleRate)] / 255, 0.82);
       _artBarsL[i] = vL > _artBarsL[i] ? vL : _artBarsL[i] * relDecay + vL * (1 - relDecay);
       if (_artBarsL[i] < 0.001) _artBarsL[i] = 0; else anyActive = true;
 
       // R side: normal — bar 0 = bass (centre), bar NBARS-1 = treble (far right)
-      const vR   = Math.pow(rawR[logBin(i, rawR.length)] / 255, 0.82);
+      const vR   = Math.pow(rawR[_logBin(i, _ART_NBARS, rawR.length, sampleRate)] / 255, 0.82);
       _artBarsR[i] = vR > _artBarsR[i] ? vR : _artBarsR[i] * relDecay + vR * (1 - relDecay);
       if (_artBarsR[i] < 0.001) _artBarsR[i] = 0; else anyActive = true;
 
@@ -5139,8 +5171,7 @@ const VU_NEEDLE = (() => {
   }
 
   function rmsToVU(analyser) {
-    const buf = new Float32Array(analyser.fftSize);
-    analyser.getFloatTimeDomainData(buf);
+    const buf = _timeDomainData(analyser);
     let sq = 0;
     for (let i = 0; i < buf.length; i++) sq += buf[i] * buf[i];
     const rms = Math.sqrt(sq / buf.length);
@@ -5150,8 +5181,7 @@ const VU_NEEDLE = (() => {
 
   // True-peak measurement for PPM ballistics — returns raw dBFS (no VU offset)
   function peakToDBFS(analyser) {
-    const buf = new Float32Array(analyser.fftSize);
-    analyser.getFloatTimeDomainData(buf);
+    const buf = _timeDomainData(analyser);
     let pk = 0;
     for (let i = 0; i < buf.length; i++) { const a = Math.abs(buf[i]); if (a > pk) pk = a; }
     if (pk < 1e-10) return -Infinity;
@@ -5257,9 +5287,7 @@ const VU_NEEDLE = (() => {
     ctx.font = '700 10px system-ui,sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
     ctx.letterSpacing = '0.5px';
     if (!audioEl.paused && audioEl.duration > 0) {
-      const cs     = getComputedStyle(document.documentElement);
-      const colPri = cs.getPropertyValue('--primary').trim();
-      const colAcc = cs.getPropertyValue('--accent').trim();
+      const { primary: colPri, accent: colAcc } = _themeColors();
       const pct    = audioEl.currentTime / audioEl.duration;
       // Shift the primary→accent gradient so the colour at CX equals lerp(primary,accent,pct)
       // — identical to the waveform's played-region colour at this moment.
@@ -5283,7 +5311,7 @@ const VU_NEEDLE = (() => {
       } else if (analyserL) {
         // Each letter of "Velvet" bounces to its own frequency bin
         const text = 'Velvet';
-        const fbuf = new Uint8Array(analyserL.frequencyBinCount);
+        const fbuf = _funBuf = _fftBuf(_funBuf, analyserL);
         analyserL.getByteFrequencyData(fbuf);
         const charSpan = VW * 0.42;
         const startX   = CX - charSpan / 2;
@@ -5667,6 +5695,9 @@ const VU_NEEDLE = (() => {
   function initKnob() {
     const knob = document.getElementById('vu-ref-knob');
     if (!knob) return;
+    const knobTitle = () => { knob.title = t('player.ctrl.vuRefKnobDrag', { db: REF_LEVEL }); };
+    knobTitle();
+    I18N.onChange(knobTitle);
     drawKnob(knob);
     let dragging = false, startX = 0, startVal = REF_LEVEL;
 
@@ -5679,7 +5710,7 @@ const VU_NEEDLE = (() => {
       if (!dragging) return;
       const delta = (e.clientX - startX) / 15;  // right = lower REF_LEVEL (more red)
       REF_LEVEL = Math.min(-10, Math.max(-20, Math.round((startVal - delta) * 2) / 2));
-      knob.title = `Drag left/right · peak ref: ${REF_LEVEL} dBFS`;
+      knobTitle();
       localStorage.setItem(_uKey('ref'), REF_LEVEL);
       _syncPrefs();
       drawKnob(knob);
@@ -5694,7 +5725,7 @@ const VU_NEEDLE = (() => {
       if (!dragging) return;
       const delta = (e.touches[0].clientX - startX) / 15;
       REF_LEVEL = Math.min(-10, Math.max(-20, Math.round((startVal - delta) * 2) / 2));
-      knob.title = `Drag left/right · peak ref: ${REF_LEVEL} dBFS`;
+      knobTitle();
       localStorage.setItem(_uKey('ref'), REF_LEVEL);
       _syncPrefs();
       drawKnob(knob);
@@ -5723,12 +5754,6 @@ const VU_NEEDLE = (() => {
       if (vuL >= CLIP_VU) lastClipL = ts;
       if (vuR >= CLIP_VU) lastClipR = ts;
     }
-    function lampI(lc) {
-      if (lc === null) return 0;
-      const age = ts - lc;
-      if (age <= PEAK_HOLD_MS) return 1;
-      return Math.max(0, 1 - (age - PEAK_HOLD_MS) / PEAK_FADE_MS);
-    }
     // PPM true-peak ballistics (fast attack, slow release) — values in dBFS
     const rawPkL   = (_vuDraining || !analyserL) ? -Infinity : peakToDBFS(analyserL);
     const rawPkR   = (_vuDraining || !analyserR) ? -Infinity : peakToDBFS(analyserR);
@@ -5742,17 +5767,11 @@ const VU_NEEDLE = (() => {
       if (ppmL >= ppmPkL) { ppmPkL = ppmL; ppmPkTsL = ts; }
       if (ppmR >= ppmPkR) { ppmPkR = ppmR; ppmPkTsR = ts; }
     }
-    function ppmLampI(lc) {
-      if (lc === null) return 0;
-      const age = ts - lc;
-      if (age <= PPM_HOLD_MS) return 1;
-      return Math.max(0, 1 - (age - PPM_HOLD_MS) / PPM_FADE_MS);
-    }
     if (_mode === 'needle') {
       const cL = document.getElementById('vu-dial-L');
       const cR = document.getElementById('vu-dial-R');
-      if (cL) drawDial(cL, 'L', vuL, lampI(lastClipL));
-      if (cR) drawDial(cR, 'R', vuR, lampI(lastClipR));
+      if (cL) drawDial(cL, 'L', vuL, _lampIntensity(ts, lastClipL, PEAK_HOLD_MS, PEAK_FADE_MS));
+      if (cR) drawDial(cR, 'R', vuR, _lampIntensity(ts, lastClipR, PEAK_HOLD_MS, PEAK_FADE_MS));
     }
     if (_mode === 'fun') {
       const now = performance.now();
@@ -5780,12 +5799,12 @@ const VU_NEEDLE = (() => {
       }
       const cL = document.getElementById('vu-dial-L');
       const cR = document.getElementById('vu-dial-R');
-      if (cL) drawDial(cL, 'L', funL, lampI(lastClipL));
-      if (cR) drawDial(cR, 'R', funR, lampI(lastClipR));
+      if (cL) drawDial(cL, 'L', funL, _lampIntensity(ts, lastClipL, PEAK_HOLD_MS, PEAK_FADE_MS));
+      if (cR) drawDial(cR, 'R', funR, _lampIntensity(ts, lastClipR, PEAK_HOLD_MS, PEAK_FADE_MS));
     }
     if (_mode === 'ppm') {
       const cP = document.getElementById('vu-ppm');
-      if (cP) drawPPM(cP, ppmL, ppmR, ppmPkL, ppmPkR, ppmLampI(ppmPkTsL), ppmLampI(ppmPkTsR));
+      if (cP) drawPPM(cP, ppmL, ppmR, ppmPkL, ppmPkR, _lampIntensity(ts, ppmPkTsL, PPM_HOLD_MS, PPM_FADE_MS), _lampIntensity(ts, ppmPkTsR, PPM_HOLD_MS, PPM_FADE_MS));
     }
     // Art-pulse ballistics (always computed so mode switch is instant)
     {
@@ -5997,7 +6016,7 @@ const VIZ = (() => {
     comp: '',
   };
   // Brand overlay + fireworks state (active only when velvet preset is running)
-  let _brandActive = false, _brandHue = 250;
+  let _brandActive = false, _brandHue = 250, _brandBuf = null;
   // Velvet logo for the branded preset centrepiece. The source SVG uses
   // width/height="100%" which renders as a 0×0 image on canvas in Firefox,
   // so we re-size it to explicit pixels and load it as a data URL.
@@ -6130,8 +6149,7 @@ const VIZ = (() => {
     // ── Frequency analysis ────────────────────────────────────
     let rawBass = 0, rawMid = 0, rawTreb = 0;
     if (analyserL) {
-      const BINS = analyserL.frequencyBinCount;
-      const d = new Uint8Array(BINS);
+      const d = _brandBuf = _fftBuf(_brandBuf, analyserL);
       analyserL.getByteFrequencyData(d);
       rawBass = (d[1]+d[2]+d[3]+d[4]+d[5]) / (5 * 255);
       let ms = 0; for (let i = 15; i < 45; i++) ms += d[i];
@@ -6832,9 +6850,45 @@ const VIZ = (() => {
     }
   }
 
+  function _stopRender() {
+    if (frameId) { cancelAnimationFrame(frameId); frameId = null; }
+    if (cycleTimer) { clearTimeout(cycleTimer); clearInterval(cycleTimer); cycleTimer = null; }
+  }
+
   function startRender() {
+    _stopRender();
     function frame() { frameId = requestAnimationFrame(frame); visualizer.render(); _drawBrand(); }
     frameId = requestAnimationFrame(frame);
+    // Give the branded velvet preset a longer first display (40 s) before auto-cycling
+    const firstCycleMs = presetKeys[presetIndex] === _VELVET_PRESET_KEY ? 40000 : CYCLE_MS;
+    cycleTimer = setTimeout(function _firstCycle() {
+      presetHistory.push(presetIndex);
+      presetIndex = _nextAutoIndex();
+      loadPreset(2.7);
+      cycleTimer = setInterval(() => {
+        presetHistory.push(presetIndex);
+        presetIndex = _nextAutoIndex();
+        loadPreset(2.7);
+      }, CYCLE_MS);
+    }, firstCycleMs);
+  }
+
+  // The preset bundles load once; whichever caller asks first starts the
+  // init, later callers wait for the same promise instead of building a
+  // second Butterchurn instance on the same canvas.
+  let _vizInit = null;
+  function _ensureViz(canvas) {
+    if (visualizer) return Promise.resolve();
+    if (!_vizInit) {
+      _vizInit = _loadPresetScripts().then(() => {
+        if (!visualizer) initViz(canvas);
+      }).finally(() => { _vizInit = null; });
+    }
+    return _vizInit;
+  }
+
+  function _milkdropShown() {
+    return vizTopMode === 0 && !document.getElementById('viz-overlay').classList.contains('hidden');
   }
 
   function initViz(canvas) {
@@ -6856,33 +6910,20 @@ const VIZ = (() => {
       });
       visualizer.connectAudio(analyserNode);
       loadPreset(0);
-      startRender();
-      // Give the branded velvet preset a longer first display (40 s) before auto-cycling
-      const _firstCycleMs = presetKeys[presetIndex] === _VELVET_PRESET_KEY ? 40000 : CYCLE_MS;
-      cycleTimer = setTimeout(function _firstCycle() {
-        presetHistory.push(presetIndex);
-        presetIndex = _nextAutoIndex();
-        loadPreset(2.7);
-        cycleTimer = setInterval(() => {
-          presetHistory.push(presetIndex);
-          presetIndex = _nextAutoIndex();
-          loadPreset(2.7);
-        }, CYCLE_MS);
-      }, _firstCycleMs);
+      if (_milkdropShown()) startRender();
     } catch (e) {
       // createVisualizer needs WebGL2 — absent with HW acceleration off, on
       // older GPUs, and in some VM/remote-desktop setups. Reset all state so a
       // later open can retry instead of leaving a half-built, wedged visualizer.
       console.warn('[Velvet] Visualizer init failed:', e);
-      if (frameId) { cancelAnimationFrame(frameId); frameId = null; }
-      if (cycleTimer) { clearTimeout(cycleTimer); clearInterval(cycleTimer); cycleTimer = null; }
+      _stopRender();
       visualizer = null;
       toast(t('player.toast.visualizerError'));
     }
   }
 
   // ── SPECTRUM RENDERER — 7 modes, click canvas to cycle ────
-  const SPEC_MODES = ['Bar Spectrum','Mirror Bars','Radial','Oscilloscope','Waterfall','VU Needles','Lissajous'];
+  const SPEC_MODES = ['specBars', 'specMirror', 'specRadial', 'specScope', 'specWaterfall', 'specVu', 'specLissajous'];
   let specStyleIdx = Number.parseInt(localStorage.getItem(_uKey('spec_style')) || '0') % SPEC_MODES.length;
   let specLabelAlpha = 0;         // fade-out alpha for mode label overlay
   let waterfallRows = null;       // pixel row buffer for waterfall mode
@@ -7077,7 +7118,7 @@ const VIZ = (() => {
     // ══ MODE 4 — Waterfall / Spectrogram ═════════════════════
     function drawWaterfall(W, H, dpr) {
       const BINS=256;
-      if (!waterfallRows || waterfallRows.width!==W) {
+      if (!waterfallRows || waterfallRows.width!==W || waterfallRows.height!==H) {
         waterfallRows=ctx.createImageData(W, H);
         waterfallPos=0;
       }
@@ -7094,17 +7135,7 @@ const VIZ = (() => {
         // hsla→rgb inline (fast approximation)
         const l=0.1+v*0.55, s=1;
         const a=v>0.02?1:0;
-        // simple hue→rgb
-        function hsl2rgb(h,sl,ll){
-          h=((h%360)+360)%360; const c=(1-Math.abs(2*ll-1))*sl;
-          const x2=c*(1-Math.abs((h/60)%2-1)); const m=ll-c/2;
-          let r=0,g=0,b=0;
-          if(h<60){r=c;g=x2;}else if(h<120){r=x2;g=c;}
-          else if(h<180){g=c;b=x2;}else if(h<240){g=x2;b=c;}
-          else if(h<300){r=x2;b=c;}else{r=c;b=x2;}
-          return[(r+m)*255,(g+m)*255,(b+m)*255];
-        }
-        const [r,g,b]=hsl2rgb(hue,s,l);
+        const [r,g,b]=_hsl2rgb(hue,s,l);
         const base=x*4;
         waterfallRows.data[base]=r; waterfallRows.data[base+1]=g;
         waterfallRows.data[base+2]=b; waterfallRows.data[base+3]=a*255;
@@ -7114,7 +7145,7 @@ const VIZ = (() => {
       // time axis label
       ctx.shadowBlur=0; ctx.font=`${Math.max(11,13*dpr)}px system-ui,sans-serif`;
       ctx.textAlign='right'; ctx.fillStyle='rgba(255,255,255,.3)';
-      ctx.fillText('L+R Spectrogram', W-10*dpr, H-10*dpr);
+      ctx.fillText(t('player.viz.spectrogram'), W-10*dpr, H-10*dpr);
     }
 
     // ══ MODE 5 — Analog VU Needles ════════════════════════════
@@ -7234,7 +7265,7 @@ const VIZ = (() => {
       ctx.font=`700 ${fs}px system-ui,sans-serif`;
       ctx.textAlign='center';
       ctx.fillStyle=`rgba(255,255,255,${specLabelAlpha.toFixed(2)})`;
-      ctx.fillText(SPEC_MODES[specStyleIdx], W/2, H/2);
+      ctx.fillText(t('player.viz.' + SPEC_MODES[specStyleIdx]), W/2, H/2);
       specLabelAlpha=Math.max(0, specLabelAlpha-0.012);
     }
 
@@ -7299,7 +7330,7 @@ const VIZ = (() => {
     amAnalyzer.bgAlpha       = 0.7;
     // Update label
     const presetName = document.getElementById('viz-preset-name');
-    if (presetName) presetName.textContent = 'AudioMotion: ' + p.name + ' \u00b7 click to cycle';
+    if (presetName) presetName.textContent = t('player.ctrl.vizAmPreset', { name: p.name });
   }
 
   function startAudioMotion(container) {
@@ -7486,7 +7517,7 @@ const VIZ = (() => {
     const s = S.queue[S.idx];
     const linesEl = document.getElementById('vlm-lines');
     if (!linesEl) return;
-    linesEl.innerHTML = '<div class="vlm-no-lyrics">Loading lyrics…</div>';
+    linesEl.innerHTML = `<div class="vlm-no-lyrics">${t('player.lyrics.loading')}</div>`;
     lyricLines = []; lyricSynced = false; lyricActiveIdx = -1;
 
     // Update art panel
@@ -7500,7 +7531,7 @@ const VIZ = (() => {
     }
 
     if (!s) {
-      linesEl.innerHTML = '<div class="vlm-no-lyrics">No track playing</div>';
+      linesEl.innerHTML = `<div class="vlm-no-lyrics">${t('player.lyrics.noTrack')}</div>`;
       return;
     }
 
@@ -7515,7 +7546,7 @@ const VIZ = (() => {
       const data = await r.json();
 
       if (data.notFound || !data.lines || !data.lines.length) {
-        linesEl.innerHTML = '<div class="vlm-no-lyrics">No lyrics found</div>';
+        linesEl.innerHTML = `<div class="vlm-no-lyrics">${t('player.lyrics.none')}</div>`;
         return;
       }
 
@@ -7539,7 +7570,7 @@ const VIZ = (() => {
       lyricActiveIdx = -1;
       lyricTick(audioEl.currentTime);
     } catch (_e) {
-      linesEl.innerHTML = '<div class="vlm-no-lyrics">No lyrics found</div>';
+      linesEl.innerHTML = `<div class="vlm-no-lyrics">${t('player.lyrics.none')}</div>`;
     }
   }
 
@@ -7619,248 +7650,6 @@ const VIZ = (() => {
     }
   }
 
-  // ── Split-flap (flipboard) mode ──────────────────────────────
-  // ── Split-flap (flipboard) mode ──────────────────────────────
-  // Self-contained board built from individual tile DOM nodes.
-  // Each tile has: fixed top half, fixed bottom half, and two flap halves
-  // that hinge on the centre line to animate character changes.
-  const FLIP_CHARSET = ' ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.,-!?\'/:()';
-  const FLIP_COLS    = 22;   // characters per row
-  const FLIP_ROWS    = 3;    // rows visible at once
-  const FLIP_STAGGER = 28;   // ms between each tile in a row
-  const FLIP_DUR     = 200;  // ms for one flip animation
-
-  // Board state
-  let _flipGrid   = [];     // FLIP_ROWS × FLIP_COLS DOM tile objects
-  let _flipChars  = [];     // current displayed chars [row][col]
-  let _flipActive = -1;     // which row is the "active" lyric (highlighted)
-  let _flipRafId  = null;
-  let _flipLyricActiveIdx = -1;  // mirrors lyricActiveIdx for flipboard
-
-  function _flipChar(charStr) {
-    // Normalise to a char in FLIP_CHARSET; uppercase only
-    const c = (charStr || ' ').toUpperCase();
-    return FLIP_CHARSET.includes(c) ? c : ' ';
-  }
-
-  function _createTile(initChar) {
-    const c = _flipChar(initChar);
-    const wrap = document.createElement('div');
-    wrap.className = 'flip-tile';
-
-    // Bottom half — always visible, pre-loaded with new char from first frame
-    const bottomBg = document.createElement('div');
-    bottomBg.className = 'ft-bottom-bg';
-    const bottomInner = document.createElement('div');
-    bottomInner.className = 'ft-inner';
-    bottomInner.textContent = c;
-    bottomBg.appendChild(bottomInner);
-
-    // Top half backing — shows new char's top half, sits behind the flap
-    const topBg = document.createElement('div');
-    topBg.className = 'ft-top-bg';
-    const topInner = document.createElement('div');
-    topInner.className = 'ft-inner';
-    topInner.textContent = c;
-    topBg.appendChild(topInner);
-
-    // Flap — covers top half, shows OLD char, drops 0°→90° on centre hinge
-    const flap = document.createElement('div');
-    flap.className = 'ft-flap';
-    const flapInner = document.createElement('div');
-    flapInner.className = 'ft-inner';
-    flapInner.textContent = c;
-    flap.appendChild(flapInner);
-
-    wrap.appendChild(bottomBg);
-    wrap.appendChild(topBg);
-    wrap.appendChild(flap);
-
-    return { el: wrap, bottomBg, topBg, flap, char: c, animating: false };
-  }
-
-  function _buildFlipBoard() {
-    const container = document.getElementById('vlm-flip-board');
-    if (!container) return;
-    container.innerHTML = '';
-    _flipGrid  = [];
-    _flipChars = [];
-
-    for (let r = 0; r < FLIP_ROWS; r++) {
-      const rowEl = document.createElement('div');
-      rowEl.className = 'flip-row';
-      const rowTiles = [];
-      const rowChars = [];
-      for (let c = 0; c < FLIP_COLS; c++) {
-        const tile = _createTile(' ');
-        rowEl.appendChild(tile.el);
-        rowTiles.push(tile);
-        rowChars.push(' ');
-      }
-      container.appendChild(rowEl);
-      _flipGrid.push({ el: rowEl, tiles: rowTiles });
-      _flipChars.push(rowChars);
-    }
-    _flipActive = -1;
-    _flipLyricActiveIdx = -1;
-  }
-
-  function _flipTileTo(tile, newChar, delay) {
-    const c = _flipChar(newChar);
-    if (tile.char === c && !tile.animating) return;
-    tile.char = c;
-
-    setTimeout(() => {
-      if (tile.animating) return;
-      tile.animating = true;
-
-      // Load new char on backing elements immediately.
-      // bottom half is already visible (real boards pre-show next card's bottom).
-      tile.bottomBg.querySelector('.ft-inner').textContent = c;
-      tile.topBg.querySelector('.ft-inner').textContent    = c;
-
-      // Animate flap (old char top half) falling: 0° → 90° around the centre hinge.
-      // backface-visibility:hidden makes it invisible once it passes 90°,
-      // cleanly revealing ft-top-bg (new char top) beneath.
-      const startTime = performance.now();
-
-      function animate(now) {
-        const t = Math.min((now - startTime) / FLIP_DUR, 1);
-        // ease-in quad — accelerates as the card falls, feels natural
-        const ease = t * t;
-        tile.flap.style.transform = `rotateX(${ease * 90}deg)`;
-        if (t < 1) {
-          requestAnimationFrame(animate);
-        } else {
-          // Flap is edge-on/invisible at 90°. Snap text + angle back to rest.
-          tile.flap.querySelector('.ft-inner').textContent = c;
-          tile.flap.style.transition = 'none';
-          tile.flap.style.transform  = 'rotateX(0deg)';
-          requestAnimationFrame(() => {
-            tile.flap.style.transition = '';
-            tile.animating = false;
-          });
-        }
-      }
-      requestAnimationFrame(animate);
-    }, delay);
-  }
-
-  function _flipDisplayLines(lines, activeRow) {
-    // lines: array of strings, each up to FLIP_COLS chars
-    // activeRow: which row index to highlight (-1 = none)
-    for (let r = 0; r < FLIP_ROWS; r++) {
-      const text  = (lines[r] || '').toUpperCase();
-      const row   = _flipGrid[r];
-      if (!row) continue;
-
-      // Update active highlight
-      row.el.classList.toggle('flip-row-active', r === activeRow);
-
-      // Pad / centre text
-      const pad   = Math.max(0, Math.floor((FLIP_COLS - text.length) / 2));
-      const padded = (' '.repeat(pad) + text).padEnd(FLIP_COLS, ' ').slice(0, FLIP_COLS);
-
-      padded.split('').forEach((ch, c) => {
-        const want = _flipChar(ch);
-        if (_flipChars[r][c] !== want) {
-          _flipChars[r][c] = want;
-          _flipTileTo(row.tiles[c], want, c * FLIP_STAGGER);
-        }
-      });
-    }
-    _flipActive = activeRow;
-  }
-
-  // Slice FLIP_ROWS lines centred around activeIdx
-  function _flipGetWindow(lines, activeIdx) {
-    if (!lines || !lines.length) return { window: ['', '', ''], rowInWindow: -1 };
-    const total = lines.length;
-    if (total <= FLIP_ROWS) {
-      return {
-        window: lines.map(l => l.text || '').concat(Array(FLIP_ROWS).fill('')).slice(0, FLIP_ROWS),
-        rowInWindow: activeIdx >= 0 ? activeIdx : -1,
-      };
-    }
-    // Centre the active line in the middle row
-    const mid  = Math.floor(FLIP_ROWS / 2);
-    let start  = Math.max(0, activeIdx - mid);
-    let end    = start + FLIP_ROWS;
-    if (end > total) { end = total; start = Math.max(0, end - FLIP_ROWS); }
-    const slice = lines.slice(start, end).map(l => l.text || '');
-    while (slice.length < FLIP_ROWS) slice.push('');
-    return { window: slice, rowInWindow: activeIdx - start };
-  }
-
-  function flipboardTick(currentTime) {
-    if (vizTopMode !== 4) return;
-    if (!lyricLines.length) return;
-
-    const t = currentTime - 0.2;
-    let newIdx = -1;
-    for (let i = 0; i < lyricLines.length; i++) {
-      if (lyricLines[i].time != null && lyricLines[i].time <= t) newIdx = i;
-      else if (lyricLines[i].time != null) break;
-    }
-
-    if (newIdx === _flipLyricActiveIdx) return;
-    _flipLyricActiveIdx = newIdx;
-
-    const { window: win, rowInWindow } = _flipGetWindow(lyricLines, newIdx);
-    _flipDisplayLines(win, rowInWindow);
-  }
-
-  async function fetchAndRenderFlipboard() {
-    const container = document.getElementById('vlm-flip-board');
-    if (!container) return;
-
-    _buildFlipBoard();
-    _flipLyricActiveIdx = -1;
-
-    // Reuse the same lyric data already fetched (or fetch if not yet available)
-    if (lyricLines.length > 0) {
-      const { window: win, rowInWindow } = _flipGetWindow(lyricLines, lyricActiveIdx);
-      _flipDisplayLines(win, rowInWindow);
-      return;
-    }
-
-    // Need to fetch
-    const s = S.queue[S.idx];
-    if (!s) { _flipDisplayLines(['NO TRACK PLAYING', '', ''], -1); return; }
-
-    _flipDisplayLines(['LOADING...', '', ''], -1);
-
-    const artist   = encodeURIComponent(s.artist  || '');
-    const title    = encodeURIComponent(s.title   || s.filepath?.split('/').pop() || '');
-    const duration = encodeURIComponent(Math.round(s.duration || 0));
-    const filepath = encodeURIComponent(s.filepath || '');
-
-    try {
-      const r = await fetch(
-        `/api/v1/lyrics?artist=${artist}&title=${title}&duration=${duration}&filepath=${filepath}`,
-        { headers: { 'x-access-token': S.token } }
-      );
-      const data = await r.json();
-      if (data.notFound || !data.lines || !data.lines.length) {
-        // Show song info instead
-        _flipDisplayLines([
-          (s.title || '').toUpperCase().slice(0, FLIP_COLS),
-          (s.artist || '').toUpperCase().slice(0, FLIP_COLS),
-          'NO LYRICS FOUND',
-        ], -1);
-        return;
-      }
-      // Share the parsed state with regular lyrics mode
-      lyricLines  = data.lines;
-      lyricSynced = !!data.synced;
-      lyricActiveIdx = -1;
-      const { window: win, rowInWindow } = _flipGetWindow(lyricLines, -1);
-      _flipDisplayLines(win, rowInWindow);
-    } catch (_e) {
-      _flipDisplayLines(['ERROR LOADING', 'LYRICS', ''], -1);
-    }
-  }
-
   function applyMode() {
     const bcCanvas   = document.getElementById('viz-canvas');
     const spCanvas   = document.getElementById('spec-canvas');
@@ -7873,7 +7662,7 @@ const VIZ = (() => {
     const vvCont     = document.getElementById('vv-container');
     const vvSelect   = document.getElementById('viz-vv-select');
 
-    const MODE_NAMES = ['Milkdrop', 'Spectrum', 'AudioMotion', 'Lyrics', 'VoltViz'];
+    const MODE_NAMES = ['Milkdrop', t('player.viz.spectrum'), 'AudioMotion', t('player.ctrl.lyrics'), 'VoltViz'];
     const nextMode   = (vizTopMode + 1) % MODE_NAMES.length;
     if (label)   label.textContent          = MODE_NAMES[vizTopMode];
     if (modeBtn) modeBtn.dataset.tip        = t('player.ctrl.vizSwitchTo', { mode: MODE_NAMES[nextMode] });
@@ -7883,7 +7672,7 @@ const VIZ = (() => {
     stopAudioMotion();
     stopLyricRaf();
     stopVoltViz();
-    if (frameId) { cancelAnimationFrame(frameId); frameId = null; }
+    _stopRender();
 
     // Hide all surfaces
     bcCanvas.classList.add('hidden');
@@ -7900,8 +7689,14 @@ const VIZ = (() => {
       if (prevBtn)    prevBtn.style.visibility = '';
       if (nextBtn)    nextBtn.style.visibility = '';
       if (presetName) { presetName.style.visibility = ''; setPresetLabel(); }
-      if (!visualizer) initViz(bcCanvas);
-      else if (!frameId) startRender();
+      if (!visualizer) {
+        _ensureViz(bcCanvas).catch((e) => {
+          console.warn('[Velvet] Visualizer open failed:', e);
+          toast(t('player.toast.visualizerError'));
+        });
+      } else {
+        startRender();
+      }
 
     } else if (vizTopMode === 1) {
       // ── Custom Spectrum (7 modes, click canvas to cycle) ──
@@ -7973,30 +7768,19 @@ const VIZ = (() => {
       overlay.classList.remove('hidden');
       document.getElementById('viz-open-btn').classList.add('active');
       updateSongInfo();
-      if (vizTopMode === 0) {
+      if (vizTopMode === 0 && visualizer) {
         const canvas = document.getElementById('viz-canvas');
-        if (!visualizer) {
-          _loadPresetScripts().then(() => initViz(canvas)).catch((e) => {
-            console.warn('[Velvet] Visualizer open failed:', e);
-            visualizer = null;
-            toast(t('player.toast.visualizerError'));
-          });
-        } else {
-          canvas.width  = canvas.clientWidth;
-          canvas.height = canvas.clientHeight;
-          visualizer.setRendererSize(canvas.width, canvas.height);
-          if (!frameId) startRender();
-        }
-        applyMode();
-      } else {
-        applyMode();
+        canvas.width  = canvas.clientWidth;
+        canvas.height = canvas.clientHeight;
+        visualizer.setRendererSize(canvas.width, canvas.height);
       }
+      applyMode();
     },
     close() {
       document.getElementById('viz-overlay').classList.add('hidden');
       document.getElementById('viz-open-btn').classList.remove('active');
       document.getElementById('viz-open-btn').blur();
-      if (frameId)    { cancelAnimationFrame(frameId);    frameId    = null; }
+      _stopRender();
       if (specFrameId){ cancelAnimationFrame(specFrameId); specFrameId = null; }
       _brandActive = false;
       stopAudioMotion();
@@ -8082,7 +7866,7 @@ function openUploadModal(dir) {
   const listEl    = document.getElementById('upload-file-list');
   const startBtn  = document.getElementById('upload-start-btn');
 
-  destEl.textContent = `Destination: ${dir}`;
+  destEl.textContent = t('player.modal.destination', { dir });
   pendingFiles = [];
   listEl.innerHTML = '';
   startBtn.disabled = true;
@@ -8128,8 +7912,8 @@ function openUploadModal(dir) {
       }
     });
     if (rejected.length > 0) {
-      const names = rejected.slice(0, 2).join(', ') + (rejected.length > 2 ? ` +${rejected.length - 2} more` : '');
-      toastError(`Not allowed: ${names}`);
+      const names = rejected.slice(0, 2).join(', ') + (rejected.length > 2 ? ' ' + t('player.upload.moreFiles', { count: rejected.length - 2 }) : '');
+      toastError(t('player.upload.notAllowed', { names }));
     }
     renderList();
   }
@@ -8220,7 +8004,7 @@ function showNewPlaylistModal() {
   setTimeout(() => document.getElementById('pl-new-name').focus(), 50);
 }
 function showDeletePlaylistModal(name) {
-  document.getElementById('pl-del-msg').textContent = `"${name}" will be permanently removed. This cannot be undone.`;
+  document.getElementById('pl-del-msg').textContent = t('player.modal.plDelMsg', { name });
   document.getElementById('pl-del-ok').dataset.pl = name;
   showModal('pl-del-modal');
 }
@@ -8230,10 +8014,25 @@ function showRenamePlaylistModal(name) {
   showModal('pl-rename-modal');
   setTimeout(() => document.getElementById('pl-rename-input').select(), 50);
 }
-function showAddToPlaylistModal(song) {
+async function _addSongsToPlaylist(songs, plName) {
+  const failed = [];
+  // One at a time so the playlist keeps the order the songs were picked in
+  for (const song of songs) {
+    try { await api('POST', 'api/v1/playlist/add-song', { song: song.filepath, playlist: plName }); }
+    catch (_) { failed.push(song); }
+  }
+  if (!failed.length) { toast(t('player.toast.addedToPlaylist', { playlist: plName })); return; }
+  const msg = failed.length === songs.length
+    ? t('player.toast.failedToAddPlaylist')
+    : t('player.toast.addedSomeToPlaylist', { added: songs.length - failed.length, total: songs.length, playlist: plName });
+  toastError(msg, { action: { label: t('player.toast.retry'), onClick: () => _addSongsToPlaylist(failed, plName) } });
+}
+
+function showAddToPlaylistModal(songOrSongs, { onPicked } = {}) {
+  const songs = Array.isArray(songOrSongs) ? songOrSongs : [songOrSongs];
   const list = document.getElementById('atp-list');
   if (!S.playlists.length) {
-    list.innerHTML = `<div class="modal-empty">No playlists yet. Create one first.</div>`;
+    list.innerHTML = `<div class="modal-empty">${esc(t('player.modal.noPlaylistsYet'))}</div>`;
   } else {
     list.innerHTML = S.playlists.map(p =>
       `<div class="modal-pl-item" data-pl="${esc(p.name)}">
@@ -8243,17 +8042,9 @@ function showAddToPlaylistModal(song) {
     ).join('');
     list.querySelectorAll('.modal-pl-item').forEach(el => {
       el.addEventListener('click', () => {
-        const plName = el.dataset.pl;
         hideModal('atp-modal');
-        // Optimistic: confirm immediately, then reconcile. On failure surface a
-        // Retry action instead of a dead-end error.
-        const attempt = isRetry =>
-          api('POST', 'api/v1/playlist/add-song', { song: song.filepath, playlist: plName })
-            .then(() => { if (isRetry) toast(t('player.toast.addedToPlaylist', { playlist: plName })); })
-            .catch(() => toastError(t('player.toast.failedToAddPlaylist'),
-              { action: { label: t('player.toast.retry'), onClick: () => attempt(true) } }));
-        toast(t('player.toast.addedToPlaylist', { playlist: plName }));
-        attempt(false);
+        onPicked?.();
+        _addSongsToPlaylist(songs, el.dataset.pl);
       });
     });
   }
@@ -8269,12 +8060,12 @@ function showSharePlaylistModal(songs) {
   urlEl.value = '';
   document.getElementById('share-pl-expires').value = '';
   okBtn.disabled = false;
-  okBtn.textContent = 'Create link';
+  okBtn.textContent = t('player.modal.shareCreate');
   showModal('share-pl-modal');
 
   okBtn.onclick = async () => {
     okBtn.disabled = true;
-    okBtn.textContent = 'Creating…';
+    okBtn.textContent = t('player.misc.creating');
     try {
       const expires = document.getElementById('share-pl-expires').value;
       const body = { playlist: songs.map(s => s.filepath) };
@@ -8283,12 +8074,12 @@ function showSharePlaylistModal(songs) {
       const url = `${location.origin}/shared/${d.playlistId}`;
       urlEl.value = url;
       resultEl.classList.remove('hidden');
-      okBtn.textContent = 'Create another';
+      okBtn.textContent = t('player.modal.shareCreateAnother');
       okBtn.disabled = false;
     } catch(e) {
       toast(t('player.toast.shareCreateFailed'));
       okBtn.disabled = false;
-      okBtn.textContent = 'Create link';
+      okBtn.textContent = t('player.modal.shareCreate');
     }
   };
 
@@ -8298,7 +8089,7 @@ function showSharePlaylistModal(songs) {
     copyText(url).then(() => {
       const btn = document.getElementById('share-pl-copy');
       const orig = btn.innerHTML;
-      btn.innerHTML = `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20,6 9,17 4,12"/></svg> Copied!`;
+      btn.innerHTML = `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20,6 9,17 4,12"/></svg> ${t('player.shared.copied')}`;
       setTimeout(() => { btn.innerHTML = orig; }, 1800);
     }).catch(() => { urlEl.select(); toast(t('player.toast.copyFailed')); });
   };
@@ -8417,14 +8208,14 @@ async function openPlaylist(name) {
     S.curSongs = songs;
     if (!songs.length) { setBody(emptyState({ icon: 'list', title: t('player.playlist.emptyTitle'), msg: t('player.playlist.emptyHint'), cta: { label: t('player.queue.emptyCta'), view: 'album-library' } })); return; }
     const totalDurSec = songs.reduce((sum, s) => sum + (s.duration || 0), 0);
-    const plMeta = `${songs.length} ${songs.length === 1 ? 'song' : 'songs'}${totalDurSec > 5 ? ' · ' + fmt(totalDurSec) : ''}`;
+    const plMeta = `${t('player.misc.songs',{ count: songs.length })}${totalDurSec > 5 ? ' · ' + fmt(totalDurSec) : ''}`;
     const body = document.getElementById('content-body');
     body.innerHTML = `
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;gap:8px;">
         <span class="pl-meta-line">${esc(plMeta)}</span>
         <button id="pl-save-cur-btn" class="btn-sm">
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17,21 17,13 7,13 7,21"/><polyline points="7,3 7,8 15,8"/></svg>
-          Save current queue into "${esc(name)}"
+          ${t('player.playlist.saveQueueInto', { name: esc(name) })}
         </button>
       </div>
       <div class="song-list">${renderSongRows(songs)}</div>`;
@@ -8432,7 +8223,7 @@ async function openPlaylist(name) {
       if (!S.queue.length) { toast(t('player.toast.queueEmpty')); return; }
       try {
         await api('POST', 'api/v1/playlist/save', { title: name, songs: S.queue.map(s => s.filepath) });
-        toast(`Saved ${S.queue.length} songs to "${name}"`);
+        toast(t('player.toast.playlistSaved', { count: S.queue.length, name }));
         openPlaylist(name);
       } catch(e) { toast(t('player.toast.saveFailed')); }
     };
@@ -8447,7 +8238,7 @@ async function openPlaylist(name) {
 
       _plSongList.querySelectorAll('.song-row').forEach(row => {
         const acts = row.querySelector('.row-actions');
-        if (acts) acts.insertAdjacentHTML('beforeend', `<span class="pl-drag-handle" title="Drag to reorder">${_DRAG_ICON}</span>`);
+        if (acts) acts.insertAdjacentHTML('beforeend', `<span class="pl-drag-handle" title="${t('player.ctrl.queueDragHandle')}">${_DRAG_ICON}</span>`);
         row.draggable = true;
 
         row.addEventListener('dragstart', e => {
@@ -8504,7 +8295,7 @@ async function openPlaylist(name) {
     }
 
     highlightRow();
-  } catch(e) { setBody(`<div class="empty-state">Error: ${esc(e.message)}</div>`); }
+  } catch(e) { setBody(`<div class="empty-state">${t('player.toast.errorMsg', { error: esc(e.message) })}</div>`); }
 }
 
 // ── VIEWS ─────────────────────────────────────────────────────
@@ -8517,31 +8308,31 @@ async function viewSharedLinks() {
   try {
     const items = await api('GET', 'api/v1/share/list');
     if (!items.length) {
-      setBody(`<div class="empty-state">No shared links yet.<br>Use the share button in the queue panel to share your queue.</div>`);
+      setBody(`<div class="empty-state">${t('player.shared.empty')}<br>${t('player.shared.emptyHint')}</div>`);
       return;
     }
     const body = document.getElementById('content-body');
     body.innerHTML = `<div class="shared-links-list">${items.map(item => {
       const url = `${location.origin}/shared/${item.playlistId}`;
-      const exp = item.expires ? new Date(item.expires * 1000).toLocaleDateString() : 'Never';
+      const exp = item.expires ? new Date(item.expires * 1000).toLocaleDateString() : t('player.ctrl.expireNever');
       const expired = item.expires && item.expires * 1000 < Date.now();
       return `<div class="shared-link-row${expired ? ' shared-expired' : ''}" data-id="${esc(item.playlistId)}">
         <div class="shared-link-info">
           <div class="shared-link-url">${esc(url)}</div>
-          <div class="shared-link-meta">${item.songCount} song${item.songCount !== 1 ? 's' : ''} &nbsp;&middot;&nbsp; Expires: ${exp}${expired ? ' <span class="shared-expired-tag">expired</span>' : ''}</div>
+          <div class="shared-link-meta">${t('player.misc.songs',{ count: item.songCount })} &nbsp;&middot;&nbsp; ${t('player.shared.expires', { date: exp })}${expired ? ` <span class="shared-expired-tag">${t('player.shared.expired')}</span>` : ''}</div>
         </div>
         <div class="shared-link-actions">
           <button class="btn-ghost shared-copy-btn" data-url="${esc(url)}">
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
-            Copy
+            ${t('player.modal.shareCopy')}
           </button>
           <a class="btn-ghost" href="${esc(url)}" target="_blank" rel="noopener">
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15,3 21,3 21,9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
-            Open
+            ${t('player.shared.open')}
           </a>
           <button class="btn-ghost shared-del-btn" data-id="${esc(item.playlistId)}" style="color:var(--red)">
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3,6 5,6 21,6"/><path d="M19,6l-1,14H6L5,6"/><path d="M9,6V4h6v2"/></svg>
-            Delete
+            ${t('player.modal.delete')}
           </button>
         </div>
       </div>`;
@@ -8550,7 +8341,7 @@ async function viewSharedLinks() {
       btn.addEventListener('click', () => {
         copyText(btn.dataset.url).then(() => {
           const orig = btn.innerHTML;
-          btn.innerHTML = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20,6 9,17 4,12"/></svg> Copied!`;
+          btn.innerHTML = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20,6 9,17 4,12"/></svg> ${t('player.shared.copied')}`;
           setTimeout(() => { btn.innerHTML = orig; }, 1800);
         }).catch(() => toast(t('player.toast.copyFailed')));
       });
@@ -8574,7 +8365,7 @@ async function viewSharedLinks() {
         }, { once: true });
       });
     });
-  } catch(e) { setBody(`<div class="empty-state">Error: ${esc(e.message)}</div>`); }
+  } catch(e) { setBody(`<div class="empty-state">${t('player.toast.errorMsg', { error: esc(e.message) })}</div>`); }
 }
 
 async function viewRecent() {
@@ -8591,7 +8382,7 @@ async function viewRecent() {
     }, sig);
 
     if (!Array.isArray(days) || days.length === 0) {
-      setBody('<div class="empty-state">No recently added songs found</div>');
+      setBody(`<div class="empty-state">${t('player.recent.emptyAdded')}</div>`);
       return;
     }
 
@@ -8606,7 +8397,7 @@ async function viewRecent() {
     const allSongs = days.flatMap(day => day.folders.flatMap(f => f._normSongs));
     S.curSongs = allSongs;
     document.getElementById('play-all-btn').onclick = () => {
-      if (allSongs.length) { _setPlaySource(null); Player.setQueue(allSongs, 0); toast(`Playing ${allSongs.length} songs`); }
+      if (allSongs.length) { _setPlaySource(null); Player.setQueue(allSongs, 0); toast(t('player.toast.playingSongs', { count: allSongs.length })); }
     };
     document.getElementById('add-all-btn').onclick = () => { if (allSongs.length) Player.addAll(allSongs); };
     document.getElementById('zip-dl-btn')?.classList.add('hidden');
@@ -8660,7 +8451,7 @@ async function viewRecent() {
               });
             }
           } catch(e) {
-            if (e.name !== 'AbortError') setBody(`<div class="empty-state">Error: ${esc(e.message)}</div>`);
+            if (e.name !== 'AbortError') setBody(`<div class="empty-state">${t('player.toast.errorMsg', { error: esc(e.message) })}</div>`);
           }
         } else {
           setTitle(folder.label || folder.artist || '');
@@ -8703,7 +8494,7 @@ async function viewRecent() {
           return `<div class="recent-day-section" data-day-idx="${di}">
             <div class="recent-day-header">
               <span class="recent-day-title">${esc(day.dayLabel)}</span>
-              <span class="recent-day-badge">${n} ${n === 1 ? 'folder' : 'folders'}</span>
+              <span class="recent-day-badge">${t('player.recent.folders', { count: n })}</span>
             </div>
             <div class="${gridClass}">${cards}</div>
           </div>`;
@@ -8757,7 +8548,7 @@ async function viewRecent() {
           return `<div class="recent-day-section" data-day-idx="${di}" style="margin-bottom:24px;">
             <div class="recent-day-header">
               <span class="recent-day-title">${esc(day.dayLabel)}</span>
-              <span class="recent-day-badge">${n} ${n === 1 ? 'song' : 'songs'}</span>
+              <span class="recent-day-badge">${t('player.misc.songs',{ count: n })}</span>
             </div>
             ${renderSongRows(daySongs)}
           </div>`;
@@ -8790,626 +8581,7 @@ async function viewRecent() {
     });
 
     renderView();
-  } catch(e) { if (e.name === 'AbortError') return; setBody(`<div class="empty-state">Error: ${esc(e.message)}</div>`); }
-}
-
-async function viewArtists_old() {
-  setTitle(t('player.title.artists')); setBack(null); setNavActive('artists_old'); S.view = 'artists_old';
-  const sig = _navCancel();
-  setBody('<div class="loading-state"></div>');
-  try {
-    const data = await api('GET', 'api/v1/artists/home', undefined, sig);
-    if (S.view !== 'artists_old') return;
-
-    const { totalCount = 0, topArtists = [], recentArtists = [], mostPlayedArtists = [] } = data;
-
-    // JS Map: artistKey → rawVariants[] — avoids storing large arrays in DOM attrs
-    const _varMap = new Map();
-    function _storeVariants(list) {
-      for (const a of list) {
-        if (a.artistKey && a.rawVariants && a.rawVariants.length) _varMap.set(a.artistKey, a.rawVariants);
-      }
-    }
-    _storeVariants(topArtists);
-    _storeVariants(recentArtists);
-    _storeVariants(mostPlayedArtists);
-
-    function _openArtist(akey, aname) {
-      const variants = _varMap.get(akey) || [aname];
-      viewArtistProfile(akey, aname, variants.filter(Boolean), () => viewArtists_old());
-    }
-
-    function _setArtistFiltering(active) {
-      const view = body.querySelector('.artist-home-view');
-      if (!view) return;
-      view.classList.toggle('artist-filtering', !!active);
-    }
-
-    async function _markArtistImageWrong(artistKey, canonicalName, ev) {
-      if (ev) {
-        ev.preventDefault();
-        ev.stopPropagation();
-      }
-      if (!S.isAdmin) return;
-      try {
-        await api('POST', 'api/v1/artists/mark-image-wrong', { artistKey, wrong: true });
-        toast(`✓ ${canonicalName}`);
-      } catch (e) {
-        toast(`Failed to mark wrong artist image${e?.message ? `: ${e.message}` : ''}`);
-      }
-    }
-
-    function _wrongBtn(a) {
-      if (!S.isAdmin) return '';
-      return `<button type="button" class="artist-wrong-btn" title="${t('player.ctrl.markArtWrong')}" aria-label="${t('player.ctrl.markArtWrong')}" data-mark-wrong="1" data-akey="${esc(a.artistKey)}" data-aname="${esc(a.canonicalName)}">⚑</button>`;
-    }
-
-    // ── artist card helper (HOME-shelf style) ──────────────────────────────
-    function artistCard(a) {
-      if (!a.canonicalName) return '';
-      const fallbackSrc = 'api/v1/artists/placeholder';
-      const artInner = a.imageFile
-        ? `<img class="artist-home-img" src="api/v1/artists/images/${encodeURIComponent(a.imageFile)}" alt="" loading="lazy" data-err-src="${fallbackSrc}">`
-        : `<img class="artist-home-img" src="${fallbackSrc}" alt="">`;
-      const sub = Number.isFinite(a.playCount) && a.playCount > 0
-        ? `${a.playCount} play${a.playCount !== 1 ? 's' : ''}`
-        : (a.songCount ? `${a.songCount} song${a.songCount !== 1 ? 's' : ''}` : '');
-      return `<div class="hc artist-home-card" data-akey="${esc(a.artistKey)}" data-aname="${esc(a.canonicalName)}">
-        <div class="hc-art">${artInner}</div>
-        <div class="hc-info">
-          <div class="hc-title">${esc(a.canonicalName)}</div>
-          ${sub ? `<div class="hc-sub">${sub}</div>` : ''}
-        </div>
-        ${_wrongBtn(a)}
-      </div>`;
-    }
-
-    // ── shelf helper ───────────────────────────────────────────────────────
-    const _ART_GRIP = `<svg width="10" height="14" viewBox="0 0 10 16" fill="currentColor" aria-hidden="true"><circle cx="2.5" cy="2" r="1.5"/><circle cx="7.5" cy="2" r="1.5"/><circle cx="2.5" cy="6" r="1.5"/><circle cx="7.5" cy="6" r="1.5"/><circle cx="2.5" cy="10" r="1.5"/><circle cx="7.5" cy="10" r="1.5"/><circle cx="2.5" cy="14" r="1.5"/><circle cx="7.5" cy="14" r="1.5"/></svg>`;
-    function artistShelf(id, title, cards) {
-      if (!cards) return '';
-      return `<div class="home-shelf" data-shelf="${id}" draggable="true">
-        <div class="home-shelf-header">
-          <span class="home-grip" title="${t('player.ctrl.queueDragHandle')}">${_ART_GRIP}</span>
-          <span class="home-shelf-title">${title}</span>
-        </div>
-        <div class="home-row">${cards}</div>
-      </div>`;
-    }
-
-    // filter blank artists from shelves
-    const validTop    = topArtists.filter(a => a.canonicalName);
-    const validRecent = recentArtists.filter(a => a.canonicalName);
-    const validMostPlayed = mostPlayedArtists.filter(a => a.canonicalName);
-
-    // ── shelf order persistence ────────────────────────────────────────────
-    const _ART_ORDER_KEY = `ms2_art_order_${S.username || ''}`;
-    function _artSavedOrder() { try { return JSON.parse(localStorage.getItem(_ART_ORDER_KEY) || 'null'); } catch(_) { return null; } }
-    function _artSaveOrder(view) {
-      const order = JSON.stringify([...view.querySelectorAll(':scope > .home-shelf')].map(s => s.dataset.shelf));
-      localStorage.setItem(_ART_ORDER_KEY, order);
-    }
-
-    const _artShelfDefs = [
-      { id: 'art-most-songs', html: artistShelf('art-most-songs', t('player.artists.shelfMostSongs'), validTop.slice(0, 8).map(artistCard).join('') || null) },
-      { id: 'art-most-played',html: artistShelf('art-most-played', t('player.artists.shelfMostPlayedArtists'), validMostPlayed.slice(0, 8).map(artistCard).join('') || null) },
-      { id: 'art-recent',     html: artistShelf('art-recent', t('player.artists.shelfRecentlyListened'), validRecent.map(artistCard).join('') || null) },
-    ];
-    const _artShelfMap  = Object.fromEntries(_artShelfDefs.map(s => [s.id, s.html]));
-    const _artDefOrder  = _artShelfDefs.map(s => s.id);
-    const _artOrder     = (_artSavedOrder() || _artDefOrder).filter(id => _artShelfMap[id]);
-    _artDefOrder.forEach(id => { if (!_artOrder.includes(id)) _artOrder.push(id); });
-    const shelves = _artOrder.map(id => _artShelfMap[id] || '').join('');
-
-    // ── A-Z pill strip ─────────────────────────────────────────────────────
-    const AZ_KEYS = ['0', ...'ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('')];
-    const azPills = AZ_KEYS.map(l =>
-      `<button class="az-btn art-az-btn" data-letter="${l}">${l === '0' ? '0–9' : l}</button>`
-    ).join('');
-
-    const html = `<div class="home-view artist-home-view">
-      <div class="art-az-block">
-        <div class="az-strip art-az-strip">${azPills}</div>
-        <div class="fe-filter-row" style="margin:4px 0 10px">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-          <input id="art-search" class="fe-filter-input" type="text" placeholder="${t('player.artists.searchAllPlaceholder', { count: totalCount.toLocaleString() })}" autocomplete="off">
-          <span id="art-match-count" class="fe-match-count"></span>
-          <button id="art-search-clear" class="fe-filter-clear hidden" title="${t('player.ctrl.clear')}">✕</button>
-          <div class="allib-view-controls">
-            <button class="allib-density-btn" data-art-density="list" title="${t('player.artists.densityList')}"><svg width="13" height="13" viewBox="0 0 14 14" fill="currentColor"><rect x="0" y="1" width="14" height="2" rx="1"/><rect x="0" y="6" width="14" height="2" rx="1"/><rect x="0" y="11" width="14" height="2" rx="1"/></svg></button>
-            <button class="allib-density-btn" data-art-density="comfy" title="${t('player.artists.densityComfy')}"><svg width="13" height="13" viewBox="0 0 14 14" fill="currentColor"><rect x="0" y="0" width="6" height="6" rx="1"/><rect x="8" y="0" width="6" height="6" rx="1"/><rect x="0" y="8" width="6" height="6" rx="1"/><rect x="8" y="8" width="6" height="6" rx="1"/></svg></button>
-            <button class="allib-density-btn" data-art-density="compact" title="${t('player.artists.densityCompact')}"><svg width="13" height="13" viewBox="0 0 14 14" fill="currentColor"><rect x="0" y="0" width="4" height="4" rx=".5"/><rect x="5" y="0" width="4" height="4" rx=".5"/><rect x="10" y="0" width="4" height="4" rx=".5"/><rect x="0" y="5" width="4" height="4" rx=".5"/><rect x="5" y="5" width="4" height="4" rx=".5"/><rect x="10" y="5" width="4" height="4" rx=".5"/><rect x="0" y="10" width="4" height="4" rx=".5"/><rect x="5" y="10" width="4" height="4" rx=".5"/><rect x="10" y="10" width="4" height="4" rx=".5"/></svg></button>
-          </div>
-        </div>
-        <div id="art-letter-results"></div>
-      </div>
-      ${shelves}
-    </div>`;
-
-    const body = document.getElementById('content-body');
-    body.innerHTML = html;
-
-    // ── artist shelf drag-to-reorder ───────────────────────────────────────
-    {
-      const view = body.querySelector('.artist-home-view');
-      let _dragSrc = null, _canDrag = false;
-      body.querySelectorAll('.artist-home-view > .home-shelf .home-grip').forEach(grip => {
-        grip.addEventListener('mousedown', () => { _canDrag = true; });
-      });
-      body.addEventListener('mouseup', () => { _canDrag = false; });
-      body.querySelectorAll('.artist-home-view > .home-shelf').forEach(shelf => {
-        shelf.addEventListener('dragstart', e => {
-          if (!_canDrag) { e.preventDefault(); return; }
-          _dragSrc = shelf;
-          shelf.classList.add('hs-dragging');
-          e.dataTransfer.effectAllowed = 'move';
-        });
-        shelf.addEventListener('dragend', () => {
-          _canDrag = false; _dragSrc = null;
-          body.querySelectorAll('.artist-home-view > .home-shelf').forEach(s => s.classList.remove('hs-dragging', 'hs-over'));
-          _artSaveOrder(view);
-        });
-        shelf.addEventListener('dragover', e => {
-          if (!_dragSrc || _dragSrc === shelf) return;
-          e.preventDefault(); e.dataTransfer.dropEffect = 'move';
-          body.querySelectorAll('.artist-home-view > .home-shelf').forEach(s => s.classList.remove('hs-over'));
-          shelf.classList.add('hs-over');
-        });
-        shelf.addEventListener('dragleave', e => {
-          if (!shelf.contains(e.relatedTarget)) shelf.classList.remove('hs-over');
-        });
-        shelf.addEventListener('drop', e => {
-          e.preventDefault();
-          if (!_dragSrc || _dragSrc === shelf) return;
-          const all = [...view.querySelectorAll(':scope > .home-shelf')];
-          const si  = all.indexOf(_dragSrc);
-          const di  = all.indexOf(shelf);
-          if (si < di) view.insertBefore(_dragSrc, shelf.nextSibling);
-          else         view.insertBefore(_dragSrc, shelf);
-        });
-      });
-    }
-
-    // click on home shelf artist cards
-    body.querySelectorAll('.artist-home-card').forEach(card => {
-      card.addEventListener('click', () => _openArtist(card.dataset.akey, card.dataset.aname));
-    });
-    body.querySelectorAll('.artist-wrong-btn').forEach(btn => {
-      btn.addEventListener('mousedown', (ev) => { ev.preventDefault(); ev.stopPropagation(); });
-      btn.addEventListener('touchstart', (ev) => { ev.preventDefault(); ev.stopPropagation(); }, { passive: false });
-      btn.addEventListener('click', (ev) => _markArtistImageWrong(btn.dataset.akey, btn.dataset.aname, ev));
-    });
-
-    // ── density preference ─────────────────────────────────────────────────
-    const _ART_DENSITY_KEY = `ms2_art_density_${S.username || ''}`;
-    let curDensity = localStorage.getItem(_ART_DENSITY_KEY) || 'list';
-
-    function _applyDensity(density) {
-      if (density === 'comfortable') density = 'comfy';
-      if (density !== 'list' && density !== 'comfy' && density !== 'compact') density = 'list';
-      curDensity = density;
-      localStorage.setItem(_ART_DENSITY_KEY, density);
-      const viewEl = body.querySelector('.artist-home-view');
-      if (viewEl) {
-        viewEl.classList.remove('density-list', 'density-comfy', 'density-compact');
-        viewEl.classList.add(`density-${density}`);
-      }
-      resultsEl.className = density === 'list' ? 'artist-list'
-        : density === 'comfy' ? 'artist-grid artist-grid--comfy'
-        : 'artist-grid artist-grid--compact';
-      body.querySelectorAll('[data-art-density]').forEach(b =>
-        b.classList.toggle('active', b.dataset.artDensity === density)
-      );
-    }
-
-    // ── render artist list rows (letter/search results) ────────────────────
-    function renderArtistRows(artists) {
-      _storeVariants(artists);
-      return artists.filter(a => a.canonicalName).map(a => {
-        const av = a.canonicalName.replace(/^The\s+/i, '').charAt(0).toUpperCase() || '?';
-        const sub = a.songCount ? `${a.songCount} song${a.songCount !== 1 ? 's' : ''}` : '';
-        const imgSrc = a.imageFile
-          ? `/api/v1/artists/images/${encodeURIComponent(a.imageFile)}`
-          : 'api/v1/artists/placeholder';
-        return `<div class="artist-row" data-akey="${esc(a.artistKey)}" data-aname="${esc(a.canonicalName)}">
-          <div class="artist-av"><img class="artist-av-img" src="${esc(imgSrc)}" alt="${esc(a.canonicalName)}" loading="lazy" data-err-src="api/v1/artists/placeholder"><span class="artist-av-fallback">${esc(av)}</span></div>
-          <div class="artist-col">
-            <div class="artist-name">${esc(a.canonicalName)}</div>
-            ${sub ? `<div class="artist-sub">${sub}</div>` : ''}
-          </div>
-          ${_wrongBtn(a)}
-        </div>`;
-      }).join('');
-    }
-
-    function renderArtistCards(artists) {
-      _storeVariants(artists);
-      return artists.filter(a => a.canonicalName).map(a => artistCard(a)).join('');
-    }
-
-    function renderArtistResults(artists) {
-      return curDensity === 'list' ? renderArtistRows(artists) : renderArtistCards(artists);
-    }
-
-    function bindResults(container, backFn) {
-      const _back = backFn || (() => viewArtists_old());
-      container.querySelectorAll('.artist-row').forEach(row => {
-        row.addEventListener('click', () => {
-          const variants = _varMap.get(row.dataset.akey) || [row.dataset.aname];
-          viewArtistProfile(row.dataset.akey, row.dataset.aname, variants.filter(Boolean), _back);
-        });
-      });
-      container.querySelectorAll('.artist-home-card').forEach(card => {
-        card.addEventListener('click', () => {
-          const variants = _varMap.get(card.dataset.akey) || [card.dataset.aname];
-          viewArtistProfile(card.dataset.akey, card.dataset.aname, variants.filter(Boolean), _back);
-        });
-      });
-      container.querySelectorAll('.artist-wrong-btn').forEach(btn => {
-        btn.addEventListener('mousedown', (ev) => { ev.preventDefault(); ev.stopPropagation(); });
-        btn.addEventListener('touchstart', (ev) => { ev.preventDefault(); ev.stopPropagation(); }, { passive: false });
-        btn.addEventListener('click', (ev) => _markArtistImageWrong(btn.dataset.akey, btn.dataset.aname, ev));
-      });
-    }
-
-    // ── letter pills ───────────────────────────────────────────────────────
-    const resultsEl   = body.querySelector('#art-letter-results');
-
-    // Apply saved density on load
-    _applyDensity(curDensity);
-
-    // Density button clicks
-    body.querySelectorAll('[data-art-density]').forEach(btn => {
-      btn.addEventListener('click', () => {
-        _applyDensity(btn.dataset.artDensity);
-        // Re-render current results under new density
-        const currentArtists = resultsEl._lastArtists;
-        if (currentArtists?.length) {
-          resultsEl.innerHTML = renderArtistResults(currentArtists);
-          bindResults(resultsEl);
-        }
-      });
-    });
-    const searchInput = body.querySelector('#art-search');
-    const searchClear = body.querySelector('#art-search-clear');
-    const matchCount  = body.querySelector('#art-match-count');
-    let _activeLetter = null;
-    let _searchTimer  = null;
-
-    async function loadLetter(letter) {
-      _activeLetter = letter;
-      body.querySelectorAll('.art-az-btn').forEach(b => b.classList.toggle('active', b.dataset.letter === letter));
-      _setArtistFiltering(true);
-      resultsEl.innerHTML = '<div class="loading-state" style="height:60px;padding:16px 0"></div>';
-      try {
-        const d = await api('GET', `api/v1/artists/letter?l=${encodeURIComponent(letter)}`);
-        const artists = d.artists || [];
-        resultsEl._lastArtists = artists;
-        if (!artists.length) { resultsEl.innerHTML = '<div class="fe-match-count" style="padding:8px 2px">No artists found</div>'; return; }
-        resultsEl.innerHTML = renderArtistResults(artists);
-        // Back from profile → return to Artists page with the same letter active
-        bindResults(resultsEl, () => {
-          S._restoreArtistLetter = letter;
-          viewArtists_old();
-        });
-        body.scrollTop = 0;
-      } catch(e) {
-        if (e.name !== 'AbortError') resultsEl.innerHTML = `<div class="fe-match-count" style="padding:8px 2px">Error: ${esc(e.message)}</div>`;
-      }
-    }
-
-    body.querySelectorAll('.art-az-btn').forEach(btn => {
-      btn.addEventListener('click', () => {
-        searchInput.value = '';
-        searchClear.classList.add('hidden');
-        matchCount.textContent = '';
-        if (_activeLetter === btn.dataset.letter) {
-          _activeLetter = null;
-          btn.classList.remove('active');
-          resultsEl.innerHTML = '';
-          _setArtistFiltering(false);
-          return;
-        }
-        loadLetter(btn.dataset.letter);
-      });
-    });
-
-    // ── search ─────────────────────────────────────────────────────────────
-    async function doSearch(q) {
-      if (!q || q.length < 2) {
-        resultsEl.innerHTML = '';
-        matchCount.textContent = '';
-        if (!_activeLetter) _setArtistFiltering(false);
-        return;
-      }
-      _activeLetter = null;
-      body.querySelectorAll('.art-az-btn').forEach(b => b.classList.remove('active'));
-      _setArtistFiltering(true);
-      resultsEl.innerHTML = '<div class="loading-state" style="height:60px;padding:16px 0"></div>';
-      try {
-        const d = await api('GET', `api/v1/artists/search?q=${encodeURIComponent(q)}`);
-        const artists = (d.artists || []).filter(a => a.canonicalName);
-        matchCount.textContent = artists.length ? `${artists.length} result${artists.length !== 1 ? 's' : ''}` : 'No results';
-        resultsEl._lastArtists = artists;
-        if (!artists.length) { resultsEl.innerHTML = ''; return; }
-        resultsEl.innerHTML = renderArtistResults(artists);
-        bindResults(resultsEl);
-      } catch(e) { if (e.name !== 'AbortError') resultsEl.innerHTML = ''; }
-    }
-
-    searchInput.addEventListener('input', () => {
-      const q = searchInput.value.trim();
-      searchClear.classList.toggle('hidden', !q);
-      clearTimeout(_searchTimer);
-      _searchTimer = setTimeout(() => doSearch(q), 250);
-    });
-    searchClear.addEventListener('click', () => {
-      searchInput.value = '';
-      searchClear.classList.add('hidden');
-      searchInput.focus();
-      resultsEl.innerHTML = '';
-      matchCount.textContent = '';
-      body.querySelectorAll('.art-az-btn').forEach(b => b.classList.remove('active'));
-      _activeLetter = null;
-      _setArtistFiltering(false);
-    });
-
-    // Restore active letter after back-navigation from an artist profile
-    if (S._restoreArtistLetter) {
-      const letter = S._restoreArtistLetter;
-      S._restoreArtistLetter = null;
-      loadLetter(letter);
-    }
-
-  } catch(e) { if (e.name === 'AbortError') return; setBody(`<div class="empty-state">Error: ${esc(e.message)}</div>`); }
-}
-
-async function viewArtistAlbums(displayName, variantsOrBackFn, backFn) {
-  // Overloaded: (name, variants[], backFn?) from artist list
-  //             (name, backFn?)         from search / legacy callers
-  let variants, back;
-  if (Array.isArray(variantsOrBackFn)) {
-    variants = variantsOrBackFn;
-    back = backFn;
-  } else {
-    variants = [displayName];
-    back = variantsOrBackFn;
-  }
-  setTitle(displayName); setBack(back || (() => viewArtists_old()));
-  const sig = _navCancel();
-  setBody('<div class="loading-state"></div>');
-  try {
-    const abEx = _audioBookExclusions();
-    const d = await api('POST', 'api/v1/db/artists-albums-multi', {
-      artists: variants,
-      ...(abEx.ignoreVPaths?.length                ? { ignoreVPaths: abEx.ignoreVPaths } : {}),
-      ...(abEx.excludeFilepathPrefixes?.length ? { excludeFilepathPrefixes: abEx.excludeFilepathPrefixes } : {}),
-    }, sig);
-    const allAlbums = d.albums || [];
-    const restoreFullArtistView = () => {
-      setTitle(displayName);
-      setBack(back || (() => viewArtists_old()));
-      renderAlbumGrid(allAlbums, displayName, variants, restoreFullArtistView, displayName);
-    };
-    renderAlbumGrid(allAlbums, displayName, variants, restoreFullArtistView, displayName);
-  } catch(e) { if (e.name === 'AbortError') return; setBody(`<div class="empty-state">Error: ${esc(e.message)}</div>`); }
-}
-
-// ── ARTIST PROFILE PAGE ──────────────────────────────────────────────────────
-// Full profile: artist image (left) + bio (right) + albums + similar artists.
-// Reuses pnow-* CSS classes so layout matches Playing Now.
-async function viewArtistProfile(artistKey, displayName, variants, backFn) {
-  const back = backFn || (() => viewArtists_old());
-  setTitle(displayName);
-  setBack(back);
-  setNavActive('artists_old');
-  S.view = 'artist-profile';
-  const sig = _navCancel();
-
-  const body = document.getElementById('content-body');
-  body.innerHTML = `<div class="artpro-view pnow-view pnow-fading">
-    <div class="artpro-hero hidden" id="artpro-hero">
-      <img class="artpro-hero-img" id="artpro-hero-img" alt="" loading="lazy">
-      <div class="artpro-hero-grad"></div>
-      <div class="artpro-hero-overlay">
-        <div class="artpro-name artpro-hero-name">${esc(displayName)}</div>
-        <div class="artpro-meta-chips hidden" id="artpro-hero-chips"></div>
-      </div>
-    </div>
-    <div class="artpro-header" id="artpro-header">
-      <div class="artpro-img-wrap" id="artpro-img-wrap"><img class="artpro-img" src="api/v1/artists/placeholder" alt=""></div>
-      <div class="artpro-info">
-        <div class="artpro-name" id="artpro-header-name">${esc(displayName)}</div>
-        <div class="artpro-meta-chips hidden" id="artpro-chips"></div>
-        <div class="pnow-bio" id="artpro-bio"></div>
-        <button class="pnow-bio-more hidden" id="artpro-bio-more">${t('player.pnow.readMore')}</button>
-      </div>
-    </div>
-    <div class="artpro-body">
-      <div class="pnow-section-title" id="artpro-sim-title"></div>
-      <div class="pnow-sim-list" id="artpro-sim"></div>
-      <div class="pnow-section-title" id="artpro-albums-title">${t('player.pnow.inYourLibrary')}</div>
-      <div class="pnow-albums" id="artpro-albums"><div class="loading-state" style="height:80px;padding:16px 0"></div></div>
-    </div>
-  </div>`;
-
-  requestAnimationFrame(() => {
-    const el = body.querySelector('.artpro-view');
-    if (el) { el.classList.remove('pnow-fading'); el.classList.add('pnow-visible'); }
-  });
-
-  // Used when navigating into an album — back returns to this profile
-  const goBack = () => viewArtistProfile(artistKey, displayName, variants, backFn);
-
-  // Load profile (image + DB bio) and albums in parallel
-  const [profileRes, albumsRes] = await Promise.allSettled([
-    api('GET', `api/v1/artists/profile?key=${encodeURIComponent(artistKey)}`, undefined, sig),
-    api('POST', 'api/v1/db/artists-albums-multi', { artists: variants || [displayName] }, sig),
-  ]);
-  if (S.view !== 'artist-profile') return;
-
-  const profile = profileRes.status === 'fulfilled' ? profileRes.value : null;
-
-  // ── Artist image vs Fanart hero — mutually exclusive ───────────────────
-  // Fan art (wide banner) takes priority. When it exists, skip the square
-  // artist image entirely — it would be redundant. Only show the artist image
-  // when there is no fan art, falling back to the placeholder if neither exist.
-  const wrap = document.getElementById('artpro-img-wrap');
-  if (profile?.fanartFile) {
-    // Fan art present — hide the header image column; show hero banner instead
-    if (wrap) wrap.style.display = 'none';
-    const headerEl = document.getElementById('artpro-header');
-    if (headerEl) headerEl.classList.add('artpro-header-no-img');
-    const heroEl  = document.getElementById('artpro-hero');
-    const heroImg = document.getElementById('artpro-hero-img');
-    if (heroEl && heroImg) {
-      heroImg.src = `api/v1/artists/images/${encodeURIComponent(profile.fanartFile)}`;
-      heroEl.classList.remove('hidden');
-      const headerNameEl = document.getElementById('artpro-header-name');
-      if (headerNameEl) headerNameEl.classList.add('hidden');
-    }
-  } else {
-    // No fan art — show artist image (real photo or placeholder)
-    if (wrap) {
-      const imgSrc = profile?.imageFile
-        ? `api/v1/artists/images/${encodeURIComponent(profile.imageFile)}`
-        : 'api/v1/artists/placeholder';
-      wrap.innerHTML = `<img class="artpro-img" src="${imgSrc}" alt="${esc(displayName)}" loading="lazy" data-err-src="api/v1/artists/placeholder">`;
-    }
-  }
-  const bioEl   = document.getElementById('artpro-bio');
-  const bioMore = document.getElementById('artpro-bio-more');
-  function _applyBio(bioText) {
-    if (!bioText || !bioEl) return;
-    bioEl.textContent = bioText;
-    if (bioEl.scrollHeight > bioEl.clientHeight + 4 && bioMore) {
-      bioMore.classList.remove('hidden');
-      bioMore.onclick = () => {
-        bioEl.classList.toggle('expanded');
-        bioMore.textContent = bioEl.classList.contains('expanded')
-          ? t('player.pnow.readLess') : t('player.pnow.readMore');
-      };
-    }
-  }
-  if (profile?.bio) _applyBio(profile.bio);
-
-  // ── Fanart hero banner ──────────────────────────────────────────────────
-  if (profile?.fanartFile) {
-    const heroEl  = document.getElementById('artpro-hero');
-    const heroImg = document.getElementById('artpro-hero-img');
-    if (heroEl && heroImg) {
-      heroImg.src = `api/v1/artists/images/${encodeURIComponent(profile.fanartFile)}`;
-      heroEl.classList.remove('hidden');
-      // Hide duplicate artist name in the standard header when hero is showing
-      const headerNameEl = document.getElementById('artpro-header-name');
-      if (headerNameEl) headerNameEl.classList.add('hidden');
-    }
-  }
-
-  // ── Metadata chips (genre / country / formedYear) ───────────────────────
-  const chipsData = [
-    profile?.genre,
-    profile?.country,
-    profile?.formedYear ? String(profile.formedYear) : null,
-  ].filter(Boolean);
-  if (chipsData.length) {
-    const chipsHtml = chipsData.map(c => `<span class="artpro-meta-chip">${esc(c)}</span>`).join('');
-    const heroChipsEl   = document.getElementById('artpro-hero-chips');
-    const headerChipsEl = document.getElementById('artpro-chips');
-    if (heroChipsEl && profile?.fanartFile) {
-      heroChipsEl.innerHTML = chipsHtml;
-      heroChipsEl.classList.remove('hidden');
-    } else if (headerChipsEl) {
-      headerChipsEl.innerHTML = chipsHtml;
-      headerChipsEl.classList.remove('hidden');
-    }
-  }
-
-  // ── Albums ──────────────────────────────────────────────────────────────
-  const albumsEl    = document.getElementById('artpro-albums');
-  const albumsTitle = document.getElementById('artpro-albums-title');
-  const albums = albumsRes.status === 'fulfilled' ? (albumsRes.value?.albums || []) : [];
-  if (albums.length && albumsEl) {
-    albumsEl.innerHTML = albums.map((alb, i) => {
-      const albArtU = artUrl(alb.album_art_file, 's');
-      const albArtHtml = albArtU
-        ? `<img src="${albArtU}" alt="" loading="lazy" data-err="noart">`
-        : noArtHtml();
-      const prevName = i > 0 ? albums[i-1].name : null;
-      const nextName = i < albums.length-1 ? albums[i+1].name : null;
-      const isSibling = alb.name === prevName || alb.name === nextName;
-      const verBadge = alb.album_version ? `<span class="alb-version-badge" title="${esc(alb.album_version)}">${esc(alb.album_version)}</span>` : '';
-      return `<div class="album-card${isSibling ? ' alb-sibling-group' : ''}" data-alb-idx="${i}">
-        <div class="album-art">${albArtHtml}<div class="play-ov"><svg width="24" height="24" viewBox="0 0 24 24" fill="white"><polygon points="5,3 19,12 5,21"/></svg></div></div>
-        <div class="album-meta"><div class="album-name">${esc(alb.name || '—')}</div>${alb.year ? `<div class="album-year">${esc(alb.year)}${verBadge}</div>` : verBadge ? `<div class="album-year">${verBadge}</div>` : ''}</div>
-      </div>`;
-    }).join('');
-    albumsEl.querySelectorAll('.album-card').forEach((card, i) => {
-      card.addEventListener('click', () => {
-        const alb = albums[i];
-        // When disc sub-folders were collapsed into normDir (e.g. Disc 1/ → parent),
-        // use folderOnly so all discs load regardless of per-disc album/artist tags.
-        // This handles CUE-based multi-disc sets where each disc file may carry a
-        // different album tag or a different credited artist (e.g. disc 3+4 of a
-        // Barry White set tagged as “Love Unlimited Orchestra”).
-        const rawDir = (alb.dir || '').replace(/[/\\]+$/, '');
-        const isMultiDisc = !!(alb.normDir && alb.normDir !== rawDir);
-        viewAlbumSongs(alb.name, displayName, goBack, {
-          albumDir: alb.normDir || alb.dir,
-          artistVariants: variants || [displayName],
-          skipAOFilter: true,
-          folderOnly: isMultiDisc || undefined,
-        });
-      });
-    });
-  } else if (albumsEl) {
-    albumsEl.innerHTML = `<p style="color:var(--t3);font-size:13px;">${t('player.pnow.noAlbums')}</p>`;
-  }
-
-  // ── Last.fm: bio fallback + similar artists ──────────────────────────────
-  if (!S.lastfmHasApiKey) return;
-  try {
-    const [bioData, simData] = await Promise.all([
-      api('GET', `api/v1/lastfm/artist-info?artist=${encodeURIComponent(displayName)}`, undefined, sig),
-      api('GET', `api/v1/lastfm/similar-artists?artist=${encodeURIComponent(displayName)}`, undefined, sig),
-    ]);
-    if (S.view !== 'artist-profile') return;
-
-    // Bio fallback: use Last.fm if DB had no bio
-    if (!profile?.bio && bioData?.bio) {
-      _applyBio(bioData.bio.trim());
-    }
-    if (bioData?.listeners && bioEl) {
-      const note = document.createElement('p');
-      note.style.cssText = 'font-size:11px;color:var(--t3);margin-top:6px;';
-      note.textContent = t('player.pnow.listeners', { n: Number(bioData.listeners).toLocaleString() });
-      bioEl.after(note);
-    }
-
-    // Similar artists chips — use clean Last.fm display names when available
-    const simArtists = _deduplicateSimArtists(simData?.displayArtists || simData?.artists || []);
-    const _simVariantMap = simData?.displayVariantMap || {};
-    const simEl    = document.getElementById('artpro-sim');
-    const simTitle = document.getElementById('artpro-sim-title');
-    if (simArtists.length && simEl && simTitle) {
-      simTitle.textContent = t('player.pnow.similarArtists');
-      // All displayArtists are server-confirmed to have actual albums in the library
-      // (artistHasAlbums check on server). Mark all as in-library.
-      const inLibrarySet = new Set(simArtists.map(a => a.toLowerCase()));
-      simEl.innerHTML = simArtists.slice(0, 12).map(a =>
-        `<button class="pnow-sim-chip${inLibrarySet.has(a.toLowerCase()) ? ' in-library' : ''}">${esc(a)}</button>`
-      ).join('');
-      simEl.querySelectorAll('.pnow-sim-chip').forEach((chip, i) => {
-        chip.addEventListener('click', () => {
-          const a = simArtists[i];
-          // Use raw DB variants from the server map for correct navigation.
-          // Fallback to [a] if not present (older server or cache).
-          const rawVars = _simVariantMap[a] || [a];
-          viewArtistProfile(a.toLowerCase(), a, rawVars, goBack);
-        });
-      });
-    }
-  } catch (_e) { /* Last.fm unavailable */ }
+  } catch(e) { if (e.name === 'AbortError') return; setBody(`<div class="empty-state">${t('player.toast.errorMsg', { error: esc(e.message) })}</div>`); }
 }
 
 // ── ARTISTS2 — redesigned artist view (Songs + Albums sections) ───────────────
@@ -9452,7 +8624,7 @@ async function viewArtists() {
         await api('POST', 'api/v1/artists/mark-image-wrong', { artistKey, wrong: true });
         toast(`✓ ${canonicalName}`);
       } catch (e) {
-        toast(`Failed to mark wrong artist image${e?.message ? `: ${e.message}` : ''}`);
+        toast(t('player.toast.wrongArtistImageFailed') + (e?.message ? `: ${e.message}` : ''));
       }
     }
 
@@ -9468,8 +8640,8 @@ async function viewArtists() {
         ? `<img class="artist-home-img" src="api/v1/artists/images/${encodeURIComponent(a.imageFile)}" alt="" loading="lazy" data-err-src="${fallbackSrc}">`
         : `<img class="artist-home-img" src="${fallbackSrc}" alt="">`;
       const sub = Number.isFinite(a.playCount) && a.playCount > 0
-        ? `${a.playCount} play${a.playCount !== 1 ? 's' : ''}`
-        : (a.songCount ? `${a.songCount} song${a.songCount !== 1 ? 's' : ''}` : '');
+        ? t('player.artists.plays', { count: a.playCount })
+        : (a.songCount ? t('player.misc.songs',{ count: a.songCount }) : '');
       return `<div class="hc artist-home-card" data-akey="${esc(a.artistKey)}" data-aname="${esc(a.canonicalName)}">
         <div class="hc-art">${artInner}</div>
         <div class="hc-info">
@@ -9541,45 +8713,10 @@ async function viewArtists() {
     const body = document.getElementById('content-body');
     body.innerHTML = html;
 
-    // shelf drag-to-reorder
     {
       const view = body.querySelector('.artist-home-view');
-      let _dragSrc = null, _canDrag = false;
-      body.querySelectorAll('.artist-home-view > .home-shelf .home-grip').forEach(grip => {
-        grip.addEventListener('mousedown', () => { _canDrag = true; });
-      });
-      body.addEventListener('mouseup', () => { _canDrag = false; });
-      body.querySelectorAll('.artist-home-view > .home-shelf').forEach(shelf => {
-        shelf.addEventListener('dragstart', e => {
-          if (!_canDrag) { e.preventDefault(); return; }
-          _dragSrc = shelf;
-          shelf.classList.add('hs-dragging');
-          e.dataTransfer.effectAllowed = 'move';
-        });
-        shelf.addEventListener('dragend', () => {
-          _canDrag = false; _dragSrc = null;
-          body.querySelectorAll('.artist-home-view > .home-shelf').forEach(s => s.classList.remove('hs-dragging', 'hs-over'));
-          _artSaveOrder(view);
-        });
-        shelf.addEventListener('dragover', e => {
-          if (!_dragSrc || _dragSrc === shelf) return;
-          e.preventDefault(); e.dataTransfer.dropEffect = 'move';
-          body.querySelectorAll('.artist-home-view > .home-shelf').forEach(s => s.classList.remove('hs-over'));
-          shelf.classList.add('hs-over');
-        });
-        shelf.addEventListener('dragleave', e => {
-          if (!shelf.contains(e.relatedTarget)) shelf.classList.remove('hs-over');
-        });
-        shelf.addEventListener('drop', e => {
-          e.preventDefault();
-          if (!_dragSrc || _dragSrc === shelf) return;
-          const all = [...view.querySelectorAll(':scope > .home-shelf')];
-          const si  = all.indexOf(_dragSrc);
-          const di  = all.indexOf(shelf);
-          if (si < di) view.insertBefore(_dragSrc, shelf.nextSibling);
-          else         view.insertBefore(_dragSrc, shelf);
-        });
-      });
+      const bindShelf = _shelfReorder(body, () => _artSaveOrder(view), sig ? { signal: sig } : {});
+      view.querySelectorAll(':scope > .home-shelf').forEach(bindShelf);
     }
 
     body.querySelectorAll('.artist-home-card').forEach(card => {
@@ -9616,7 +8753,7 @@ async function viewArtists() {
       _storeVariants(artists);
       return artists.filter(a => a.canonicalName).map(a => {
         const av = a.canonicalName.replace(/^The\s+/i, '').charAt(0).toUpperCase() || '?';
-        const sub = a.songCount ? `${a.songCount} song${a.songCount !== 1 ? 's' : ''}` : '';
+        const sub = a.songCount ? t('player.misc.songs',{ count: a.songCount }) : '';
         const imgSrc = a.imageFile
           ? `/api/v1/artists/images/${encodeURIComponent(a.imageFile)}`
           : 'api/v1/artists/placeholder';
@@ -9690,15 +8827,15 @@ async function viewArtists() {
         const d = await api('GET', `api/v1/artists/letter?l=${encodeURIComponent(letter)}`);
         const artists = d.artists || [];
         resultsEl._lastArtists = artists;
-        if (!artists.length) { resultsEl.innerHTML = '<div class="fe-match-count" style="padding:8px 2px">No artists found</div>'; return; }
+        if (!artists.length) { resultsEl.innerHTML = `<div class="fe-match-count" style="padding:8px 2px">${t('player.misc.noArtists')}</div>`; return; }
         resultsEl.innerHTML = renderArtistResults(artists);
         bindResults(resultsEl, () => {
-          S._restoreArtist2Letter = letter;
+          S._restoreArtistLetter = letter;
           viewArtists();
         });
         body.scrollTop = 0;
       } catch(e) {
-        if (e.name !== 'AbortError') resultsEl.innerHTML = `<div class="fe-match-count" style="padding:8px 2px">Error: ${esc(e.message)}</div>`;
+        if (e.name !== 'AbortError') resultsEl.innerHTML = `<div class="fe-match-count" style="padding:8px 2px">${t('player.toast.errorMsg', { error: esc(e.message) })}</div>`;
       }
     }
 
@@ -9732,7 +8869,7 @@ async function viewArtists() {
       try {
         const d = await api('GET', `api/v1/artists/search?q=${encodeURIComponent(q)}`);
         const artists = (d.artists || []).filter(a => a.canonicalName);
-        matchCount.textContent = artists.length ? `${artists.length} result${artists.length !== 1 ? 's' : ''}` : 'No results';
+        matchCount.textContent = artists.length ? t('player.misc.results', { count: artists.length }) : t('player.misc.noResults');
         resultsEl._lastArtists = artists;
         if (!artists.length) { resultsEl.innerHTML = ''; return; }
         resultsEl.innerHTML = renderArtistResults(artists);
@@ -9757,13 +8894,13 @@ async function viewArtists() {
       _setArtistFiltering(false);
     });
 
-    if (S._restoreArtist2Letter) {
-      const letter = S._restoreArtist2Letter;
-      S._restoreArtist2Letter = null;
+    if (S._restoreArtistLetter) {
+      const letter = S._restoreArtistLetter;
+      S._restoreArtistLetter = null;
       loadLetter(letter);
     }
 
-  } catch(e) { if (e.name === 'AbortError') return; setBody(`<div class="empty-state">Error: ${esc(e.message)}</div>`); }
+  } catch(e) { if (e.name === 'AbortError') return; setBody(`<div class="empty-state">${t('player.toast.errorMsg', { error: esc(e.message) })}</div>`); }
 }
 
 // ── ARTIST PROFILE 2 — Songs + Albums sections ───────────────────────────────
@@ -9810,6 +8947,34 @@ function _nameContainsArtist(name, artist) {
   return false;
 }
 
+function _matchSeriesIds(series, artists) {
+  const ids = new Set();
+  for (const ser of (series || [])) {
+    if (artists.some(v => _nameContainsArtist(ser.displayName, v))) ids.add(ser.id);
+  }
+  return ids;
+}
+
+// Match albums: either they belong to a matched series, carry a matching artist tag
+// (files deep inside a genre folder such as Disco/Cerrone Discography/...), or their
+// L1 folder (directly under the vpath root) starts with the artist name. alb.artist is
+// not used: it comes from folder conventions like "Year - Title" and is often wrong.
+// The L1 check is a prefix-separator match so "Cerrone Discography" does not match
+// "Cerrone" while "Cerrone - Love in C Minor" does.
+function _albumMatchesArtist(alb, artists, matchedSeriesIds) {
+  if (alb.seriesId && matchedSeriesIds.has(alb.seriesId)) return true;
+  if (alb.rawArtistTags?.length) {
+    const tags = alb.rawArtistTags.map(tag => String(tag).toLowerCase());
+    if (artists.some(v => tags.includes(v.toLowerCase()))) return true;
+  }
+  const relPath = alb.path ? alb.path.slice(((alb.sourceVpath || '').length) + 1) : '';
+  const l1 = (relPath.split('/')[0] || '').toLowerCase();
+  return artists.some(v => {
+    const vn = v.toLowerCase();
+    return l1 === vn || l1.startsWith(vn + ' - ') || l1.startsWith(vn + ' (') || l1.startsWith(vn + '-');
+  });
+}
+
 async function viewArtistProfile2(artistKey, displayName, variants, backFn, initialCategory = null, restoreAlbumsTab = false) {
   const back = backFn || (() => viewArtists());
   setTitle(displayName);
@@ -9838,9 +9003,11 @@ async function viewArtistProfile2(artistKey, displayName, variants, backFn, init
       </div>
     </div>
     <div class="artpro-body">
+      <div class="pnow-section-title" id="artpro2-sim-title"></div>
+      <div class="pnow-sim-list" id="artpro2-sim"></div>
       <div class="artpro2-tab-bar">
-        <button class="artpro2-tab active" data-tab="songs">Songs</button>
-        <button class="artpro2-tab" data-tab="albums">Albums</button>
+        <button class="artpro2-tab active" data-tab="songs">${t('player.artists.tabSongs')}</button>
+        <button class="artpro2-tab" data-tab="albums">${t('player.nav.albums')}</button>
       </div>
       <div class="artpro2-panel" id="artpro2-songs-panel">
         <div id="artpro2-songs"><div class="loading-state" style="height:80px;padding:16px 0"></div></div>
@@ -9965,7 +9132,7 @@ async function viewArtistProfile2(artistKey, displayName, variants, backFn, init
     }
 
     let songsHtml = `<div style="margin-bottom:10px">
-      <button class="artpro2-play-all-btn" id="artpro2-songs-play-all">▶ Play all (${rawSongs.length})</button>
+      <button class="artpro2-play-all-btn" id="artpro2-songs-play-all">${t('player.artists.playAll', { n: rawSongs.length })}</button>
     </div>`;
 
     for (const [folder, songs] of grouped) {
@@ -9984,7 +9151,7 @@ async function viewArtistProfile2(artistKey, displayName, variants, backFn, init
           ${trackNum}
           <span class="artpro2-song-title">${esc(title)}</span>
           ${dur ? `<span class="artpro2-song-dur">${dur}</span>` : ''}
-          <button class="artpro2-song-add" data-fp="${esc(s.filepath)}" title="Add to queue">+</button>
+          <button class="artpro2-song-add" data-fp="${esc(s.filepath)}" title="${t('player.ctrl.addToQueue')}">+</button>
         </div>`;
       }
       songsHtml += `</div></div>`;
@@ -10024,61 +9191,13 @@ async function viewArtistProfile2(artistKey, displayName, variants, backFn, init
 
   // Also update the tab label to show count
   const songsTabBtn = body.querySelector('.artpro2-tab[data-tab="songs"]');
-  if (songsTabBtn && rawSongs.length) songsTabBtn.textContent = `Songs (${rawSongs.length})`;
+  if (songsTabBtn && rawSongs.length) songsTabBtn.textContent = t('player.search.sectionSongs', { count: rawSongs.length });
 
   // ── Albums tab — same data as the Albums view (_albLib), matched by artist folder name
   const albumsEl = document.getElementById('artpro2-albums');
 
   if (albumsEl) {
-    // Match series whose displayName contains any artist variant as a whole word
-    const matchedSeriesIds = new Set();
-    for (const ser of (_albLib?.series || [])) {
-      for (const v of artistsArg) {
-        if (_nameContainsArtist(ser.displayName, v)) {
-          matchedSeriesIds.add(ser.id);
-          break;
-        }
-      }
-    }
-
-    // Match albums: either they belong to a matched series, or their L1 folder
-    // (= the folder directly under the vpath root) matches the artist name.
-    // We do NOT rely on alb.artist which is extracted from folder-name conventions
-    // like "Year - Title" and is often wrong (e.g. "1976" instead of "Cerrone").
-    // We use a prefix-separator match (not substring) so that an artist folder named
-    // "Cerrone Discography" does NOT falsely match artist "Cerrone" via L1, while
-    // folders like "Cerrone - Love in C Minor" or "Cerrone" still match correctly.
-    function _l1MatchesArtist(l1, v) {
-      const l1n = l1.toLowerCase();
-      const vn = v.toLowerCase();
-      return l1n === vn ||
-        l1n.startsWith(vn + ' - ') ||
-        l1n.startsWith(vn + ' (') ||
-        l1n.startsWith(vn + '-');
-    }
-    function albumMatchesArtist(alb) {
-      if (alb.seriesId && matchedSeriesIds.has(alb.seriesId)) return true;
-      // Tag-based match: check actual album_artist/artist DB tags so artists whose files
-      // live deep inside a genre folder (e.g. Disco/Cerrone Discography/...) are found
-      // even when the folder structure doesn't start with the artist's name.
-      if (alb.rawArtistTags?.length) {
-        for (const tag of alb.rawArtistTags) {
-          for (const v of artistsArg) {
-            if (tag.toLowerCase() === v.toLowerCase()) return true;
-          }
-        }
-      }
-      // L1 = first path segment after sourceVpath
-      const relPath = alb.path ? alb.path.slice(((alb.sourceVpath || '').length) + 1) : '';
-      const l1 = relPath.split('/')[0] || '';
-      for (const v of artistsArg) {
-        if (_l1MatchesArtist(l1, v)) return true;
-      }
-      return false;
-    }
-
-    const artistAlbums = (_albLib?.albums || []).filter(albumMatchesArtist)
-      .sort((a, b) => (Number.parseInt(a.year) || 9999) - (Number.parseInt(b.year) || 9999));
+    const artistAlbums = _artistAlbumsFor(artistsArg);
 
     if (artistAlbums.length) {
       // ── Category pills — Albums / Compilations / Live / etc. ──────────
@@ -10093,23 +9212,14 @@ async function viewArtistProfile2(artistKey, displayName, variants, backFn, init
           : artistAlbums;
 
         albumsEl.innerHTML = (hasCats ? `<div class="alb-cat-pills artpro2-cat-pills" id="artpro2-cat-pills">
-          <button class="alb-cat-pill${activeCat === null ? ' on' : ''}" data-cat="">Albums (${artistAlbums.filter(a => !a.categoryLabel).length})</button>
+          <button class="alb-cat-pill${activeCat === null ? ' on' : ''}" data-cat="">${t('player.nav.albums')} (${artistAlbums.filter(a => !a.categoryLabel).length})</button>
           ${catLabels.map(c => `<button class="alb-cat-pill${activeCat === c ? ' on' : ''}" data-cat="${esc(c)}">${esc(c.replaceAll(/^\[|\]$/g, ''))} (${artistAlbums.filter(a => a.categoryLabel === c).length})</button>`).join('')}
         </div>` : '') +
-        visible.map((alb, i) => {
-          const albArtU = _albArtUrl(alb.artFile, alb.aaFile);
-          const albArtHtml = albArtU
-            ? `<img src="${albArtU}" alt="" loading="lazy" data-err="noart">`
-            : noArtHtml();
-          const verBadge = alb.album_version ? `<span class="alb-version-badge" title="${esc(alb.album_version)}">${esc(alb.album_version)}</span>` : '';
-          return `<div class="album-card" data-alb2-idx="${artistAlbums.indexOf(alb)}">
-            <div class="album-art">${albArtHtml}<div class="play-ov"><svg width="24" height="24" viewBox="0 0 24 24" fill="white"><polygon points="5,3 19,12 5,21"/></svg></div></div>
-            <div class="album-meta"><div class="album-name">${esc(alb.displayName || '—')}</div>${alb.year ? `<div class="album-year">${esc(alb.year)}${verBadge}</div>` : verBadge ? `<div class="album-year">${verBadge}</div>` : ''}</div>
-          </div>`;
-        }).join('') || '<p style="color:var(--t3);font-size:13px;">No albums in this category</p>';
+        visible.map(alb => _artistAlbumCardHtml(alb, artistAlbums.indexOf(alb))).join('')
+          || `<p style="color:var(--t3);font-size:13px;">${t('player.artists.noAlbumsInCat')}</p>`;
 
         albumsEl.querySelectorAll('.album-card').forEach(card => {
-          const idx = Number.parseInt(card.dataset.alb2Idx);
+          const idx = Number.parseInt(card.dataset.albIdx);
           card.addEventListener('click', () => {
             const catAtClick = activeCat; // capture so back nav restores this category
             viewAlbumDetail(artistAlbums[idx].id, 0, {
@@ -10131,25 +9241,68 @@ async function viewArtistProfile2(artistKey, displayName, variants, backFn, init
       _renderArtistAlbums();
 
       const albumsTabBtn = body.querySelector('.artpro2-tab[data-tab="albums"]');
-      if (albumsTabBtn) albumsTabBtn.textContent = `Albums (${artistAlbums.length})`;
+      if (albumsTabBtn) albumsTabBtn.textContent = t('player.search.sectionAlbums', { count: artistAlbums.length });
     } else {
       albumsEl.innerHTML = `<p style="color:var(--t3);font-size:13px;">${t('player.pnow.noAlbums')}</p>`;
     }
   }
 
-  // ── Last.fm: bio fallback ──────────────────────────────────────────────
+  // ── Last.fm: bio fallback + similar artists ────────────────────────────
   if (!S.lastfmHasApiKey) return;
   try {
-    const bioData = await api('GET', `api/v1/lastfm/artist-info?artist=${encodeURIComponent(displayName)}`);
+    const [bioData, simData] = await Promise.all([
+      api('GET', `api/v1/lastfm/artist-info?artist=${encodeURIComponent(displayName)}`, undefined, sig),
+      api('GET', `api/v1/lastfm/similar-artists?artist=${encodeURIComponent(displayName)}`, undefined, sig),
+    ]);
     if (S.view !== 'artist-profile2') return;
     if (!profile?.bio && bioData?.bio) _applyBio(bioData.bio.trim());
-    if (bioData?.listeners && bioEl) {
-      const note = document.createElement('p');
-      note.style.cssText = 'font-size:11px;color:var(--t3);margin-top:6px;';
-      note.textContent = t('player.pnow.listeners', { n: Number(bioData.listeners).toLocaleString() });
-      bioEl.after(note);
-    }
+    if (bioEl) _addListenersNote(bioEl, bioData?.listeners);
+    _renderSimilarArtistChips(document.getElementById('artpro2-sim'), document.getElementById('artpro2-sim-title'), simData, goBack);
   } catch (_e) { /* Last.fm unavailable */ }
+}
+
+// Albums of the library matched to an artist (same data as the Albums view), oldest first.
+function _artistAlbumsFor(artistsArg) {
+  const matchedSeriesIds = _matchSeriesIds(_albLib?.series, artistsArg);
+  return (_albLib?.albums || []).filter(alb => _albumMatchesArtist(alb, artistsArg, matchedSeriesIds))
+    .sort((a, b) => (Number.parseInt(a.year) || 9999) - (Number.parseInt(b.year) || 9999));
+}
+
+function _artistAlbumCardHtml(alb, idx) {
+  const albArtU = _albArtUrl(alb.artFile, alb.aaFile);
+  const albArtHtml = albArtU
+    ? `<img src="${albArtU}" alt="" loading="lazy" data-err="noart">`
+    : noArtHtml();
+  const verBadge = alb.album_version ? `<span class="alb-version-badge" title="${esc(alb.album_version)}">${esc(alb.album_version)}</span>` : '';
+  const yearHtml = alb.year ? `<div class="album-year">${esc(alb.year)}${verBadge}</div>` : verBadge ? `<div class="album-year">${verBadge}</div>` : '';
+  return `<div class="album-card" data-alb-idx="${idx}">
+    <div class="album-art">${albArtHtml}<div class="play-ov"><svg width="24" height="24" viewBox="0 0 24 24" fill="white"><polygon points="5,3 19,12 5,21"/></svg></div></div>
+    <div class="album-meta"><div class="album-name">${esc(alb.displayName || '—')}</div>${yearHtml}</div>
+  </div>`;
+}
+
+function _addListenersNote(bioEl, listeners) {
+  if (!listeners) return;
+  const note = document.createElement('p');
+  note.style.cssText = 'font-size:11px;color:var(--t3);margin-top:6px;';
+  note.textContent = t('player.pnow.listeners', { n: Number(listeners).toLocaleString() });
+  bioEl.after(note);
+}
+
+// Last.fm similar artists as chips; the server only returns artists that have
+// albums in the library, so every chip is marked in-library.
+function _renderSimilarArtistChips(simEl, simTitle, simData, backFn) {
+  const simArtists = _deduplicateSimArtists(simData?.displayArtists || simData?.artists || []);
+  if (!simArtists.length || !simEl || !simTitle) return;
+  const variantMap = simData?.displayVariantMap || {};
+  simTitle.textContent = t('player.pnow.similarArtists');
+  simEl.innerHTML = simArtists.slice(0, 12).map(a => `<button class="pnow-sim-chip in-library">${esc(a)}</button>`).join('');
+  simEl.querySelectorAll('.pnow-sim-chip').forEach((chip, i) => {
+    chip.addEventListener('click', () => {
+      const a = simArtists[i];
+      viewArtistProfile2(a.toLowerCase(), a, variantMap[a] || [a], backFn);
+    });
+  });
 }
 
 // ── ALBUM LIBRARY (Albums New) ────────────────────────────────────────────────
@@ -10242,9 +9395,9 @@ async function viewAlbumLibrary() {
     const { albums, series } = _albLib;
 
     if (!albums.length && !series.length) {
-      const msg = _albLib.error || 'No albums found.';
+      const msg = _albLib.error || t('player.albums.noneFound');
       document.getElementById('content-body').innerHTML =
-        `<div class="empty-state" style="flex-direction:column;height:auto;padding:3em 1em;text-align:center;"><p>${esc(msg)}</p><p style="margin-top:.5em;font-size:.85em;opacity:.65;">Enable <strong>Albums Only</strong> on at least one folder in Admin \u2192 Directories to use the Album Library.</p></div>`;
+        `<div class="empty-state" style="flex-direction:column;height:auto;padding:3em 1em;text-align:center;"><p>${esc(msg)}</p><p style="margin-top:.5em;font-size:.85em;opacity:.65;">${t('player.albums.enableAlbumsOnlyHint')}</p></div>`;
       return;
     }
 
@@ -10398,8 +9551,8 @@ async function viewAlbumLibrary() {
           count++;
         }
       }
-      grid.innerHTML = html || '<div class="empty-state">No albums found</div>';
-      countEl.textContent = lc ? `${count} result${count !== 1 ? 's' : ''}` : '';
+      grid.innerHTML = html || `<div class="empty-state">${t('player.albums.noneFound')}</div>`;
+      countEl.textContent = lc ? t('player.misc.results', { count }) : '';
     }
 
     render('');
@@ -10477,7 +9630,7 @@ async function viewAlbumLibrary() {
       else if (albumCard) viewAlbumDetail(albumCard.dataset.albumId, 0);
     });
 
-  } catch(e) { setBody(`<div class="empty-state">Error: ${esc(e.message)}</div>`); }
+  } catch(e) { setBody(`<div class="empty-state">${t('player.toast.errorMsg', { error: esc(e.message) })}</div>`); }
 }
 
 async function viewAlbumSeries(seriesId, inheritedVersions = new Set(), initialCategory = null) {
@@ -10486,7 +9639,7 @@ async function viewAlbumSeries(seriesId, inheritedVersions = new Set(), initialC
   try {
     await _loadAlbLib();
     const series = _albLib.series.find(s => s.id === seriesId);
-    if (!series) { setBody('<div class="empty-state">Series not found</div>'); return; }
+    if (!series) { setBody(`<div class="empty-state">${t('player.albums.seriesNotFound')}</div>`); return; }
     const allAlbums = (_albLib.bySeriesId[seriesId] || [])
       .slice().sort((a, b) => (Number.parseInt(a.year)||9999) - (Number.parseInt(b.year)||9999) || a.displayName.localeCompare(b.displayName, undefined, { sensitivity: 'base' }));
 
@@ -10569,7 +9722,7 @@ async function viewAlbumSeries(seriesId, inheritedVersions = new Set(), initialC
         if (activeVersions.size > 0 && !activeVersions.has(a.album_version)) continue;
         html += seriesAlbumCard(a);
       }
-      grid.innerHTML = html || '<div class="empty-state">No albums found</div>';
+      grid.innerHTML = html || `<div class="empty-state">${t('player.albums.noneFound')}</div>`;
     }
 
     render();
@@ -10619,7 +9772,7 @@ async function viewAlbumSeries(seriesId, inheritedVersions = new Set(), initialC
       });
     });
 
-  } catch(e) { setBody(`<div class="empty-state">Error: ${esc(e.message)}</div>`); }
+  } catch(e) { setBody(`<div class="empty-state">${t('player.toast.errorMsg', { error: esc(e.message) })}</div>`); }
 }
 
 // ── ALBUM ART PICKER (album detail view, admin only) ─────────────────────────
@@ -10777,7 +9930,7 @@ async function _albSetArt(opts) {
   const album = _albDetailAlbum;
   const el    = document.getElementById('albd-art-picker');
   if (!el || !album) return;
-  el.innerHTML = `<div class="np-embed-spinner"></div><span class="np-embed-label">Saving cover.jpg\u2026</span>`;
+  el.innerHTML = `<div class="np-embed-spinner"></div><span class="np-embed-label">${t('player.npArt.savingFolderCover')}</span>`;
   try {
     const result = await api('POST', 'api/v1/albums/set-art', { albumPath: album.path, ...opts });
     // Update local album cache so the detail view refreshes immediately
@@ -10809,7 +9962,7 @@ async function _albSetArt(opts) {
     toast(t('player.toast.coverSaved'));
   } catch(err) {
     el.innerHTML =
-      `<span class="np-discogs-status" style="color:rgba(255,100,100,.8)">Failed: ${esc(err?.message || 'error')}</span>` +
+      `<span class="np-discogs-status" style="color:rgba(255,100,100,.8)">${t('player.npArt.saveFolderCoverFailed', { msg: esc(err?.message || '') })}</span>` +
       `<button class="np-discogs-cancel" id="albd-art-back-btn" style="margin-top:6px">${t('player.npArt.back')}</button>`;
   }
 }
@@ -10820,13 +9973,13 @@ async function viewAlbumDetail(albumId, activeDiscIdx, opts = {}) {
   try {
     await _loadAlbLib();
     const albumSlim = _albLib.byId[albumId];
-    if (!albumSlim) { setBody('<div class="empty-state">Album not found</div>'); return; }
+    if (!albumSlim) { setBody(`<div class="empty-state">${t('player.albums.albumNotFound')}</div>`); return; }
 
     // Fetch full album (with discs + tracks) lazily on first click — browse response is slim
     let album = albumSlim;
     if (!albumSlim.discs) {
       const full = await api('GET', `api/v1/albums/detail?id=${encodeURIComponent(albumId)}`);
-      if (!full || !full.discs) { setBody('<div class="empty-state">Album detail not found</div>'); return; }
+      if (!full || !full.discs) { setBody(`<div class="empty-state">${t('player.albums.albumNotFound')}</div>`); return; }
       album = Object.assign(albumSlim, full);   // merge into cached entry for next time
     }
 
@@ -10926,7 +10079,7 @@ async function viewAlbumDetail(albumId, activeDiscIdx, opts = {}) {
       if (!disc) return;
       const tl = body.querySelector('#albd-tracklist');
       if (disc.tracks.length === 0) {
-        tl.innerHTML = '<div class="empty-state">No tracks found</div>';
+        tl.innerHTML = `<div class="empty-state">${t('player.misc.noTracks')}</div>`;
         return;
       }
       // CUE disc: single FLAC with embedded cuepoints — expand into named rows
@@ -10974,7 +10127,7 @@ async function viewAlbumDetail(albumId, activeDiscIdx, opts = {}) {
     // Add (current disc) to playlist
     body.querySelector('#albd-add-pl').onclick = () => {
       const songs = getDiscSongsFor(curDiscIdx);
-      if (songs.length) showAddToPlaylistModalBulk(songs);
+      if (songs.length) showAddToPlaylistModal(songs);
     };
     // Album mode toggle — 'disc' vs 'single'
     body.querySelector('.albd-mode-toggle input').addEventListener('change', e => {
@@ -11040,7 +10193,7 @@ async function viewAlbumDetail(albumId, activeDiscIdx, opts = {}) {
             const statEl   = document.getElementById('albd-url-paste-status');
             if (!coverUrl) return;
             if (!/^https?:\/\/.+/i.test(coverUrl)) {
-              if (statEl) { statEl.textContent = 'Please enter a valid https:// URL'; statEl.style.display = ''; }
+              if (statEl) { statEl.textContent = t('player.npArt.invalidUrl'); statEl.style.display = ''; }
               return;
             }
             await _albSetArt({ coverUrl });
@@ -11081,7 +10234,7 @@ async function viewAlbumDetail(albumId, activeDiscIdx, opts = {}) {
             return;
           }
           imgEl.onload  = () => { wrap.classList.remove('hidden'); if (statEl) statEl.style.display = 'none'; };
-          imgEl.onerror = () => { wrap.classList.add('hidden');    if (statEl) { statEl.textContent = 'Could not load image from that URL'; statEl.style.display = ''; } };
+          imgEl.onerror = () => { wrap.classList.add('hidden');    if (statEl) { statEl.textContent = t('player.npArt.loadFailed'); statEl.style.display = ''; } };
           imgEl.src = url;
         });
       }
@@ -11139,322 +10292,15 @@ async function viewAlbumDetail(albumId, activeDiscIdx, opts = {}) {
       }
     });
 
-  } catch(e) { setBody(`<div class="empty-state">Error: ${esc(e.message)}</div>`); }
+  } catch(e) { setBody(`<div class="empty-state">${t('player.toast.errorMsg', { error: esc(e.message) })}</div>`); }
 }
 
 // ── END ALBUM LIBRARY ─────────────────────────────────────────────────────────
 
-function renderAlbumGrid(albums, defaultArtist, artistVariants, _parentRestoreFn, _titlePrefix) {
-  if (!albums.length) { setBody('<div class="empty-state">No albums found</div>'); return; }
-  S.curSongs = [];
-  document.getElementById('play-all-btn').onclick = null;
-  document.getElementById('add-all-btn').onclick  = null;
-  const body = document.getElementById('content-body');
-
-  // Pre-compute clean names for display / filtering / A-Z
-  const albumsClean = albums.map(a => ({
-    ...a,
-    cleanName: a.name ? cleanArtistDisplay(a.name) : t('player.title.singles'),
-  }));
-
-  // When multiple albums in this set share the same tag name (e.g. 26 CDs all
-  // tagged "Catalogue"), fall back to the last path segment of normDir as the
-  // display label so the user sees "CD01-On the Radio Part 1" etc. instead.
-  const _nameCnt = new Map();
-  albumsClean.forEach(a => _nameCnt.set(a.name, (_nameCnt.get(a.name) || 0) + 1));
-  albumsClean.forEach(a => {
-    if ((_nameCnt.get(a.name) || 0) > 1 && a.normDir) {
-      const segs = a.normDir.replace(/\/$/, '').split('/');
-      const last = segs[segs.length - 1];
-      if (last) a.cleanName = last;
-    }
-  });
-
-  const letterOfAlbum = a => {
-    const ch = a.cleanName.charAt(0).toUpperCase();
-    return /[A-Z]/.test(ch) ? ch : '#';
-  };
-  const AZ_KEYS = ['#', ...'ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('')];
-  // ── Series grouping ─────────────────────────────────────────────────────────
-  // Albums nested under a parent folder are grouped into a series card, mirroring
-  // the Albums Library series concept.
-  // Example: filepath "Madonna - Catalogue/Like a Prayer (1989)/01.mp3"
-  //   has dir "Madonna - Catalogue/Like a Prayer (1989)/"
-  //   → L1 parent = "Madonna - Catalogue" → series card containing all sub-albums
-  const _seriesParent = dir => {
-    if (!dir) return null;
-    const segs = dir.replace(/\/$/, '').split('/');
-    return segs.length >= 2 ? segs[0] : null;
-  };
-  const seriesMap = new Map(); // seriesName → album indices[]
-  albumsClean.forEach((a, si) => {
-    const s = _seriesParent(a.dir);
-    if (!s) return;
-    if (!seriesMap.has(s)) seriesMap.set(s, []);
-    seriesMap.get(s).push(si);
-  });
-
-  // Build merged cardData: series items replace individual album items in groups of 2+
-  const cardData = [];
-  const _seenSeries = new Set();
-  for (let ci = 0; ci < albumsClean.length; ci++) {
-    const a = albumsClean[ci];
-    const sname = _seriesParent(a.dir);
-    const sIdxs = sname ? seriesMap.get(sname) : null;
-    if (sIdxs?.length >= 2) {
-      if (!_seenSeries.has(sname)) {
-        _seenSeries.add(sname);
-        const sch = sname.replace(/^(the|a|an)\s+/i, '').charAt(0).toUpperCase();
-        cardData.push({ type: 'ser', lc: sname.toLowerCase(), letter: /[A-Z]/.test(sch) ? sch : '#', seriesName: sname, seriesIdxs: sIdxs });
-      }
-    } else {
-      cardData.push({ type: 'alb', lc: (a.cleanName || '').toLowerCase(), letter: letterOfAlbum(a), idx: ci });
-    }
-  }
-
-  const hasLetter = new Set(cardData.map(c => c.letter));
-
-  body.innerHTML = `
-    <div class="fe-filter-row">
-      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-      <input id="lib-filter" class="fe-filter-input" type="text" placeholder="${t('player.albums.searchAlbumsPlaceholder')}" autocomplete="off">
-      <span id="lib-match-count" class="fe-match-count"></span>
-      <button id="lib-filter-clear" class="fe-filter-clear hidden" title="${t('player.ctrl.clearFilter')}">✕</button>
-    </div>
-    <div class="az-strip" id="az-strip">${
-      AZ_KEYS.map(l => `<button class="az-btn" data-letter="${l}"${hasLetter.has(l) ? '' : ' disabled'}>${l}</button>`).join('')
-    }</div>
-    <div class="album-grid"></div>`;
-  const filterInput = body.querySelector('#lib-filter');
-  const filterClear = body.querySelector('#lib-filter-clear');
-  const matchCount  = body.querySelector('#lib-match-count');
-  const azStrip     = body.querySelector('#az-strip');
-  const grid        = body.querySelector('.album-grid');
-
-  // Build HTML for a single card on demand (item is {type:'alb', idx} or {type:'ser', ...})
-  function buildCard(item) {
-    if (item.type === 'ser') {
-      let art = null;
-      for (const si of item.seriesIdxs) {
-        const c = artUrl(albumsClean[si].album_art_file, 'l');
-        if (c) { art = c; break; }
-      }
-      return `<div class="album-card album-card--series" data-series-name="${esc(item.seriesName)}">
-        <div class="album-art">
-          ${art
-            ? `<img src="${art}" alt="${esc(item.seriesName)}" loading="lazy" data-err="hide">`
-            : `<div class="no-art no-art-album"><div class="no-art-wave"><span></span><span></span><span></span><span></span><span></span></div><span class="no-art-label">no artwork</span></div>`}
-          <div class="play-ov"><svg width="30" height="30" viewBox="0 0 24 24" fill="white"><polygon points="5,3 19,12 5,21"/></svg></div>
-        </div>
-        <div class="album-meta">
-          <div class="album-name">${esc(item.seriesName)}</div>
-          <div class="album-year" style="color:var(--t2)">${item.seriesIdxs.length} albums</div>
-        </div>
-      </div>`;
-    }
-    const a    = albumsClean[item.idx];
-    const name = a.cleanName;
-    const art  = artUrl(a.album_art_file, 'l');
-    const verBadge = a.album_version ? `<span class="alb-version-badge" title="${esc(a.album_version)}">${esc(a.album_version)}</span>` : '';
-    return `<div class="album-card" data-i="${item.idx}">
-      <div class="album-art">
-        ${art
-          ? `<img src="${art}" alt="${esc(name)}" loading="lazy" data-err="hide">`
-          : `<div class="no-art no-art-album"><div class="no-art-wave"><span></span><span></span><span></span><span></span><span></span></div><span class="no-art-label">no artwork</span></div>`}
-        <div class="play-ov"><svg width="30" height="30" viewBox="0 0 24 24" fill="white"><polygon points="5,3 19,12 5,21"/></svg></div>
-      </div>
-      <div class="album-meta">
-        <div class="album-name">${esc(name)}</div>
-        ${a.year ? `<div class="album-year">${a.year}${verBadge}</div>` : verBadge ? `<div class="album-year">${verBadge}</div>` : '<div class="album-year">&nbsp;</div>'}
-      </div>
-    </div>`;
-  }
-
-  // ── Virtual scroll ───────────────────────────────────────────
-  // Only cards within the visible viewport + BUFS buffer rows are in the DOM.
-  // Padding on the grid fakes the height of off-screen rows so the scrollbar
-  // and scrollTop behave exactly as if every card were rendered.
-  //
-  //  paddingTop    = fRow * (rowH + GAP)
-  //  paddingBottom = (numRows - lRow - 1) * (rowH + GAP)
-  //
-  const GAP  = 20;   // matches .album-grid gap: 20px
-  const BUFS = 3;    // buffer rows above + below viewport
-  let cols = 0, rowH = 0;
-  let vData = cardData;          // current active data slice (full / filtered / AZ)
-  let curFRow = -1, curLRow = -1;
-
-  // Measure one probe card to get real column count and row height
-  function measure() {
-    const gw = grid.clientWidth;
-    if (!gw) return false;
-    const probe = document.createElement('div');
-    probe.className = 'album-card';
-    probe.style.cssText = 'visibility:hidden;pointer-events:none;position:relative;';
-    probe.innerHTML = '<div class="album-art" style="aspect-ratio:1"></div>'
-                    + '<div class="album-meta"><div class="album-name">X</div>'
-                    + '<div class="album-year">&nbsp;</div></div>';
-    grid.appendChild(probe);
-    const pw = probe.offsetWidth;
-    rowH = probe.offsetHeight;
-    grid.removeChild(probe);
-    cols = pw > 0 ? Math.max(1, Math.round((gw + GAP) / (pw + GAP))) : 1;
-    return rowH > 0;
-  }
-
-  function renderWindow(force) {
-    if (!cols || !rowH) { if (!measure()) return; }
-    const nRows  = Math.ceil(vData.length / cols);
-    const sTop   = body.scrollTop;
-    const vH     = body.clientHeight;
-    const fRow   = Math.max(0, Math.floor(sTop / (rowH + GAP)) - BUFS);
-    const lRow   = Math.min(nRows - 1, Math.ceil((sTop + vH) / (rowH + GAP)) + BUFS);
-
-    if (!force && fRow === curFRow && lRow === curLRow) return;
-    curFRow = fRow; curLRow = lRow;
-
-    grid.style.paddingTop    = `${fRow * (rowH + GAP)}px`;
-    grid.style.paddingBottom = `${Math.max(0, nRows - lRow - 1) * (rowH + GAP)}px`;
-
-    const fIdx = fRow * cols;
-    const lIdx = Math.min(vData.length - 1, (lRow + 1) * cols - 1);
-    const html = [];
-    for (let i = fIdx; i <= lIdx; i++) html.push(buildCard(vData[i]));
-    grid.innerHTML = html.join('');
-  }
-
-  // Scroll: render on every scroll tick (cheap — only string-builds ~40 cards)
-  let _rafPending = false;
-  body.addEventListener('scroll', () => {
-    if (_rafPending || !grid.isConnected) return;
-    _rafPending = true;
-    requestAnimationFrame(() => { _rafPending = false; if (grid.isConnected) renderWindow(false); });
-  });
-
-  // Resize: re-measure column count + row height when the grid width changes
-  let _roFrame = false;
-  const ro = new ResizeObserver(() => {
-    if (_roFrame || !grid.isConnected) return;
-    _roFrame = true;
-    requestAnimationFrame(() => {
-      _roFrame = false;
-      if (!grid.isConnected) { ro.disconnect(); return; }
-      if (measure()) { curFRow = -1; curLRow = -1; renderWindow(true); }
-    });
-  });
-  ro.observe(grid);
-
-  // Delegated click — works regardless of which cards are in the DOM
-  grid.addEventListener('click', e => {
-    const card = e.target.closest('.album-card');
-    if (!card) return;
-    // Series card: drill into sub-albums
-    if (card.dataset.seriesName !== undefined) {
-      const sname = card.dataset.seriesName;
-      const item = cardData.find(c => c.type === 'ser' && c.seriesName === sname);
-      if (!item) return;
-      // Clear dir so sub-albums render as standalone (no infinite nesting)
-      const subAlbums = item.seriesIdxs.map(i => ({ ...albumsClean[i], dir: '' }));
-      const newPrefix = _titlePrefix ? `${_titlePrefix} – ${sname}` : sname;
-      setTitle(newPrefix);
-      const restoreBack = _parentRestoreFn || (() => {});
-      setBack(restoreBack);
-      renderAlbumGrid(subAlbums, defaultArtist, artistVariants, restoreBack, newPrefix);
-      return;
-    }
-    const album = albums[Number.parseInt(card.dataset.i)];
-    if (!album) return;
-    // Restore exactly this level of the grid (correct breadcrumb + correct back)
-    const restoreThisLevel = () => {
-      if (_titlePrefix) {
-        setTitle(_titlePrefix);
-        setBack(_parentRestoreFn || null);
-      } else if (defaultArtist) {
-        setTitle(defaultArtist);
-        setBack(() => viewArtists_old());
-      } else {
-        setTitle(t('player.title.albums'));
-        setBack(null);
-      }
-      renderAlbumGrid(albums, defaultArtist, artistVariants, _parentRestoreFn, _titlePrefix);
-    };
-    const albumDisplayName = album.cleanName || album.name;
-    const albumTitle = _titlePrefix ? `${_titlePrefix} – ${albumDisplayName}` : albumDisplayName;
-    viewAlbumSongs(album.name, album._rawArtist || null, restoreThisLevel, { skipAOFilter: true, albumDir: album.normDir || null, artistVariants: artistVariants || (defaultArtist ? [defaultArtist] : null), titleOverride: albumTitle });
-  });
-
-  // Switch the active data set + reset scroll + redraw
-  function setVData(data, label) {
-    vData = data;
-    curFRow = -1; curLRow = -1;
-    grid.style.paddingTop = '0';
-    grid.style.paddingBottom = '0';
-    body.scrollTop = 0;
-    matchCount.textContent = label || '';
-    renderWindow(true);
-  }
-
-  let _albTimer, _activeLetter = null;
-  function setActiveAZ(letter) {
-    body.querySelectorAll('.az-btn').forEach(b => b.classList.toggle('active', b.dataset.letter === letter));
-  }
-
-  // A-Z strip
-  body.querySelectorAll('.az-btn').forEach(btn => {
-    btn.addEventListener('click', () => {
-      filterInput.value = '';
-      azStrip.classList.remove('az-hidden');
-      filterClear.classList.add('hidden');
-      const letter = btn.dataset.letter;
-      if (_activeLetter === letter) {
-        _activeLetter = null;
-        setActiveAZ(null);
-        setVData(cardData, '');
-        return;
-      }
-      _activeLetter = letter;
-      setActiveAZ(letter);
-      const subset = cardData.filter(c => c.letter === letter);
-      setVData(subset, `${subset.length} album${subset.length !== 1 ? 's' : ''}`);
-    });
-  });
-
-  filterInput.addEventListener('input', () => {
-    clearTimeout(_albTimer);
-    _albTimer = setTimeout(() => {
-      const q = filterInput.value.trim().toLowerCase();
-      _activeLetter = null;
-      setActiveAZ(null);
-      azStrip.classList.toggle('az-hidden', !!q);
-      if (q) {
-        const subset = cardData.filter(c => c.lc.includes(q));
-        filterClear.classList.remove('hidden');
-        setVData(subset, `${subset.length} result${subset.length !== 1 ? 's' : ''}`);
-      } else {
-        filterClear.classList.add('hidden');
-        setVData(cardData, '');
-      }
-    }, 150);
-  });
-
-  filterClear.addEventListener('click', () => {
-    clearTimeout(_albTimer);
-    _activeLetter = null;
-    setActiveAZ(null);
-    filterInput.value = '';
-    filterInput.focus();
-    azStrip.classList.remove('az-hidden');
-    filterClear.classList.add('hidden');
-    setVData(cardData, '');
-  });
-
-  // Initial render — defer one frame so the grid has layout dimensions
-  requestAnimationFrame(() => { if (grid.isConnected) renderWindow(true); });
-}
-
 async function viewAlbumSongs(albumName, artist, backFn, opts = {}) {
-  setTitle(opts.titleOverride || albumName || 'Singles');
+  setTitle(opts.titleOverride || albumName || t('player.title.singles'));
   setBack(backFn || null);
+  S.view = 'album-songs';
   const sig = _navCancel();
   setBody('<div class="loading-state"></div>');
   try {
@@ -11485,7 +10331,7 @@ async function viewAlbumSongs(albumName, artist, backFn, opts = {}) {
         bodyEl.insertBefore(badge, bodyEl.firstChild);
       }
     }
-  } catch(e) { if (e.name === 'AbortError') return; setBody(`<div class="empty-state">Error: ${esc(e.message)}</div>`); }
+  } catch(e) { if (e.name === 'AbortError') return; setBody(`<div class="empty-state">${t('player.toast.errorMsg', { error: esc(e.message) })}</div>`); }
 }
 
 async function viewArtistTracks(displayName, variants, backFn) {
@@ -11737,7 +10583,7 @@ async function doSearch(q) {
 
     res.querySelectorAll('.artist-row[data-artist-disp]').forEach(r => {
       let vars; try { vars = JSON.parse(r.dataset.artistVariants); } catch { vars = [r.dataset.artistDisp]; }
-      r.addEventListener('click', () => viewArtistProfile(r.dataset.artistDisp.toLowerCase(), r.dataset.artistDisp, vars, () => viewSearch()));
+      r.addEventListener('click', () => viewArtistProfile2(r.dataset.artistDisp.toLowerCase(), r.dataset.artistDisp, vars, () => viewSearch()));
     });
     res.querySelectorAll('.search-artist-tracks-btn').forEach(btn => {
       btn.addEventListener('click', e => {
@@ -12177,7 +11023,7 @@ async function viewHistory() {
         }
         return `<div class="album-card" data-hist-i="${i}">
           <div class="album-art">
-            ${art ? `<img src="${art}" alt="" loading="lazy" data-err="hide">` : `<div class="no-art no-art-album"><div class="no-art-wave"><span></span><span></span><span></span><span></span><span></span></div><span class="no-art-label">no artwork</span></div>`}
+            ${art ? `<img src="${art}" alt="" loading="lazy" data-err="hide">` : `<div class="no-art no-art-album"><div class="no-art-wave"><span></span><span></span><span></span><span></span><span></span></div><span class="no-art-label">${t('player.albums.noArtwork')}</span></div>`}
             <div class="play-ov"><svg width="30" height="30" viewBox="0 0 24 24" fill="white"><polygon points="5,3 19,12 5,21"/></svg></div>
           </div>
           <div class="album-meta">
@@ -12248,24 +11094,64 @@ async function viewHistory() {
 
 // ── HOME ─────────────────────────────────────────────────────
 
+function _migratePinnedView(v) { return v === 'artists_old' ? 'artists' : v; }
+
+// Single map from view id to page. `open` is the nav entry (fresh state),
+// `rerender` redraws the current page in place after a language change.
+const VIEW_ROUTES = {
+  'playing-now':      { open: () => viewPlayingNow(), pinnable: true },
+  home:               { open: () => viewHome(), pinnable: true },
+  shortcuts:          { open: () => viewShortcuts(), pinnable: true },
+  recent:             { open: () => viewRecent() },
+  artists:            { open: () => viewArtists(), pinnable: true },
+  'album-library':    { open: () => viewAlbumLibrary(), pinnable: true },
+  search:             { open: () => viewSearch(), pinnable: true },
+  rated:              { open: () => viewRated(), pinnable: true },
+  'most-played':      { open: () => viewMostPlayed() },
+  played:             { open: () => viewPlayed() },
+  history:            { open: () => viewHistory() },
+  files:              { open: () => { S.feDirStack = []; S.feFilter = ''; return viewFiles('', false); },
+                        rerender: () => viewFiles(S.feDir || '', false), pinnable: true },
+  autodj:             { open: () => viewAutoDJ() },
+  'ai-dj':            { open: () => viewAiDj() },
+  genres:             { open: () => viewGenres() },
+  decades:            { open: () => viewDecades() },
+  transcode:          { open: () => viewTranscode() },
+  jukebox:            { open: () => viewJukebox() },
+  apps:               { open: () => viewApps() },
+  'shared-links':     { open: () => viewSharedLinks() },
+  playback:           { open: () => viewPlayback() },
+  'play-history':     { open: () => viewPlayHistory() },
+  lastfm:             { open: () => viewLastFM() },
+  listenbrainz:       { open: () => viewListenBrainz() },
+  webhooks:           { open: () => viewWebhooks() },
+  discogs:            { open: () => viewDiscogs() },
+  subsonic:           { open: () => viewSubsonic() },
+  'user-settings':    { open: () => viewUserSettings() },
+  radio:              { open: () => viewRadio() },
+  'sonos-radio':      { open: () => viewSonosRadio() },
+  podcasts:           { open: () => viewPodcasts() },
+  'podcast-feeds':    { open: () => viewPodcastFeeds() },
+  'podcast-episodes': { rerender: async () => {
+                          let feed = _podcastFeeds.find(f => f.id === S.podcastFeedId);
+                          if (!feed) {
+                            try { _podcastFeeds = await api('GET', 'api/v1/podcast/feeds'); } catch (_) {}
+                            feed = _podcastFeeds.find(f => f.id === S.podcastFeedId);
+                          }
+                          return feed ? viewPodcastEpisodes(feed) : viewPodcastFeeds();
+                        } },
+  youtube:            { open: () => viewYoutube() },
+  wrapped:            { open: () => viewWrapped() },
+  'smart-playlists':  { open: () => { _splResetBuilder(); return viewSmartPlaylists(); },
+                        rerender: () => viewSmartPlaylists() },
+  'ml-playlist':      { open: () => viewMlPlaylist() },
+};
+
 // Launches the user's pinned start view, or falls back to Home if none is set.
 function _launchPinnedViewOrHome() {
-  const v = S.pinnedView;
-  if (v === 'playing-now')  { viewPlayingNow(); return; }
-  if (v === 'history')      { viewHistory(); return; }
-  if (v === 'shortcuts')    { viewShortcuts(); return; }
-  if (v === 'search')       { viewSearch(); return; }
-  if (v === 'files')        { S.feDirStack = []; S.feFilter = ''; viewFiles('', false); return; }
-  if (v === 'recent')       { viewRecent(); return; }
-  if (v === 'artists')      { viewArtists(); return; }
-  if (v === 'artists_old')  { viewArtists_old(); return; }
-  if (v === 'album-library') { viewAlbumLibrary(); return; }
-  if (v === 'genres')       { viewGenres(); return; }
-  if (v === 'decades')      { viewDecades(); return; }
-  if (v === 'autodj')       { viewAutoDJ(); return; }
-  if (v === 'ai-dj' && S.aiDjEnabled) { viewAiDj(); return; }
-  if (v === 'playback')     { viewPlayback(); return; }
-  viewHome(); // default — 'home' or no pin set
+  const route = VIEW_ROUTES[S.pinnedView];
+  if (route?.pinnable) { route.open(); return; }
+  viewHome();
 }
 
 // ── SCROBBLE TRACKING & STATUS ──────────────────────────────
@@ -12323,9 +11209,9 @@ function _updateScrobbleUI() {
   if (scrobbleEl) {
     const msgs = [];
     if (_scrobbleState.lastfm === 'ok') msgs.push('Last.fm ✓');
-    else if (_scrobbleState.lastfm === 'err') msgs.push('Last.fm: failed');
+    else if (_scrobbleState.lastfm === 'err') msgs.push('Last.fm: ' + t('player.misc.failed'));
     if (_scrobbleState.listenbrainz === 'ok') msgs.push('ListenBrainz ✓');
-    else if (_scrobbleState.listenbrainz === 'err') msgs.push('ListenBrainz: failed');
+    else if (_scrobbleState.listenbrainz === 'err') msgs.push('ListenBrainz: ' + t('player.misc.failed'));
 
     if (msgs.length) {
       const ok = msgs.every(m => m.endsWith('✓'));
@@ -12343,6 +11229,14 @@ function _updateScrobbleUI() {
   }
 }
 
+// The Last.fm and ListenBrainz scrobble routes answer { scrobbled: true | false | null };
+// null means the user has no linked account.
+function _scrobbleOutcome(r) {
+  if (r?.scrobbled === false) return 'err';
+  if (r?.scrobbled === null) return 'off';
+  return 'ok';
+}
+
 // fromMs: where a song taken back from a room continues; past the 30 s mark the room scrobbled it already.
 function _scheduleScrobble(s, fromMs = 0) {
   clearTimeout(scrobbleTimer);
@@ -12355,25 +11249,20 @@ function _scheduleScrobble(s, fromMs = 0) {
       api('POST', 'api/v1/listenbrainz/playing-now', { filePath: s.filepath }).catch(() => {});
     }
     scrobbleTimer = setTimeout(async () => {
-      const msgs = [];
-      if (S.lastfmEnabled) {
+      if (_scrobbleState.lastfm !== 'off') {
         try {
-          await api('POST', 'api/v1/lastfm/scrobble-by-filepath', { filePath: s.filepath });
-          _scrobbleState.lastfm = 'ok';
-          msgs.push('Last.fm ✓');
-        } catch (e) {
+          const r = await api('POST', 'api/v1/lastfm/scrobble-by-filepath', { filePath: s.filepath });
+          _scrobbleState.lastfm = _scrobbleOutcome(r);
+        } catch (_) {
           _scrobbleState.lastfm = 'err';
-          msgs.push('Last.fm: ' + (e?.message || 'failed'));
         }
       }
       if (S.listenbrainzEnabled && S.listenbrainzLinked) {
         try {
-          await api('POST', 'api/v1/listenbrainz/scrobble-by-filepath', { filePath: s.filepath });
-          _scrobbleState.listenbrainz = 'ok';
-          msgs.push('ListenBrainz ✓');
-        } catch (e) {
+          const r = await api('POST', 'api/v1/listenbrainz/scrobble-by-filepath', { filePath: s.filepath });
+          _scrobbleState.listenbrainz = _scrobbleOutcome(r);
+        } catch (_) {
           _scrobbleState.listenbrainz = 'err';
-          msgs.push('ListenBrainz: ' + (e?.message || 'failed'));
         }
       }
       if (S.discordWebhookEnabled) {
@@ -12466,19 +11355,15 @@ async function _renderPlayingNow(fade) {
   ].filter(Boolean).join('');
 
   // Metadata table rows
-  function mv(v) { return v != null ? `<span class="pnow-meta-v">${esc(String(v))}</span>` : `<span class="pnow-meta-v dim">—</span>`; }
-  const _rgRaw = s.replaygain ?? s.rg?.trackGain ?? null;
-  const _rgVal = _rgRaw != null ? _rgRaw + (S.rgPreamp || 0) : null;
-  const rgStr = _rgVal != null ? `${_rgVal > 0 ? '+' : ''}${Number(_rgVal).toFixed(2)} dB` : null;
   const metaRows = [
-    [t('metadata.title'),  s.title],
-    [t('metadata.artist'), s.artist],
-    [t('metadata.album'),  s.album],
-    [t('metadata.year'),   s.year],
-    [t('metadata.track'),  s.track],
-    [t('metadata.disc'),   s.disk],
-    [t('metadata.replayGain'), rgStr],
-  ].map(([k, v]) => `<span class="pnow-meta-k">${esc(k||'')}:</span>${mv(v)}`).join('');
+    [_metaLabel('metadata.title'),  s.title],
+    [_metaLabel('metadata.artist'), s.artist],
+    [_metaLabel('metadata.album'),  s.album],
+    [_metaLabel('metadata.year'),   s.year],
+    [_metaLabel('metadata.track'),  s.track],
+    [_metaLabel('metadata.disc'),   s.disk],
+    [_metaLabel('metadata.replayGain'), _fmtRg(s)],
+  ].map(([k, v]) => `<span class="pnow-meta-k">${esc(k)}:</span>${_metaValueHtml(v, 'pnow-meta-v')}`).join('');
 
   body.innerHTML = `<div class="pnow-view pnow-fading">
     <div class="pnow-hero">
@@ -12615,8 +11500,8 @@ async function _pnowLoadArtistData(artist, forFp, skipImg = false) {
       albumsEl.style.display = 'block'; // override .pnow-albums grid — tabs need full width
       albumsEl.innerHTML = `
         <div class="artpro2-tab-bar" id="pnow-lib-tabs">
-          <button class="artpro2-tab active" data-tab="songs">Songs</button>
-          <button class="artpro2-tab" data-tab="albums">Albums</button>
+          <button class="artpro2-tab active" data-tab="songs">${t('player.artists.tabSongs')}</button>
+          <button class="artpro2-tab" data-tab="albums">${t('player.nav.albums')}</button>
         </div>
         <div class="artpro2-panel" id="pnow-lib-songs-panel">
           <div id="pnow-lib-songs"><div class="loading-state" style="height:80px;padding:16px 0"></div></div>
@@ -12660,7 +11545,7 @@ async function _pnowLoadArtistData(artist, forFp, skipImg = false) {
         grouped.get(folder).push(s);
       }
       let songsHtml = `<div style="margin-bottom:10px">
-        <button class="artpro2-play-all-btn" id="pnow-lib-songs-play-all">▶ Play all (${rawSongs.length})</button>
+        <button class="artpro2-play-all-btn" id="pnow-lib-songs-play-all">${t('player.artists.playAll', { n: rawSongs.length })}</button>
       </div>`;
       for (const [folder, songs] of grouped) {
         const folderLabel = folder.split('/').pop() || folder;
@@ -12709,7 +11594,7 @@ async function _pnowLoadArtistData(artist, forFp, skipImg = false) {
         });
       });
       const songsTabBtn = albumsEl?.querySelector('.artpro2-tab[data-tab="songs"]');
-      if (songsTabBtn && rawSongs.length) songsTabBtn.textContent = `Songs (${rawSongs.length})`;
+      if (songsTabBtn && rawSongs.length) songsTabBtn.textContent = t('player.search.sectionSongs', { count: rawSongs.length });
     } else if (songsEl2) {
       songsEl2.innerHTML = `<p style="color:var(--t3);font-size:13px;">${t('player.pnow.noSongs')}</p>`;
     }
@@ -12719,43 +11604,15 @@ async function _pnowLoadArtistData(artist, forFp, skipImg = false) {
     if (_pnowSongFp !== forFp || S.view !== 'playing-now') return;
     const albumsEl2 = document.getElementById('pnow-lib-albums');
     if (albumsEl2 && _albLib) {
-      // Reuse exact same matching logic as viewArtistProfile2
-      const matchedSeriesIds = new Set();
-      for (const ser of (_albLib.series || [])) {
-        for (const v of artistsArg) {
-          if (_nameContainsArtist(ser.displayName, v)) {
-            matchedSeriesIds.add(ser.id); break;
-          }
-        }
-      }
-      function _l1m(l1, v) {
-        const l1n = l1.toLowerCase(), vn = v.toLowerCase();
-        return l1n === vn || l1n.startsWith(vn + ' - ') || l1n.startsWith(vn + ' (') || l1n.startsWith(vn + '-');
-      }
-      const artistAlbums = (_albLib.albums || []).filter(alb => {
-        if (alb.seriesId && matchedSeriesIds.has(alb.seriesId)) return true;
-        const relPath = alb.path ? alb.path.slice(((alb.sourceVpath || '').length) + 1) : '';
-        const l1 = relPath.split('/')[0] || '';
-        return artistsArg.some(v => _l1m(l1, v));
-      }).sort((a, b) => (Number.parseInt(a.year) || 9999) - (Number.parseInt(b.year) || 9999));
+      const artistAlbums = _artistAlbumsFor(artistsArg);
 
       if (artistAlbums.length) {
-        albumsEl2.innerHTML = artistAlbums.map((alb, i) => {
-          const albArtU = _albArtUrl(alb.artFile, alb.aaFile);
-          const albArtHtml = albArtU
-            ? `<img src="${albArtU}" alt="" loading="lazy" data-err="noart">`
-            : noArtHtml();
-          const verBadge = alb.album_version ? `<span class="alb-version-badge" title="${esc(alb.album_version)}">${esc(alb.album_version)}</span>` : '';
-          return `<div class="album-card" data-pnow-alb-idx="${i}">
-            <div class="album-art">${albArtHtml}<div class="play-ov"><svg width="24" height="24" viewBox="0 0 24 24" fill="white"><polygon points="5,3 19,12 5,21"/></svg></div></div>
-            <div class="album-meta"><div class="album-name">${esc(alb.displayName || '—')}</div>${alb.year ? `<div class="album-year">${esc(alb.year)}${verBadge}</div>` : verBadge ? `<div class="album-year">${verBadge}</div>` : ''}</div>
-          </div>`;
-        }).join('');
+        albumsEl2.innerHTML = artistAlbums.map(_artistAlbumCardHtml).join('');
         albumsEl2.querySelectorAll('.album-card').forEach((card, i) => {
           card.addEventListener('click', () => viewAlbumDetail(artistAlbums[i].id, 0, { backFn: goBack }));
         });
         const albTabBtn = albumsEl?.querySelector('.artpro2-tab[data-tab="albums"]');
-        if (albTabBtn) albTabBtn.textContent = `Albums (${artistAlbums.length})`;
+        if (albTabBtn) albTabBtn.textContent = t('player.search.sectionAlbums', { count: artistAlbums.length });
       } else {
         albumsEl2.innerHTML = `<p style="color:var(--t3);font-size:13px;">${t('player.pnow.noAlbums')}</p>`;
       }
@@ -12791,34 +11648,10 @@ async function _pnowLoadArtistData(artist, forFp, skipImg = false) {
           };
         }
       }
-      // Listener count as a note under bio
-      if (bioData.listeners) {
-        const note = document.createElement('p');
-        note.style.cssText = 'font-size:11px;color:var(--t3);margin-top:6px;';
-        note.textContent = t('player.pnow.listeners', { n: Number(bioData.listeners).toLocaleString() });
-        bioEl.after(note);
-      }
+      _addListenersNote(bioEl, bioData.listeners);
     }
 
-    // Similar artists chips — use clean Last.fm display names when available
-    const simArtists = _deduplicateSimArtists(simData?.displayArtists || simData?.artists || []);
-    const _simVariantMap = simData?.displayVariantMap || {};
-    if (simArtists.length && simEl && simTitle) {
-      simTitle.textContent = t('player.pnow.similarArtists');
-      // All displayArtists are server-confirmed to have actual albums in the library
-      // (artistHasAlbums check on server). Mark all as in-library.
-      const inLibrarySet = new Set(simArtists.map(a => a.toLowerCase()));
-      simEl.innerHTML = simArtists.slice(0, 12).map(a =>
-        `<button class="pnow-sim-chip${inLibrarySet.has(a.toLowerCase()) ? ' in-library' : ''}">${esc(a)}</button>`
-      ).join('');
-      simEl.querySelectorAll('.pnow-sim-chip').forEach((chip, i) => {
-        chip.addEventListener('click', () => {
-          const a = simArtists[i];
-          const rawVars = _simVariantMap[a] || [a];
-          viewArtistProfile(a.toLowerCase(), a, rawVars, () => viewPlayingNow());
-        });
-      });
-    }
+    _renderSimilarArtistChips(simEl, simTitle, simData, () => viewPlayingNow());
   } catch (_e) { /* Last.fm unavailable */ }
 }
 
@@ -12831,10 +11664,62 @@ function _pnowOnSongChange() {
   _renderPlayingNow(true);
 }
 
+function _homeSongCard(s, showCount) {
+  const url = artUrl(s['album-art'], 's');
+  const artInner = url
+    ? `<img src="${url}" alt="" loading="lazy" data-err="noart">`
+    : noArtHtml();
+  const sub = showCount && s._playCount
+    ? `${esc(s.artist || '')}${s.artist ? ' · ' : ''}${s._playCount}×`
+    : esc(s.artist || '');
+  return `<div class="hc home-song" data-fp="${esc(s.filepath)}">
+    <div class="hc-art">${artInner}</div>
+    <div class="hc-info">
+      <div class="hc-title">${esc(s.title || s.filepath.split('/').pop())}</div>
+      ${sub ? `<div class="hc-sub">${sub}</div>` : ''}
+    </div>
+  </div>`;
+}
+
+// Drag-to-reorder for .home-shelf rows (direct children of one view). Dragging only
+// starts from a .home-grip. Returns bind(shelf) so shelves rendered later can join.
+function _shelfReorder(root, onSave, listenerOpts = {}) {
+  let dragSrc = null, canDrag = false;
+  root.addEventListener('mousedown', e => { if (e.target.closest('.home-grip')) canDrag = true; }, listenerOpts);
+  root.addEventListener('mouseup', () => { canDrag = false; }, listenerOpts);
+  const siblings = shelf => [...shelf.parentElement.querySelectorAll(':scope > .home-shelf')];
+  return function bind(shelf) {
+    shelf.addEventListener('dragstart', e => {
+      if (!canDrag) { e.preventDefault(); return; }
+      dragSrc = shelf; shelf.classList.add('hs-dragging');
+      e.dataTransfer.effectAllowed = 'move';
+    });
+    shelf.addEventListener('dragend', () => {
+      canDrag = false; dragSrc = null;
+      siblings(shelf).forEach(x => x.classList.remove('hs-dragging', 'hs-over'));
+      onSave();
+    });
+    shelf.addEventListener('dragover', e => {
+      if (!dragSrc || dragSrc === shelf) return;
+      e.preventDefault(); e.dataTransfer.dropEffect = 'move';
+      siblings(shelf).forEach(x => x.classList.remove('hs-over'));
+      shelf.classList.add('hs-over');
+    });
+    shelf.addEventListener('dragleave', e => {
+      if (!shelf.contains(e.relatedTarget)) shelf.classList.remove('hs-over');
+    });
+    shelf.addEventListener('drop', e => {
+      e.preventDefault();
+      if (!dragSrc || dragSrc === shelf) return;
+      const all = siblings(shelf);
+      if (all.indexOf(dragSrc) < all.indexOf(shelf)) shelf.parentElement.insertBefore(dragSrc, shelf.nextSibling);
+      else                                           shelf.parentElement.insertBefore(dragSrc, shelf);
+    });
+  };
+}
+
 async function viewHome() {
   setTitle(t('player.title.home')); setBack(null); setNavActive('home'); S.view = 'home';
-  _homeAC?.abort();
-  _homeAC = (typeof AbortController !== 'undefined') ? new AbortController() : null;
 
   const sig = _navCancel();
   const abEx = _audioBookExclusions();
@@ -12875,23 +11760,6 @@ async function viewHome() {
   function _slot(id) { return body?.querySelector('#' + id); }
 
   // ── card / strip helpers ─────────────────────────────────────
-  function songCard(s, showCount) {
-    const url = artUrl(s['album-art'], 's');
-    const artInner = url
-      ? `<img src="${url}" alt="" loading="lazy" data-err="noart">`
-      : noArtHtml();
-    const sub = showCount && s._playCount
-      ? `${esc(s.artist || '')}${s.artist ? ' · ' : ''}${s._playCount}×`
-      : esc(s.artist || '');
-    return `<div class="hc home-song" data-fp="${esc(s.filepath)}">
-      <div class="hc-art">${artInner}</div>
-      <div class="hc-info">
-        <div class="hc-title">${esc(s.title || s.filepath.split('/').pop())}</div>
-        ${sub ? `<div class="hc-sub">${sub}</div>` : ''}
-      </div>
-    </div>`;
-  }
-
   function albumCard(group, idx) {
     const url = artUrl(group.art, 's');
     const artInner = url
@@ -12949,7 +11817,7 @@ async function viewHome() {
               });
             }
           } catch(e) {
-            if (e.name !== 'AbortError') setBody(`<div class="empty-state">${t('player.home.recentlyAdded')}: Error</div>`);
+            if (e.name !== 'AbortError') setBody(`<div class="empty-state">${t('player.toast.errorMsg', { error: esc(e.message) })}</div>`);
           }
         } else {
           setTitle(g.label || '');
@@ -12996,10 +11864,10 @@ async function viewHome() {
       else _moodMap.current.push(s);
     }
     const moodParts = [];
-    if (_moodMap.nostalgia.length >= 3) moodParts.push(strip(t('player.home.moodNostalgia'), _moodMap.nostalgia.slice(0, _limit).map(s=>songCard(s,false)).join('')));
-    if (_moodMap.current.length   >= 3) moodParts.push(strip(t('player.home.moodCurrent'),   _moodMap.current.slice(0, _limit).map(s=>songCard(s,false)).join('')));
+    if (_moodMap.nostalgia.length >= 3) moodParts.push(strip(t('player.home.moodNostalgia'), _moodMap.nostalgia.slice(0, _limit).map(s=>_homeSongCard(s,false)).join('')));
+    if (_moodMap.current.length   >= 3) moodParts.push(strip(t('player.home.moodCurrent'),   _moodMap.current.slice(0, _limit).map(s=>_homeSongCard(s,false)).join('')));
     const fallback = !moodParts.length && mostPlayed.length
-      ? strip(t('player.home.shelfMost'), mostPlayed.map(s => songCard(s, true)).join('')) : '';
+      ? strip(t('player.home.shelfMost'), mostPlayed.map(s => _homeSongCard(s, true)).join('')) : '';
     const html = moodParts.join('') + fallback;
     const slot = _slot('home-mood-slot');
     if (slot && html) { slot.innerHTML = html; _bindSongCards(slot); _onDemandArt(mostPlayed); }
@@ -13017,7 +11885,7 @@ async function viewHome() {
       _seenAlbums.add(key); return true;
     }).slice(0, _limit);
     const html = continueItems.length
-      ? strip(t('player.home.shelfContinue'), continueItems.map(s => songCard(s, false)).join('')) : '';
+      ? strip(t('player.home.shelfContinue'), continueItems.map(s => _homeSongCard(s, false)).join('')) : '';
     const slot = _slot('home-continue-slot');
     if (slot && html) { slot.innerHTML = html; _bindSongCards(slot); _onDemandArt(continueItems); }
   });
@@ -13099,7 +11967,7 @@ async function viewHome() {
     _allSongs.push(...allTemporal);
     const temporalHtml = temporalSections.map(sec => {
       const lk = _sectionKeyLabels[sec.key];
-      return lk ? strip(t(lk), sec.songs.map(s => songCard(s, false)).join('')) : '';
+      return lk ? strip(t(lk), sec.songs.map(s => _homeSongCard(s, false)).join('')) : '';
     }).filter(Boolean).join('');
     const slot = _slot('home-temporal-slot');
     if (slot && temporalHtml) { slot.innerHTML = temporalHtml; _bindSongCards(slot); _onDemandArt(allTemporal); }
@@ -13110,8 +11978,6 @@ async function viewHome() {
 
 async function viewShortcuts() {
   setTitle(t('player.title.shortcuts')); setBack(null); setNavActive('shortcuts'); S.view = 'shortcuts';
-  _shortcutsAC?.abort();
-  _shortcutsAC = (typeof AbortController !== 'undefined') ? new AbortController() : null;
 
   const sig = _navCancel();
   const abEx = _audioBookExclusions();
@@ -13134,23 +12000,6 @@ async function viewShortcuts() {
       <div class="hc-info">
         <div class="hc-title">${esc(title)}</div>
         ${sub ? `<div class="hc-sub">${esc(sub)}</div>` : ''}
-      </div>
-    </div>`;
-  }
-
-  function songCard(s, showCount) {
-    const url = artUrl(s['album-art'], 's');
-    const artInner = url
-      ? `<img src="${url}" alt="" loading="lazy" data-err="noart">`
-      : noArtHtml();
-    const sub = showCount && s._playCount
-      ? `${esc(s.artist || '')}${s.artist ? ' · ' : ''}${s._playCount}×`
-      : esc(s.artist || '');
-    return `<div class="hc home-song" data-fp="${esc(s.filepath)}">
-      <div class="hc-art">${artInner}</div>
-      <div class="hc-info">
-        <div class="hc-title">${esc(s.title || s.filepath.split('/').pop())}</div>
-        ${sub ? `<div class="hc-sub">${sub}</div>` : ''}
       </div>
     </div>`;
   }
@@ -13212,6 +12061,7 @@ async function viewShortcuts() {
                        : `<div id="sc-slot-${id}">${skeletonShelf()}</div>`
   ).join('');
   setBody(`<div class="home-view">${_toolbarHtml}${skeletonHtml}</div>`);
+  _shortcutsAC = (typeof AbortController !== 'undefined') ? new AbortController() : null;
 
   const body = document.getElementById('content-body');
 
@@ -13261,41 +12111,7 @@ async function viewShortcuts() {
     }
   }, _scACOpts);
 
-  // ── shelf drag-to-reorder (event delegation + per-shelf listeners) ───────────
-  let _dragSrc = null, _canDrag = false;
-  body.addEventListener('mousedown', e => { if (e.target.closest('.home-grip')) _canDrag = true; }, _scACOpts);
-  body.addEventListener('mouseup',   () => { _canDrag = false; }, _scACOpts);
-
-  function _bindShelfDrag(shelf) {
-    shelf.addEventListener('dragstart', e => {
-      if (!_canDrag) { e.preventDefault(); return; }
-      _dragSrc = shelf; shelf.classList.add('hs-dragging');
-      e.dataTransfer.effectAllowed = 'move';
-    });
-    shelf.addEventListener('dragend', () => {
-      _canDrag = false; _dragSrc = null;
-      body.querySelectorAll('.home-shelf').forEach(s => s.classList.remove('hs-dragging', 'hs-over'));
-      _saveOrder();
-    });
-    shelf.addEventListener('dragover', e => {
-      if (!_dragSrc || _dragSrc === shelf) return;
-      e.preventDefault(); e.dataTransfer.dropEffect = 'move';
-      body.querySelectorAll('.home-shelf').forEach(s => s.classList.remove('hs-over'));
-      shelf.classList.add('hs-over');
-    });
-    shelf.addEventListener('dragleave', e => {
-      if (!shelf.contains(e.relatedTarget)) shelf.classList.remove('hs-over');
-    });
-    shelf.addEventListener('drop', e => {
-      e.preventDefault();
-      if (!_dragSrc || _dragSrc === shelf) return;
-      const v = shelf.closest('.home-view');
-      const all = [...v.querySelectorAll(':scope > .home-shelf')];
-      const si = all.indexOf(_dragSrc), di = all.indexOf(shelf);
-      if (si < di) v.insertBefore(_dragSrc, shelf.nextSibling);
-      else         v.insertBefore(_dragSrc, shelf);
-    });
-  }
+  const _bindShelfDrag = _shelfReorder(body, _saveOrder, _scACOpts);
   // Bind drag on the playlists shelf that's already in the DOM
   body.querySelectorAll('.home-shelf').forEach(_bindShelfDrag);
 
@@ -13382,14 +12198,14 @@ async function viewShortcuts() {
   api('POST', 'api/v1/db/stats/recently-played', base, sig).catch(() => []).then(raw => {
     const songs = (Array.isArray(raw) ? raw : []).map(norm);
     _allSongs.push(...songs);
-    _fillSlot('recent', mkShelf('recent', t('player.shortcuts.shelfRecent'), songs.map(s => songCard(s, false)).join('') || null));
+    _fillSlot('recent', mkShelf('recent', t('player.shortcuts.shelfRecent'), songs.map(s => _homeSongCard(s, false)).join('') || null));
   });
 
   // Most played → then "Because you listened to" (non-blocking, appended when ready)
   api('POST', 'api/v1/db/stats/most-played', base, sig).catch(() => []).then(async raw => {
     const mostPlayed = (Array.isArray(raw) ? raw : []).map(s => { const n = norm(s); n._playCount = s.metadata?.['play-count']; return n; });
     _allSongs.push(...mostPlayed);
-    _fillSlot('most', mkShelf('most', t('player.shortcuts.shelfMost'), mostPlayed.map(s => songCard(s, true)).join('') || null));
+    _fillSlot('most', mkShelf('most', t('player.shortcuts.shelfMost'), mostPlayed.map(s => _homeSongCard(s, true)).join('') || null));
 
     // "Because you listened to" — fires only after most-played renders; each shelf appends independently
     if (!S.lastfmHasApiKey || !mostPlayed.length) return;
@@ -13408,7 +12224,7 @@ async function viewShortcuts() {
         const normSongs = songs.map(norm);
         _allSongs.push(...normSongs);
         const key = `bec:${artist}`;
-        const shelfEl = mkShelf(key, t('player.shortcuts.becauseYouListened', { artist: esc(artist) }), normSongs.map(s => songCard(s, false)).join(''));
+        const shelfEl = mkShelf(key, t('player.shortcuts.becauseYouListened', { artist: esc(artist) }), normSongs.map(s => _homeSongCard(s, false)).join(''));
         if (!shelfEl) continue;
         const view = body?.querySelector('.home-view');
         if (!view) continue;
@@ -13433,7 +12249,7 @@ async function viewFiles(dir, addToStack) {
   try {
     const d = await api('POST', 'api/v1/file-explorer', { directory: S.feDir, sort: true, pullMetadata: true }, sig);
     renderFileExplorer(d);
-  } catch(e) { if (e.name === 'AbortError') return; setBody(`<div class="empty-state">Error: ${esc(e.message)}</div>`); }
+  } catch(e) { if (e.name === 'AbortError') return; setBody(`<div class="empty-state">${t('player.toast.errorMsg', { error: esc(e.message) })}</div>`); }
 }
 
 function renderFileExplorer(d) {
@@ -13443,7 +12259,7 @@ function renderFileExplorer(d) {
   const parts = curPath.replace(/^\/|\/$/g, '').split('/').filter(Boolean);
   const _inAC = !!S.audioContentReturn;
   let crumbs = _inAC
-    ? `<span class="fe-crumb" data-dir="__ac__">⌂ Audio Content</span>`
+    ? `<span class="fe-crumb" data-dir="__ac__">⌂ ${t('player.nav.audioContent')}</span>`
     : `<span class="fe-crumb" data-dir="">${t('player.fe.rootCrumb')}</span>`;
   let cumPath = '';
   parts.forEach(p => {
@@ -13453,22 +12269,6 @@ function renderFileExplorer(d) {
   });
 
   const feVpath = parts[0] || '';
-  // A file can be deletable even when its root vpath is type=music, if it lives
-  // inside a child vpath that has type=recordings and allowRecordDelete=true.
-  // Check all vpathMeta entries whose filepathPrefix (or root) contains curPath.
-  function canDeleteFp(fp) {
-    if (!fp) return false;
-    return Object.entries(S.vpathMeta || {}).some(([vpName, meta]) => {
-      if ((meta.type !== 'recordings' && meta.type !== 'youtube') || !meta.allowRecordDelete) return false;
-      // Direct root vpath match: fp starts with vpName/
-      if (fp.startsWith(vpName + '/') || fp === vpName) return true;
-      // Child vpath: fp starts with parentVpath/filepathPrefix
-      if (meta.parentVpath && meta.filepathPrefix) {
-        return fp.startsWith(meta.parentVpath + '/' + meta.filepathPrefix);
-      }
-      return false;
-    });
-  }
   // canDeleteFp expects paths without a leading slash (same format as song.filepath).
   // d.path from the API always has a leading slash, so strip it before checking.
   const _curNorm = curPath.replace(/^\//, '').replace(/\/$/, '');
@@ -13752,7 +12552,7 @@ async function viewTagWorkshop(dir, addToStack) {
       api('POST', 'api/v1/file-explorer', { directory: S.feDir, sort: true }, sig),
     ]);
     renderTagWorkshop(dbData.files || [], feData.directories || [], feData.path || (S.feDir || '/'));
-  } catch(e) { if (e.name === 'AbortError') return; setBody(`<div class="empty-state">Error: ${esc(e.message)}</div>`); }
+  } catch(e) { if (e.name === 'AbortError') return; setBody(`<div class="empty-state">${t('player.toast.errorMsg', { error: esc(e.message) })}</div>`); }
 }
 
 function renderTagWorkshop(dbFiles, dirs, curPath) {
@@ -14042,7 +12842,7 @@ function renderTagWorkshop(dbFiles, dirs, curPath) {
         toast(t('player.tw.toastDone', { done: 1 }));
       } catch(e) {
         btn.disabled = false;
-        toast('✗ ' + (e.message || 'Error'));
+        toast('✗ ' + (e.message || t('player.misc.error')));
       }
     });
   });
@@ -14074,7 +12874,7 @@ function renderTagWorkshop(dbFiles, dirs, curPath) {
       toast(t('player.tw.scanToast', { n: r.queued }));
     } catch(e) {
       btn.disabled = false;
-      toast('✗ ' + (e.message || 'Error'));
+      toast('✗ ' + (e.message || t('player.misc.error')));
     }
   });
 
@@ -14091,7 +12891,7 @@ function renderTagWorkshop(dbFiles, dirs, curPath) {
       toast(t('player.tw.enrichToast', { n: r.queued }));
     } catch(e) {
       btn.disabled = false;
-      toast('✗ ' + (e.message || 'Error'));
+      toast('✗ ' + (e.message || t('player.misc.error')));
     }
   });
 
@@ -14186,7 +12986,7 @@ function renderTagWorkshop(dbFiles, dirs, curPath) {
         }
         if (statusEl) { statusEl.textContent = '✓ ' + t('player.tw.savedOk'); statusEl.className = 'tw-inline-status tw-status-ok'; }
       } catch(e) {
-        if (statusEl) { statusEl.textContent = '✗ ' + (e.message || 'Error'); statusEl.className = 'tw-inline-status tw-status-err'; }
+        if (statusEl) { statusEl.textContent = '✗ ' + (e.message || t('player.misc.error')); statusEl.className = 'tw-inline-status tw-status-err'; }
       }
       btn.disabled = false;
     });
@@ -14255,11 +13055,7 @@ async function viewAutoDJ() {
           </div>
           <select class="autodj-select" id="dj-min-rating">
             <option value="0" ${S.djMinRating===0?'selected':''}>${t('player.autodj.ratingAny')}</option>
-            <option value="2" ${S.djMinRating===2?'selected':''}>★ (1 star)</option>
-            <option value="4" ${S.djMinRating===4?'selected':''}>★★ (2 stars)</option>
-            <option value="6" ${S.djMinRating===6?'selected':''}>★★★ (3 stars)</option>
-            <option value="8" ${S.djMinRating===8?'selected':''}>★★★★ (4 stars)</option>
-            <option value="10" ${S.djMinRating===10?'selected':''}>★★★★★ (5 stars)</option>
+            ${[1, 2, 3, 4, 5].map(n => `<option value="${n * 2}" ${S.djMinRating === n * 2 ? 'selected' : ''}>${'★'.repeat(n)} (${t('player.autodj.ratingStars', { count: n })})</option>`).join('')}
           </select>
         </div>
         <div class="autodj-opt-row">
@@ -14572,11 +13368,11 @@ ${_webAnimSupported ? `
       if (!showGrpOpt && availSubs.length === 0) continue;
       const og = document.createElement('optgroup');
       const grpTotal = grp.genres.reduce((s, g) => s + (g.cnt || 0), 0);
-      og.label = grp.name + ' \u2014 ' + grpTotal.toLocaleString() + ' songs';
+      og.label = t('player.autodj.genreGroupSongs', { name: grp.name, n: grpTotal.toLocaleString() });
       if (showGrpOpt) {
         const allOpt = document.createElement('option');
         allOpt.value = grpVal;
-        allOpt.textContent = '\u229e All ' + grp.name;
+        allOpt.textContent = t('player.autodj.genreGroupAll', { name: grp.name });
         og.appendChild(allOpt);
       }
       for (const g of availSubs) {
@@ -14837,41 +13633,22 @@ function _mountAlbumVScroll(albums, buildCard, onClick, containerEl) {
   render(true);
 }
 
-// Super-category buckets for genre grouping — first match wins
-const GENRE_BUCKETS = [
-  ['Rock',               /\b(rock|punk|metal|grunge|emo|hardcore|alternative|indie|shoegaze|post.rock|new.wave|prog(ressive)?|glam|gothic|psychedel|garage|britpop|surf|math.rock|noise.rock|skate)\b/i],
-  ['Electronic',         /\b(electro(nic)?|techno|house|trance|drum.?n?.?bass|dnb|d&b|ambient|synth|rave|edm|idm|breakbeat|dubstep|chillout|chill(?!i)|deep.house|trip.hop|downtempo|jungle|acid|minimal(?! folk|ist)|dance(?!.pop)|club|industrial|dark.wave|ebm|vaporwave|lo.?fi|hardstyle|psytrance|psybient|dub(?!step)|gabber|neurofunk|liquid drum|deathstep)\b/i],
-  ['Pop',                /\b(pop(?!.punk|.rock)|disco|bubblegum|teen.pop|j.?pop|k.?pop|c.?pop|city.pop)\b/i],
-  ['Hip-Hop & R&B',      /\b(hip.?hop|rap|r&b|rnb|neo.?soul|urban|grime|trap|drill|afroswing)\b/i],
-  ['Soul & Funk',        /\b(soul|funk|motown|rhythm.and.blues|boogie|northern.soul|groove(?! metal))\b/i],
-  ['Jazz & Blues',       /\b(jazz|blues|swing|bebop|be.bop|fusion|bossa|latin.jazz|cool.jazz|dixieland|delta|smooth.jazz|acid.jazz|nu.jazz)\b/i],
-  ['Classical',          /\b(classical|orchestral|opera|chamber|symphony|baroque|contempor|neoclassic|minimali(st)?|modern.classical)\b/i],
-  ['Folk & Country',     /\b(folk|country|bluegrass|acoustic(?!.rock)|singer.?songwriter|americana|celtic|irish|western|cowboy|outlaw|appalachian)\b/i],
-  ['World & Reggae',     /\b(world|reggae|latin(?!.jazz)|african|caribbean|cuban|salsa|bossa.nova|afrobeat|cumbia|flamenco|tango|polka|turkish|arabic|indian|bollywood|samba|merengue|calypso|afrobeats|dancehall)\b/i],
-  ['Gospel & Christian', /\b(gospel|christian|worship|spiritual|hymn|ccm|praise|inspirational|devotional)\b/i],
-];
-function classifyGenre(name) {
-  for (const [label, re] of GENRE_BUCKETS) { if (re.test(name)) return label; }
-  return 'Other';
+// The server's genre groups (saved by the admin, or built automatically when
+// none are saved), plus an "Other" section for genres no group holds.
+// groups: [{name, genres:[{genre,cnt}|string]}]; allGenres: items of the same shape; key(g) gives the genre name.
+function _genreSectionsWithOther(groups, allGenres, key) {
+  const sections = (groups || []).map(grp => ({ name: grp.name, genres: grp.genres }));
+  const assigned = new Set(sections.flatMap(grp => grp.genres.map(key)));
+  const other = allGenres.filter(g => !assigned.has(key(g)));
+  if (other.length) sections.push({ name: t('player.smart.genreOther'), genres: other });
+  return sections;
 }
 
-// Build genre sections HTML from server-provided groups (or fall back to GENRE_BUCKETS)
+// Build genre sections HTML from the server's genre groups.
 // genreGroups: [{name, genres:[{genre,cnt}]}] or null
 // allGenres:   [{genre,cnt}]
 function _buildGenreSections(genreGroups, allGenres) {
-  let sectionList;
-  if (genreGroups?.length > 0) {
-    sectionList = genreGroups;
-  } else {
-    // Fall back to GENRE_BUCKETS classifier
-    const bucketOrder = [...GENRE_BUCKETS.map(([l]) => l), 'Other'];
-    const grouped = {};
-    for (const g of allGenres) {
-      const cat = classifyGenre(g.genre);
-      (grouped[cat] = grouped[cat] || []).push(g);
-    }
-    sectionList = bucketOrder.filter(cat => grouped[cat]).map(cat => ({ name: cat, genres: grouped[cat] }));
-  }
+  const sectionList = _genreSectionsWithOther(genreGroups, allGenres, g => g.genre);
   return sectionList.map(grp => {
     const chips = grp.genres.map(g =>
       `<button class="genre-chip" data-genre="${esc(g.genre)}">${esc(g.genre)}<span class="genre-cnt">${g.cnt}</span></button>`
@@ -15155,7 +13932,7 @@ async function viewGenres() {
     const d = await api('GET', 'api/v1/db/genre-groups');
     const allGenres = d.genres || [];
     if (!allGenres.length) {
-      setBody('<div class="info-panel"><h2>No Genres</h2><p class="info-hint">Your library has no genre tags. Tag your files to use this view.</p></div>');
+      setBody(`<div class="info-panel"><h2>${t('player.genres.emptyTitle')}</h2><p class="info-hint">${t('player.genres.emptyHint')}</p></div>`);
       return;
     }
     setBody(`<div class="genre-sections">${_buildGenreSections(d.groups, allGenres)}</div>`);
@@ -15165,7 +13942,7 @@ async function viewGenres() {
     document.querySelectorAll('.genre-chip').forEach(el =>
       el.addEventListener('click', () => viewGenreDetail(el.dataset.genre))
     );
-  } catch(e) { setBody('<div class="info-panel"><p class="info-hint">Failed to load genres.</p></div>'); }
+  } catch(e) { setBody(`<div class="info-panel"><p class="info-hint">${t('player.genres.loadFailed')}</p></div>`); }
 }
 
 // ── DECADE VIEW ────────────────────────────────────────────────
@@ -15178,20 +13955,20 @@ async function viewDecades() {
   try {
     const d = await api('GET', 'api/v1/db/decades');
     if (!d.decades || d.decades.length === 0) {
-      setBody('<div class="info-panel"><h2>No Year Data</h2><p class="info-hint">Your library has no year tags. Tag your files to use this view.</p></div>');
+      setBody(`<div class="info-panel"><h2>${t('player.decades.emptyTitle')}</h2><p class="info-hint">${t('player.decades.emptyHint')}</p></div>`);
       return;
     }
     const items = d.decades.map(row => {
-      const label = row.decade ? `${row.decade}s` : 'Unknown';
-      return `<button class="decade-card" data-decade="${row.decade}">${esc(label)}<span class="decade-stat">${row.cnt} tracks · ${row.albums} albums</span></button>`;
+      const label = row.decade ? `${row.decade}s` : t('player.misc.unknown');
+      return `<button class="decade-card" data-decade="${row.decade}">${esc(label)}<span class="decade-stat">${t('player.decades.stat', { tracks: row.cnt, albums: row.albums })}</span></button>`;
     }).join('');
     setBody(`<div class="decade-grid">${items}</div>`);
     document.querySelectorAll('.decade-card').forEach(el => {
       const dec = el.dataset.decade;
-      const lbl = dec ? `${dec}s` : 'Unknown';
+      const lbl = dec ? `${dec}s` : t('player.misc.unknown');
       el.addEventListener('click', () => viewDecadeDetail(Number.parseInt(dec), lbl));
     });
-  } catch(e) { setBody('<div class="info-panel"><p class="info-hint">Failed to load decades.</p></div>'); }
+  } catch(e) { setBody(`<div class="info-panel"><p class="info-hint">${t('player.decades.loadFailed')}</p></div>`); }
 }
 
 // ── SHARED: virtual song list with sort bar ─────────────────────────────────
@@ -15204,11 +13981,11 @@ function _mountSongVScroll(allSongs, container) {
   container.classList.add('tracks-mode');
   container.innerHTML = `
     <div class="sort-bar">
-      <span class="sort-bar-label">Sort</span>
-      <button class="sort-pill active" data-key="artist">Artist <span class="sort-dir">↑</span></button>
-      <button class="sort-pill" data-key="title">Title</button>
-      <button class="sort-pill" data-key="album">Album</button>
-      <button class="sort-pill" data-key="year">Year</button>
+      <span class="sort-bar-label">${t('player.sortBar.label')}</span>
+      <button class="sort-pill active" data-key="artist">${t('player.sortBar.artist')} <span class="sort-dir">↑</span></button>
+      <button class="sort-pill" data-key="title">${t('player.sortBar.title')}</button>
+      <button class="sort-pill" data-key="album">${t('player.sortBar.album')}</button>
+      <button class="sort-pill" data-key="year">${t('player.sortBar.year')}</button>
     </div>
     <div class="vslist-wrap"><div class="song-list"></div></div>`;
 
@@ -15217,7 +13994,7 @@ function _mountSongVScroll(allSongs, container) {
   const sortBar = container.querySelector('.sort-bar');
 
   function rowHtml(s, i) {
-    const title  = s.title  || s.filepath?.split('/').pop() || 'Unknown';
+    const title  = s.title  || s.filepath?.split('/').pop() || t('player.misc.unknown');
     const artist = s.artist || '';
     const album  = s.album  ? ` · ${s.album}` : '';
     const stars  = starsHtml(s.rating || 0);
@@ -15301,13 +14078,13 @@ function _mountSongVScroll(allSongs, container) {
     sortBar.querySelectorAll('.sort-pill').forEach(p => {
       const active = p.dataset.key === _sortKey;
       p.classList.toggle('active', active);
-      const lbl = p.dataset.key.charAt(0).toUpperCase() + p.dataset.key.slice(1);
+      const lbl = t('player.sortBar.' + p.dataset.key);
       p.innerHTML = active ? `${lbl} <span class="sort-dir">${_sortAsc ? '↑' : '↓'}</span>` : lbl;
     });
     S.curSongs = _songs;
     const playBtn = document.getElementById('play-all-btn');
     const addBtn  = document.getElementById('add-all-btn');
-    if (playBtn) playBtn.onclick = () => { if (_songs.length) { Player.setQueue(_songs, 0); toast(`Playing ${_songs.length} songs`); } };
+    if (playBtn) playBtn.onclick = () => { if (_songs.length) { Player.setQueue(_songs, 0); toast(t('player.toast.playingSongs', { count: _songs.length })); } };
     if (addBtn)  addBtn.onclick  = () => { if (_songs.length) { Player.addAll(_songs); } };
     fRow = -1; lRow = -1;
     wrap.scrollTop = 0;
@@ -15329,7 +14106,7 @@ function _mountSongVScroll(allSongs, container) {
   S.curSongs = _songs;
   const playBtn = document.getElementById('play-all-btn');
   const addBtn  = document.getElementById('add-all-btn');
-  if (playBtn) playBtn.onclick = () => { if (_songs.length) { Player.setQueue(_songs, 0); toast(`Playing ${_songs.length} songs`); } };
+  if (playBtn) playBtn.onclick = () => { if (_songs.length) { Player.setQueue(_songs, 0); toast(t('player.toast.playingSongs', { count: _songs.length })); } };
   if (addBtn)  addBtn.onclick  = () => { if (_songs.length) { Player.addAll(_songs); } };
   requestAnimationFrame(() => render(true));
 
@@ -15352,8 +14129,8 @@ function _showSongsIn(songs, container) {
 }
 
 // ── GENRE DETAIL VIEW (Albums + Tracks tabs) ─────────────────
-async function viewGenreDetail(genre, defaultTab) {
-  setTitle(genre); setBack(viewGenres); setNavActive('genres'); S.view = 'genres';
+async function _viewBrowseDetail({ title, back, navId, albumsRoute, songsRoute, body: reqBody, reopen, defaultTab }) {
+  setTitle(title); setBack(back); setNavActive(navId); S.view = navId;
   S.curSongs = [];
   document.getElementById('play-all-btn').onclick = null;
   document.getElementById('add-all-btn').onclick  = null;
@@ -15361,13 +14138,13 @@ async function viewGenreDetail(genre, defaultTab) {
   let albums = [], songs = [];
   try {
     const [ar, sr] = await Promise.all([
-      api('POST', 'api/v1/db/genre/albums', { genre }),
-      api('POST', 'api/v1/db/genre/songs',  { genre })
+      api('POST', albumsRoute, reqBody),
+      api('POST', songsRoute,  reqBody)
     ]);
     albums = (ar?.albums) ? ar.albums : [];
     songs  = (sr || []).map(norm);
   } catch(e) {
-    setBody('<div class="info-panel"><p class="info-hint">Failed to load.</p></div>'); return;
+    setBody(`<div class="info-panel"><p class="info-hint">${t('player.browse.loadFailed')}</p></div>`); return;
   }
 
   const tab = defaultTab || (albums.length > 0 ? 'albums' : 'tracks');
@@ -15380,11 +14157,11 @@ async function viewGenreDetail(genre, defaultTab) {
     body.innerHTML = `
       <div class="browse-tabs">
         <div class="browse-tab-group">
-          <button class="browse-tab${tA ? ' active' : ''}" data-tab="albums">Albums<span class="browse-cnt">${albums.length}</span></button>
-          <button class="browse-tab${!tA ? ' active' : ''}" data-tab="tracks">Tracks<span class="browse-cnt">${songs.length}</span></button>
+          <button class="browse-tab${tA ? ' active' : ''}" data-tab="albums">${t('player.nav.albums')}<span class="browse-cnt">${albums.length}</span></button>
+          <button class="browse-tab${!tA ? ' active' : ''}" data-tab="tracks">${t('player.search.tabTracks')}<span class="browse-cnt">${songs.length}</span></button>
         </div>
         <div class="browse-filter-wrap">
-          <input id="browse-filter" class="browse-filter-input" placeholder="Filter…" autocomplete="off" spellcheck="false">
+          <input id="browse-filter" class="browse-filter-input" placeholder="${t('player.browse.filterPlaceholder')}" autocomplete="off" spellcheck="false">
           <button class="browse-filter-clear${_fv ? '' : ' hidden'}" id="browse-filter-clear" title="${t('player.ctrl.clear')}">×</button>
         </div>
       </div>
@@ -15400,7 +14177,7 @@ async function viewGenreDetail(genre, defaultTab) {
       bc.classList.remove('tracks-mode');
       if (tA) {
         const fa = q ? albums.filter(a => [(a.name||''),(a.artist||'')].some(v => v.toLowerCase().includes(q))) : albums;
-        if (!fa.length) { bc.innerHTML = `<div class="info-panel"><p class="info-hint">${q ? `No albums match "${esc(q)}".` : 'No albums found — try Tracks.'}</p></div>`; return; }
+        if (!fa.length) { bc.innerHTML = `<div class="info-panel"><p class="info-hint">${q ? t('player.browse.noAlbumsMatch', { q: esc(q) }) : t('player.browse.noAlbumsTryTracks')}</p></div>`; return; }
         _mountAlbumVScroll(fa,
           (a, i) => {
             const u   = artUrl(a.album_art_file, 'l');
@@ -15410,12 +14187,12 @@ async function viewGenreDetail(genre, defaultTab) {
               <div class="album-info"><div class="album-name">${esc(a.name)}</div><div class="album-meta">${esc(a.artist||'')}${a.year ? ' · ' + a.year : ''}</div></div>
             </div>`;
           },
-          (a) => viewAlbumSongs(a.name, a.artist || undefined, () => viewGenreDetail(genre, 'albums')),
+          (a) => viewAlbumSongs(a.name, a.artist || undefined, () => reopen('albums')),
           bc
         );
       } else {
         const fs = q ? songs.filter(s => [(s.title||''),(s.artist||''),(s.album||'')].some(v => v.toLowerCase().includes(q))) : songs;
-        if (!fs.length) { bc.innerHTML = `<div class="info-panel"><p class="info-hint">${q ? `No tracks match "${esc(q)}".` : 'No tracks found.'}</p></div>`; return; }
+        if (!fs.length) { bc.innerHTML = `<div class="info-panel"><p class="info-hint">${q ? t('player.browse.noTracksMatch', { q: esc(q) }) : t('player.browse.noTracks')}</p></div>`; return; }
         _showSongsIn(fs, bc);
       }
     }
@@ -15433,86 +14210,21 @@ async function viewGenreDetail(genre, defaultTab) {
   renderBrowse(tab);
 }
 
+async function viewGenreDetail(genre, defaultTab) {
+  return _viewBrowseDetail({
+    title: genre, back: viewGenres, navId: 'genres',
+    albumsRoute: 'api/v1/db/genre/albums', songsRoute: 'api/v1/db/genre/songs',
+    body: { genre }, reopen: tab => viewGenreDetail(genre, tab), defaultTab,
+  });
+}
+
 // ── DECADE DETAIL VIEW (Albums + Tracks tabs) ─────────────────
 async function viewDecadeDetail(decade, label, defaultTab) {
-  setTitle(label || `${decade}s`); setBack(viewDecades); setNavActive('decades'); S.view = 'decades';
-  S.curSongs = [];
-  document.getElementById('play-all-btn').onclick = null;
-  document.getElementById('add-all-btn').onclick  = null;
-  setBody('<div class="loading-state"></div>');
-  let albums = [], songs = [];
-  try {
-    const [ar, sr] = await Promise.all([
-      api('POST', 'api/v1/db/decade/albums', { decade }),
-      api('POST', 'api/v1/db/decade/songs',  { decade })
-    ]);
-    albums = (ar?.albums) ? ar.albums : [];
-    songs  = (sr || []).map(norm);
-  } catch(e) {
-    setBody('<div class="info-panel"><p class="info-hint">Failed to load.</p></div>'); return;
-  }
-
-  const tab = defaultTab || (albums.length > 0 ? 'albums' : 'tracks');
-
-  function renderBrowse(activeTab, _fv) {
-    _fv = _fv || '';
-    const tA = activeTab === 'albums';
-    const body = document.getElementById('content-body');
-    body.classList.add('browse-mode');
-    body.innerHTML = `
-      <div class="browse-tabs">
-        <div class="browse-tab-group">
-          <button class="browse-tab${tA ? ' active' : ''}" data-tab="albums">Albums<span class="browse-cnt">${albums.length}</span></button>
-          <button class="browse-tab${!tA ? ' active' : ''}" data-tab="tracks">Tracks<span class="browse-cnt">${songs.length}</span></button>
-        </div>
-        <div class="browse-filter-wrap">
-          <input id="browse-filter" class="browse-filter-input" placeholder="Filter…" autocomplete="off" spellcheck="false">
-          <button class="browse-filter-clear${_fv ? '' : ' hidden'}" id="browse-filter-clear" title="${t('player.ctrl.clear')}">×</button>
-        </div>
-      </div>
-      <div id="browse-content"></div>`;
-    const bc   = document.getElementById('browse-content');
-    const fInp = document.getElementById('browse-filter');
-    const fClr = document.getElementById('browse-filter-clear');
-    fInp.value = _fv;
-    function applyContent() {
-      const q = fInp.value.trim().toLowerCase();
-      fClr.classList.toggle('hidden', !q);
-      bc.innerHTML = '';
-      bc.classList.remove('tracks-mode');
-      if (tA) {
-        const fa = q ? albums.filter(a => [(a.name||''),(a.artist||'')].some(v => v.toLowerCase().includes(q))) : albums;
-        if (!fa.length) { bc.innerHTML = `<div class="info-panel"><p class="info-hint">${q ? `No albums match "${esc(q)}".` : 'No albums found — try Tracks.'}</p></div>`; return; }
-        _mountAlbumVScroll(fa,
-          (a, i) => {
-            const u   = artUrl(a.album_art_file, 'l');
-            const art = u ? `<img src="${u}" alt="" loading="lazy" data-err="noart">` : noArtHtml();
-            return `<div class="album-card" data-i="${i}">
-              <div class="album-art">${art}<div class="play-ov"><svg width="28" height="28" viewBox="0 0 24 24" fill="currentColor"><polygon points="5,3 19,12 5,21"/></svg></div></div>
-              <div class="album-info"><div class="album-name">${esc(a.name)}</div><div class="album-meta">${esc(a.artist||'')}${a.year ? ' · ' + a.year : ''}</div></div>
-            </div>`;
-          },
-          (a) => viewAlbumSongs(a.name, a.artist || undefined, () => viewDecadeDetail(decade, label, 'albums')),
-          bc
-        );
-      } else {
-        const fs = q ? songs.filter(s => [(s.title||''),(s.artist||''),(s.album||'')].some(v => v.toLowerCase().includes(q))) : songs;
-        if (!fs.length) { bc.innerHTML = `<div class="info-panel"><p class="info-hint">${q ? `No tracks match "${esc(q)}".` : 'No tracks found.'}</p></div>`; return; }
-        _showSongsIn(fs, bc);
-      }
-    }
-    body.querySelectorAll('.browse-tab').forEach(btn => {
-      btn.addEventListener('click', () => {
-        if (btn.classList.contains('active')) return;
-        renderBrowse(btn.dataset.tab, fInp.value);
-      });
-    });
-    fInp.addEventListener('input', applyContent);
-    fClr.addEventListener('click', () => { fInp.value = ''; fInp.dispatchEvent(new Event('input')); fInp.focus(); });
-    applyContent();
-  }
-
-  renderBrowse(tab);
+  return _viewBrowseDetail({
+    title: label || `${decade}s`, back: viewDecades, navId: 'decades',
+    albumsRoute: 'api/v1/db/decade/albums', songsRoute: 'api/v1/db/decade/songs',
+    body: { decade }, reopen: tab => viewDecadeDetail(decade, label, tab), defaultTab,
+  });
 }
 
 
@@ -15529,6 +14241,12 @@ let _splLimit = 100;
 let _splEditId = null;
 let _splEditName = null;
 let _splCountTimer = null;
+
+function _splResetBuilder() {
+  _splEditId = null; _splEditName = null;
+  _splFilters = _splDefaultFilters();
+  _splSort = 'random'; _splLimit = 100;
+}
 
 async function loadSmartPlaylists() {
   try {
@@ -15559,7 +14277,7 @@ function _renderSmartPlaylistNav() {
   const nav = document.getElementById('smart-playlist-nav');
   if (!nav) return;
   const list = S.smartPlaylists || [];
-  if (!list.length) { nav.innerHTML = '<div class="pl-empty-hint">No smart playlists yet</div>'; return; }
+  if (!list.length) { nav.innerHTML = `<div class="pl-empty-hint">${t('player.misc.noSmartPlaylists')}</div>`; return; }
   nav.innerHTML = list.map(p => `
     <div class="pl-row" data-splid="${p.id}">
       <button class="pl-row-btn" data-splid="${p.id}" title="${esc(_splSummaryText(p))}">
@@ -15595,11 +14313,11 @@ function _renderSmartPlaylistNav() {
       e.stopPropagation();
       const id = Number.parseInt(btn.dataset.splid, 10);
       const pl = (S.smartPlaylists || []).find(p => p.id === id);
-      showConfirmModal(`Delete smart playlist "${pl?.name || id}"?`, 'This cannot be undone.', async () => {
+      showConfirmModal(t('player.smart.deleteTitle', { name: pl?.name || id }), t('player.smart.deleteMsg'), async () => {
         try {
           await api('DELETE', `api/v1/smart-playlists/${id}`);
           await loadSmartPlaylists();
-          toast(t('player.toast.recordingDeleted', { name: '' }).replaceAll(': ', ''));
+          toast(t('player.smart.deleted'));
         } catch(_) { toast(t('player.toast.deleteFailed')); }
       });
     });
@@ -15617,15 +14335,15 @@ async function _runSavedSmartPlaylist(id) {
     const effectiveSort = pl.filters?.freshPicks ? 'random' : pl.sort;
     const d = await api('POST', 'api/v1/smart-playlists/run', { filters: pl.filters, sort: effectiveSort, limit: pl.limit_n });
     _viewSmartPlaylistResults(d.songs, pl.name, id, pl.filters, pl.sort, pl.limit_n);
-  } catch(e) { setBody(`<div class="empty-state">Error: ${esc(e.message)}</div>`); }
+  } catch(e) { setBody(`<div class="empty-state">${t('player.toast.errorMsg', { error: esc(e.message) })}</div>`); }
 }
 
 function _viewSmartPlaylistResults(songs, name, splId, filters, sort, limitN) {
   const mapped = (songs || []).map(norm);
   S.curSongs = mapped;
-  const title = name || 'Smart Playlist';
+  const title = name || t('player.smart.defaultName');
   setTitle(title);
-  const _splTitle = name || 'Smart Playlist';
+  const _splTitle = title;
   document.getElementById('play-all-btn').onclick = () => {
     if (mapped.length) { _setPlaySource('smart-playlist', _splTitle); Player.setQueue(mapped, 0); toast(t('player.toast.playingSongs', { count: mapped.length })); }
   };
@@ -15635,15 +14353,15 @@ function _viewSmartPlaylistResults(songs, name, splId, filters, sort, limitN) {
 
   const editBtn = `<button class="spl-edit-btn" id="spl-result-edit-btn">
     <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
-    Edit filter</button>`;
+    ${t('player.smart.editFilter')}</button>`;
   const reshuffleBtn = (filters?.freshPicks && splId)
     ? `<button class="spl-reshuffle-btn" id="spl-reshuffle-btn" title="${t('player.ctrl.splReshuffle')}">
         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="17,1 21,5 17,9"/><path d="M3,11V9a4,4,0,0,1,4-4h14"/><polyline points="7,23 3,19 7,15"/><path d="M21,13v2a4,4,0,0,1-4,4H3"/></svg>
-        New picks</button>`
+        ${t('player.smart.newPicks')}</button>`
     : '';
 
   if (!mapped.length) {
-    setBody(`<div class="empty-state"><p>No songs match this filter.</p>${editBtn}${reshuffleBtn}</div>`);
+    setBody(`<div class="empty-state"><p>${t('player.smart.noMatch')}</p>${editBtn}${reshuffleBtn}</div>`);
   } else {
     const body = document.getElementById('content-body');
     body.innerHTML = `<div class="spl-result-header">${editBtn}${reshuffleBtn}</div><div class="song-list">${renderSongRows(mapped)}</div>`;
@@ -15670,6 +14388,13 @@ function _viewSmartPlaylistResults(songs, name, splId, filters, sort, limitN) {
 }
 
 // ── ML Smart Playlist — "For You" view ─────────────────────────────────────
+const SPL_STATUS_KEYS = {
+  'any':      'player.smart.ratingAny',
+  'never':    'player.smart.statusNever',
+  'played':   'player.smart.statusPlayed',
+  'at-least': 'player.smart.statusAtLeast',
+};
+
 const ML_SLOTS = ['morning', 'afternoon', 'evening', 'night'];
 const ML_SLOT_KEYS = {
   morning:   'player.mlPlaylist.slotMorning',
@@ -15750,8 +14475,7 @@ async function viewMlPlaylist(slot) {
   };
   document.getElementById('add-all-btn').onclick = () => {
     if (!rows.length) return;
-    Player.addToQueue(rows);
-    toast(t('player.toast.addedSongs', { count: rows.length }));
+    Player.addAll(rows);
   };
 
   body.innerHTML = `
@@ -15771,7 +14495,7 @@ async function viewMlPlaylist(slot) {
       await api('POST', 'api/v1/smartplaylist/save-as-playlist', { name, slot: activeSlot });
       toast(t('player.mlPlaylist.saved', { name }));
     } catch (e) {
-      toast(e?.data?.error || e.message || 'Error');
+      toast(e?.data?.error || e.message || t('player.toast.saveFailed'));
     }
   });
 }
@@ -15825,20 +14549,10 @@ async function viewSmartPlaylists(editData) {
 
   const f = _splFilters;
   if (!Array.isArray(f.selectedVpaths)) f.selectedVpaths = [];
-  // Build grouped genre picker — use server groups if available, else GENRE_BUCKETS
-  let _splSectionList;
-  if (_splGenreGroups?.length > 0) {
-    _splSectionList = _splGenreGroups.map(grp => ({ name: grp.name, genres: grp.genres.map(g => g.genre || g) }));
-    // Any genre from allGenres not in a group
-    const assigned = new Set(_splSectionList.flatMap(g => g.genres));
-    const other = genres.filter(g => !assigned.has(g));
-    if (other.length) _splSectionList.push({ name: t('player.smart.genreOther'), genres: other });
-  } else {
-    const _splBucketOrder = [...GENRE_BUCKETS.map(([l]) => l), t('player.smart.genreOther')];
-    const _splGrouped = {};
-    for (const g of genres) { const cat = classifyGenre(g); (_splGrouped[cat] = _splGrouped[cat] || []).push(g); }
-    _splSectionList = _splBucketOrder.filter(cat => _splGrouped[cat]).map(cat => ({ name: cat, genres: _splGrouped[cat] }));
-  }
+  // Grouped genre picker from the server's genre groups
+  const _splSectionList = _genreSectionsWithOther(
+    (_splGenreGroups || []).map(grp => ({ name: grp.name, genres: grp.genres.map(g => g.genre || g) })),
+    genres, g => g);
   const genreGroupsHTML = !genres.length ? `<span class="spl-hint">${t('player.smart.noGenresFound')}</span>` :
     _splSectionList.map(grp => {
       const chips = grp.genres;
@@ -15848,65 +14562,65 @@ async function viewSmartPlaylists(editData) {
       return `<div class="spl-genre-group${activeCount === 0 ? ' collapsed' : ''}"><div class="spl-genre-group-head"><button class="spl-genre-group-select${allActive ? ' all-active' : ''}" data-genres='${JSON.stringify(chips).replaceAll(/'/g, "&#39;")}'><span class="spl-genre-group-name">${esc(grp.name)}</span>${activeCount ? `<span class="spl-genre-group-badge">${activeCount}</span>` : ''}<span class="spl-genre-group-total">${chips.length}</span></button><button class="spl-genre-group-chevron-btn"><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6,9 12,15 18,9"/></svg></button></div><div class="spl-genre-group-chips">${chipsHTML}</div></div>`;
     }).join('');
   const ratingBtns = RATING_OPTS.map(o => `<button class="spl-rating-opt${f.minRating === o.db ? ' active' : ''}" data-db="${o.db}">${o.label}</button>`).join('');
-  const statusPills = ['any','never','played','at-least'].map(s => `<button class="spl-status-pill${(s === 'at-least' ? (f.playedStatus === 'played' && f.minPlayCount > 0 ? ' active' : '') : f.playedStatus === s ? ' active' : '')}" data-status="${s}">${s === 'any' ? 'Any' : s === 'never' ? 'Never played' : s === 'played' ? 'Played' : 'At least…'}</button>`).join('');
+  const statusPills = ['any','never','played','at-least'].map(s => `<button class="spl-status-pill${(s === 'at-least' ? (f.playedStatus === 'played' && f.minPlayCount > 0 ? ' active' : '') : f.playedStatus === s ? ' active' : '')}" data-status="${s}">${t(SPL_STATUS_KEYS[s])}</button>`).join('');
   const sortOpts = SORTS.map(o => `<option value="${o.v}"${_splSort === o.v ? ' selected' : ''}>${o.l}</option>`).join('');
-  const limitOpts = LIMITS.map(n => `<option value="${n}"${_splLimit === n ? ' selected' : ''}>${n} songs</option>`).join('');
+  const limitOpts = LIMITS.map(n => `<option value="${n}"${_splLimit === n ? ' selected' : ''}>${t('player.aidj.lengthSongs', { n })}</option>`).join('');
 
   setBody(`
     <div class="spl-builder">
       <div class="spl-section">
-        <div class="spl-section-title">Genres <span class="spl-hint">(select multiple, or none for all)</span></div>
-        <input type="text" id="spl-genre-search" class="spl-text-inp" placeholder="Search genres… e.g. disco, house, indie" style="margin-bottom:8px">
+        <div class="spl-section-title">${t('player.nav.genres')} <span class="spl-hint">${t('player.smart.genresHint')}</span></div>
+        <input type="text" id="spl-genre-search" class="spl-text-inp" placeholder="${t('player.smart.genreSearchPlaceholder')}" style="margin-bottom:8px">
         <div class="spl-genre-groups" id="spl-genre-groups-wrap">${genreGroupsHTML}</div>
       </div>
 
       ${_musicVpaths().length > 1 ? `<div class="spl-section">
-        <div class="spl-section-title">Libraries <span class="spl-hint">(deselect to exclude)</span></div>
+        <div class="spl-section-title">${t('player.smart.libraries')} <span class="spl-hint">${t('player.smart.librariesHint')}</span></div>
         <div class="spl-vpath-pills" id="spl-vpaths">${_musicVpaths().map(v => `<button class="dj-vpath-pill${f.selectedVpaths.length === 0 || f.selectedVpaths.includes(v) ? ' on' : ''}" data-vpath="${esc(v)}">${esc(v)}</button>`).join('')}</div>
       </div>` : ''}
 
       <div class="spl-section spl-row-2">
         <div>
-          <div class="spl-section-title">Year range</div>
+          <div class="spl-section-title">${t('player.smart.yearRange')}</div>
           <div class="spl-year-row">
-            <input type="number" id="spl-year-from" class="spl-year-inp" placeholder="From" min="1000" max="9999" value="${f.yearFrom || ''}">
+            <input type="number" id="spl-year-from" class="spl-year-inp" placeholder="${t('player.smart.yearFrom')}" min="1000" max="9999" value="${f.yearFrom || ''}">
             <span class="spl-year-sep">–</span>
-            <input type="number" id="spl-year-to"   class="spl-year-inp" placeholder="To"   min="1000" max="9999" value="${f.yearTo   || ''}">
+            <input type="number" id="spl-year-to"   class="spl-year-inp" placeholder="${t('player.smart.yearTo')}"   min="1000" max="9999" value="${f.yearTo   || ''}">
           </div>
         </div>
         <div>
-          <div class="spl-section-title">Minimum rating</div>
+          <div class="spl-section-title">${t('player.smart.minRating')}</div>
           <div class="spl-rating-row">${ratingBtns}</div>
         </div>
       </div>
 
       <div class="spl-section">
-        <div class="spl-section-title">Play status</div>
+        <div class="spl-section-title">${t('player.smart.playStatus')}</div>
         <div class="spl-status-pills">
           ${statusPills}
-          <input type="number" id="spl-min-pc" class="spl-minpc-inp${f.minPlayCount > 0 ? '' : ' hidden'}" min="1" max="99999" value="${f.minPlayCount || 5}" placeholder="times">
+          <input type="number" id="spl-min-pc" class="spl-minpc-inp${f.minPlayCount > 0 ? '' : ' hidden'}" min="1" max="99999" value="${f.minPlayCount || 5}" placeholder="${t('player.smart.timesPlaceholder')}">
         </div>
       </div>
 
       <div class="spl-section spl-row-2">
         <div>
-          <div class="spl-section-title">Artist search</div>
-          <input type="text" id="spl-artist-search" class="spl-text-inp" placeholder="e.g. Beatles" value="${esc(f.artistSearch || '')}">
+          <div class="spl-section-title">${t('player.smart.artistSearch')}</div>
+          <input type="text" id="spl-artist-search" class="spl-text-inp" placeholder="${t('player.smart.artistSearchPlaceholder')}" value="${esc(f.artistSearch || '')}">
         </div>
         <div class="spl-starred-wrap">
           <label class="spl-starred-label">
-            <input type="checkbox" id="spl-starred-cb"${f.starred ? ' checked' : ''}> Starred only
+            <input type="checkbox" id="spl-starred-cb"${f.starred ? ' checked' : ''}> ${t('player.smart.starredOnly')}
           </label>
         </div>
       </div>
 
       <div class="spl-section spl-row-2">
         <div>
-          <div class="spl-section-title">Sort by</div>
+          <div class="spl-section-title">${t('player.smart.sortBy')}</div>
           <select id="spl-sort" class="spl-select">${sortOpts}</select>
         </div>
         <div>
-          <div class="spl-section-title">Max songs</div>
+          <div class="spl-section-title">${t('player.smart.maxSongs')}</div>
           <select id="spl-limit" class="spl-select">${limitOpts}</select>
         </div>
       </div>
@@ -15915,16 +14629,16 @@ async function viewSmartPlaylists(editData) {
         <label class="spl-fresh-picks-label">
           <input type="checkbox" id="spl-fresh-picks"${f.freshPicks ? ' checked' : ''}>
           <div class="spl-fresh-picks-text">
-            <span class="spl-fresh-picks-name">Fresh Picks</span>
-            <span class="spl-hint">Shuffle on every open — different songs each time</span>
+            <span class="spl-fresh-picks-name">${t('player.ctrl.freshPicks')}</span>
+            <span class="spl-hint">${t('player.smart.freshPicksHint')}</span>
           </div>
         </label>
       </div>
 
       <div class="spl-actions">
         <span class="spl-match-count" id="spl-match-count">…</span>
-        <button class="spl-btn-run" id="spl-run-btn">▶ Preview</button>
-        <button class="spl-btn-save" id="spl-save-btn">${_splEditId ? 'Update' : 'Save'}</button>
+        <button class="spl-btn-run" id="spl-run-btn">${t('player.smart.preview')}</button>
+        <button class="spl-btn-save" id="spl-save-btn">${_splEditId ? t('player.misc.update') : t('player.modal.save')}</button>
       </div>
     </div>
   `);
@@ -16079,7 +14793,7 @@ async function viewSmartPlaylists(editData) {
     try {
       const effectiveSort = _splFilters.freshPicks ? 'random' : _splSort;
       const d = await api('POST', 'api/v1/smart-playlists/run', { filters: _splFilters, sort: effectiveSort, limit: _splLimit });
-      _viewSmartPlaylistResults(d.songs, _splEditName || 'Preview', _splEditId, _splFilters, _splSort, _splLimit);
+      _viewSmartPlaylistResults(d.songs, _splEditName || t('player.smart.previewTitle'), _splEditId, _splFilters, _splSort, _splLimit);
     } catch(e) { toast(t('player.toast.errorMsg', { error: e.message })); }
     finally { btn.disabled = false; }
   });
@@ -16091,7 +14805,7 @@ async function viewSmartPlaylists(editData) {
       try {
         await api('PUT', `api/v1/smart-playlists/${_splEditId}`, { name: _splEditName, filters: _splFilters, sort: _splSort, limit: _splLimit });
         await loadSmartPlaylists();
-        toast(`"${_splEditName}" updated`);
+        toast(t('player.toast.splUpdated', { name: _splEditName }));
         // Re-run to show results, honouring Fresh Picks
         const effectiveSort = _splFilters.freshPicks ? 'random' : _splSort;
         const d = await api('POST', 'api/v1/smart-playlists/run', { filters: _splFilters, sort: effectiveSort, limit: _splLimit });
@@ -16099,7 +14813,7 @@ async function viewSmartPlaylists(editData) {
       } catch(e) { toast(t('player.toast.errorMsg', { error: e.message })); }
     } else {
       // Ask for name
-      document.getElementById('spl-save-modal-title').textContent = 'Save Smart Playlist';
+      document.getElementById('spl-save-modal-title').textContent = t('player.modal.saveSplTitle');
       document.getElementById('spl-save-name').value = '';
       showModal('spl-save-modal');
       setTimeout(() => document.getElementById('spl-save-name').focus(), 50);
@@ -16116,7 +14830,7 @@ function _splScheduleCount() {
     try {
       const d = await api('POST', 'api/v1/smart-playlists/count', { filters: _splFilters });
       if (document.getElementById('spl-match-count')) {
-        document.getElementById('spl-match-count').textContent = `${d.count} song${d.count !== 1 ? 's' : ''} match`;
+        document.getElementById('spl-match-count').textContent = t('player.smart.matchCount', { count: d.count });
       }
     } catch(_) { if (document.getElementById('spl-match-count')) document.getElementById('spl-match-count').textContent = ''; }
   }, 500);
@@ -16124,6 +14838,8 @@ function _splScheduleCount() {
 
 
 function viewTranscode() {
+  setTitle(t('player.nav.transcode')); setBack(null); setNavActive('transcode'); S.view = 'transcode';
+  _navCancel();
   S.curSongs = [];
   document.getElementById('play-all-btn').onclick = null;
   document.getElementById('add-all-btn').onclick  = null;
@@ -16178,8 +14894,8 @@ function viewTranscode() {
           <label class="settings-label" for="tc-algo">${t('player.transcode.labelAlgorithm')}</label>
           <select class="settings-select" id="tc-algo">
             <option value="">${t('player.transcode.defaultOption', {val: esc(info.defaultAlgorithm || 'server')})}</option>
-            <option value="buffer" ${S.transAlgo==='buffer'?'selected':''}>Buffer</option>
-            <option value="stream" ${S.transAlgo==='stream'?'selected':''}>Stream</option>
+            <option value="buffer" ${S.transAlgo==='buffer'?'selected':''}>${t('player.transcode.algoBuffer')}</option>
+            <option value="stream" ${S.transAlgo==='stream'?'selected':''}>${t('player.transcode.algoStream')}</option>
           </select>
         </div>
       </div>
@@ -16242,10 +14958,8 @@ function viewJukebox() {
   document.getElementById('juke-connect-btn').onclick = _connectJukebox;
 }
 
-function _pushJukeboxState() {
-  if (!S.jukeCode) return;
+function _pushJukeboxNowPlaying() {
   const song = S.queue[S.idx] || null;
-  const safeIdx = Math.max(0, S.idx || 0);
   fetch('/api/v1/jukebox/update-now-playing', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -16255,12 +14969,21 @@ function _pushJukeboxState() {
       currentTime: audioEl.currentTime||0, duration: audioEl.duration||0, playing: !audioEl.paused,
     }}),
   }).catch(() => {});
+}
+
+function _pushJukeboxPlaylist() {
   const tracks = S.queue.map(s => ({ title: s.title||null, artist: s.artist||null, album: s.album||null, 'album-art': s['album-art']||null, filepath: s.filepath }));
   fetch('/api/v1/jukebox/update-playlist', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ code: S.jukeCode, tracks, idx: safeIdx }),
+    body: JSON.stringify({ code: S.jukeCode, tracks, idx: Math.max(0, S.idx || 0) }),
   }).catch(() => {});
+}
+
+function _pushJukeboxState() {
+  if (!S.jukeCode) return;
+  _pushJukeboxNowPlaying();
+  _pushJukeboxPlaylist();
 }
 
 function _connectJukebox() {
@@ -16297,7 +15020,7 @@ function _connectJukebox() {
           // Express.static literal-space mounts don't match percent-encoded URLs.
           api('POST', 'api/v1/db/metadata', { filepath: msg.file })
             .then(meta => Player.addSong(norm(meta)))
-            .catch(() => Player.addSong({ filepath: msg.file, title: msg.file.split('/').pop() }));
+            .catch(() => toast(t('player.toast.jukeboxAddFailed')));
         }
         else if (msg.command === 'removeSong') {
           const idx = Number.parseInt(msg.file, 10);
@@ -16316,26 +15039,8 @@ function _connectJukebox() {
             Player.playAt(idx);
           }
         }
-        else if (msg.command === 'getPlaylist') {
-          const tracks = S.queue.map(s => ({ title: s.title||null, artist: s.artist||null, album: s.album||null, 'album-art': s['album-art']||null, filepath: s.filepath }));
-          fetch('/api/v1/jukebox/update-playlist', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ code: S.jukeCode, tracks, idx: Math.max(0, S.idx || 0) }),
-          }).catch(() => {});
-        }
-        else if (msg.command === 'getNowPlaying') {
-          const song = S.queue[S.idx] || null;
-          fetch('/api/v1/jukebox/update-now-playing', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ code: S.jukeCode, nowPlaying: {
-              title: song?.title||null, artist: song?.artist||null, album: song?.album||null,
-              albumArt: song?.['album-art']||null, filepath: song?.filepath||null,
-              currentTime: audioEl.currentTime||0, duration: audioEl.duration||0, playing: !audioEl.paused,
-            }}),
-          }).catch(() => {});
-        }
+        else if (msg.command === 'getPlaylist')   _pushJukeboxPlaylist();
+        else if (msg.command === 'getNowPlaying') _pushJukeboxNowPlaying();
       }
     } catch(_) {}
   };
@@ -16370,7 +15075,7 @@ function _renderJukeboxActive(code) {
     qrSvg = raw
       .replaceAll('<svg ', '<svg width="180" height="180" style="border-radius:8px;background:#fff;padding:4px;box-sizing:content-box;" ');
   } catch(e) {
-    qrSvg = `<div style="width:180px;height:180px;display:flex;align-items:center;justify-content:center;background:var(--raised);border-radius:8px;color:var(--t3);font-size:12px">QR unavailable</div>`;
+    qrSvg = `<div style="width:180px;height:180px;display:flex;align-items:center;justify-content:center;background:var(--raised);border-radius:8px;color:var(--t3);font-size:12px">${t('player.jukebox.qrUnavailable')}</div>`;
   }
 
   setBody(`
@@ -16489,7 +15194,7 @@ function viewPlayHistory() {
         try {
           await api('POST', 'api/v1/db/stats/reset-play-counts', {});
           toast(t('player.toast.mostPlayedReset'));
-        } catch(e) { toast(t('player.toast.errorMsg', { error: esc(e.message) })); }
+        } catch(e) { toast(t('player.toast.errorMsg', { error: e.message })); }
       }
     );
   });
@@ -16502,7 +15207,7 @@ function viewPlayHistory() {
         try {
           await api('POST', 'api/v1/db/stats/reset-recently-played', {});
           toast(t('player.toast.recentlyPlayedReset'));
-        } catch(e) { toast(t('player.toast.errorMsg', { error: esc(e.message) })); }
+        } catch(e) { toast(t('player.toast.errorMsg', { error: e.message })); }
       }
     );
   });
@@ -16531,7 +15236,7 @@ async function viewUnplayedGems() {
       return;
     }
     document.getElementById('play-all-btn').onclick = () => {
-      if (S.curSongs.length) { _setPlaySource(null); Player.setQueue(S.curSongs, 0); toast(`Playing ${S.curSongs.length} songs`); }
+      if (S.curSongs.length) { _setPlaySource(null); Player.setQueue(S.curSongs, 0); toast(t('player.toast.playingSongs', { count: S.curSongs.length })); }
     };
     document.getElementById('add-all-btn').onclick = () => {
       if (S.curSongs.length) Player.addAll(S.curSongs);
@@ -16859,15 +15564,15 @@ async function viewLastFM() {
         <div class="playback-section-hdr">
           <div class="playback-section-icon">🎵</div>
           <div>
-            <div class="playback-section-title">Your Last.fm Account</div>
-            <div class="playback-section-desc">Link your Last.fm profile to scrobble every track you play on this server to your Last.fm history. Your password is never stored — it is used once to obtain a session key from Last.fm, and only that key is saved.</div>
+            <div class="playback-section-title">${t('player.lastfm.title')}</div>
+            <div class="playback-section-desc">${t('player.lastfm.desc')}</div>
           </div>
         </div>
 
         <div id="lfm-connected" class="${linkedUser ? '' : 'hidden'}">
           <div class="playback-row">
             <div class="playback-row-label">
-              <div class="playback-row-name">Connected as: <span id="lfm-current-user">${esc(linkedUser || '')}</span></div>
+              <div class="playback-row-name">${t('player.lastfm.connectedAs')} <span id="lfm-current-user">${esc(linkedUser || '')}</span></div>
             </div>
             <button class="btn-danger" id="lfm-disconnect-btn">${t('player.common.btnDisconnect')}</button>
           </div>
@@ -16876,18 +15581,18 @@ async function viewLastFM() {
         <div id="lfm-form" class="${linkedUser ? 'hidden' : ''}">
           <div class="playback-row">
             <label class="playback-row-label" for="lfm-username">
-              <div class="playback-row-name">Username</div>
+              <div class="playback-row-name">${t('player.login.username')}</div>
             </label>
-            <input type="text" id="lfm-username" class="settings-input" style="max-width:220px" placeholder="Last.fm username" autocomplete="off" data-form-type="other" data-lpignore="true" data-1p-ignore data-bwignore>
+            <input type="text" id="lfm-username" class="settings-input" style="max-width:220px" placeholder="${t('player.lastfm.usernamePlaceholder')}" autocomplete="off" data-form-type="other" data-lpignore="true" data-1p-ignore data-bwignore>
           </div>
           <div class="playback-row">
             <label class="playback-row-label" for="lfm-password">
-              <div class="playback-row-name">Password</div>
+              <div class="playback-row-name">${t('player.login.password')}</div>
             </label>
-            <input type="password" id="lfm-password" class="settings-input" style="max-width:220px" placeholder="Last.fm password" autocomplete="new-password" data-form-type="other" data-lpignore="true" data-1p-ignore data-bwignore>
+            <input type="password" id="lfm-password" class="settings-input" style="max-width:220px" placeholder="${t('player.lastfm.passwordPlaceholder')}" autocomplete="new-password" data-form-type="other" data-lpignore="true" data-1p-ignore data-bwignore>
           </div>
           <div class="playback-row" style="justify-content:flex-end">
-            <button class="btn-primary" id="lfm-connect-btn">Connect</button>
+            <button class="btn-primary" id="lfm-connect-btn">${t('player.misc.connect')}</button>
           </div>
         </div>
       </div>
@@ -16912,7 +15617,7 @@ async function viewLastFM() {
     const user = document.getElementById('lfm-username').value.trim();
     const pass = document.getElementById('lfm-password').value;
     if (!user || !pass) { toast(t('player.toast.lastfmEnterCreds')); return; }
-    btn.disabled = true; btn.textContent = 'Connecting…';
+    btn.disabled = true; btn.textContent = t('player.misc.connecting');
     try {
       await api('POST', 'api/v1/lastfm/connect', { lastfmUser: user, lastfmPassword: pass });
       S.lastfmLinked = true;
@@ -16920,8 +15625,8 @@ async function viewLastFM() {
       toast(t('player.toast.lastfmConnected', { user }));
       viewLastFM();
     } catch(e) {
-      toast(t('player.toast.lastfmFailed', { error: e.message || 'Authentication failed' }));
-      btn.disabled = false; btn.textContent = 'Connect';
+      toast(t('player.toast.lastfmFailed', { error: e.message || t('player.lastfm.authFailed') }));
+      btn.disabled = false; btn.textContent = t('player.misc.connect');
     }
   });
 
@@ -16950,15 +15655,15 @@ async function viewListenBrainz() {
         <div class="playback-section-hdr">
           <div class="playback-section-icon">🎵</div>
           <div>
-            <div class="playback-section-title">Your ListenBrainz Account</div>
-            <div class="playback-section-desc">Link your ListenBrainz profile to scrobble every track you play on this server. Enter your ListenBrainz user token — you can find it at listenbrainz.org/profile.</div>
+            <div class="playback-section-title">${t('player.listenbrainz.title')}</div>
+            <div class="playback-section-desc">${t('player.listenbrainz.desc')}</div>
           </div>
         </div>
 
         <div id="lb-connected" class="${linked ? '' : 'hidden'}">
           <div class="playback-row">
             <div class="playback-row-label">
-              <div class="playback-row-name">Token is saved and active.</div>
+              <div class="playback-row-name">${t('player.listenbrainz.tokenActive')}</div>
             </div>
             <button class="btn-danger" id="lb-disconnect-btn">${t('player.common.btnDisconnect')}</button>
           </div>
@@ -16967,12 +15672,12 @@ async function viewListenBrainz() {
         <div id="lb-form" class="${linked ? 'hidden' : ''}">
           <div class="playback-row">
             <label class="playback-row-label" for="lb-token">
-              <div class="playback-row-name">User Token</div>
+              <div class="playback-row-name">${t('player.listenbrainz.tokenLabel')}</div>
             </label>
-            <input type="password" id="lb-token" class="settings-input" style="max-width:340px" placeholder="ListenBrainz user token" autocomplete="new-password" data-form-type="other" data-lpignore="true" data-1p-ignore data-bwignore>
+            <input type="password" id="lb-token" class="settings-input" style="max-width:340px" placeholder="${t('player.listenbrainz.tokenPlaceholder')}" autocomplete="new-password" data-form-type="other" data-lpignore="true" data-1p-ignore data-bwignore>
           </div>
           <div class="playback-row" style="justify-content:flex-end">
-            <button class="btn-primary" id="lb-connect-btn">Connect</button>
+            <button class="btn-primary" id="lb-connect-btn">${t('player.misc.connect')}</button>
           </div>
         </div>
       </div>
@@ -16992,7 +15697,7 @@ async function viewListenBrainz() {
     const btn   = document.getElementById('lb-connect-btn');
     const token = document.getElementById('lb-token').value.trim();
     if (!token) { toast(t('player.toast.listenbrainzEnterToken')); return; }
-    btn.disabled = true; btn.textContent = 'Connecting…';
+    btn.disabled = true; btn.textContent = t('player.misc.connecting');
     try {
       await api('POST', 'api/v1/listenbrainz/connect', { lbToken: token });
       S.listenbrainzLinked = true;
@@ -17000,77 +15705,13 @@ async function viewListenBrainz() {
       toast(t('player.toast.listenbrainzConnected'));
       viewListenBrainz();
     } catch(e) {
-      toast(t('player.toast.listenbrainzFailed', { error: e.message || 'Token validation failed' }));
-      btn.disabled = false; btn.textContent = 'Connect';
+      toast(t('player.toast.listenbrainzFailed', { error: e.message || t('player.listenbrainz.validationFailed') }));
+      btn.disabled = false; btn.textContent = t('player.misc.connect');
     }
   });
 
   document.getElementById('lb-token')?.addEventListener('keydown', e => {
     if (e.key === 'Enter') document.getElementById('lb-connect-btn')?.click();
-  });
-}
-
-// ── DISCORD WEBHOOK ───────────────────────────────────────────
-async function viewDiscordWebhook() {
-  setTitle(t('player.title.discordWebhook')); setBack(null); setNavActive('discord-webhook'); S.view = 'discord-webhook';
-  S.curSongs = [];
-  document.getElementById('play-all-btn').onclick = null;
-  document.getElementById('add-all-btn').onclick  = null;
-
-  let status = { serverEnabled: false, webhookEnabled: false, nick: '' };
-  try { status = await api('GET', 'api/v1/discord-webhook/status'); } catch(_) {}
-
-  setBody(`
-    <div class="playback-panel">
-      <div class="playback-section">
-        <div class="playback-section-hdr">
-          <div class="playback-section-icon">🎮</div>
-          <div>
-            <div class="playback-section-title">${t('player.discordWebhook.title')}</div>
-            <div class="playback-section-desc">${t('player.discordWebhook.desc')}</div>
-          </div>
-        </div>
-
-        ${!status.serverEnabled ? `<div class="playback-row"><div class="playback-row-label"><div class="playback-row-name" style="color:var(--text-muted)">${t('player.discordWebhook.notEnabled')}</div></div></div>` : `
-        <div class="playback-row">
-          <div class="playback-row-label">
-            <div class="playback-row-name">${t('player.discordWebhook.labelEnable')}</div>
-            <div class="playback-row-hint">${t('player.discordWebhook.enableHint')}</div>
-          </div>
-          <label class="toggle-switch">
-            <input type="checkbox" id="dw-enabled" ${status.webhookEnabled ? 'checked' : ''}>
-            <span class="toggle-slider"></span>
-          </label>
-        </div>
-        <div class="playback-row">
-          <label class="playback-row-label" for="dw-nick">
-            <div class="playback-row-name">${t('player.discordWebhook.labelNick')}</div>
-            <div class="playback-row-hint">${t('player.discordWebhook.nickHint')}</div>
-          </label>
-          <input type="text" id="dw-nick" class="settings-input" style="max-width:220px" placeholder="${esc(t('player.discordWebhook.nickPlaceholder'))}" maxlength="64" autocomplete="off" data-form-type="other" data-lpignore="true" data-1p-ignore value="${esc(status.nick || '')}">
-        </div>
-        <div class="playback-row" style="justify-content:flex-end">
-          <button class="btn-primary" id="dw-save-btn">${t('player.discordWebhook.btnSave')}</button>
-        </div>`}
-      </div>
-    </div>`);
-
-  if (!status.serverEnabled) return;
-
-  document.getElementById('dw-save-btn')?.addEventListener('click', async () => {
-    const btn     = document.getElementById('dw-save-btn');
-    const enabled = document.getElementById('dw-enabled')?.checked ?? false;
-    const nick    = (document.getElementById('dw-nick')?.value || '').trim().slice(0, 64);
-    btn.disabled = true;
-    try {
-      await api('POST', 'api/v1/discord-webhook/save', { enabled, nick });
-      S.discordWebhookEnabled = status.serverEnabled && enabled;
-      toast(t('player.toast.discordWebhookSaved'));
-    } catch(e) {
-      toast(t('player.toast.errorMsg', { error: e.message }));
-    } finally {
-      btn.disabled = false;
-    }
   });
 }
 
@@ -17230,15 +15871,15 @@ async function viewSubsonic() {
             <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="4"/><line x1="21.17" y1="8" x2="12" y2="8"/><line x1="3.95" y1="6.06" x2="8.54" y2="14"/><line x1="10.88" y1="21.94" x2="15.46" y2="14"/></svg>
           </div>
           <div>
-            <div class="playback-section-title">Subsonic API Password</div>
-            <div class="playback-section-desc">Set the password used by Subsonic-compatible apps (Ultrasonic, DSub, Symfonium, Tempo, Jamstash, etc.). This is separate from your Velvet login password. Use HTTP token auth (MD5) in your app for best security.</div>
+            <div class="playback-section-title">${t('player.subsonic.pwTitle')}</div>
+            <div class="playback-section-desc">${t('player.subsonic.pwDesc')}</div>
           </div>
         </div>
 
         <div class="playback-row">
           <div class="playback-row-label">
-            <div class="playback-row-name">Server URL</div>
-            <div class="playback-row-hint">Enter this in your Subsonic app</div>
+            <div class="playback-row-name">${t('player.subsonic.serverUrl')}</div>
+            <div class="playback-row-hint">${t('player.subsonic.serverUrlHint')}</div>
           </div>
           <div style="display:flex;align-items:center;gap:8px;">
             <span id="subsonic-server-url" style="font-family:monospace;font-size:.82rem;color:var(--t1);word-break:break-all;">${esc(location.origin)}</span>
@@ -17248,20 +15889,20 @@ async function viewSubsonic() {
 
         <div class="playback-row">
           <label class="playback-row-label" for="subsonic-new-pw">
-            <div class="playback-row-name">New Subsonic Password</div>
+            <div class="playback-row-name">${t('player.subsonic.newPw')}</div>
           </label>
           <div style="display:flex;align-items:center;gap:8px;">
-            <input type="password" id="subsonic-new-pw" class="settings-input" style="max-width:220px" placeholder="New Subsonic password" autocomplete="new-password" data-form-type="other" data-lpignore="true" data-1p-ignore data-bwignore>
-            <button class="btn-primary" id="subsonic-save-pw-btn">Save</button>
+            <input type="password" id="subsonic-new-pw" class="settings-input" style="max-width:220px" placeholder="${t('player.subsonic.newPwPlaceholder')}" autocomplete="new-password" data-form-type="other" data-lpignore="true" data-1p-ignore data-bwignore>
+            <button class="btn-primary" id="subsonic-save-pw-btn">${t('player.subsonic.btnSave')}</button>
           </div>
         </div>
 
         <div class="playback-row" style="background:var(--raised2,var(--raised));border-radius:8px;padding:.65rem .9rem;margin-top:.5rem;gap:1rem;flex-wrap:wrap;">
           <div class="playback-row-label">
-            <div class="playback-row-name" style="font-size:.8rem;">App connection details</div>
-            <div class="playback-row-hint" id="subsonic-username-hint">Username: <strong>${esc(S.username || 'velvet-user')}</strong>${S.username ? '' : ' <span style="font-size:.75rem;color:var(--t2);">(no-auth default)</span>'}</div>
-            <div class="playback-row-hint">API path: <code style="font-size:.78rem;">/rest/</code></div>
-            <div class="playback-row-hint" style="margin-top:.25rem;">Use <em>Token auth (MD5)</em> in your app when available — safer than plain-text mode.</div>
+            <div class="playback-row-name" style="font-size:.8rem;">${t('player.subsonic.connDetails')}</div>
+            <div class="playback-row-hint" id="subsonic-username-hint">${t('player.subsonic.username')} <strong>${esc(S.username || 'velvet-user')}</strong>${S.username ? '' : ` <span style="font-size:.75rem;color:var(--t2);">${t('player.subsonic.noAuthDefault')}</span>`}</div>
+            <div class="playback-row-hint">${t('player.subsonic.apiPath')} <code style="font-size:.78rem;">/rest/</code></div>
+            <div class="playback-row-hint" style="margin-top:.25rem;">${t('player.subsonic.tokenAuthHint')}</div>
           </div>
         </div>
       </div>
@@ -17276,18 +15917,15 @@ async function viewSubsonic() {
     const btn = document.getElementById('subsonic-save-pw-btn');
     const pw  = document.getElementById('subsonic-new-pw').value;
     if (!pw) { toast(t('player.toast.subsonicEnterPassword')); return; }
-    btn.disabled = true; btn.textContent = 'Saving…';
+    btn.disabled = true; btn.textContent = t('player.subsonic.btnSaving');
     try {
-      await api('POST', 'api/v1/admin/users/subsonic-password', {
-        username: S.username || '',
-        password: pw
-      });
+      await api('POST', 'api/v1/user/subsonic-password', { password: pw });
       toast(t('player.toast.subsonicUpdated'));
       document.getElementById('subsonic-new-pw').value = '';
     } catch(e) {
-      toast(t('player.toast.errorMsg', { error: e.message || 'Failed to update password' }));
+      toast(t('player.toast.errorMsg', { error: e.message || t('player.subsonic.updateFailed') }));
     } finally {
-      btn.disabled = false; btn.textContent = 'Save';
+      btn.disabled = false; btn.textContent = t('player.subsonic.btnSave');
     }
   });
 
@@ -17298,9 +15936,9 @@ async function viewSubsonic() {
   // Scrobble forwarding toggles
   async function _saveScrobblePref(key, value) {
     try {
-      await api('POST', 'api/v1/admin/users/subsonic-scrobble', { username: S.username || '', [key]: value });
+      await api('POST', 'api/v1/user/subsonic-scrobble', { [key]: value });
     } catch(e) {
-      toast(t('player.toast.errorMsg', { error: e.message || 'Save failed' }));
+      toast(t('player.toast.errorMsg', { error: e.message || t('player.toast.saveFailed') }));
     }
   }
   document.getElementById('subsonic-scrobble-lfm')?.addEventListener('change', e => {
@@ -17384,12 +16022,14 @@ async function viewUserSettings() {
     const cur  = document.getElementById('us-cur-pw').value;
     const nw   = document.getElementById('us-new-pw').value;
     const conf = document.getElementById('us-confirm-pw').value;
-    if (!cur || !nw || !conf) { pwStatus.textContent = t('player.toast.errorMsg', { error: 'All fields are required.' }); return; }
+    if (!cur || !nw || !conf) { pwStatus.textContent = t('player.userSettings.pwAllRequired'); return; }
     if (nw !== conf) { pwStatus.textContent = t('player.userSettings.pwMismatch'); return; }
     changePwBtn.disabled = true;
     pwStatus.textContent = '';
     try {
-      await api('POST', 'api/v1/auth/change-password', { currentPassword: cur, newPassword: nw });
+      // The server revokes every older token of this user and hands out a new one
+      const r = await api('POST', 'api/v1/auth/change-password', { currentPassword: cur, newPassword: nw });
+      if (r?.token) _storeToken(r.token);
       document.getElementById('us-cur-pw').value = '';
       document.getElementById('us-new-pw').value = '';
       document.getElementById('us-confirm-pw').value = '';
@@ -17397,7 +16037,7 @@ async function viewUserSettings() {
     } catch(e) {
       const msg = e.status === 401
         ? t('player.userSettings.pwWrongCurrent')
-        : (e.message || 'Failed to change password.');
+        : (e.message || t('player.userSettings.pwChangeFailed'));
       pwStatus.textContent = msg;
     } finally {
       changePwBtn.disabled = false;
@@ -17468,7 +16108,7 @@ async function viewUserSettings() {
             toast(t('player.passkey.toastRevoked'));
             await _reloadPasskeys();
           } catch(e) {
-            toast(t('player.toast.errorMsg', { error: e.message || 'Failed' }));
+            toast(t('player.toast.errorMsg', { error: e.message || t('player.misc.failed') }));
             btn.disabled = false;
           }
         });
@@ -17588,15 +16228,15 @@ async function viewDiscogs() {
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="3"/></svg>
           </div>
           <div>
-            <div class="playback-section-title">Discogs Album Art</div>
-            <div class="playback-section-desc">When enabled, the Now Playing modal shows a <b>Fix Art</b> button for songs with missing or broken album art. It searches Discogs and offers up to <b>8 front-cover proposals</b> — picking one embeds the image permanently into the audio file (mp3, flac, ogg, m4a&hellip;). Only visible to admins. Enter your own key+secret from <strong>discogs.com/settings/developers</strong>, or leave blank to use the built-in keys.</div>
+            <div class="playback-section-title">${t('player.discogs.title')}</div>
+            <div class="playback-section-desc">${t('player.discogs.desc')}</div>
           </div>
         </div>
 
         <div class="playback-row">
           <div class="playback-row-label">
-            <div class="playback-row-name">Enable Album Art Import</div>
-            <div class="playback-row-hint">Show Discogs cover choices in the Auto-DJ strip</div>
+            <div class="playback-row-name">${t('player.discogs.enable')}</div>
+            <div class="playback-row-hint">${t('player.discogs.enableHint')}</div>
           </div>
           <label class="toggle-switch">
             <input type="checkbox" id="discogs-enabled" ${cfg.enabled ? 'checked' : ''}>
@@ -17606,28 +16246,28 @@ async function viewDiscogs() {
 
         <div class="playback-row">
           <label class="playback-row-label" for="discogs-key">
-            <div class="playback-row-name">API Key</div>
-            <div class="playback-row-hint">Consumer Key from Discogs developer settings</div>
+            <div class="playback-row-name">${t('player.discogs.apiKey')}</div>
+            <div class="playback-row-hint">${t('player.discogs.apiKeyHint')}</div>
           </label>
           <input type="text" id="discogs-key" class="settings-input" style="max-width:280px"
-            placeholder="Consumer Key (optional)" autocomplete="off"
+            placeholder="${t('player.discogs.apiKeyPlaceholder')}" autocomplete="off"
             data-form-type="other" data-lpignore="true" data-1p-ignore data-bwignore
             value="${esc(cfg.apiKey || '')}">
         </div>
 
         <div class="playback-row">
           <label class="playback-row-label" for="discogs-secret">
-            <div class="playback-row-name">API Secret</div>
-            <div class="playback-row-hint">Consumer Secret from Discogs developer settings</div>
+            <div class="playback-row-name">${t('player.discogs.apiSecret')}</div>
+            <div class="playback-row-hint">${t('player.discogs.apiSecretHint')}</div>
           </label>
           <input type="password" id="discogs-secret" class="settings-input" style="max-width:280px"
-            placeholder="Consumer Secret (optional)" autocomplete="new-password"
+            placeholder="${t('player.discogs.apiSecretPlaceholder')}" autocomplete="new-password"
             data-form-type="other" data-lpignore="true" data-1p-ignore data-bwignore
             value="${esc(cfg.apiSecret || '')}">
         </div>
 
         <div class="playback-row" style="justify-content:flex-end">
-          <button class="btn-primary" id="discogs-save-btn">Save</button>
+          <button class="btn-primary" id="discogs-save-btn">${t('player.modal.save')}</button>
         </div>
       </div>
     </div>`);
@@ -17637,7 +16277,7 @@ async function viewDiscogs() {
     const enabled   = document.getElementById('discogs-enabled').checked;
     const apiKey    = document.getElementById('discogs-key').value.trim();
     const apiSecret = document.getElementById('discogs-secret').value.trim();
-    btn.disabled = true; btn.textContent = 'Saving…';
+    btn.disabled = true; btn.textContent = t('player.misc.saving');
     try {
       await api('POST', 'api/v1/admin/discogs/config', {
         enabled,
@@ -17652,7 +16292,7 @@ async function viewDiscogs() {
       viewDiscogs();
     } catch (e) {
       toast(t('player.toast.errorMsg', { error: e.message }));
-      btn.disabled = false; btn.textContent = 'Save';
+      btn.disabled = false; btn.textContent = t('player.modal.save');
     }
   });
 }
@@ -17884,7 +16524,7 @@ let _sonosNavReachable = false;
 function _hasDetectedSonos() {
   const cfg = S.sonosConfig || {};
   const enabled = (S.sonosEnabled === true) || (cfg.enabled === true);
-  return enabled && _sonosNavReachable;
+  return S.canCast && enabled && _sonosNavReachable;
 }
 
 function _updateSonosRadioNavVisibility() {
@@ -17895,6 +16535,11 @@ function _updateSonosRadioNavVisibility() {
 
 async function _refreshSonosNavDetection() {
   if (!S.token) return;
+  if (!S.canCast) {
+    _sonosNavReachable = false;
+    _updateSonosRadioNavVisibility();
+    return;
+  }
   try {
     const d = await api('GET', 'api/v1/sonos/devices');
     if (!d) {
@@ -17920,6 +16565,7 @@ async function _refreshSonosNavDetection() {
     _sonosNavReachable = reachable;
     _updateSonosRadioNavVisibility();
   } catch {
+    S.sonosEnabled = false;
     _sonosNavReachable = false;
     _updateSonosRadioNavVisibility();
   }
@@ -18394,7 +17040,7 @@ function _radioSearchPanel() {
       </div>
       <div class="playback-row">
         <label class="playback-row-label" for="rs-search-q" style="min-width:130px"><div class="playback-row-name">${t('player.radio.searchLabelName')}</div></label>
-        <input type="text" id="rs-search-q" class="settings-input" style="max-width:320px" placeholder="e.g. 538, 3FM, BBC Radio 2">
+        <input type="text" id="rs-search-q" class="settings-input" style="max-width:320px" placeholder="${t('player.radio.searchPlaceholder')}">
       </div>
       <div class="playback-row">
         <label class="playback-row-label" for="rs-search-country" style="min-width:130px"><div class="playback-row-name">${t('player.radio.searchLabelCountry')}</div><div class="playback-row-hint">${t('player.radio.searchCountryHint')}</div></label>
@@ -18491,7 +17137,7 @@ async function _execRadioSearch() {
               <div class="rs-result-meta">${esc(codecLabel(best))}${best.country ? ' · ' + esc(best.country) : ''}${best.tags ? ' · ' + esc(best.tags.split(',').slice(0, 2).map(t => t.trim()).filter(Boolean).join(', ')) : ''}</div>
             </div>
             <div class="rs-result-actions">
-              ${rest.length ? `<button class="btn-flat rs-alts-toggle" data-target="${altId}" style="font-size:.8rem;padding:.2rem .5rem" title="${rest.length} alternative stream${rest.length > 1 ? 's' : ''}">▾ ${rest.length}</button>` : ''}
+              ${rest.length ? `<button class="btn-flat rs-alts-toggle" data-target="${altId}" style="font-size:.8rem;padding:.2rem .5rem" title="${t('player.radio.altStreams', { count: rest.length })}">▾ ${rest.length}</button>` : ''}
               <button class="btn-primary rs-pick-btn" style="padding:.3rem .75rem;font-size:.85rem" data-station="${esc(encodeURIComponent(JSON.stringify(best)))}">${t('player.radio.btnSelect')}</button>
             </div>
           </div>
@@ -18564,15 +17210,15 @@ function _radioEditForm(station) {
       </div>
       <div class="playback-row">
         <label class="playback-row-label" for="rs-name" style="min-width:130px"><div class="playback-row-name">${t('player.radio.labelName')} <span style="color:var(--accent)">*</span></div></label>
-        <input type="text" id="rs-name" class="settings-input" style="max-width:320px" placeholder="e.g. Radio Paradise" value="${esc(s.name||'')}">  
+        <input type="text" id="rs-name" class="settings-input" style="max-width:320px" placeholder="${t('player.radio.namePlaceholder')}" value="${esc(s.name||'')}">  
       </div>
       <div class="playback-row">
         <label class="playback-row-label" for="rs-genre" style="min-width:130px"><div class="playback-row-name">${t('player.radio.labelGenre')}</div><div class="playback-row-hint">${t('player.radio.genreHint')}</div></label>
-        <input type="text" id="rs-genre" class="settings-input" style="max-width:320px" placeholder="e.g. Top40, House, Dance" value="${esc(s.genre||'')}">
+        <input type="text" id="rs-genre" class="settings-input" style="max-width:320px" placeholder="${t('player.radio.genrePlaceholder')}" value="${esc(s.genre||'')}">
       </div>
       <div class="playback-row">
         <label class="playback-row-label" for="rs-country" style="min-width:130px"><div class="playback-row-name">${t('player.radio.labelCountry')}</div></label>
-        <input type="text" id="rs-country" class="settings-input" style="max-width:320px" placeholder="e.g. US, Netherlands" value="${esc(s.country||'')}">  
+        <input type="text" id="rs-country" class="settings-input" style="max-width:320px" placeholder="${t('player.radio.countryPlaceholder')}" value="${esc(s.country||'')}">  
       </div>
       <div class="playback-row">
         <label class="playback-row-label" for="rs-link-a" style="min-width:130px"><div class="playback-row-name">${t('player.radio.labelStreamUrl')} <span style="color:var(--accent)">*</span></div><div class="playback-row-hint">${t('player.radio.streamUrlHint')}</div></label>
@@ -18743,7 +17389,7 @@ function _renderRadioView() {
     btn.addEventListener('click', async () => {
       const s = _radioStations.find(x => x.id == btn.dataset.id);
       if (!s) return;
-      if (!confirm(`Delete "${s.name}"?`)) return;
+      if (!confirm(t('player.modal.deleteNamedConfirm', { name: s.name }))) return;
       try {
         await api('DELETE', `api/v1/radio/stations/${s.id}`);
         _radioStations = _radioStations.filter(x => x.id !== s.id);
@@ -18770,7 +17416,7 @@ function _attachRadioFormHandlers() {
     if (!body.name) { toast(t('player.toast.nameRequired')); return; }
     if (!body.link_a) { toast(t('player.toast.streamUrlRequired')); return; }
     const btn = document.getElementById('rs-save-btn');
-    btn.disabled = true; btn.textContent = 'Saving…';
+    btn.disabled = true; btn.textContent = t('player.misc.saving');
     try {
       if (id) {
         await api('PUT', `api/v1/radio/stations/${id}`, body);
@@ -18783,8 +17429,8 @@ function _attachRadioFormHandlers() {
       document.getElementById('rs-edit-area').innerHTML = '';
       _renderRadioView();
     } catch (e) {
-      toast(t('player.toast.saveFailed') + ': ' + (e.message || 'unknown error'));
-      btn.disabled = false; btn.textContent = id ? 'Save Changes' : 'Add Station';
+      toast(t('player.toast.errorMsg', { error: e.message || t('player.toast.saveFailed') }));
+      btn.disabled = false; btn.textContent = id ? t('player.radio.btnSaveChanges') : t('player.radio.btnAddStation');
     }
   });
 }
@@ -18947,29 +17593,34 @@ function viewYoutube() {
       toast(t('player.toast.ytDownloadComplete'));
 
       // Build a minimal song object and show inline play controls
-      const song = {
-        filepath: job.vpath + '/' + job.filePath,
+      const fallbackSong = {
+        filepath: job.filepath || (job.vpath + '/' + job.filePath),
         title:  title  || job.filePath,
         artist: artist || '',
         album:  album  || '',
         'album-art': thumbUrl || null,
       };
+      // The DB lookup maps a child-vpath path to its root vpath; until the file is indexed keep the fallback
+      const resolveSong = () => api('POST', 'api/v1/db/metadata', { filepath: fallbackSong.filepath })
+        .then(meta => (meta?.metadata ? norm(meta) : { ...fallbackSong, filepath: meta?.filepath || fallbackSong.filepath }))
+        .catch(() => fallbackSong);
       const actionsArea = document.getElementById('yt-post-actions');
       if (actionsArea) {
         actionsArea.innerHTML =
           `<button id="yt-play-btn"  class="btn-sm btn-primary" style="flex-shrink:0;">${t('player.ytdl.btnPlayNow')}</button>` +
           `<button id="yt-queue-btn" class="btn-sm btn-primary" style="flex-shrink:0;">${t('player.ytdl.btnAddToQueue')}</button>`;
         actionsArea.classList.remove('hidden');
-        document.getElementById('yt-play-btn').addEventListener('click', () => {
+        document.getElementById('yt-play-btn').addEventListener('click', async () => {
+          const song = await resolveSong();
           Player.playSingle(song);
-          toast(t('player.toast.ytPlayingNow', { title: esc(song.title) }));
+          toast(t('player.toast.ytPlayingNow', { title: song.title || fallbackSong.title }));
         });
-        document.getElementById('yt-queue-btn').addEventListener('click', () => {
-          Player.queueAndPlay(song);
+        document.getElementById('yt-queue-btn').addEventListener('click', async () => {
+          Player.queueAndPlay(await resolveSong());
         });
       }
     } catch (err) {
-      statusEl.textContent = t('player.ytdl.errorStatus', { error: esc(err.message || t('player.toast.ytDownloadFailed')) });
+      statusEl.textContent = t('player.ytdl.errorStatus', { error: err.message || t('player.toast.ytDownloadFailed') });
       toast(err.message || t('player.toast.ytDownloadFailed'));
     } finally {
       dlBtn.disabled = false;
@@ -18992,7 +17643,7 @@ function viewPodcasts() {
 
 function _renderPodcastsView(abVpaths, recVpaths = []) {
   if (abVpaths.length === 0 && recVpaths.length === 0) {
-    setBody('<div class="empty-state">No audio content folders configured</div>');
+    setBody(`<div class="empty-state">${t('player.audioContent.empty')}</div>`);
     return;
   }
   const folderIcon = `<svg class="fe-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>`;
@@ -19007,7 +17658,7 @@ function _renderPodcastsView(abVpaths, recVpaths = []) {
 
   const body = document.getElementById('content-body');
   body.innerHTML = `
-    <div class="fe-breadcrumb"><span class="fe-crumb" style="cursor:default">⌂ Audio Content</span></div>
+    <div class="fe-breadcrumb"><span class="fe-crumb" style="cursor:default">⌂ ${t('player.nav.audioContent')}</span></div>
     <div class="fe-filter-row">
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
       <input id="fe-filter" class="fe-filter-input" type="text" placeholder="${t('player.fe.filterPlaceholder')}" autocomplete="off">
@@ -19054,14 +17705,7 @@ function _pfArtHtml(img, size, w, h) {
   if (u) return `<img src="${u}" alt="" style="width:${ws};height:${hs};object-fit:cover;display:block" data-err="noart">` ;
   return noArtHtml();
 }
-function _fmtDuration(secs) {
-  if (!secs || Number.isNaN(secs)) return '';
-  const h = Math.floor(secs / 3600);
-  const m = Math.floor((secs % 3600) / 60);
-  const s = Math.floor(secs % 60);
-  if (h > 0) return `${h}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;
-  return `${m}:${String(s).padStart(2,'0')}`;
-}
+function _fmtDuration(secs) { return secs ? fmt(secs) : ''; }
 function _fmtPubDate(unix) {
   if (!unix) return '';
   return new Date(unix * 1000).toLocaleDateString(I18N.getLanguage(), { year:'numeric', month:'short', day:'numeric' });
@@ -19416,6 +18060,8 @@ async function viewPodcastEpisodes(feed) {
       const ep = episodes.find(e => e.id == btn.dataset.id);
       if (!ep) return;
       _setPlaySource('podcast', feed.title || feed.url);
+      const resumeAt = _podcastResumeAt(ep);
+      if (resumeAt) _pendingCueSeek = resumeAt;
       Player.playSingle({
         title:          ep.title,
         artist:         feed.author || feed.title,
@@ -19473,8 +18119,10 @@ function viewPlayback() {
   document.getElementById('add-all-btn').onclick  = null;
 
   const xf = S.crossfade;
-  const sleepActive = S.sleepMins > 0;
-  const sleepRemaining = sleepActive ? Math.max(0, Math.ceil((S.sleepEndsAt - Date.now()) / 60000)) : 0;
+  const sleepActive = S.sleepMins !== 0;
+  const sleepRemainingText = S.sleepMins === -1
+    ? t('player.sleep.afterSong')
+    : t('player.sleep.remaining', { mins: Math.max(0, Math.ceil((S.sleepEndsAt - Date.now()) / 60000)) });
 
   setBody(`
     <div class="playback-panel">
@@ -19484,18 +18132,18 @@ function viewPlayback() {
         <div class="playback-section-hdr">
           <div class="playback-section-icon">🎚️</div>
           <div>
-            <div class="playback-section-title">Crossfade</div>
-            <div class="playback-section-desc">Smoothly blend between tracks — the current song fades out while the next fades in.</div>
+            <div class="playback-section-title">${t('player.player.crossfadeShort')}</div>
+            <div class="playback-section-desc">${t('player.playback.xfDesc')}</div>
           </div>
         </div>
         <div class="playback-row">
           <div class="playback-row-label">
-            <div class="playback-row-name">Crossfade Duration</div>
-            <div class="playback-row-hint">0 = disabled · max 12 seconds</div>
+            <div class="playback-row-name">${t('player.autodj.crossfadeLabel')}</div>
+            <div class="playback-row-hint">${t('player.playback.xfHint')}</div>
           </div>
           <div class="xf-ctrl">
             <input type="range" id="xf-slider" class="xf-slider" min="0" max="12" step="1" value="${xf}">
-            <span id="xf-val" class="xf-val">${xf === 0 ? t('player.autodj.crossfadeOff') : xf + 's'}</span>
+            <span id="xf-val" class="xf-val">${_crossfadeLabel(xf)}</span>
           </div>
         </div>
       </div>
@@ -19505,14 +18153,14 @@ function viewPlayback() {
         <div class="playback-section-hdr">
           <div class="playback-section-icon">▶▶</div>
           <div>
-            <div class="playback-section-title">Gapless Playback</div>
-            <div class="playback-section-desc">Pre-buffer the next track so it starts instantly with no silence. Works when Crossfade is set to 0.</div>
+            <div class="playback-section-title">${t('player.playback.gaplessTitle')}</div>
+            <div class="playback-section-desc">${t('player.playback.gaplessDesc')}</div>
           </div>
         </div>
         <div class="playback-row">
           <div class="playback-row-label">
-            <div class="playback-row-name">Gapless Mode</div>
-            <div class="playback-row-hint">Requires crossfade = 0; overridden by crossfade when > 0</div>
+            <div class="playback-row-name">${t('player.playback.gaplessMode')}</div>
+            <div class="playback-row-hint">${t('player.playback.gaplessHint')}</div>
           </div>
           <label class="toggle-sw">
             <input type="checkbox" id="gapless-enable" ${S.gapless ? 'checked' : ''}>
@@ -19526,14 +18174,14 @@ function viewPlayback() {
         <div class="playback-section-hdr">
           <div class="playback-section-icon">▶️</div>
           <div>
-            <div class="playback-section-title">Auto-Resume</div>
-            <div class="playback-section-desc">When you reopen the browser or reload the page, automatically resume playing where you left off. When disabled, music is always paused on start.</div>
+            <div class="playback-section-title">${t('player.playback.resumeTitle')}</div>
+            <div class="playback-section-desc">${t('player.playback.resumeDesc')}</div>
           </div>
         </div>
         <div class="playback-row">
           <div class="playback-row-label">
-            <div class="playback-row-name">Resume playback on reload</div>
-            <div class="playback-row-hint">Stored in this browser — off by default</div>
+            <div class="playback-row-name">${t('player.playback.resumeLabel')}</div>
+            <div class="playback-row-hint">${t('player.playback.resumeHint')}</div>
           </div>
           <label class="toggle-sw">
             <input type="checkbox" id="auto-resume-enable" ${S.autoResume ? 'checked' : ''}>
@@ -19547,17 +18195,17 @@ function viewPlayback() {
         <div class="playback-section-hdr">
           <div class="playback-section-icon">🔈</div>
           <div>
-            <div class="playback-section-title">Audio Output Device</div>
-            <div class="playback-section-desc">Choose which speaker or audio device to use for playback.</div>
+            <div class="playback-section-title">${t('player.device.title')}</div>
+            <div class="playback-section-desc">${t('player.device.desc')}</div>
           </div>
         </div>
         <div class="playback-row">
           <div class="playback-row-label">
-            <div class="playback-row-name">Output device</div>
-            <div class="playback-row-hint" id="audio-output-hint">Requires browser permission to list devices</div>
+            <div class="playback-row-name">${t('player.device.outputLabel')}</div>
+            <div class="playback-row-hint" id="audio-output-hint">${t('player.device.permHint')}</div>
           </div>
-          <select class="settings-select" id="audio-output-sel"><option value="">Default</option></select>
-          <button class="btn-sm" id="audio-perm-btn" style="display:none;margin-top:8px;">Allow devices</button>
+          <select class="settings-select" id="audio-output-sel"><option value="">${t('player.device.default')}</option></select>
+          <button class="btn-sm" id="audio-perm-btn" style="display:none;margin-top:8px;">${t('player.device.allow')}</button>
         </div>
       </div>
 
@@ -19566,14 +18214,14 @@ function viewPlayback() {
         <div class="playback-section-hdr">
           <div class="playback-section-icon">🔊</div>
           <div>
-            <div class="playback-section-title">Loudness Normalisation</div>
-            <div class="playback-section-desc">Adjusts each track's volume to a consistent −18 LUFS level using measurements from the Normalisation Workshop, falling back to embedded ReplayGain or R128 tags.</div>
+            <div class="playback-section-title">${t('player.playback.rgTitle')}</div>
+            <div class="playback-section-desc">${t('player.playback.rgDesc')}</div>
           </div>
         </div>
         <div class="playback-row">
           <div class="playback-row-label">
-            <div class="playback-row-name">Enable normalisation</div>
-            <div class="playback-row-hint">When off, all tracks play at their original recorded level</div>
+            <div class="playback-row-name">${t('player.playback.rgEnable')}</div>
+            <div class="playback-row-hint">${t('player.playback.rgEnableHint')}</div>
           </div>
           <label class="toggle-sw">
             <input type="checkbox" id="rg-enable" ${S.rgEnabled ? 'checked' : ''}>
@@ -19582,18 +18230,18 @@ function viewPlayback() {
         </div>
         <div class="playback-row">
           <div class="playback-row-label">
-            <div class="playback-row-name">Mode</div>
-            <div class="playback-row-hint">Track = each track independently · Album = preserve relative loudness within an album</div>
+            <div class="playback-row-name">${t('player.playback.rgMode')}</div>
+            <div class="playback-row-hint">${t('player.playback.rgModeHint')}</div>
           </div>
           <select id="rg-mode" style="width:auto;padding:.25rem .5rem;">
-            <option value="track"${S.rgMode==='track'?' selected':''}>Track</option>
-            <option value="album"${S.rgMode==='album'?' selected':''}>Album</option>
+            <option value="track"${S.rgMode==='track'?' selected':''}>${t('player.playback.rgModeTrack')}</option>
+            <option value="album"${S.rgMode==='album'?' selected':''}>${t('player.playback.rgModeAlbum')}</option>
           </select>
         </div>
         <div class="playback-row">
           <div class="playback-row-label">
-            <div class="playback-row-name">Pre-amp</div>
-            <div class="playback-row-hint">Extra gain offset on top of normalisation · 0 dB = pure −18 LUFS reference</div>
+            <div class="playback-row-name">${t('player.playback.rgPreamp')}</div>
+            <div class="playback-row-hint">${t('player.playback.rgPreampHint')}</div>
           </div>
           <div style="display:flex;align-items:center;gap:.5rem;">
             <input type="range" id="rg-preamp" min="-10" max="10" step="0.5" value="${S.rgPreamp}" style="width:100px;">
@@ -19602,8 +18250,8 @@ function viewPlayback() {
         </div>
         <div class="playback-row">
           <div class="playback-row-label">
-            <div class="playback-row-name">Clip Prevention</div>
-            <div class="playback-row-hint">Reduce gain if true peak would exceed 0 dBTP after normalisation</div>
+            <div class="playback-row-name">${t('player.playback.rgClip')}</div>
+            <div class="playback-row-hint">${t('player.playback.rgClipHint')}</div>
           </div>
           <label class="toggle-sw">
             <input type="checkbox" id="rg-clip" ${S.rgClip ? 'checked' : ''}>
@@ -19618,18 +18266,18 @@ function viewPlayback() {
         <div class="playback-section-hdr">
           <div class="playback-section-icon"><svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor"><path d="M23.498 6.186a3.016 3.016 0 0 0-2.122-2.136C19.505 3.545 12 3.545 12 3.545s-7.505 0-9.377.505A3.017 3.017 0 0 0 .502 6.186C0 8.07 0 12 0 12s0 3.93.502 5.814a3.016 3.016 0 0 0 2.122 2.136c1.871.505 9.376.505 9.376.505s7.505 0 9.377-.505a3.015 3.015 0 0 0 2.122-2.136C24 15.93 24 12 24 12s0-3.93-.502-5.814zM9.545 15.568V8.432L15.818 12l-6.273 3.568z"/></svg></div>
           <div>
-            <div class="playback-section-title">YouTube Download</div>
-            <div class="playback-section-desc">Default audio format when downloading from YouTube. Saved to your recordings folder alongside radio recordings.</div>
+            <div class="playback-section-title">${t('player.title.youtubeDownload')}</div>
+            <div class="playback-section-desc">${t('player.playback.ytDesc')}</div>
           </div>
         </div>
         <div class="playback-row">
           <div class="playback-row-label">
-            <div class="playback-row-name">Download format</div>
-            <div class="playback-row-hint">Opus = original stream, no re-encoding · MP3 = universal, requires ffmpeg</div>
+            <div class="playback-row-name">${t('player.playback.ytFormat')}</div>
+            <div class="playback-row-hint">${t('player.playback.ytFormatHint')}</div>
           </div>
           <select class="settings-select" id="ytdl-format-sel">
-            <option value="opus" ${(localStorage.getItem(_uKey('ytdl_format')) || 'opus') === 'opus' ? 'selected' : ''}>Opus (original quality)</option>
-            <option value="mp3"  ${localStorage.getItem(_uKey('ytdl_format')) === 'mp3' ? 'selected' : ''}>MP3 (universal, re-encoded)</option>
+            <option value="opus" ${(localStorage.getItem(_uKey('ytdl_format')) || 'opus') === 'opus' ? 'selected' : ''}>${t('player.ytdl.formatOpus')}</option>
+            <option value="mp3"  ${localStorage.getItem(_uKey('ytdl_format')) === 'mp3' ? 'selected' : ''}>${t('player.ytdl.formatMp3')}</option>
           </select>
         </div>
       </div>` : ''}
@@ -19639,18 +18287,18 @@ function viewPlayback() {
         <div class="playback-section-hdr">
           <div class="playback-section-icon">🖥️</div>
           <div>
-            <div class="playback-section-title">Interface</div>
-            <div class="playback-section-desc">Layout preferences for the player window.</div>
+            <div class="playback-section-title">${t('player.playback.uiTitle')}</div>
+            <div class="playback-section-desc">${t('player.playback.uiDesc')}</div>
           </div>
         </div>
         <div class="playback-row">
           <div class="playback-row-label">
-            <div class="playback-row-name">Player bar position</div>
-            <div class="playback-row-hint">Move the playback controls and DJ strip to the top or bottom of the window</div>
+            <div class="playback-row-name">${t('player.playback.barPos')}</div>
+            <div class="playback-row-hint">${t('player.playback.barPosHint')}</div>
           </div>
           <div id="bar-pos-seg" class="playback-seg">
-            <button class="playback-seg-btn ${!S.barTop ? 'active' : ''}" data-pos="bottom">Bottom</button>
-            <button class="playback-seg-btn ${S.barTop  ? 'active' : ''}" data-pos="top">Top</button>
+            <button class="playback-seg-btn ${!S.barTop ? 'active' : ''}" data-pos="bottom">${t('player.playback.barBottom')}</button>
+            <button class="playback-seg-btn ${S.barTop  ? 'active' : ''}" data-pos="top">${t('player.playback.barTop')}</button>
           </div>
         </div>
       </div>
@@ -19660,14 +18308,14 @@ function viewPlayback() {
         <div class="playback-section-hdr">
           <div class="playback-section-icon">🗂️</div>
           <div>
-            <div class="playback-section-title">Navigation</div>
-            <div class="playback-section-desc">Show or hide sections in the sidebar. Settings are synced across devices.</div>
+            <div class="playback-section-title">${t('player.playback.navTitle')}</div>
+            <div class="playback-section-desc">${t('player.playback.navDesc')}</div>
           </div>
         </div>
         <div class="playback-row">
           <div class="playback-row-label">
-            <div class="playback-row-name">Genres</div>
-            <div class="playback-row-hint">Browse your library by genre tag</div>
+            <div class="playback-row-name">${t('player.nav.genres')}</div>
+            <div class="playback-row-hint">${t('player.playback.navGenresHint')}</div>
           </div>
           <label class="toggle-sw">
             <input type="checkbox" id="show-genres-enable" ${S.showGenres ? 'checked' : ''}>
@@ -19676,8 +18324,8 @@ function viewPlayback() {
         </div>
         <div class="playback-row">
           <div class="playback-row-label">
-            <div class="playback-row-name">Decades</div>
-            <div class="playback-row-hint">Browse your library by release decade</div>
+            <div class="playback-row-name">${t('player.nav.decades')}</div>
+            <div class="playback-row-hint">${t('player.playback.navDecadesHint')}</div>
           </div>
           <label class="toggle-sw">
             <input type="checkbox" id="show-decades-enable" ${S.showDecades ? 'checked' : ''}>
@@ -19691,14 +18339,14 @@ function viewPlayback() {
         <div class="playback-section-hdr">
           <div class="playback-section-icon">🎨</div>
           <div>
-            <div class="playback-section-title">Dynamic Colours</div>
-            <div class="playback-section-desc">Tints the interface with the dominant colour sampled from the current album art.</div>
+            <div class="playback-section-title">${t('player.playback.dynTitle')}</div>
+            <div class="playback-section-desc">${t('player.playback.dynDesc')}</div>
           </div>
         </div>
         <div class="playback-row">
           <div class="playback-row-label">
-            <div class="playback-row-name">Dynamic Colours</div>
-            <div class="playback-row-hint">Stored in this browser's local storage — setting is per-browser for now</div>
+            <div class="playback-row-name">${t('player.playback.dynTitle')}</div>
+            <div class="playback-row-hint">${t('player.playback.dynHint')}</div>
           </div>
           <label class="toggle-sw">
             <input type="checkbox" id="dyn-color-enable" ${S.dynColor ? 'checked' : ''}>
@@ -19712,14 +18360,14 @@ function viewPlayback() {
         <div class="playback-section-hdr">
           <div class="playback-section-icon">🏷️</div>
           <div>
-            <div class="playback-section-title">Queue Artist Display</div>
-            <div class="playback-section-desc">For tracks in the Album Library (albumsOnly vpaths), show the Album Artist tag in the queue and player bar instead of the track artist. Useful when tracks have individual performer tags but you want to see the album owner (e.g. "Various Artists" or the main artist for feat. tracks).</div>
+            <div class="playback-section-title">${t('player.playback.qaaTitle')}</div>
+            <div class="playback-section-desc">${t('player.playback.qaaDesc')}</div>
           </div>
         </div>
         <div class="playback-row">
           <div class="playback-row-label">
-            <div class="playback-row-name">Use Album Artist in queue</div>
-            <div class="playback-row-hint">Only applies to Album Library vpaths · falls back to track artist when Album Artist tag is empty</div>
+            <div class="playback-row-name">${t('player.playback.qaaLabel')}</div>
+            <div class="playback-row-hint">${t('player.playback.qaaHint')}</div>
           </div>
           <label class="toggle-sw">
             <input type="checkbox" id="queue-aa-enable" ${S.queueShowAlbumArtist ? 'checked' : ''}>
@@ -19733,24 +18381,24 @@ function viewPlayback() {
         <div class="playback-section-hdr">
           <div class="playback-section-icon">😴</div>
           <div>
-            <div class="playback-section-title">Sleep Timer</div>
-            <div class="playback-section-desc">Playback fades out and stops automatically after the chosen time.</div>
+            <div class="playback-section-title">${t('player.sleep.title')}</div>
+            <div class="playback-section-desc">${t('player.sleep.desc')}</div>
           </div>
         </div>
         ${sleepActive ? `
         <div class="sleep-active-box" id="sleep-active-box">
           <div class="sleep-active-info">
-            <span class="sleep-active-label">Timer active</span>
-            <span class="sleep-active-remaining" id="sleep-view-remaining">${sleepRemaining} min remaining</span>
+            <span class="sleep-active-label">${t('player.sleep.active')}</span>
+            <span class="sleep-active-remaining" id="sleep-view-remaining">${esc(sleepRemainingText)}</span>
           </div>
-          <button class="sleep-cancel-btn" id="sleep-cancel-btn">Cancel</button>
+          <button class="sleep-cancel-btn" id="sleep-cancel-btn">${t('player.sleep.cancel')}</button>
         </div>` : ''}
         <div class="sleep-presets" id="sleep-presets">
-          <button class="sleep-preset" data-mins="15">15 min</button>
-          <button class="sleep-preset" data-mins="30">30 min</button>
-          <button class="sleep-preset" data-mins="60">60 min</button>
-          <button class="sleep-preset" data-mins="90">90 min</button>
-          <button class="sleep-preset" data-mins="-1">End of song</button>
+          <button class="sleep-preset" data-mins="15">${t('player.sleep.preset', { mins: 15 })}</button>
+          <button class="sleep-preset" data-mins="30">${t('player.sleep.preset', { mins: 30 })}</button>
+          <button class="sleep-preset" data-mins="60">${t('player.sleep.preset', { mins: 60 })}</button>
+          <button class="sleep-preset" data-mins="90">${t('player.sleep.preset', { mins: 90 })}</button>
+          <button class="sleep-preset" data-mins="-1">${t('player.sleep.endOfSongBtn')}</button>
         </div>
       </div>
 
@@ -19758,7 +18406,6 @@ function viewPlayback() {
 
   // Crossfade slider
   const xfSlider = document.getElementById('xf-slider');
-  const xfVal    = document.getElementById('xf-val');
   xfSlider.addEventListener('input', () => {
     setCrossfade(xfSlider.value);
   });
@@ -19780,7 +18427,7 @@ function viewPlayback() {
     S.rgEnabled ? localStorage.setItem(_uKey('rg'), '1') : localStorage.removeItem(_uKey('rg'));
     _syncPrefs();
     if (S.queue[S.idx]) _applyRGGain(S.queue[S.idx]);
-    _mpvReapplyGain();
+    _mpvApplyAudioState();
     toast(t(S.rgEnabled ? 'player.toast.loudnessOn' : 'player.toast.loudnessOff'));
   });
 
@@ -19790,7 +18437,7 @@ function viewPlayback() {
     localStorage.setItem(_uKey('rg_mode'), S.rgMode);
     _syncPrefs();
     if (S.queue[S.idx]) _applyRGGain(S.queue[S.idx]);
-    _mpvReapplyGain();
+    _mpvApplyAudioState();
   });
 
   // ReplayGain preamp slider
@@ -19802,7 +18449,7 @@ function viewPlayback() {
     localStorage.setItem(_uKey('rg_preamp'), String(S.rgPreamp));
     _syncPrefs();
     if (S.queue[S.idx]) _applyRGGain(S.queue[S.idx]);
-    _mpvReapplyGain();
+    _mpvApplyAudioState();
   });
 
   // ReplayGain clipping prevention
@@ -19811,7 +18458,7 @@ function viewPlayback() {
     S.rgClip ? localStorage.setItem(_uKey('rg_clip'), '1') : localStorage.setItem(_uKey('rg_clip'), '0');
     _syncPrefs();
     if (S.queue[S.idx]) _applyRGGain(S.queue[S.idx]);
-    _mpvReapplyGain();
+    _mpvApplyAudioState();
   });
 
   // Gapless toggle
@@ -19909,7 +18556,7 @@ function viewPlayback() {
         const hasLabels = outputs.some(d => d.label);
         if (outputs.length <= 1 || !hasLabels) {
           sel.disabled = true;
-          if (hint) hint.textContent = 'Browser permission needed to list devices';
+          if (hint) hint.textContent = t('player.device.permNeeded');
           if (permBtn) permBtn.style.display = '';
           return;
         }
@@ -19918,14 +18565,14 @@ function viewPlayback() {
         outputs.forEach(d => {
           const opt = document.createElement('option');
           opt.value = d.deviceId;
-          opt.textContent = d.label || ('Output ' + d.deviceId.slice(0, 6));
+          opt.textContent = d.label || t('player.device.output', { id: d.deviceId.slice(0, 6) });
           if (d.deviceId === S.outputDeviceId) opt.selected = true;
           sel.appendChild(opt);
         });
         sel.value = S.outputDeviceId || '';
       } catch (_e) {
         sel.disabled = true;
-        if (hint) hint.textContent = 'Browser permission required to list audio devices';
+        if (hint) hint.textContent = t('player.device.permRequired');
         if (permBtn) permBtn.style.display = '';
       }
     }
@@ -19935,13 +18582,13 @@ function viewPlayback() {
     if (permBtn) {
       permBtn.addEventListener('click', async () => {
         permBtn.disabled = true;
-        permBtn.textContent = 'Requesting…';
+        permBtn.textContent = t('player.device.requesting');
         try {
           const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-          stream.getTracks().forEach(t => t.stop()); // release immediately
+          stream.getTracks().forEach(tr => tr.stop()); // release immediately
         } catch (_e) { /* user denied — that's OK */ }
         permBtn.disabled = false;
-        permBtn.textContent = 'Allow devices';
+        permBtn.textContent = t('player.device.allow');
         await populateOutputs();
       });
     }
@@ -19951,7 +18598,7 @@ function viewPlayback() {
       S.outputDeviceId ? localStorage.setItem(_uKey('output_device'), S.outputDeviceId)
                        : localStorage.removeItem(_uKey('output_device'));
       await _applyOutputDevice();
-      toast(S.outputDeviceId ? 'Audio output switched' : 'Switched to default output');
+      toast(t(S.outputDeviceId ? 'player.device.switched' : 'player.device.switchedDefault'));
     });
   })();
 
@@ -19984,7 +18631,7 @@ function setSleepTimer(mins) {
     S.sleepMins = -1;
     S.sleepEndsAt = -1;
     localStorage.setItem(_uKey('sleep_ends'), '-1');
-    _showInfoStrip('', '<span class="dj-strip-label">💤 Sleep — will stop after this song</span>', 5000, true);
+    _showInfoStrip('', `<span class="dj-strip-label">💤 ${t('player.sleep.afterSong')}</span>`, 5000, true);
     _updateSleepLight();
     return;
   }
@@ -19992,7 +18639,7 @@ function setSleepTimer(mins) {
   S.sleepMins = mins;
   S.sleepEndsAt = Date.now() + mins * 60000;
   localStorage.setItem(_uKey('sleep_ends'), String(S.sleepEndsAt));
-  _showInfoStrip('', `<span class="dj-strip-label">💤 Sleep timer set · <strong>${mins} min</strong></span>`, 5000, true);
+  _showInfoStrip('', `<span class="dj-strip-label">💤 ${t('player.sleep.timerSet', { mins })}</span>`, 5000, true);
   _updateSleepLight();
 
   _sleepTimer = setInterval(() => {
@@ -20000,7 +18647,7 @@ function setSleepTimer(mins) {
     _updateSleepLight();
     // Update the playback view remaining label if visible
     const remEl = document.getElementById('sleep-view-remaining');
-    if (remEl) remEl.textContent = Math.max(0, Math.ceil(remaining / 60000)) + ' min remaining';
+    if (remEl) remEl.textContent = t('player.sleep.remaining', { mins: Math.max(0, Math.ceil(remaining / 60000)) });
 
     if (remaining <= 0) {
       clearInterval(_sleepTimer);
@@ -20022,15 +18669,27 @@ function _updateSleepLight() {
   }
   el.classList.remove('hidden');
   if (S.sleepMins === -1) {
-    cd.textContent = 'end of song';
+    cd.textContent = t('player.sleep.endOfSong');
   } else {
     const mins = Math.max(0, Math.ceil((S.sleepEndsAt - Date.now()) / 60000));
     cd.textContent = mins + 'm';
   }
 }
 
+function _sleepStopped() {
+  S.sleepMins = 0;
+  S.sleepEndsAt = 0;
+  _updateSleepLight();
+  _showInfoStrip('', `<span class="dj-strip-label">💤 ${t('player.sleep.stopped')}</span>`, 6000, true);
+}
+
 function _sleepFadeOut() {
-  // Fade volume to 0 over 10 seconds then pause
+  // Rooms and casts play elsewhere; the local element is paused or muted, so fading it does nothing
+  if (_room || S.castingToSonos || S.castingToMpv) {
+    if (_isPlayingNow()) Player.toggle();
+    _sleepStopped();
+    return;
+  }
   const startVol = audioEl.volume;
   const steps = 40;
   const stepMs = 10000 / steps;
@@ -20041,11 +18700,9 @@ function _sleepFadeOut() {
     audioEl.volume = Math.max(0, startVol - dec * step);
     if (step >= steps) {
       clearInterval(iv);
-      audioEl.pause();
+      if (_isPlayingNow()) Player.toggle();
       audioEl.volume = startVol; // restore volume for next play
-      _showInfoStrip('', '<span class="dj-strip-label">💤 Sleep — playback stopped</span>', 6000, true);
-      S.sleepMins = 0;
-      _updateSleepLight();
+      _sleepStopped();
     }
   }, stepMs);
 }
@@ -20071,7 +18728,8 @@ const _ROOM_MAX_SONGS = 10000;
 function _roomActive() { return !!_room; }
 function _roomUrl(id, sub) { return 'api/v1/rooms/' + encodeURIComponent(id) + (sub ? '/' + sub : ''); }
 function _roomIsUrl(fp) { return /^https?:\/\//i.test(fp || ''); }
-function _roomPlaying() { return !!_room && (_room.state === 'playing' || _room.state === 'buffering'); }
+function _roomPlaying() { return !!_room && _room.state === 'playing'; }
+function _isPlayingNow() { return _room ? _roomPlaying() : !audioEl.paused; }
 function _roomPosSec() {
   if (!_room) return 0;
   let pos = (_room.positionMs || 0) / 1000;
@@ -20151,7 +18809,7 @@ async function _roomsBoot() {
   try { saved = localStorage.getItem(_uKey('room')); } catch (_) {}
   if (!saved || _room) return;
   const r = S.rooms.find(x => x.id === saved);
-  if (!r || !['playing', 'paused', 'buffering'].includes(r.state)) {
+  if (!r || !['playing', 'paused'].includes(r.state)) {
     try { localStorage.removeItem(_uKey('room')); } catch (_) {}
     return;
   }
@@ -20182,10 +18840,7 @@ function _roomEnter(room) {
 // From here the server scrobbles, counts and logs what the room plays (src/api/room-listen.js): this tab stops doing it.
 function _roomTakeOverListen() {
   clearTimeout(scrobbleTimer);
-  if (!_wrappedEventId) return;
-  const eid = _wrappedEventId;
-  _wrappedEventId = null;
-  api('POST', 'api/v1/wrapped/play-stop', { eventId: eid, playedMs: Math.max(0, Math.round(((audioEl.currentTime || 0) - _wrappedTrackStartOffset) * 1000)) }).catch(() => {});
+  _wrappedClose({ radio: false, podcast: false });
 }
 
 // The Playing Now scrobble badges follow the room's own scrobbles; null = the room does not scrobble this song.
@@ -20644,6 +19299,12 @@ function _roomAlignIndex(st) {
 
 function _roomApply(st) {
   if (!_room || !st || st.id !== _room.id) return;
+  // Rooms never fire 'ended' here: end-of-song sleep triggers on the room's track change
+  if (S.sleepMins === -1 && _room.filepath && st.current?.filepath && st.current.filepath !== _room.filepath && st.state === 'playing') {
+    _roomCmd('pause');
+    st.state = 'paused';
+    _sleepStopped();
+  }
   Object.assign(_room, {
     name: st.name || _room.name,
     state: st.state,
@@ -20711,7 +19372,7 @@ function _roomStartPoll() {
     _roomPaintProgress();
     // A hidden tab still polls (slower, and the browser may throttle this timer to once a minute): Auto-DJ tops up
     // the room from here, so it must keep running in the background.
-    const playing = _room.state === 'playing' || _room.state === 'buffering';
+    const playing = _room.state === 'playing';
     const everyMs = document.visibilityState !== 'visible' ? 10_000 : playing ? 1000 : 5000;
     if (Date.now() - lastPoll >= everyMs) { lastPoll = Date.now(); _roomPoll(); }
   }, 500);
@@ -20799,7 +19460,7 @@ function _roomToggleShuffle() {
   _roomModeTouchedAt = Date.now();
   _room.shuffle = shuffle;
   _syncShuffleBtn();
-  _showInfoStrip('', `<span class="dj-strip-label">Shuffle: <strong>${shuffle ? 'On' : 'Off'}</strong></span>`, 3000, true);
+  _showInfoStrip('', `<span class="dj-strip-label">${t('player.shuffle.label')}: <strong>${t(shuffle ? 'player.misc.on' : 'player.misc.off')}</strong></span>`, 3000, true);
   _roomCmd('shuffle', { shuffle }).then(() => { _roomModeTouchedAt = Date.now(); });
 }
 
@@ -21119,7 +19780,7 @@ document.getElementById('rooms-edit-create')?.addEventListener('click', async ()
 
 // ── OUTPUT PICKER (Browser / Server Speaker / Sonos) ─────────
 function _hasAnyOutput() {
-  const hasSonos = S.sonosEnabled && (S.sonosRooms.length > 0 || S.sonosDefaultRoom != null);
+  const hasSonos = S.canCast && S.sonosEnabled && (S.sonosRooms.length > 0 || S.sonosDefaultRoom != null);
   return (S.serverAudioRunning && S.allowMpvCast) || hasSonos || (S.roomsAvailable && S.rooms.length > 0) || !!_room;
 }
 
@@ -21147,9 +19808,6 @@ function _updateOutputBtn() {
     btn.title = t('player.output.castTo');
   }
 }
-
-// Keep old name as alias so any external callers still work
-const _updateCastBtn = _updateOutputBtn;
 
 let _outputDropdownEl = null;
 let _outputPickerFromScan = false; // prevents toggle-close + re-scan on scan-triggered re-opens
@@ -21201,7 +19859,7 @@ function _openOutputPicker() {
   }
 
   const hasMpv = S.serverAudioRunning && S.allowMpvCast;
-  const hasSonos = S.sonosEnabled && (S.sonosRooms.length > 0 || S.sonosDefaultRoom);
+  const hasSonos = S.canCast && S.sonosEnabled && (S.sonosRooms.length > 0 || S.sonosDefaultRoom);
 
   // Browser row — always present
   drop.appendChild(row(t('player.output.browser'), !S.castingToMpv && !S.castingToSonos && !_sonosFav && !_room, () => {
@@ -21272,7 +19930,7 @@ function _openOutputPicker() {
       // ℹ️ info button — shows device info panel inline
       const infoBtn = document.createElement('button');
       infoBtn.className = 'out-info-btn';
-      infoBtn.title = 'Device info';
+      infoBtn.title = t('player.device.info');
       infoBtn.innerHTML = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>';
       infoBtn.addEventListener('click', e => {
         e.stopPropagation();
@@ -21294,7 +19952,7 @@ function _openOutputPicker() {
         const panelClose = document.createElement('button');
         panelClose.className = 'out-info-close-btn';
         panelClose.innerHTML = '&times;';
-        panelClose.title = 'Close';
+        panelClose.title = t('player.modal.close');
         panelClose.addEventListener('click', e => {
           e.stopPropagation();
           _closeOutputDropdown();
@@ -21303,7 +19961,7 @@ function _openOutputPicker() {
         panelHdr.appendChild(panelClose);
         panel.appendChild(panelHdr);
         const panelBody = document.createElement('div');
-        panelBody.innerHTML = '<div class="out-info-loading">Loading…</div>';
+        panelBody.innerHTML = `<div class="out-info-loading">${t('player.misc.loading')}</div>`;
         panel.appendChild(panelBody);
         rowEl.after(panel);
         // Reposition dropdown after panel insertion
@@ -21318,7 +19976,7 @@ function _openOutputPicker() {
         ]).then(([info, bat]) => {
           if (!panel.isConnected) return;
           const row2 = (label, val) => val
-            ? `<div class="out-info-row"><span class="out-info-lbl">${label}</span><span class="out-info-val">${val}</span></div>`
+            ? `<div class="out-info-row"><span class="out-info-lbl">${esc(label)}</span><span class="out-info-val">${esc(String(val))}</span></div>`
             : '';
           let batHtml = '';
           if (bat?.supported) {
@@ -21329,16 +19987,16 @@ function _openOutputPicker() {
             const healthPart = isHealthy ? '' : ` · ${fmtBat(bat.health)}`;
             const tempPart = bat.temperature && bat.temperature !== 'NORMAL' ? ` ⚠\uFE0E ${fmtBat(bat.temperature)}` : '';
             const lvl = col ? `<span ${col}>${bat.level}%</span>` : `${bat.level}%`;
-            batHtml = `<div class="out-info-row"><span class="out-info-lbl">Battery</span><span class="out-info-val" style="white-space:nowrap">${icon} ${lvl}${healthPart}${tempPart}</span></div>`;
+            batHtml = `<div class="out-info-row"><span class="out-info-lbl">${t('player.output.battery')}</span><span class="out-info-val" style="white-space:nowrap">${icon} ${lvl}${healthPart}${tempPart}</span></div>`;
           }
           const wifiVal = info.wifi ? info.wifi + (info.sonosNetPeers && !info.sonosNetPeers.includes('NO_SONOSNET_PEERS') ? ' · SonosNet' : '') : null;
           panelBody.innerHTML = `
             ${row2('IP', info.ipAddress)}
             ${row2('MAC', info.macAddress)}
-            ${row2('Firmware', info.firmware + (info.firmwareDate ? ' · ' + info.firmwareDate : ''))}
-            ${row2('Hardware', info.model)}
-            ${row2('Series', info.seriesId)}
-            ${row2('Network', wifiVal)}
+            ${row2(t('player.output.firmware'), info.firmware + (info.firmwareDate ? ' · ' + info.firmwareDate : ''))}
+            ${row2(t('player.output.hardware'), info.model)}
+            ${row2(t('player.output.series'), info.seriesId)}
+            ${row2(t('player.output.network'), wifiVal)}
             ${batHtml}
           `;
           setTimeout(() => {
@@ -21347,7 +20005,7 @@ function _openOutputPicker() {
             drop.style.top = (top2 < 6 ? br2.bottom + 8 : top2) + 'px';
           }, 0);
         }).catch(() => {
-          if (panel.isConnected) panelBody.innerHTML = '<div class="out-info-loading" style="color:#f97316">Failed to load</div>';
+          if (panel.isConnected) panelBody.innerHTML = `<div class="out-info-loading" style="color:#f97316">${t('player.misc.failedToLoad')}</div>`;
         });
       });
       rowEl.appendChild(infoBtn);
@@ -21545,7 +20203,7 @@ function _handleCastResponse(r) {
     try { audioEl.currentTime = pos; } catch (_) { /* not seekable yet — the load seek applies later */ }
     _sonosCastTime = Date.now() - pos * 1000;
     _sonosCastSeekTo = 0;
-    console.log(`[sonos] speaker already playing this track since ${_mmss(pos)} (server auto-advance) — mirror positioned, not re-cast`);
+    console.log(`[sonos] speaker already playing this track since ${fmt(pos)} (server auto-advance) — mirror positioned, not re-cast`);
   }
   if (r.actualIp && r.actualIp !== S.sonosRoom.ip) {
     console.info(`[sonos] cast response: IP updated ${S.sonosRoom.ip} → ${r.actualIp}`);
@@ -21825,7 +20483,8 @@ function _clearSonosCastClientState() {
 async function _refreshServerAudioState() {
   let serverAudioEnabled = false;
   try {
-    const d = await api('GET', 'api/v1/admin/server-audio');
+    const d = await api('GET', 'api/v1/server-playback/available');
+    S.canCast = d?.allowed === true;
     serverAudioEnabled = d?.enabled === true;
     S.serverAudioRunning = !!(serverAudioEnabled && d.running);
   } catch (_) {
@@ -21903,7 +20562,7 @@ async function _refreshServerAudioState() {
       }
     } catch (_) {}
   }
-  _updateCastBtn();
+  _updateOutputBtn();
 }
 
 // Immediately mute/load one song into MPV and (optionally) seek
@@ -22015,7 +20674,7 @@ function _deactivateCast(clearMpv = true) {
     _setCrossfadeRestore(null);
     _syncCrossfadeButton();
   }
-  _updateCastBtn();
+  _updateOutputBtn();
 }
 
 async function toggleMpvCast(from = null) {
@@ -22043,7 +20702,7 @@ async function toggleMpvCast(from = null) {
     }
     S.castingToMpv = true;
     localStorage.setItem(_uKey('casting_mpv'), '1');
-    _updateCastBtn();
+    _updateOutputBtn();
     // Load current song into MPV, seek to current position
     await _mpvLoadSong(s.filepath, from ? from.seekTo : audioEl.currentTime);
     _startMpvHeartbeat(); // keep server watchdog alive
@@ -22058,7 +20717,7 @@ async function toggleMpvCast(from = null) {
     // Revert
     VIZ.setCastMute(false);
     S.castingToMpv = false;
-    _updateCastBtn();
+    _updateOutputBtn();
     toast(t('player.toast.castFailed'));
   }
 }
@@ -22087,20 +20746,19 @@ function _updateRecordBtn() {
   }
 }
 
-function _recElapsedStr(secs) {
-  const h = Math.floor(secs / 3600);
-  const m = Math.floor((secs % 3600) / 60);
-  const s = secs % 60;
-  const pad = n => String(n).padStart(2, '0');
-  return h > 0 ? `${h}:${pad(m)}:${pad(s)}` : `${m}:${pad(s)}`;
+// A station whose art could not be cached keeps its remote URL as album-art;
+// the recorder only accepts a cached art filename.
+function _recArtFile(s) {
+  const a = s['album-art'];
+  return a && /^[^/\\]+$/.test(a) ? a : null;
 }
 
 function _recurLabel(recurrence, recurDays) {
-  if (recurrence === 'daily')    return 'Daily';
-  if (recurrence === 'weekdays') return 'Weekdays';
+  if (recurrence === 'daily')    return t('player.modal.recEveryDay');
+  if (recurrence === 'weekdays') return t('player.modal.recWeekdays');
   if (recurrence === 'custom' && recurDays && recurDays.length) {
-    const names = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
-    return recurDays.map(d => names[d]).join(', ');
+    const names = ['recSun', 'recMon', 'recTue', 'recWed', 'recThu', 'recFri', 'recSat'];
+    return recurDays.map(d => t('player.modal.' + names[d])).join(', ');
   }
   return recurrence;
 }
@@ -22132,10 +20790,10 @@ async function _loadScheduleList() {
       return `<div class="rec-sched-item">
         <div class="rec-sched-item-info">
           <span class="rec-sched-station">${activeDot}${esc(sc.stationName)}</span>
-          <span class="rec-sched-when">${esc(when)} &bull; ${sc.durationMinutes} min &bull; ${esc(sc.vpath)}</span>
+          <span class="rec-sched-when">${esc(when)} &bull; ${t('player.rec.durationMin', { n: sc.durationMinutes })} &bull; ${esc(sc.vpath)}</span>
         </div>
         <div class="rec-sched-item-actions">
-          <button class="btn-xs${sc.enabled ? ' btn-xs-on' : ''}" data-sched-toggle="${esc(sc.id)}" data-enabled="${sc.enabled ? '1' : ''}">${sc.enabled ? 'On' : 'Off'}</button>
+          <button class="btn-xs${sc.enabled ? ' btn-xs-on' : ''}" data-sched-toggle="${esc(sc.id)}" data-enabled="${sc.enabled ? '1' : ''}">${t(sc.enabled ? 'player.misc.on' : 'player.misc.off')}</button>
           <button class="btn-xs btn-xs-del" data-sched-del="${esc(sc.id)}">&#x2715;</button>
         </div>
       </div>`;
@@ -22159,7 +20817,7 @@ function _recDeleteSchedule(id) {
 
 async function _saveSchedule(station, streamUrl) {
   const dtVal = document.getElementById('rec-sched-dt').value;
-  if (!dtVal) { _showInfoStrip('', '<span style="color:var(--err)">Please set a start date and time</span>', 4000, true); return; }
+  if (!dtVal) { _showInfoStrip('', `<span style="color:var(--err)">${t('player.rec.needStart')}</span>`, 4000, true); return; }
 
   const [datePart, timePart] = dtVal.split('T');
   const startTime = (timePart || '').slice(0, 5);
@@ -22168,7 +20826,7 @@ async function _saveSchedule(station, streamUrl) {
   if (recur === 'custom') {
     recurDays = [...document.querySelectorAll('#rec-sched-days-wrap input[type=checkbox]:checked')]
       .map(cb => Number.parseInt(cb.value, 10));
-    if (!recurDays.length) { _showInfoStrip('', '<span style="color:var(--err)">Select at least one day</span>', 4000, true); return; }
+    if (!recurDays.length) { _showInfoStrip('', `<span style="color:var(--err)">${t('player.rec.needDay')}</span>`, 4000, true); return; }
   }
 
   const vpath = document.getElementById('rec-sched-vpath').value;
@@ -22180,7 +20838,7 @@ async function _saveSchedule(station, streamUrl) {
     await api('POST', 'api/v1/radio/schedules', {
       stationName:     station.title || station.artist || 'Radio',
       streamUrl,
-      artFile:         station['album-art'] || null,
+      artFile:         _recArtFile(station),
       vpath,
       startTime,
       startDate:       recur === 'once' ? datePart : null,
@@ -22189,10 +20847,10 @@ async function _saveSchedule(station, streamUrl) {
       recurDays,
       description,
     });
-    _showInfoStrip('', '<span>Recording scheduled &#10003;</span>', 3000, true);
+    _showInfoStrip('', `<span>${t('player.rec.scheduled')} &#10003;</span>`, 3000, true);
     _loadScheduleList();
   } catch (e) {
-    _showInfoStrip('', `<span style="color:var(--err)">Schedule failed: ${esc(e.message || '')}</span>`, 5000, true);
+    _showInfoStrip('', `<span style="color:var(--err)">${t('player.rec.scheduleFailed', { error: esc(e.message || '') })}</span>`, 5000, true);
   }
 }
 
@@ -22221,29 +20879,24 @@ function _initRecordingModal() {
       const d = await api('POST', 'api/v1/radio/record/start', {
         url: streamUrl, vpath,
         stationName: s.title || s.artist || 'Radio',
-        artFile: s['album-art'] || null,
+        artFile: _recArtFile(s),
         description,
       });
-      S.recordingActive = true;
-      S.recordingId = d.id;
-      S.recordingElapsedSec = 0;
-      S.recordingMeta = { vpath, art: s['album-art'] || null, title: s.title || s.artist || 'Radio' };
-      S._recordingTimer = setInterval(() => {
-        S.recordingElapsedSec++;
-        const elEl = document.getElementById('radio-rec-elapsed');
-        if (elEl) elEl.textContent = _recElapsedStr(S.recordingElapsedSec);
-      }, 1000);
-      _updateRecordBtn();
-      _showInfoStrip('', `<span style="color:var(--err)">&#9679; Recording started &rarr; <em>${esc(d.filename || vpath)}</em></span>`, 5000, true);
+      _setActiveRecording(d.id, 0, { vpath, art: s['album-art'] || null, title: s.title || s.artist || 'Radio', startedHere: true });
+      try { sessionStorage.setItem('ms2_rec_owned', d.id); } catch (_) {}
+      _showInfoStrip('', `<span style="color:var(--err)">&#9679; ${t('player.rec.started')} &rarr; <em>${esc(d.filename || vpath)}</em></span>`, 5000, true);
     } catch (e) {
-      _showInfoStrip('', `<span style="color:var(--err)">Recording failed: ${esc(e.message || '')}</span>`, 6000, true);
+      _showInfoStrip('', `<span style="color:var(--err)">${t('player.rec.failed', { error: esc(e.message || '') })}</span>`, 6000, true);
     }
   });
 
   // Save schedule
   document.getElementById('rec-sched-save').addEventListener('click', () => {
     const s = S.queue[S.idx];
-    if (!s || !s.isRadio) return;
+    if (!s || !s.isRadio) {
+      _showInfoStrip('', `<span style="color:var(--err)">${t('player.rec.needStation')}</span>`, 4000, true);
+      return;
+    }
     const streamUrl = (s._radioLinks && s._radioLinks[s._radioLinkIdx || 0]) || s.filepath;
     _saveSchedule(s, streamUrl);
   });
@@ -22254,17 +20907,46 @@ function _initRecordingModal() {
   });
 }
 
+function _setActiveRecording(id, elapsedSec, meta) {
+  clearInterval(S._recordingTimer);
+  S.recordingActive = true;
+  S.recordingId = id;
+  S.recordingElapsedSec = elapsedSec;
+  S.recordingMeta = meta;
+  S._recordingTimer = setInterval(() => {
+    S.recordingElapsedSec++;
+    const elEl = document.getElementById('radio-rec-elapsed');
+    if (elEl) elEl.textContent = fmt(S.recordingElapsedSec);
+  }, 1000);
+  _updateRecordBtn();
+}
+
+// The recording keeps running on the server across a reload; without its id the stop button is gone.
+// The server lists every recording of this user, also those another tab or device started:
+// only the one this tab started (sessionStorage survives a reload, not a new tab) is
+// stopped automatically when a non-radio song comes up.
+async function _restoreActiveRecording() {
+  if (!S.allowRadioRecording || S.recordingActive) return;
+  const list = await api('GET', 'api/v1/radio/record/active').catch(() => []);
+  if (!Array.isArray(list) || !list.length) return;
+  let owned = null;
+  try { owned = sessionStorage.getItem('ms2_rec_owned'); } catch (_) {}
+  const r = list.find(x => x.id === owned) || list[0];
+  _setActiveRecording(r.id, Math.max(0, Math.floor((Date.now() - r.startedAt) / 1000)),
+    { vpath: r.vpath, art: null, title: r.stationName, startedHere: r.id === owned });
+}
+
 async function _startRecording() {
   const s = S.queue[S.idx];
   if (!s || !s.isRadio) return;
   // Get the raw stream URL (first link configured for this station)
   const streamUrl = (s._radioLinks && s._radioLinks[s._radioLinkIdx || 0]) || s.filepath || null;
   if (!streamUrl || !/^https?:\/\//i.test(streamUrl)) {
-    _showInfoStrip('', '<span style="color:var(--err)">No stream URL for this station</span>', 4000, true); return;
+    _showInfoStrip('', `<span style="color:var(--err)">${t('player.rec.noStream')}</span>`, 4000, true); return;
   }
 
   const vpaths = _recordingVpaths();
-  if (vpaths.length === 0) { _showInfoStrip('', '<span style="color:var(--err)">No Recordings folder configured</span>', 4000, true); return; }
+  if (vpaths.length === 0) { _showInfoStrip('', `<span style="color:var(--err)">${t('player.rec.noFolder')}</span>`, 4000, true); return; }
 
   // Populate both folder dropdowns
   const vpathOpts = vpaths.map(v => `<option value="${esc(v)}">${esc(v)}</option>`).join('');
@@ -22297,10 +20979,11 @@ async function _stopRecording() {
   const meta = S.recordingMeta || {};
   try {
     const d = await api('POST', 'api/v1/radio/record/stop', { id: S.recordingId });
-    const dur = d.durationMs ? _recElapsedStr(Math.round(d.durationMs / 1000)) : '';
+    const dur = d.durationMs ? fmt(Math.round(d.durationMs / 1000)) : '';
     const kb  = d.bytesWritten ? ` (${(d.bytesWritten / 1024).toFixed(0)} KB)` : '';
-    _showInfoStrip('', `<span>&#9679; Recording saved — ${dur}${kb}</span>`, 6000, true);
+    _showInfoStrip('', `<span>&#9679; ${t('player.rec.saved')} — ${dur}${kb}</span>`, 6000, true);
   } catch (_) {}
+  try { if (sessionStorage.getItem('ms2_rec_owned') === S.recordingId) sessionStorage.removeItem('ms2_rec_owned'); } catch (_) {}
   S.recordingActive = false;
   S.recordingId = null;
   S.recordingElapsedSec = 0;
@@ -22323,28 +21006,11 @@ function _mpvApplyAudioState() {
   const volumePct = isMuted ? 0 : Number.parseFloat(volSlider?.value ?? '80');
   // Balance — slider is -100…+100 integers, stored as -1.0…+1.0
   const balance   = Number.parseFloat(document.getElementById('balance')?.value ?? '0') / 100;
-  // RG gain — same computation as _applyRGGain / addToQueue on server
+  // RG gain — undefined = no song, don't touch the stored gainDb
   const s = S.queue[S.idx];
-  let gainDb    = undefined; // undefined = don't touch stored gainDb
-  let peakDbtp  = null;
-  if (s) {
-    gainDb = null;
-    if (S.rgEnabled && s.rg) {
-      if (S.rgMode === 'album' && s.rg.albumGain != null) { gainDb = s.rg.albumGain; peakDbtp = s.rg.albumPeak; }
-      else { gainDb = s.rg.trackGain; peakDbtp = s.rg.truePeak; }
-    }
-    if (gainDb == null && S.rgEnabled) gainDb = s.replaygain ?? null;
-    if (gainDb != null) {
-      let db = Number(gainDb) + (S.rgPreamp || 0);
-      if (S.rgClip && peakDbtp != null) { const h = -peakDbtp; if (db > h) db = h; }
-      gainDb = db;
-    }
-  }
+  const gainDb = s ? (_rgGain(s)?.db ?? null) : undefined;
   api('POST', 'api/v1/server-playback/reapply-gain', { gainDb, volumePct, balance }).catch(() => {});
 }
-
-// Thin alias so the 4 RG event listeners keep working unchanged.
-function _mpvReapplyGain() { _mpvApplyAudioState(); }
 
 /** Mirror current volume + mute state to the active Sonos device (debounced). */
 let _sonosVolTimer = null;
@@ -22370,6 +21036,26 @@ function _sonosApplyVolume() {
   }, 200);
 }
 
+// The ReplayGain to apply to a song, the same for the browser and the server
+// speaker: album or track gain by mode (server-measured s.rg first, the file's
+// tag s.replaygain as fallback), plus preamp, capped so the true peak stays at
+// or below 0 dBTP when clip prevention is on. null when RG is off or unknown.
+function _rgGain(s) {
+  if (!S.rgEnabled || !s) return null;
+  let gainDb = null, peakDbtp = null, src = null;
+  if (s.rg) {
+    const album = S.rgMode === 'album' && s.rg.albumGain != null;
+    gainDb   = album ? s.rg.albumGain : s.rg.trackGain;
+    peakDbtp = album ? s.rg.albumPeak : s.rg.truePeak;
+    src = s.rg.src || null;
+  }
+  if (gainDb == null) { gainDb = s.replaygain ?? null; src = gainDb != null ? 'tag' : null; }
+  if (gainDb == null) return null;
+  let db = Number(gainDb) + (S.rgPreamp || 0);
+  if (S.rgClip && peakDbtp != null && db > -peakDbtp) db = -peakDbtp;
+  return { db, src };
+}
+
 function _applyRGGain(s) {
   if (!_rgGainNode) return;
   const badge = document.getElementById('player-rg-badge');
@@ -22378,23 +21064,8 @@ function _applyRGGain(s) {
     if (badge) { badge.textContent = ''; badge.classList.add('hidden'); }
     return;
   }
-  // Choose gain value: prefer server-measured values (s.rg), fall back to s.replaygain
-  let gainDb = null;
-  let peakDbtp = null;
-  let src = null;
-  if (s.rg) {
-    if (S.rgMode === 'album' && s.rg.albumGain != null) {
-      gainDb   = s.rg.albumGain;
-      peakDbtp = s.rg.albumPeak;
-    } else {
-      gainDb   = s.rg.trackGain;
-      peakDbtp = s.rg.truePeak;
-    }
-    src = s.rg.src || null;
-  }
-  if (gainDb == null) { gainDb = s.replaygain; src = gainDb != null ? 'tag' : null; }
-
-  if (gainDb == null) {
+  const rg = _rgGain(s);
+  if (!rg) {
     // No rg data on this song object (e.g. restored from localStorage before fix).
     // Lazy-fetch metadata once to populate rg, then re-apply.
     if (s.filepath && !s.isRadio && !s._rgFetching) {
@@ -22417,20 +21088,13 @@ function _applyRGGain(s) {
     return;
   }
 
-  let db = Number(gainDb) + (S.rgPreamp || 0);
-
-  // Clip prevention: reduce gain so true peak stays at or below 0 dBTP
-  if (S.rgClip && peakDbtp != null) {
-    const headroom = -peakDbtp;
-    if (db > headroom) db = headroom;
-  }
-
+  const { db, src } = rg;
   _rgGainNode.gain.value = Math.pow(10, db / 20);
 
   // Update play bar badge
   if (badge) {
     const sign = db >= 0 ? '+' : '';
-    const label = src === 'measured' ? 'RG' : src === 'r128' ? 'R128' : 'RG tag';
+    const label = src === 'measured' ? 'RG' : src === 'r128' ? 'R128' : t('player.player.rgTag');
     badge.textContent = `${label} ${sign}${db.toFixed(1)} dB`;
     badge.classList.toggle('rg-tag', src !== 'measured');
     badge.classList.remove('hidden');
@@ -22522,7 +21186,7 @@ async function _fetchWaveform(filepath) {
   const wfStatus = document.getElementById('wf-status');
   if (wfStatus) {
     wfStatus.dataset.loading = '1';
-    wfStatus.textContent = 'Generating waveform…';
+    wfStatus.textContent = t('player.misc.generatingWaveform');
     wfStatus.classList.add('visible');
   }
 
@@ -22557,9 +21221,7 @@ function _drawWaveformBars(ctx, W, H, data, pct) {
   const midY   = H / 2;
   const barW   = W / data.length;
   const drawW  = Math.max(1, barW > 2 ? barW - 1 : barW);
-  const cs      = getComputedStyle(document.documentElement);
-  const colPri  = cs.getPropertyValue('--primary').trim();
-  const colAcc  = cs.getPropertyValue('--accent').trim();
+  const { primary: colPri, accent: colAcc } = _themeColors();
   const grad = ctx.createLinearGradient(0, 0, W, 0);
   grad.addColorStop(0, colPri);
   grad.addColorStop(1, colAcc);
@@ -22620,9 +21282,7 @@ function _drawWaveform() {
     const freqData = new Uint8Array(binCount);
     analyserL.getByteFrequencyData(freqData);
     const midY   = H / 2;
-    const cs     = getComputedStyle(document.documentElement);
-    const colPri = cs.getPropertyValue('--primary').trim();
-    const colAcc = cs.getPropertyValue('--accent').trim();
+    const { primary: colPri, accent: colAcc } = _themeColors();
     const grad   = ctx.createLinearGradient(0, 0, W, 0);
     grad.addColorStop(0, colPri);
     grad.addColorStop(1, colAcc);
@@ -22782,10 +21442,20 @@ function _rgbToHsl(r, g, b) {
   return [h, s, l];
 }
 
+// Meters and the waveform draw every frame; reading computed style there forces a style recalc each time
+function _themeColors() {
+  if (_themeColorCache) return _themeColorCache;
+  const cs = getComputedStyle(document.documentElement);
+  const colors = { primary: cs.getPropertyValue('--primary').trim(), accent: cs.getPropertyValue('--accent').trim() };
+  if (colors.primary) _themeColorCache = colors;
+  return colors;
+}
+
 function _resetAlbumArtTheme() {
   document.documentElement.style.removeProperty('--primary');
   document.documentElement.style.removeProperty('--accent');
   document.documentElement.style.removeProperty('--primary-fg');
+  _themeColorCache = null;
 }
 
 function _applyAlbumArtTheme(url) {
@@ -22863,6 +21533,7 @@ function _applyAlbumArtTheme(url) {
       document.documentElement.style.setProperty('--primary', primary);
       document.documentElement.style.setProperty('--accent',  accent);
       document.documentElement.style.setProperty('--primary-fg', primaryFg);
+      _themeColorCache = null;
       _updateBadgeFg();
     } catch(_e) {}
   };
@@ -23401,6 +22072,12 @@ function _startCrossfade(nextIdx) {
 // _xfadeEl is already playing the next track through Web Audio.
 // We do a true element swap: retire the old audioEl, promote _xfadeEl to
 // be the new audioEl, reattach all event listeners — zero gap, no reload.
+function _retireAudioEl(el) {
+  el.removeAttribute('src');
+  el.load();
+  el.remove();
+}
+
 function _doXfadeHandoff(nextIdx) {
   clearInterval(_xfadeGainIv);
   _xfadeGainIv = null;
@@ -23461,7 +22138,10 @@ function _doXfadeHandoff(nextIdx) {
   // Silence + pause the old element (it's no longer 'audioEl')
   oldEl.volume = 0;
   oldEl.pause();
-  // Don't clear oldEl.src — leave it for GC; removing src can cause a brief noise
+  // Its gain node is already out of the graph; once the incoming ramp is done,
+  // drop its media buffer and take it out of the document so it can be collected
+  // (every crossfade/gapless handoff would otherwise leave one element behind).
+  setTimeout(() => _retireAudioEl(oldEl), 1000);
 
   // Promote the new element
   audioEl = newEl;
@@ -23486,6 +22166,10 @@ function _doXfadeHandoff(nextIdx) {
       eventId:  eid,
       playedMs: Math.max(0, Math.round(((oldEl.duration || 0) - _wrappedTrackStartOffset) * 1000)),
     }).catch(() => {});
+  }
+  if (_wrappedPodcastEventId) {
+    const eid = _wrappedPodcastEventId; _wrappedPodcastEventId = null;
+    api('POST', 'api/v1/wrapped/podcast-end', { eventId: eid, playedMs: Math.round((oldEl.duration || 0) * 1000), completed: true }).catch(() => {});
   }
 
   if (!s) return;
@@ -23514,17 +22198,7 @@ function _doXfadeHandoff(nextIdx) {
   }
   clearTimeout(scrobbleTimer);
   (function(){ const el = document.getElementById('np-scrobble-status'); if (el) { el.textContent = ''; el.className = 'np-scrobble-status'; } })();
-  if (!s.isRadio && !s.isPodcast) {
-    api('POST', 'api/v1/db/stats/log-play', { filePath: s.filepath }).catch(() => {});
-    // Wrapped: start tracking the incoming crossfade track
-    _wrappedEndedNaturally = false;
-    _wrappedTrackStartOffset = 0;
-    api('POST', 'api/v1/wrapped/play-start', {
-      filePath:  s.filepath,
-      sessionId: _wrappedSessionId,
-      source:    _wrappedSource(),
-    }).then(r => { _wrappedEventId = r?.eventId ?? null; }).catch(() => {});
-  }
+  _reportTrackStart(s);
   _scheduleScrobble(s);
   // Early Auto-DJ prefetch — same rationale as Player.playAt: have the next DJ
   // pick queued right away so a manual NEXT after a crossfade/gapless handoff
@@ -23595,18 +22269,14 @@ function _renderScanProgress(scans) {
   if (!wrap) return;
   if (!scans || scans.length === 0) { wrap.innerHTML = ''; return; }
   wrap.innerHTML = scans.map(sp => {
-    const isCounting = sp.countingFound > 0 && sp.scanned === 0;
-    const pctTxt   = isCounting ? 'Counting\u2026'
-                   : sp.pct !== null ? `${sp.pct}%` : 'first scan';
-    const bar      = isCounting || sp.pct === null
+    const pctTxt   = sp.pct !== null ? `${sp.pct}%` : t('player.scan.firstScan');
+    const bar      = sp.pct === null
       ? `<div class="spc-fill-ind"></div>`
       : `<div class="spc-fill" style="width:${sp.pct}%"></div>`;
-    const countTxt = isCounting
-      ? `${sp.countingFound.toLocaleString()} files found\u2026`
-      : sp.expected
-        ? `${sp.scanned.toLocaleString()} / ${sp.expected.toLocaleString()}`
-        : `${sp.scanned.toLocaleString()} files`;
-    const fileTip  = sp.currentFile ? ` title="${sp.currentFile.replaceAll(/"/g,'&quot;')}"` : '';
+    const countTxt = sp.expected
+      ? `${sp.scanned.toLocaleString()} / ${sp.expected.toLocaleString()}`
+      : t('player.scan.files', { n: sp.scanned.toLocaleString() });
+    const fileTip  = sp.currentFile ? ` title="${esc(sp.currentFile)}"` : '';
     return `<div class="spc-card"${fileTip}>
       <span class="spc-dot"></span>
       <span class="spc-vpath">${esc(sp.vpath)}</span>
@@ -23637,7 +22307,7 @@ async function pollScan() {
         _renderScanProgress(prog);
       } catch(_) {
         // fallback: plain badge text if progress endpoint fails
-        _renderScanProgress([{ vpath: 'Scanning…', pct: null, scanned: d.totalFileCount || 0, expected: null, currentFile: null }]);
+        _renderScanProgress([{ vpath: t('player.scan.scanning'), pct: null, scanned: d.totalFileCount || 0, expected: null, currentFile: null }]);
       }
       scanTimer = setTimeout(pollScan, 3000);  // fast poll while scanning
     } else {
@@ -23667,7 +22337,11 @@ function _collectPrefs() {
     crossfade_restore: localStorage.getItem('ms2_crossfade_restore_' + u),
     gapless:           localStorage.getItem('ms2_gapless_'        + u),
     rg:                localStorage.getItem('ms2_rg_'             + u),
-    eq:                localStorage.getItem('ms2_eq_'             + u),
+    rg_mode:           localStorage.getItem('ms2_rg_mode_'        + u),
+    rg_preamp:         localStorage.getItem('ms2_rg_preamp_'      + u),
+    rg_clip:           localStorage.getItem('ms2_rg_clip_'        + u),
+    ytdl_format:       localStorage.getItem('ms2_ytdl_format_'    + u),
+    eq:               localStorage.getItem('ms2_eq_'             + u),
     eq_on:             localStorage.getItem('ms2_eq_on_'          + u),
     trans:             localStorage.getItem('ms2_trans_'          + u),
     trans_algo:        localStorage.getItem('ms2_trans_algo_'     + u),
@@ -23710,10 +22384,6 @@ function _syncPrefs() {
 }
 
 let _syncQueueTimer = null;
-function _syncQueue() {
-  // Kept for backwards-compat call sites; delegates to _syncQueueToDb.
-  _syncQueueToDb();
-}
 
 async function _loadServerSettings() {
   if (!S.token) return;
@@ -23762,6 +22432,10 @@ function _applyServerSettings(data) {
   }
   if (prefs.gapless       != null) { ls('ms2_gapless_' + u, prefs.gapless); S.gapless = prefs.gapless === '1'; }
   if (prefs.rg            != null) { ls('ms2_rg_' + u, prefs.rg); S.rgEnabled = prefs.rg === '1'; }
+  if (prefs.rg_mode       != null) { ls('ms2_rg_mode_' + u, prefs.rg_mode); S.rgMode = prefs.rg_mode || 'track'; }
+  if (prefs.rg_preamp     != null) { ls('ms2_rg_preamp_' + u, prefs.rg_preamp); S.rgPreamp = Number.parseFloat(prefs.rg_preamp) || 0; }
+  if (prefs.rg_clip       != null) { ls('ms2_rg_clip_' + u, prefs.rg_clip); S.rgClip = prefs.rg_clip !== '0'; }
+  if (prefs.ytdl_format   != null) ls('ms2_ytdl_format_' + u, prefs.ytdl_format);
   if (prefs.eq            != null) ls('ms2_eq_' + u, prefs.eq);
   if (prefs.eq_on         != null) ls('ms2_eq_on_' + u, prefs.eq_on);
   if (prefs.trans         != null) { ls('ms2_trans_' + u, prefs.trans); S.transEnabled = !!prefs.trans; }
@@ -23796,7 +22470,7 @@ function _applyServerSettings(data) {
   }
   if (prefs.show_genres  != null) { ls('ms2_show_genres_'  + u, prefs.show_genres);  S.showGenres  = prefs.show_genres  !== '0'; }
   if (prefs.show_decades != null) { ls('ms2_show_decades_' + u, prefs.show_decades); S.showDecades = prefs.show_decades !== '0'; }
-  if (prefs.pinned_view  != null) { ls('ms2_pinned_view_' + u, prefs.pinned_view); S.pinnedView = prefs.pinned_view || ''; }
+  if (prefs.pinned_view  != null) { S.pinnedView = _migratePinnedView(prefs.pinned_view || ''); ls('ms2_pinned_view_' + u, S.pinnedView); }
   // Home view layout — shelf order and hidden cards synced across devices
   if (prefs.home_order  != null) ls('ms2_home_order_'  + u, prefs.home_order);
   if (prefs.home_hidden != null) ls('ms2_home_hidden_' + u, prefs.home_hidden);
@@ -23889,36 +22563,84 @@ function _applyServerSettings(data) {
 }
 
 // ── AUTH ──────────────────────────────────────────────────────
-async function tryLogin(username, password) {
-  const d = await api('POST', 'api/v1/auth/login', { username, password });
-  S.token    = d.token;
+const _FEATURE_STATUS_ROUTES = ['api/v1/lastfm/status', 'api/v1/listenbrainz/status', 'api/v1/discord-webhook/status', 'api/v1/custom-webhooks/status', 'api/v1/radio/enabled'];
+
+// keepOnError: a background refresh leaves a flag as it was when its status call fails.
+async function _loadFeatureFlags({ probeAdmin = true, keepOnError = false } = {}) {
+  if (probeAdmin) {
+    try { await api('GET', 'api/v1/admin/directories'); S.isAdmin = true; } catch(_) { S.isAdmin = false; }
+  }
+  const [dc, ls, lb, dw, cw, rd] = await Promise.all([
+    S.isAdmin ? api('GET', 'api/v1/admin/discogs/config').catch(() => null) : null,
+    ..._FEATURE_STATUS_ROUTES.map(r => api('GET', r).catch(() => null)),
+  ]);
+  const apply = (res, fn) => { if (res !== null || !keepOnError) fn(res); };
+  apply(dc, d => {
+    S.discogsEnabled     = d?.enabled === true;
+    S.discogsAllowUpdate = d?.allowArtUpdate === true;
+    S.allowId3Edit       = d?.allowId3Edit === true;
+    S.itunesEnabled      = !!d && d.itunesEnabled !== false;
+    S.deezerEnabled      = !!d && d.deezerEnabled !== false;
+  });
+  apply(ls, d => {
+    S.lastfmEnabled   = d?.serverEnabled !== false;
+    S.lastfmHasApiKey = d?.hasApiKey === true;
+    S.lastfmLinked    = !!d?.linkedUser;
+  });
+  apply(lb, d => {
+    S.listenbrainzEnabled = d?.serverEnabled === true;
+    S.listenbrainzLinked  = d?.linked === true;
+  });
+  apply(dw, d => {
+    S.discordWebhookServerEnabled = d?.serverEnabled === true;
+    S.discordWebhookEnabled = d?.serverEnabled === true && d?.webhookEnabled === true;
+  });
+  apply(cw, d => {
+    const cws = d?.webhooks || [];
+    S.customWebhooksServerEnabled = cws.some(w => w.serverEnabled);
+    S.customWebhooksEnabled = [0, 1].map(i => cws[i]?.serverEnabled === true && cws[i]?.userEnabled === true);
+  });
+  apply(rd, d => { S.radioEnabled = d?.enabled === true; });
+  // Similar-artists needs a Last.fm API key; drop a saved "on" so Auto-DJ does not try to use it
+  if (ls && !S.lastfmHasApiKey && S.djSimilar) { S.djSimilar = false; localStorage.removeItem(_uKey('dj_similar')); }
+  S.feedsEnabled = true; // Podcasts always available — user needs the section to add their first feed
+}
+
+function _syncFeatureNav() {
+  const show = (id, on) => document.getElementById(id)?.classList.toggle('hidden', !on);
+  show('discogs-nav-btn', S.isAdmin && S.discogsEnabled);
+  show('lastfm-nav-btn', S.lastfmEnabled);
+  show('listenbrainz-nav-btn', S.listenbrainzEnabled);
+  show('webhooks-nav-btn', S.discordWebhookServerEnabled || S.customWebhooksServerEnabled);
+  show('radio-nav-btn', S.radioEnabled);
+}
+
+// Everything a fresh sign-in needs, whichever way the token was obtained
+// (password or passkey).
+function _storeToken(token) {
+  S.token = token;
+  localStorage.setItem('ms2_token', token);
+  localStorage.setItem('token', token);   // mirror for admin panel compatibility
+}
+
+async function _completeLogin(token, username, vpaths) {
+  _storeToken(token);
   S.username = username;
-  S.vpaths   = d.vpaths || [];
+  S.vpaths   = vpaths || [];
   // Only default to all vpaths if no saved selection exists
   const _savedDjVpaths = JSON.parse(localStorage.getItem(_djKey('vpaths')) || 'null');
-  S.djVpaths = (_savedDjVpaths?.length) ? _savedDjVpaths.filter(v => S.vpaths.includes(v)).concat() : [...S.vpaths];
+  S.djVpaths = (_savedDjVpaths?.length) ? _savedDjVpaths.filter(v => S.vpaths.includes(v)) : [...S.vpaths];
   if (S.djVpaths.length === 0) S.djVpaths = [...S.vpaths];
-  localStorage.setItem('ms2_token', d.token);
-  localStorage.setItem('token', d.token);   // mirror for admin panel compatibility
   localStorage.setItem('ms2_user',  username);
   localStorage.removeItem('ms2_logged_out');
-  // Detect admin role after login
-  try {
-    await api('GET', 'api/v1/admin/directories');
-    S.isAdmin = true;
-    try { const dc = await api('GET', 'api/v1/admin/discogs/config'); S.discogsEnabled = dc?.enabled === true; S.discogsAllowUpdate = dc?.allowArtUpdate === true; S.allowId3Edit = dc?.allowId3Edit === true; S.itunesEnabled = dc?.itunesEnabled !== false; S.deezerEnabled = dc?.deezerEnabled !== false; } catch(_) { S.discogsEnabled = false; S.discogsAllowUpdate = false; S.allowId3Edit = false; S.itunesEnabled = false; S.deezerEnabled = false; }
-  } catch(_) { S.isAdmin = false; S.discogsEnabled = false; S.discogsAllowUpdate = false; S.allowId3Edit = false; S.itunesEnabled = false; S.deezerEnabled = false; }
-  try { const ls = await api('GET', 'api/v1/lastfm/status'); S.lastfmEnabled = ls?.serverEnabled !== false; S.lastfmHasApiKey = ls?.hasApiKey === true; S.lastfmLinked = !!ls?.linkedUser; } catch(_) { S.lastfmEnabled = true; S.lastfmHasApiKey = false; S.lastfmLinked = false; }
-  // If similar-artists was saved on but there's no API key, clear it so AutoDJ doesn't try to use it
-  if (!S.lastfmHasApiKey && S.djSimilar) { S.djSimilar = false; localStorage.removeItem(_uKey('dj_similar')); }
-  try { const lb = await api('GET', 'api/v1/listenbrainz/status'); S.listenbrainzEnabled = lb?.serverEnabled === true; S.listenbrainzLinked = lb?.linked === true; } catch(_) { S.listenbrainzEnabled = false; S.listenbrainzLinked = false; }
-  try { const dw = await api('GET', 'api/v1/discord-webhook/status'); S.discordWebhookServerEnabled = dw?.serverEnabled === true; S.discordWebhookEnabled = dw?.serverEnabled === true && dw?.webhookEnabled === true; } catch(_) { S.discordWebhookServerEnabled = false; S.discordWebhookEnabled = false; }
-  try { const cw = await api('GET', 'api/v1/custom-webhooks/status'); const cws = cw?.webhooks || []; S.customWebhooksServerEnabled = cws.some(s => s.serverEnabled); S.customWebhooksEnabled = [0,1].map(i => cws[i]?.serverEnabled === true && cws[i]?.userEnabled === true); } catch(_) { S.customWebhooksServerEnabled = false; S.customWebhooksEnabled = [false, false]; }
-  try { const rd = await api('GET', 'api/v1/radio/enabled'); S.radioEnabled = rd?.enabled === true; } catch(_) { S.radioEnabled = false; }
-  try { const sd = await api('GET', 'api/v1/sonos/devices'); S.sonosEnabled = sd?.enabled === true; S.sonosConfig = sd; } catch(_) { S.sonosEnabled = false; S.sonosConfig = null; }
-  S.feedsEnabled = true; // Podcasts always available — user needs the section to add their first feed
+  await _loadFeatureFlags();
   await _loadServerSettings();
   if (window.I18N?.setUser) { await window.I18N.setUser(S.username); }
+}
+
+async function tryLogin(username, password) {
+  const d = await api('POST', 'api/v1/auth/login', { username, password });
+  await _completeLogin(d.token, username, d.vpaths);
 }
 
 async function checkSession() {
@@ -23953,37 +22675,13 @@ async function checkSession() {
         S.djVpaths = S.djVpaths.filter(v => S.vpaths.includes(v));
         if (S.djVpaths.length === 0) S.djVpaths = [...S.vpaths];
       }
-      // detect admin by trying the admin endpoint
-      try {
-        await api('GET', 'api/v1/admin/directories');
-        S.isAdmin = true;
-        try { const dc = await api('GET', 'api/v1/admin/discogs/config'); S.discogsEnabled = dc?.enabled === true; S.discogsAllowUpdate = dc?.allowArtUpdate === true; S.allowId3Edit = dc?.allowId3Edit === true; S.itunesEnabled = dc?.itunesEnabled !== false; S.deezerEnabled = dc?.deezerEnabled !== false; } catch(_) { S.discogsEnabled = false; S.discogsAllowUpdate = false; S.allowId3Edit = false; S.itunesEnabled = false; S.deezerEnabled = false; }
-      } catch(_) { S.isAdmin = false; S.discogsEnabled = false; S.discogsAllowUpdate = false; S.allowId3Edit = false; S.itunesEnabled = false; S.deezerEnabled = false; }
-      const [ls, lb, dw, rd, cw] = await Promise.all([
-        api('GET', 'api/v1/lastfm/status').catch(() => null),
-        api('GET', 'api/v1/listenbrainz/status').catch(() => null),
-        api('GET', 'api/v1/discord-webhook/status').catch(() => null),
-        api('GET', 'api/v1/radio/enabled').catch(() => null),
-        api('GET', 'api/v1/custom-webhooks/status').catch(() => null),
-      ]);
-      S.lastfmEnabled        = ls?.serverEnabled !== false;
-      S.lastfmHasApiKey      = ls?.hasApiKey === true;
-      S.lastfmLinked         = !!ls?.linkedUser;
-      S.listenbrainzEnabled  = lb?.serverEnabled === true;
-      S.listenbrainzLinked   = lb?.linked === true;
-      S.discordWebhookServerEnabled = dw?.serverEnabled === true;
-      S.discordWebhookEnabled = dw?.serverEnabled === true && dw?.webhookEnabled === true;
-      S.radioEnabled         = rd?.enabled === true;
-      { const cws = cw?.webhooks || []; S.customWebhooksServerEnabled = cws.some(s => s.serverEnabled); S.customWebhooksEnabled = [0,1].map(i => cws[i]?.serverEnabled === true && cws[i]?.userEnabled === true); }
-      S.feedsEnabled = true; // Podcasts always available — user needs the section to add their first feed
+      await _loadFeatureFlags();
       // Refresh the token on every page load — ensures localStorage always has a
       // freshly-signed token. Guards against secret rotation, Sonos token bleed,
       // or any other scenario where the stored token is stale.
       const _refreshed = await api('GET', 'api/v1/auth/refresh').catch(() => null);
       if (_refreshed?.token) {
-        S.token = _refreshed.token;
-        localStorage.setItem('ms2_token', _refreshed.token);
-        localStorage.setItem('token', _refreshed.token); // mirror for admin panel
+        _storeToken(_refreshed.token);
       }
       await _loadServerSettings();
       return true;
@@ -24038,29 +22736,8 @@ async function checkSession() {
         }
       }
       await _loadServerSettings();
-      // On a no-auth server (no users configured), the server grants admin to
-      // everyone — detect this so the admin button and scan button appear.
-      try {
-        await api('GET', 'api/v1/admin/directories');
-        S.isAdmin = true;
-        try { const dc = await api('GET', 'api/v1/admin/discogs/config'); S.discogsEnabled = dc?.enabled === true; S.discogsAllowUpdate = dc?.allowArtUpdate === true; S.allowId3Edit = dc?.allowId3Edit === true; S.itunesEnabled = dc?.itunesEnabled !== false; S.deezerEnabled = dc?.deezerEnabled !== false; } catch(_) { S.discogsEnabled = false; S.discogsAllowUpdate = false; S.allowId3Edit = false; S.itunesEnabled = false; S.deezerEnabled = false; }
-      } catch(_) { S.isAdmin = false; S.discogsEnabled = false; S.discogsAllowUpdate = false; S.allowId3Edit = false; S.itunesEnabled = false; S.deezerEnabled = false; }
-      const [ls2, lb2, dw2, rd2, cw2] = await Promise.all([
-        api('GET', 'api/v1/lastfm/status').catch(() => null),
-        api('GET', 'api/v1/listenbrainz/status').catch(() => null),
-        api('GET', 'api/v1/discord-webhook/status').catch(() => null),
-        api('GET', 'api/v1/radio/enabled').catch(() => null),
-        api('GET', 'api/v1/custom-webhooks/status').catch(() => null),
-      ]);
-      S.lastfmEnabled        = ls2?.serverEnabled !== false;
-      S.lastfmHasApiKey      = ls2?.hasApiKey === true;
-      S.listenbrainzEnabled  = lb2?.serverEnabled === true;
-      S.listenbrainzLinked   = lb2?.linked === true;
-      S.discordWebhookServerEnabled = dw2?.serverEnabled === true;
-      S.discordWebhookEnabled = dw2?.serverEnabled === true && dw2?.webhookEnabled === true;
-      S.radioEnabled         = rd2?.enabled === true;
-      { const cws = cw2?.webhooks || []; S.customWebhooksServerEnabled = cws.some(s => s.serverEnabled); S.customWebhooksEnabled = [0,1].map(i => cws[i]?.serverEnabled === true && cws[i]?.userEnabled === true); }
-      S.feedsEnabled = true; // Podcasts are always available — user needs section to add first feed
+      // On a no-auth server (no users configured), the server grants admin to everyone.
+      await _loadFeatureFlags();
       return true;
     }
   } catch(_) {}
@@ -24101,7 +22778,7 @@ function showApp() {
     if (_BOOT_DBG) console.warn('[BOOT] _bootDismiss: _bootComplete=true');
   }
   if (_bootEl) _bootEl.classList.remove('hidden');
-  _bootMsg('Loading your library…');
+  _bootMsg(t('player.boot.loadingLibrary'));
   // Skip button appears after 2.5 s for slow connections
   const _skipShowT = setTimeout(() => { if (_bootSkip) _bootSkip.classList.remove('hidden'); }, 2500);
   if (_bootSkip) _bootSkip.onclick = () => { clearTimeout(_skipShowT); _bootDismiss(); };
@@ -24160,12 +22837,12 @@ function showApp() {
   // Radio items are not preloaded on restore (no seek position) so skip the seeked wait.
   const _restoredSong = S.queue.length > 0 && S.idx >= 0 ? S.queue[S.idx] : null;
   if (_restoredSong && !_restoredSong.isRadio) {
-    _bootMsg('Restoring your session\u2026');
+    _bootMsg(t('player.boot.restoringSession'));
     audioEl.addEventListener('seeked', function _onBootSeeked() {
       audioEl.removeEventListener('seeked', _onBootSeeked);
       clearTimeout(_bootHardT); clearTimeout(_skipShowT);
       if (_BOOT_DBG) console.warn('[BOOT] _onBootSeeked: currentTime=' + audioEl.currentTime.toFixed(2));
-      _bootMsg('Ready!');
+      _bootMsg(t('player.boot.ready'));
       setTimeout(_bootDismiss, 450);
     }, { once: true });
   } else {
@@ -24218,16 +22895,13 @@ function showApp() {
     // Flush exact current position to DB synchronously via sendBeacon so an
     // immediate F5 restores to the right spot (not up to 15 s behind).
     if (S.token && S.username) {
-      const payload = JSON.stringify({ queue: {
-        queue:     _compactQueueList(S.queue),
-        idx:       S.idx,
-        time:      audioEl.currentTime || 0,
-        playing:   false,  // always save paused — refresh is never a resume trigger
-        savedAt:   Date.now(),
-        browserId: _browserId,
-      }});
-      navigator.sendBeacon('/api/v1/user/settings?token=' + encodeURIComponent(S.token),
-        new Blob([payload], { type: 'application/json' }));
+      const payload = _queueBeaconBody();
+      if (payload) {
+        navigator.sendBeacon('/api/v1/user/settings?token=' + encodeURIComponent(S.token),
+          new Blob([payload], { type: 'application/json' }));
+      } else if (!_bootRestoring && !_queueLazyPending) {
+        _postQueueSync(false);
+      }
       // Wrapped: fire play-stop + session-end on tab/window close
       if (_wrappedEventId) {
         const stopPayload = JSON.stringify({ eventId: _wrappedEventId, playedMs: Math.max(0, Math.round(((audioEl.currentTime || 0) - _wrappedTrackStartOffset) * 1000)) });
@@ -24270,59 +22944,14 @@ function showApp() {
     _albLib = null;
     _albActiveSources  = null;
     _albActiveVersions = null;
-    // Admin-only flags (Discogs)
-    if (S.isAdmin) {
-      try {
-        const dc = await api('GET', 'api/v1/admin/discogs/config');
-        const wasDiscogsEnabled = S.discogsEnabled;
-        S.discogsEnabled    = dc?.enabled === true;
-        S.discogsAllowUpdate = dc?.allowArtUpdate === true;
-        S.allowId3Edit = dc?.allowId3Edit === true;
-        const discogsBtn = document.getElementById('discogs-nav-btn');
-        if (discogsBtn) {
-          if (S.discogsEnabled) discogsBtn.classList.remove('hidden');
-          else discogsBtn.classList.add('hidden');
-        }
-        if (wasDiscogsEnabled && !S.discogsEnabled) {
-          document.getElementById('np-left')?.classList.remove('np-left--picking');
-          const dsEl = document.getElementById('np-discogs-section');
-          if (dsEl) { dsEl.classList.add('hidden'); dsEl.dataset.songFp = ''; }
-        }
-      } catch (_) {}
+    const wasDiscogsEnabled = S.discogsEnabled;
+    await _loadFeatureFlags({ probeAdmin: false, keepOnError: true });
+    _syncFeatureNav();
+    if (wasDiscogsEnabled && !S.discogsEnabled) {
+      document.getElementById('np-left')?.classList.remove('np-left--picking');
+      const dsEl = document.getElementById('np-discogs-section');
+      if (dsEl) { dsEl.classList.add('hidden'); dsEl.dataset.songFp = ''; }
     }
-    // All-user flag: Last.fm server enabled/disabled
-    try {
-      const ls = await api('GET', 'api/v1/lastfm/status');
-      S.lastfmEnabled = ls?.serverEnabled !== false;
-      S.lastfmHasApiKey = ls?.hasApiKey === true;
-      S.lastfmLinked = !!ls?.linkedUser;
-      const lastfmBtn = document.getElementById('lastfm-nav-btn');
-      if (lastfmBtn) {
-        if (S.lastfmEnabled) lastfmBtn.classList.remove('hidden');
-        else lastfmBtn.classList.add('hidden');
-      }
-    } catch (_) {}
-    // All-user flag: ListenBrainz server enabled/status
-    try {
-      const lb = await api('GET', 'api/v1/listenbrainz/status');
-      S.listenbrainzEnabled = lb?.serverEnabled === true;
-      S.listenbrainzLinked  = lb?.linked === true;
-      const lbBtn = document.getElementById('listenbrainz-nav-btn');
-      if (lbBtn) {
-        if (S.listenbrainzEnabled) lbBtn.classList.remove('hidden');
-        else lbBtn.classList.add('hidden');
-      }
-    } catch (_) {}
-    // All-user flag: Radio enabled/disabled
-    try {
-      const rd = await api('GET', 'api/v1/radio/enabled');
-      S.radioEnabled = rd?.enabled === true;
-      const radioBtn = document.getElementById('radio-nav-btn');
-      if (radioBtn) {
-        if (S.radioEnabled) radioBtn.classList.remove('hidden');
-        else radioBtn.classList.add('hidden');
-      }
-    } catch (_) {}
 
     // ── Queue + prefs sync from server ───────────────────────────────────────
     // Single GET fetches both queue and prefs. _applyServerSettings decides
@@ -24360,7 +22989,7 @@ function showApp() {
         if (ytBtn) ytBtn.classList.toggle('hidden', !S.allowYoutubeDownload);
         _updateListenSection();
       }
-      if (pd.allowMpvCast        != null) { S.allowMpvCast         = pd.allowMpvCast         === true; _updateCastBtn(); }
+      if (pd.allowMpvCast        != null) { S.allowMpvCast         = pd.allowMpvCast         === true; _updateOutputBtn(); }
       if (pd.allowServerRemote   != null)   S.allowServerRemote   = pd.allowServerRemote   !== false;
     } catch (_) {}
     _aiDjRefreshStatus();
@@ -24446,6 +23075,7 @@ function showApp() {
     // Per-user permission to record radio streams
     S.allowRadioRecording = d.allowRadioRecording === true;
     _updateRecordBtn();
+    _restoreActiveRecording();
     // Per-user permission to download from YouTube
     S.allowYoutubeDownload = d.allowYoutubeDownload === true;
     const ytBtn = document.getElementById('youtube-nav-btn');
@@ -24453,7 +23083,7 @@ function showApp() {
     // Per-user MPV permissions
     S.allowMpvCast = d.allowMpvCast === true;
     S.allowServerRemote = d.allowServerRemote !== false;
-    _updateCastBtn(); // re-evaluate now that allowMpvCast is known (serverAudioRunning may already be set)
+    _updateOutputBtn(); // re-evaluate now that allowMpvCast is known (serverAudioRunning may already be set)
     if (d.version) {
       const brand = document.querySelector('.sidebar-brand');
       if (brand) brand.title = `Velvet v${d.version}`;
@@ -24461,8 +23091,9 @@ function showApp() {
     _updateListenSection();
   }).catch(() => { S.transInfo = { serverEnabled: false }; });
 
-  // Check if Server Audio (mpv) is enabled and running — show cast button if so
-  _refreshServerAudioState();
+  // Check if Server Audio (mpv) is enabled and running — show cast button if so.
+  // Its `allowed` flag (S.canCast) also decides whether this user may see Sonos at all.
+  const _castStateReady = _refreshServerAudioState();
   // Keep server-audio state fresh so MPV cast self-heals after backend restarts.
   // Without this poll, a restart during an active cast can leave the UI in a stale
   // state until the user manually toggles output Web → MPV.
@@ -24477,11 +23108,14 @@ function showApp() {
   }
 
   // Fetch Sonos rooms + default room so the output picker can show them
-  api('GET', 'api/v1/sonos/devices').then(d => {
+  _castStateReady.then(() => {
+    _refreshSonosNavDetection();
+    return S.canCast ? api('GET', 'api/v1/sonos/devices') : null;
+  }).then(d => {
     if (!d) return;
     S.sonosRooms       = d.rooms       || [];
     S.sonosDefaultRoom = d.defaultRoom || null;
-    S.sonosEnabled     = d.enabled !== false;
+    S.sonosEnabled     = d.enabled === true;
     S.sonosConfig      = d;
     _updateSonosRadioNavVisibility();
     // Snap active cast room IP if device UUID/IP has changed since last session
@@ -24548,13 +23182,16 @@ function showApp() {
         });
     }
     _updateOutputBtn();
-  }).catch(() => {});
+  }).catch(() => {
+    S.sonosEnabled = false;
+    _updateOutputBtn();
+  });
 
   // Register Media Session action handlers (OS lock-screen controls)
   if ('mediaSession' in navigator) {
     try {
-      navigator.mediaSession.setActionHandler('play',         () => { VIZ.initAudio(); audioEl.play().catch(() => {}); });
-      navigator.mediaSession.setActionHandler('pause',        () => audioEl.pause());
+      navigator.mediaSession.setActionHandler('play',         () => { VIZ.initAudio(); if (!_isPlayingNow()) Player.toggle(); });
+      navigator.mediaSession.setActionHandler('pause',        () => { if (_isPlayingNow()) Player.toggle(); });
       navigator.mediaSession.setActionHandler('nexttrack',    () => Player.next());
       navigator.mediaSession.setActionHandler('previoustrack', () => Player.prev());
       navigator.mediaSession.setActionHandler('seekto', (e) => {
@@ -24585,125 +23222,8 @@ async function _rerenderCurrentViewForLanguageChange() {
     return;
   }
 
-  switch (v) {
-    case 'home':
-      await viewHome();
-      return;
-    case 'shortcuts':
-      await viewShortcuts();
-      return;
-    case 'recent':
-      await viewRecent();
-      return;
-    case 'artists':
-      await viewArtists();
-      return;
-    case 'artists_old':
-      await viewArtists_old();
-      return;
-    case 'album-library':
-      await viewAlbumLibrary();
-      return;
-    case 'search':
-      viewSearch();
-      return;
-    case 'rated':
-      await viewRated();
-      return;
-    case 'most-played':
-      await viewMostPlayed();
-      return;
-    case 'played':
-      await viewPlayed();
-      return;
-    case 'history':
-      await viewHistory();
-      return;
-    case 'files':
-      await viewFiles(S.feDir || '', false);
-      return;
-    case 'autodj':
-      await viewAutoDJ();
-      return;
-    case 'ai-dj':
-      await viewAiDj();
-      return;
-    case 'genres':
-      await viewGenres();
-      return;
-    case 'decades':
-      await viewDecades();
-      return;
-    case 'transcode':
-      viewTranscode();
-      return;
-    case 'jukebox':
-      viewJukebox();
-      return;
-    case 'apps':
-      viewApps();
-      return;
-    case 'shared-links':
-      await viewSharedLinks();
-      return;
-    case 'playback':
-      viewPlayback();
-      return;
-    case 'play-history':
-      await viewPlayHistory();
-      return;
-    case 'lastfm':
-      await viewLastFM();
-      return;
-    case 'listenbrainz':
-      await viewListenBrainz();
-      return;
-    case 'discogs':
-      await viewDiscogs();
-      return;
-    case 'user-settings':
-      await viewUserSettings();
-      return;
-    case 'subsonic':
-      await viewSubsonic();
-      return;
-    case 'radio':
-      await viewRadio();
-      return;
-    case 'podcasts':
-      await viewPodcasts();
-      return;
-    case 'podcast-feeds':
-      await viewPodcastFeeds();
-      return;
-    case 'podcast-episodes': {
-      let feed = _podcastFeeds.find(f => f.id === S.podcastFeedId);
-      if (!feed) {
-        try { _podcastFeeds = await api('GET', 'api/v1/podcast/feeds'); } catch (_) {}
-        feed = _podcastFeeds.find(f => f.id === S.podcastFeedId);
-      }
-      if (feed) {
-        await viewPodcastEpisodes(feed);
-      } else {
-        await viewPodcastFeeds();
-      }
-      return;
-    }
-    case 'youtube':
-      viewYoutube();
-      return;
-    case 'wrapped':
-      await viewWrapped();
-      return;
-    case 'smart-playlists':
-      await viewSmartPlaylists();
-      return;
-    case 'ml-playlist':
-      await viewMlPlaylist();
-      return;
-    default:
-      return;
-  }
+  const route = VIEW_ROUTES[v];
+  await (route?.rerender || route?.open)?.();
 }
 
 if (window.I18N?.onChange) {
@@ -24726,7 +23246,7 @@ if (_loginVer) _loginVer.textContent = 'v' + VELVET_VERSION;
 // ── PASSKEY ───────────────────────────────────────────────────
 async function tryPasskeyLogin() {
   const SimpleWebAuthnBrowser = window.SimpleWebAuthnBrowser;
-  if (!SimpleWebAuthnBrowser?.browserSupportsWebAuthn()) throw new Error('WebAuthn not supported');
+  if (!SimpleWebAuthnBrowser?.browserSupportsWebAuthn()) throw new Error(t('player.login.passkeyUnsupported'));
 
   // 1. Get authentication options from server (discoverable credential flow)
   const optRes = await fetch('/api/v1/auth/passkey/auth/options', {
@@ -24734,7 +23254,7 @@ async function tryPasskeyLogin() {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({}),
   });
-  if (!optRes.ok) throw new Error('Failed to get passkey options');
+  if (!optRes.ok) throw new Error(t('player.login.passkeyFailed'));
   const options = await optRes.json();
   const challenge = options.challenge;
 
@@ -24749,19 +23269,10 @@ async function tryPasskeyLogin() {
   });
   if (!verRes.ok) {
     const err = await verRes.json().catch(() => ({}));
-    throw new Error(err.error || 'Passkey verification failed');
+    throw new Error(err.error || t('player.login.passkeyFailed'));
   }
   const d = await verRes.json();
-  S.token    = d.token;
-  S.username = d.username;
-  S.vpaths   = d.vpaths || [];
-  const _savedDjVpaths = JSON.parse(localStorage.getItem(_djKey('vpaths')) || 'null');
-  S.djVpaths = (_savedDjVpaths?.length) ? _savedDjVpaths.filter(v => S.vpaths.includes(v)) : [...S.vpaths];
-  if (S.djVpaths.length === 0) S.djVpaths = [...S.vpaths];
-  localStorage.setItem('ms2_token', d.token);
-  localStorage.setItem('token', d.token);
-  localStorage.setItem('ms2_user', d.username);
-  localStorage.removeItem('ms2_logged_out');
+  await _completeLogin(d.token, d.username, d.vpaths);
 }
 
 // Show passkey button only if WebAuthn is available in this browser
@@ -24781,7 +23292,7 @@ async function tryPasskeyLogin() {
       if (e.name === 'NotAllowedError') {
         err.textContent = '';
       } else {
-        err.textContent = e.message || 'Passkey sign-in failed.';
+        err.textContent = e.message || t('player.login.passkeyFailed');
       }
     } finally {
       pkBtn.disabled = false;
@@ -24794,7 +23305,7 @@ document.getElementById('login-form').addEventListener('submit', async e => {
   e.preventDefault();
   const btn = document.getElementById('login-btn');
   const err = document.getElementById('login-error');
-  btn.disabled = true; btn.textContent = 'Signing in…'; err.textContent = '';
+  btn.disabled = true; btn.textContent = t('player.login.signingIn'); err.textContent = '';
   try {
     await tryLogin(document.getElementById('l-user').value.trim(), document.getElementById('l-pass').value);
     showApp();
@@ -24812,8 +23323,8 @@ document.getElementById('login-form').addEventListener('submit', async e => {
         }
       }).catch(() => {});
     }
-  } catch(_) { err.textContent = 'Login failed. Check credentials.'; }
-  finally    { btn.disabled = false; btn.textContent = 'Sign In'; }
+  } catch(_) { err.textContent = t('player.login.failed'); }
+  finally    { btn.disabled = false; btn.textContent = t('player.login.signIn'); }
 });
 
 // Sidebar nav
@@ -24821,44 +23332,7 @@ document.querySelectorAll('.nav-btn').forEach(btn => {
   btn.addEventListener('click', () => {
     const v = btn.dataset.view;
     if (v !== 'podcasts') S.audioContentReturn = null; // clear Audio Content context on any other nav
-    if (v === 'playing-now')  viewPlayingNow();
-    else if (v === 'home')         viewHome();
-    else if (v === 'shortcuts')   viewShortcuts();
-    else if (v === 'recent')      viewRecent();
-    else if (v === 'artists') viewArtists();
-    else if (v === 'artists_old') viewArtists_old();
-    else if (v === 'album-library') viewAlbumLibrary();
-    else if (v === 'search')  viewSearch();
-    else if (v === 'rated')   viewRated();
-    else if (v === 'most-played') viewMostPlayed();
-    else if (v === 'played')  viewPlayed();
-    else if (v === 'history') viewHistory();
-    else if (v === 'files')   { S.feDirStack = []; S.feFilter = ''; viewFiles('', false); }
-    else if (v === 'autodj')  viewAutoDJ();
-    else if (v === 'ai-dj')   viewAiDj();
-    else if (v === 'genres')        viewGenres();
-    else if (v === 'decades')       viewDecades();
-    else if (v === 'transcode') viewTranscode();
-    else if (v === 'jukebox')   viewJukebox();
-    else if (v === 'apps')      viewApps();
-    else if (v === 'shared-links') viewSharedLinks();
-    else if (v === 'playback')  viewPlayback();
-    else if (v === 'play-history') viewPlayHistory();
-    else if (v === 'lastfm')       viewLastFM();
-    else if (v === 'listenbrainz') viewListenBrainz();
-    else if (v === 'discord-webhook') viewDiscordWebhook();
-    else if (v === 'webhooks')        viewWebhooks();
-    else if (v === 'discogs')      viewDiscogs();
-    else if (v === 'subsonic')     viewSubsonic();
-    else if (v === 'user-settings') viewUserSettings();
-    else if (v === 'radio')        viewRadio();
-    else if (v === 'sonos-radio')   viewSonosRadio();
-    else if (v === 'podcasts')        viewPodcasts();
-    else if (v === 'podcast-feeds')  viewPodcastFeeds();
-    else if (v === 'youtube')        viewYoutube();
-    else if (v === 'wrapped')        viewWrapped();
-    else if (v === 'smart-playlists') { _splEditId = null; _splEditName = null; _splFilters = { genres: [], yearFrom: null, yearTo: null, minRating: 0, playedStatus: 'any', minPlayCount: 0, starred: false, artistSearch: '' }; _splSort = 'random'; _splLimit = 100; viewSmartPlaylists(); }
-    else if (v === 'ml-playlist') viewMlPlaylist();
+    VIEW_ROUTES[v]?.open?.();
   });
 });
 
@@ -24867,16 +23341,7 @@ document.querySelectorAll('.nav-btn').forEach(btn => {
 // The pinned item becomes the default landing page on start/refresh.
 (function _initNavPins() {
   const PIN_SVG = `<svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor" stroke="none" style="pointer-events:none"><path d="M16 12V4h1V2H7v2h1v8l-2 2v2h5v6l1 1 1-1v-6h5v-2z"/></svg>`;
-  const PINNABLE_VIEWS = new Set([
-    'playing-now',
-    'home',
-    'search',
-    'files',
-    'artists',
-    'album-library',
-    'rated',
-    'shortcuts'
-  ]);
+  const PINNABLE_VIEWS = new Set(Object.keys(VIEW_ROUTES).filter(v => VIEW_ROUTES[v].pinnable));
 
   if (!PINNABLE_VIEWS.has(S.pinnedView)) {
     S.pinnedView = '';
@@ -24926,6 +23391,9 @@ document.querySelectorAll('.nav-btn').forEach(btn => {
 document.getElementById('dj-light').addEventListener('click', () => {
   if (S.view === 'autodj') { S.backFn?.(); } else { viewAutoDJ(); }
 });
+
+// Sleep light — opens the Playback settings, where the timer can be changed or cancelled
+document.getElementById('sleep-light').addEventListener('click', () => viewPlayback());
 
 // Output picker button — opens dropdown with all available outputs
 document.getElementById('output-btn').addEventListener('click', () => _openOutputPicker());
@@ -25009,8 +23477,8 @@ document.getElementById('prev-btn').addEventListener('click', () => Player.prev(
 // Shuffle
 function _shuffleStripHtml() {
   if (S.shuffle && S.autoDJ)
-    return '<span class="dj-strip-label">Shuffle: <strong>On</strong> — but inactive, Auto-DJ is on</span>';
-  return `<span class="dj-strip-label">Shuffle: <strong>${S.shuffle ? 'On' : 'Off'}</strong></span>`;
+    return `<span class="dj-strip-label">${t('player.shuffle.label')}: <strong>${t('player.misc.on')}</strong> — ${t('player.shuffle.inactiveAutoDj')}</span>`;
+  return `<span class="dj-strip-label">${t('player.shuffle.label')}: <strong>${t(S.shuffle ? 'player.misc.on' : 'player.misc.off')}</strong></span>`;
 }
 function _syncShuffleBtn() {
   document.getElementById('shuffle-btn')?.classList.toggle('active', _room ? _room.shuffle : S.shuffle);
@@ -25033,10 +23501,10 @@ function _syncRepeatIcon() {
   const mode = _room ? _room.repeat : S.repeat;
   btn.innerHTML = mode === 'one' ? _svgRepeatOne : _svgRepeatAll;
   btn.classList.toggle('active', mode !== 'off');
-  btn.title = mode === 'one' ? 'Repeat: One' : mode === 'all' ? 'Repeat: All' : 'Repeat: Off';
+  btn.title = t(mode === 'one' ? 'player.repeat.titleOne' : mode === 'all' ? 'player.repeat.titleAll' : 'player.repeat.titleOff');
 }
 function _repeatStripHtml(mode) {
-  return `<span class="dj-strip-label">Repeat: <strong>${mode === 'one' ? 'One Song' : mode === 'all' ? 'All' : 'Off'}</strong></span>`;
+  return `<span class="dj-strip-label">${t('player.repeat.label')}: <strong>${t(mode === 'one' ? 'player.repeat.oneSong' : mode === 'all' ? 'player.repeat.all' : 'player.misc.off')}</strong></span>`;
 }
 
 document.getElementById('repeat-btn').addEventListener('click', () => {
@@ -25094,8 +23562,12 @@ document.getElementById('queue-btn').addEventListener('click', toggleQueue);
   el.addEventListener('click', () => {
     // Open record modal on Schedule tab
     const s = S.queue[S.idx];
-    if (s?.isRadio) { _startRecording(); _recModalSwitchTab('schedule'); }
-    else { _recModalSwitchTab('schedule'); document.getElementById('radio-rec-modal').classList.remove('hidden'); }
+    if (s?.isRadio) { _startRecording(); _recModalSwitchTab('schedule'); return; }
+    // No station playing: the list of schedules can still be managed here
+    document.getElementById('rec-sched-vpath').innerHTML = _recordingVpaths().map(v => `<option value="${esc(v)}">${esc(v)}</option>`).join('');
+    _recModalSwitchTab('schedule');
+    document.getElementById('radio-rec-modal').classList.remove('hidden');
+    _loadScheduleList();
   });
 
   async function _pollSched() {
@@ -25106,12 +23578,7 @@ document.getElementById('queue-btn').addEventListener('click', toggleQueue);
       if (!list || !list.length) { el.classList.add('hidden'); return; }
       // Show first active scheduled recording (most common case is one)
       const rec = list[0];
-      const elapsedSec = Math.floor((Date.now() - rec.startedAt) / 1000);
-      const h = Math.floor(elapsedSec / 3600);
-      const m = Math.floor((elapsedSec % 3600) / 60);
-      const s = elapsedSec % 60;
-      const pad = n => String(n).padStart(2, '0');
-      const elapsed = h > 0 ? `${h}:${pad(m)}:${pad(s)}` : `${m}:${pad(s)}`;
+      const elapsed = fmt(Math.max(0, Math.floor((Date.now() - rec.startedAt) / 1000)));
       const extra = list.length > 1 ? ` +${list.length - 1}` : '';
       el.innerHTML = `<span class="sri-dot"></span><span class="sri-label">${esc(rec.stationName)} ${elapsed}${extra}</span>`;
       el.classList.remove('hidden');
@@ -25143,9 +23610,12 @@ document.getElementById('qp-share-btn').addEventListener('click', () => {
   showSharePlaylistModal(S.queue);
 });
 document.getElementById('qp-jump-btn').addEventListener('click', () => _scrollQueueToActive(true));
-document.getElementById('qp-save-btn').addEventListener('click', () => showSavePlaylistModal());
+document.getElementById('qp-save-btn').addEventListener('click', () => {
+  if (!S.queue.length) { toast(t('player.toast.queueEmpty')); return; }
+  showSavePlaylistModal();
+});
 document.getElementById('q-sel-remove-btn')?.addEventListener('click', () => {
-  const toRemove = [..._qvsSelected].sort((a, b) => b - a);
+  const toRemove = _queueSelectedIndices().reverse();
   const curFp = S.queue[S.idx]?.filepath;
   for (const qi of toRemove) {
     if (qi < S.idx) S.idx--;
@@ -25163,9 +23633,16 @@ document.getElementById('q-sel-remove-btn')?.addEventListener('click', () => {
   _roomQueueEdited();
 });
 document.getElementById('q-sel-atp-btn')?.addEventListener('click', () => {
-  const songs = [..._qvsSelected].sort((a, b) => a - b).map(qi => S.queue[qi]).filter(Boolean);
+  const songs = _queueSelectedIndices().map(qi => S.queue[qi]);
   if (!songs.length) return;
-  showAddToPlaylistModalBulk(songs);
+  showAddToPlaylistModal(songs, {
+    onPicked: () => {
+      _qvsSelected.clear(); _qvsLastClick = -1;
+      _updateQueueSelBar();
+      const queueList = document.getElementById('queue-list');
+      if (queueList) { _qvsFIdx = -1; _qvsLIdx = -1; _qvsRender(queueList, true); }
+    },
+  });
 });
 document.getElementById('qp-shuffle-btn').addEventListener('click', () => {
   if (!S.queue.length) return;
@@ -25244,10 +23721,7 @@ document.getElementById('qp-clear-btn').addEventListener('click', () => {
   persistQueue();
   // Flush immediately (no debounce) so the DB reflects the cleared queue before
   // the user can refresh the page — prevents stale songs from being restored.
-  clearTimeout(_syncQueueTimer);
-  api('POST', 'api/v1/user/settings', { queue: {
-    queue: S.queue, idx: S.idx, time: audioEl?.currentTime || 0, playing: !audioEl.paused, savedAt: Date.now(), browserId: _browserId,
-  }}).catch(() => {});
+  _syncQueueToDbNow();
   _roomQueueEdited();
 });
 
@@ -25268,10 +23742,13 @@ document.getElementById('logout-btn').addEventListener('click', () => {
   if (window.I18N?.setUser) { window.I18N.setUser(''); }
   S.token = ''; S.username = '';
   localStorage.removeItem('ms2_token'); localStorage.removeItem('ms2_user');
+  localStorage.removeItem('token');
+  try { new BroadcastChannel('velvet').postMessage({ type: 'logout' }); } catch (_) {}
   // Expire the server-set cookie so a page refresh cannot re-authenticate
   document.cookie = 'x-access-token=; Max-Age=0; path=/; SameSite=Strict';
   localStorage.setItem('ms2_logged_out', '1');
-  showLogin();
+  // showApp() registers listeners and timers once per call; a reload is the only clean reset
+  location.reload();
 });
 
 // Scan button (admin)
@@ -25286,12 +23763,7 @@ document.getElementById('scan-btn').addEventListener('click', async () => {
 // New playlist
 document.getElementById('new-pl-btn').addEventListener('click', () => showNewPlaylistModal());
 // New smart playlist
-document.getElementById('new-spl-btn').addEventListener('click', () => {
-  _splEditId = null; _splEditName = null;
-  _splFilters = { genres: [], yearFrom: null, yearTo: null, minRating: 0, playedStatus: 'any', minPlayCount: 0, starred: false, artistSearch: '' };
-  _splSort = 'random'; _splLimit = 100;
-  viewSmartPlaylists();
-});
+document.getElementById('new-spl-btn').addEventListener('click', () => VIEW_ROUTES['smart-playlists'].open());
 document.getElementById('pl-new-cancel').addEventListener('click', () => hideModal('pl-new-modal'));
 document.getElementById('pl-new-ok').addEventListener('click', async () => {
   const name = document.getElementById('pl-new-name').value.trim();
@@ -25301,7 +23773,13 @@ document.getElementById('pl-new-ok').addEventListener('click', async () => {
     await api('POST', 'api/v1/playlist/new', { title: name });
     await loadPlaylists();
     toast(t('player.toast.playlistCreated', { name }));
-  } catch(e) { toast(t('player.toast.playlistCreated', { name }) + ': ' + e.message); }
+    openPlaylist(name);
+  } catch(e) {
+    toast(e.message?.includes('Already Exists') ? t('player.toast.playlistExists', { name }) : t('player.toast.errorMsg', { error: e.message }));
+  }
+});
+document.getElementById('pl-new-name').addEventListener('keydown', e => {
+  if (e.key === 'Enter') document.getElementById('pl-new-ok').click();
 });
 
 // Save playlist modal
@@ -25333,9 +23811,12 @@ document.getElementById('pl-save-ok').addEventListener('click', async () => {
   try {
     await api('POST', 'api/v1/playlist/save', { title: name, songs: S.queue.map(s => s.filepath) });
     await loadPlaylists();
-    toast(`Saved ${S.queue.length} songs to "${name}"`);
+    toast(t('player.toast.playlistSaved', { count: S.queue.length, name }));
     openPlaylist(name);
   } catch(e) { toast(t('player.toast.saveFailed') + ': ' + e.message); }
+});
+document.getElementById('pl-save-name').addEventListener('keydown', e => {
+  if (e.key === 'Enter') document.getElementById('pl-save-ok').click();
 });
 
 // Add to playlist modal cancel
@@ -25350,7 +23831,7 @@ document.getElementById('pl-del-ok').addEventListener('click', async () => {
   try {
     await api('POST', 'api/v1/playlist/delete', { playlistname: name });
     await loadPlaylists();
-    toast(`Deleted "${name}"`);
+    toast(t('player.toast.playlistDeleted', { name }));
     if (S.view === 'playlist:' + name) viewRecent();
   } catch(e) { toast(t('player.toast.deleteFailed')); }
 });
@@ -25362,9 +23843,9 @@ document.getElementById('pl-rename-ok').addEventListener('click', async () => {
   try {
     await api('POST', 'api/v1/playlist/rename', { oldName, newName });
     await loadPlaylists();
-    toast(`Renamed to "${newName}"`);
+    toast(t('player.toast.playlistRenamed', { name: newName }));
     if (S.view === 'playlist:' + oldName) openPlaylist(newName);
-  } catch(e) { toast(e.message || 'Failed to rename playlist'); }
+  } catch(e) { toast(e.message || t('player.toast.playlistRenameFailed')); }
 });
 
 // Context menu actions
@@ -25393,17 +23874,17 @@ document.getElementById('ctx-menu').querySelectorAll('.ctx-item').forEach(btn =>
       document.body.appendChild(a); a.click(); document.body.removeChild(a);
     }
     if (action === 'rate')        { showRatePanel(0, 0, song); document.getElementById('rate-panel').style.left = '50%'; document.getElementById('rate-panel').style.top = '40%'; }
-    if (action === 'go-artist')   { if (song.artist) viewArtistProfile(song.artist.toLowerCase(), song.artist, [song.artist], () => viewArtists_old()); }
+    if (action === 'go-artist')   { if (song.artist) viewArtistProfile2(song.artist.toLowerCase(), song.artist, [song.artist], () => viewArtists()); }
     if (action === 'go-album')    { if (song.album)  viewAlbumSongs(song.album, song.artist || null, null, { skipAOFilter: true }); }
     if (action === 'delete-recording') {
       const fname = song.filepath.split('/').pop();
       showConfirmModal(
-        'Delete recording?',
-        `"${fname}" will be permanently deleted from the server. This cannot be undone.`,
+        t('player.fe.deleteTitle'),
+        t('player.fe.deleteBody', { name: fname }),
         async () => {
           try {
             await api('DELETE', 'api/v1/files/recording', { filepath: song.filepath });
-            toast(`Deleted: ${fname}`);
+            toast(t('player.toast.recordingDeleted', { name: fname }));
             // Remove from current view if present
             const idx = S.curSongs.findIndex(s => s.filepath === song.filepath);
             if (idx !== -1) {
@@ -25569,7 +24050,7 @@ const EQ = (() => {
     const track = document.getElementById('eq-bypass-track');
     const lbl   = document.getElementById('eq-bypass-text');
     if (track) track.classList.toggle('lit', enabled);
-    if (lbl)   lbl.textContent = enabled ? 'On' : 'Off';
+    if (lbl)   lbl.textContent = t(enabled ? 'player.misc.on' : 'player.misc.off');
     document.getElementById('eq-btn')?.classList.toggle('eq-active', enabled && gains.some(g => g !== 0));
   }
 
@@ -25833,24 +24314,17 @@ function _onAudioPlay()  {
   if (S.username) localStorage.setItem(_playingKey(), '1');
   syncPlayIcons(); VIZ.initAudio(); VU_NEEDLE.start(); _startWaveformRaf(); document.body.classList.add('audio-playing'); _TabFav.play(); _startPositionSync(); if (S.queue[S.idx]?.isRadio) { _radioPlayStart = Date.now(); if (_radioNowPlayingStation) _pollRadioNowPlaying(_radioNowPlayingStation); } if ('mediaSession' in navigator) try { navigator.mediaSession.playbackState = 'playing'; } catch(_e) {} /* Re-apply book speed — browsers reset playbackRate to 1 after audioEl.load() */ if (_isAudioBookSong(S.queue[S.idx]) && S.bookSpeed && S.bookSpeed !== 1) audioEl.playbackRate = S.bookSpeed;
 }
-function _onAudioPause() { if (S.username) localStorage.setItem(_playingKey(), '0'); syncPlayIcons(); VU_NEEDLE.stop();  _stopWaveformRaf(); document.body.classList.remove('audio-playing'); _TabFav.pause(); _stopPositionSync(); if ('mediaSession' in navigator) try { navigator.mediaSession.playbackState = 'paused';  } catch(_e) {} persistQueue(); /* flush playing:false to localStorage immediately */ _syncQueueToDbNow(false); /* immediate DB write — no debounce — so even a quick clear+refresh sees playing:false */ const _ps = S.queue[S.idx]; if (_isAudioBookSong(_ps) && audioEl.currentTime > 2) { _saveBookPosition(_ps.filepath, audioEl.currentTime); } }
+function _onAudioPause() { if (S.username) localStorage.setItem(_playingKey(), '0'); syncPlayIcons(); VU_NEEDLE.stop();  _stopWaveformRaf(); document.body.classList.remove('audio-playing'); _TabFav.pause(); _stopPositionSync(); if ('mediaSession' in navigator) try { navigator.mediaSession.playbackState = 'paused';  } catch(_e) {} persistQueue(); /* flush playing:false to localStorage immediately */ _syncQueueToDbNow(false); /* immediate DB write — no debounce — so even a quick clear+refresh sees playing:false */ const _ps = S.queue[S.idx]; if (_isAudioBookSong(_ps) && audioEl.currentTime > 2) { _saveBookPosition(_ps.filepath, audioEl.currentTime); } if (_podcastSong && _podcastSong === _ps && !audioEl.ended) _savePodcastProgress(); }
 function _onAudioEnded() {
   // Radio stream ended unexpectedly — try to reconnect on the same link
   const _curSong = S.queue[S.idx];
   if (_curSong?.isRadio) {
     setTimeout(() => {
       if (S.queue[S.idx]?.isRadio) {
-        audioEl.src = mediaUrl(_curSong._radioLinks[_curSong._radioLinkIdx || 0]);
+        audioEl.src = mediaUrl(_radioLinksOf(_curSong)[_curSong._radioLinkIdx || 0]);
         audioEl.load(); audioEl.play().catch(() => {});
       }
     }, 3000);
-    return;
-  }
-  if (S.sleepMins === -1) {
-    S.sleepMins = 0;
-    S.sleepEndsAt = 0;
-    _updateSleepLight();
-    _showInfoStrip('', '<span class="dj-strip-label">💤 Sleep — playback stopped</span>', 6000, true);
     return;
   }
   // Crossfade: _xfadeEl is already playing through Web Audio.
@@ -25880,6 +24354,12 @@ function _onAudioEnded() {
       eventId: eid, playedMs: Math.round((audioEl.duration || 0) * 1000), completed: true,
     }).catch(() => {});
   }
+  if (_podcastSong) { _savePodcastProgress(true); _podcastSong = null; }
+  if (S.sleepMins === -1) {
+    _syncQueueToDbNow(false);
+    _sleepStopped();
+    return;
+  }
   // The local mirror is the clock: when it ends, the web UI decides the track is done
   // and advances, exactly as it would for Browser or Server Speaker output. Sonos is
   // told about the new track by playAt() below, the same way any other track change
@@ -25894,6 +24374,11 @@ const _mediaParseRetries = new Map();
 // serve a stale broken stream from its internal media cache.
 const _parseErrFilepaths = new Set();
 
+// A station's stream links; its filepath is the first link.
+function _radioLinksOf(s) {
+  return s._radioLinks?.length ? s._radioLinks : [s.filepath];
+}
+
 function _onAudioError() {
   if (_sinkSwitching) return;  // suppress errors during audio output device switch
   const err = audioEl.error;
@@ -25903,19 +24388,20 @@ function _onAudioError() {
   // Radio stream error — try next fallback link, or retry from start after delay
   const _radioSong = S.queue[S.idx];
   if (_radioSong?.isRadio) {
+    const links = _radioLinksOf(_radioSong);
     const nextIdx = (_radioSong._radioLinkIdx || 0) + 1;
-    if (nextIdx < _radioSong._radioLinks.length) {
+    if (nextIdx < links.length) {
       _radioSong._radioLinkIdx = nextIdx;
-      audioEl.src = mediaUrl(_radioSong._radioLinks[nextIdx]); // must go through proxy
+      audioEl.src = mediaUrl(links[nextIdx]); // must go through proxy
       audioEl.load(); audioEl.play().catch(() => {});
-      toast(`Radio: trying fallback link ${nextIdx + 1}…`);
+      toast(t('player.toast.radioFallback', { n: nextIdx + 1 }));
     } else {
       // All links exhausted (e.g. server restarting) — reset to link 0 and retry after a delay
       _radioSong._radioLinkIdx = 0;
-      toast(`⚠ Radio stream unavailable — retrying in 10s…`);
+      toast(t('player.toast.radioUnavailable'));
       setTimeout(() => {
         if (S.queue[S.idx] === _radioSong) {
-          audioEl.src = mediaUrl(_radioSong._radioLinks[0]);
+          audioEl.src = mediaUrl(links[0]);
           audioEl.load(); audioEl.play().catch(() => {});
         }
       }, 10000);
@@ -25957,7 +24443,7 @@ function _onAudioError() {
     // Already retried — give up and skip.
     _mediaParseRetries.delete(src);
     const song = S.queue[S.idx];
-    const name = song ? (song.title || song.filepath.split('/').pop()) : 'Unknown';
+    const name = song ? (song.title || song.filepath.split('/').pop()) : t('player.misc.unknown');
     if (song?.filepath) {
       // Remember this filepath so the next play attempt gets a cache-busted URL
       _parseErrFilepaths.add(song.filepath);
@@ -25968,7 +24454,7 @@ function _onAudioError() {
       }).catch(() => {});
       toast(t('player.toast.parseErrorReported', { name }));
     } else {
-      toast(`⚠ Skipping unplayable file: ${name}`);
+      toast(t('player.toast.skippingUnplayable', { name }));
     }
     Player.next();
     return;
@@ -26045,7 +24531,7 @@ function renderCueMarkers() {
   const html = _cuePoints.map(cp => {
     const pct = (cp.t / dur) * 100;
     if (pct <= 0 || pct >= 100) return '';
-    const label = cp.title ? `${cp.no}. ${cp.title}` : `Track ${cp.no}`;
+    const label = cp.title ? `${cp.no}. ${cp.title}` : t('player.cue.trackN', { n: cp.no });
     return `<span class="cue-tick" style="left:${pct.toFixed(2)}%" data-label="${esc(label)}"></span>`;
   }).join('');
   ['cue-markers','np-cue-markers'].forEach(id => {
@@ -26187,6 +24673,8 @@ function _updateAudioBookChapterBar() {
   }
 }
 
+const AB_SPEEDS = [0.5, 0.75, 1, 1.25, 1.5, 1.75, 2];
+
 // Toggle the speed popup.
 function _toggleSpeedPop(btn) {
   const pop = document.getElementById('ab-speed-pop');
@@ -26257,6 +24745,7 @@ function _onAudioTimeupdatePersist() {
     if (_isAudioBookSong(_s) && audioEl.currentTime > 2) {
       _saveBookPosition(_s.filepath, audioEl.currentTime);
     }
+    if (_podcastSong && _podcastSong === _s && !audioEl.paused && Date.now() - _podcastSavedAt >= 15000) _savePodcastProgress();
   }, 5000);
 }
 // Buffered-range indicator: paint a faint bar up to the buffered end nearest
@@ -26283,9 +24772,15 @@ function _updateBufferBars() {
 
 function _onAudioTimeupdateUI() {
   const _cueSong = S.queue[S.idx];
-  // CUE virtual track: advance to next queue entry when reaching this track's end boundary
-  if (_cueSong?._isCueSplit && _cueSong.cueEndOffset != null &&
+  // CUE virtual track: advance to next queue entry when reaching this track's end boundary.
+  // Pausing fires one more timeupdate, so a paused element never advances; play resumes into the next track.
+  if (_cueSong?._isCueSplit && _cueSong.cueEndOffset != null && !audioEl.paused &&
       audioEl.currentTime >= _cueSong.cueEndOffset - 0.15) {
+    if (S.sleepMins === -1) {
+      Player.toggle();
+      _sleepStopped();
+      return;
+    }
     Player.next();
     return;
   }
@@ -26344,22 +24839,11 @@ function _onAudioTimeupdateUI() {
     _renderTimes();
   }
   VIZ.lyricTick(audioEl.currentTime);
-  if (S.crossfade > 0 && !S.gapless && !_xfadeFired && !S.castingToMpv && !S.castingToSonos) {
+  if (S.crossfade > 0 && !S.gapless && !_xfadeFired && !S.castingToMpv && !S.castingToSonos && S.sleepMins !== -1) {
     if (!S.queue[S.idx]?.isRadio) {
       const remaining = audioEl.duration - audioEl.currentTime;
       if (remaining > 0 && remaining <= S.crossfade) {
-        let nextIdx = -1;
-        if (S.shuffle) {
-          nextIdx = Math.floor(Math.random() * S.queue.length);
-        } else if (S.repeat === 'one') {
-          nextIdx = S.idx;
-        } else if (S.idx < S.queue.length - 1) {
-          nextIdx = S.idx + 1;
-        } else if (S.repeat === 'all') {
-          nextIdx = 0;
-        } else if (S.autoDJ && S.queue.length > S.idx + 1) {
-          nextIdx = S.idx + 1;
-        }
+        const nextIdx = _nextIndexAuto();
         if (nextIdx !== -1) _startCrossfade(nextIdx);
       }
     }
@@ -26367,15 +24851,10 @@ function _onAudioTimeupdateUI() {
   // Gapless playback: pre-buffer next track ~8 s before end when crossfade is off.
   // We need the buffer window to be large enough so the browser has time to
   // fetch+decode the start of the next FLAC before audioEl fires 'ended'.
-  if (S.gapless && !_xfadeFired && audioEl.duration > 0 && !S.queue[S.idx]?.isRadio) {
+  if (S.gapless && !_xfadeFired && !S.castingToMpv && !S.castingToSonos && S.sleepMins !== -1 && audioEl.duration > 0 && !S.queue[S.idx]?.isRadio) {
     const remaining = audioEl.duration - audioEl.currentTime;
     if (remaining > 0 && remaining <= 8.0) {
-      let nextIdx = -1;
-      if (S.shuffle)                             nextIdx = Math.floor(Math.random() * S.queue.length);
-      else if (S.repeat === 'one')               nextIdx = S.idx;
-      else if (S.idx < S.queue.length - 1)       nextIdx = S.idx + 1;
-      else if (S.repeat === 'all')               nextIdx = 0;
-      else if (S.autoDJ && S.queue.length > S.idx + 1) nextIdx = S.idx + 1;
+      const nextIdx = _nextIndexAuto();
       if (nextIdx !== -1) _startGapless(nextIdx);
     }
   }
@@ -26439,7 +24918,6 @@ const _sonosTakeCastReason = () => {
   _sonosCastReason = null; _sonosMirrorLagNote = null;
   return r || undefined;
 };
-const _mmss = s => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
 let _sonosStreamOffset = 0;    // seconds offset for transcoded streams started mid-file: Sonos reports stream-relative position, so add this to convert to original-file position
 let _sonosLocalControlAt = 0;  // timestamp of a web-initiated play/pause/seek — suppresses the heartbeat racing our own command
 let _sonosLastRecastAt = 0;    // throttle for the stopped-device self-heal re-cast
@@ -26524,8 +25002,8 @@ function _startSonosPositionSync(ip) {
         if (_idle && _speakerElapsed >= _dur - 3 && _sonosAdvancedFp !== _cur.filepath) {
           _sonosAdvancedFp = _cur.filepath;
           const _at = Math.floor(audioEl.currentTime || 0);
-          console.log(`[sonos] device finished "${_cur.filepath}" (local mirror at ${_mmss(_at)} of ${_mmss(_dur)}) — advancing`);
-          _sonosCastReason = `speaker finished the previous track; web player clock was at ${_mmss(_at)}/${_mmss(_dur)}`;
+          console.log(`[sonos] device finished "${_cur.filepath}" (local mirror at ${fmt(_at)} of ${fmt(_dur)}) — advancing`);
+          _sonosCastReason = `speaker finished the previous track; web player clock was at ${fmt(_at)}/${fmt(_dur)}`;
           _onAudioEnded();
         } else if (_idle &&
             (Date.now() - _sonosLastRecastAt) >= 10000 &&
@@ -26601,17 +25079,7 @@ function _startPositionSync() {
   _positionSyncInterval = setInterval(() => {
     if (!audioEl.paused && S.token && S.username) {
       persistQueue();
-      // Write position directly — skip the debounce so DB is always current
-      api('POST', 'api/v1/user/settings', { queue: {
-        queue:     S.queue,
-        idx:       S.idx,
-        time:      audioEl.currentTime || 0,
-        playing:   true,
-        savedAt:   Date.now(),
-        browserId: _browserId,
-      }})
-        .then(() => localStorage.setItem('ms2_settings_pushed_' + S.username, new Date().toISOString()))
-        .catch(() => {});
+      _syncQueueToDbNow(true);
     }
   }, 60000);
 }
@@ -26659,8 +25127,8 @@ function _reloadFromPosition(attempt) {
   if (attempt > 5) {
     console.error('Recovery: gave up after 5 recovery attempts — skipping track');
     const song = S.queue[S.idx];
-    const name = song ? (song.title || song.filepath.split('/').pop()) : 'Unknown';
-    toast(`⚠ Skipping unreachable file: ${name}`);
+    const name = song ? (song.title || song.filepath.split('/').pop()) : t('player.misc.unknown');
+    toast(t('player.toast.skippingUnreachable', { name }));
     Player.next();
     return;
   }
@@ -26711,11 +25179,11 @@ function _reloadFromPosition(attempt) {
 }
 
 // (error, stalled, playing, canplay, timeupdate × 2 are all registered via _attachAudioListeners above)
-// Seek arrow + time bubble on the player-bar progress track
+// Seek arrow + time bubble on a progress track (player bar and Now Playing modal)
 // Arrow is a DOM element: CSS fixes its vertical position, JS only ever sets left.
-(function initSeekPreview() {
-  const track     = document.getElementById('prog-track');
-  const container = track.closest('.player-progress');
+function _initSeekPreview(trackId, containerSel) {
+  const track     = document.getElementById(trackId);
+  const container = track.closest(containerSel);
 
   // Triangle arrow — vertical position set in CSS (bottom:7px), never touched by JS
   const arrow = document.createElement('div');
@@ -26739,7 +25207,8 @@ function _reloadFromPosition(attempt) {
     arrow.classList.add('sa-show');
     if (onCue) { bubble.classList.remove('sp-show'); return; }
     bubble.style.left = xPx + 'px';
-    if (audioEl.duration && Number.isFinite(audioEl.duration)) { bubble.textContent = fmt(pct * audioEl.duration); bubble.classList.add('sp-show'); }
+    const dur = _playerDurSec();
+    if (dur > 0) { bubble.textContent = fmt(pct * dur); bubble.classList.add('sp-show'); }
   }
   function onLeave() { arrow.classList.remove('sa-show'); bubble.classList.remove('sp-show'); }
   container.addEventListener('mousemove', onMove);
@@ -26753,7 +25222,8 @@ function _reloadFromPosition(attempt) {
     const dur = _playerDurSec();
     if (dur > 0) _seekCurrentTrack(Math.max(0, Math.min(1, (e.clientX - r.left) / r.width)) * dur);
   });
-}());
+}
+_initSeekPreview('prog-track', '.player-progress');
 let _volSaveTimer = null;
 document.getElementById('volume').addEventListener('input', e => {
   if (_room) { _roomSetVolume(e.target.value); return; }
@@ -26881,7 +25351,7 @@ document.getElementById('np-left').addEventListener('click', async e => {
       if (_dsAfter) { _dsAfter.classList.remove('hidden'); _dsAfter.dataset.songFp = ''; _dsAfter.innerHTML = `<span class="np-discogs-status" style="color:rgba(110,230,110,.85)">${esc(t('player.toast.folderCoverSaved'))}</span>`; }
       setTimeout(() => { const _d = document.getElementById('np-discogs-section'); if (_d) _d.dataset.songFp = ''; renderNPModal(); }, 1800);
     } catch(fcErr) {
-      const errMsg = t('player.npArt.saveFolderCoverFailed', { msg: esc(fcErr?.message || 'error') });
+      const errMsg = t('player.npArt.saveFolderCoverFailed', { msg: fcErr?.message || t('player.misc.failed') });
       const _dsAfter = document.getElementById('np-discogs-section');
       if (_dsAfter) { _dsAfter.classList.remove('hidden'); _dsAfter.dataset.songFp = ''; _dsAfter.innerHTML = `<span class="np-discogs-status" style="color:rgba(255,100,100,.8)">${esc(errMsg)}</span>`; }
       setTimeout(() => { const _d = document.getElementById('np-discogs-section'); if (_d) _d.dataset.songFp = ''; renderNPModal(); }, 2500);
@@ -26938,46 +25408,12 @@ document.getElementById('np-left').addEventListener('click', async e => {
     if (!coverUrl || !song?.filepath) return;
     // Basic URL validation — must start with http(s)://
     if (!/^https?:\/\/.+/i.test(coverUrl)) {
-      if (statusEl) { statusEl.textContent = 'Please enter a valid https:// URL'; statusEl.style.display = ''; }
+      if (statusEl) { statusEl.textContent = t('player.npArt.invalidUrl'); statusEl.style.display = ''; }
       return;
     }
-    const filepath = song.filepath;
-    const dsEl   = document.getElementById('np-discogs-section');
-    const npLeft = document.getElementById('np-left');
-    const _cacheOnly = ['wav','aiff','aif','w64'].includes((filepath || '').split('.').pop().toLowerCase());
-    const _label = _cacheOnly ? t('player.npArt.savingArt') : t('player.npArt.embeddingArt');
-    const _isCurrentSong = S.queue[S.idx]?.filepath === filepath;
-    const _wasPlaying    = _isCurrentSong && !audioEl.paused;
-    const _resumeAt      = _isCurrentSong ? audioEl.currentTime : 0;
-    if (_isCurrentSong && _wasPlaying) audioEl.pause();
-    if (dsEl) dsEl.innerHTML = _embedProgressHtml(_label, _cacheOnly);
-    npLeft?.classList.add('np-left--embedding');
-    try {
-      const result = await api('POST', 'api/v1/discogs/embed', { filepath, coverUrl });
-      if (result?.aaFile) {
-        S.queue.forEach(q => { if (q.filepath === filepath) q['album-art'] = result.aaFile; });
-        _syncQueueToDb();
-      }
-      npLeft?.classList.remove('np-left--embedding');
-      npLeft?.classList.remove('np-left--picking');
-      if (dsEl) dsEl.dataset.songFp = '';
-      renderNPModal();
-      if (!result.cacheOnly && !result.coverFile) _npOfferFolderCover(filepath);
-      if (S.queue[S.idx]?.filepath === filepath) Player.updateBar();
-      refreshQueueUI();
-      if (_isCurrentSong) {
-        clearTimeout(_netRecoveryTimer);
-        toast(t('player.toast.albumArtSaved'));
-        _reloadCurrentSongAfterArtEmbed(filepath, _wasPlaying, _resumeAt);
-      }
-    } catch(err) {
-      npLeft?.classList.remove('np-left--embedding');
-      if (_isCurrentSong && _wasPlaying) audioEl.play().catch(() => {});
-      if (dsEl) dsEl.innerHTML =
-        `<span class="np-discogs-status" style="color:rgba(255,100,100,.8)">${t('player.npArt.embedFailed', { msg: esc(err?.message || 'error') })}</span>` +
-        `<button class="np-discogs-btn" id="np-url-paste-btn" style="margin-top:6px">${t('player.npArt.tryAgain')}</button>` +
-        `<button class="np-discogs-cancel" id="np-discogs-back-btn" style="margin-top:4px">${t('player.npArt.back')}</button>`;
-    }
+    await _npEmbedArt(song.filepath, { coverUrl }, {
+      retryHtml: `<button class="np-discogs-btn" id="np-url-paste-btn" style="margin-top:6px">${t('player.npArt.tryAgain')}</button>`,
+    });
     return;
   }
   // "Load" button — fetch art by Discogs release ID or URL
@@ -27031,44 +25467,10 @@ document.getElementById('np-left').addEventListener('click', async e => {
     const filepath = deezerThumb.dataset.filepath;
     if (!filepath || !coverUrl) return;
     deezerThumb.classList.add('selected');
-    const dsEl   = document.getElementById('np-discogs-section');
-    const npLeft = document.getElementById('np-left');
-    const _cacheOnly = ['wav','aiff','aif','w64'].includes((filepath || '').split('.').pop().toLowerCase());
-    const _label = _cacheOnly ? t('player.npArt.savingArt') : t('player.npArt.embeddingArt');
-    const _isCurrentSong = S.queue[S.idx]?.filepath === filepath;
-    const _wasPlaying    = _isCurrentSong && !audioEl.paused;
-    if (_isCurrentSong && _wasPlaying) audioEl.pause();
-    if (dsEl) dsEl.innerHTML = _embedProgressHtml(_label, _cacheOnly);
-    npLeft?.classList.add('np-left--embedding');
-    try {
-      const result = await api('POST', 'api/v1/discogs/embed', { filepath, coverUrl });
-      if (result?.aaFile) {
-        S.queue.forEach(q => { if (q.filepath === filepath) q['album-art'] = result.aaFile; });
-        _syncQueueToDb(); // persist new art into server queue so tab-sync restores it correctly
-      }
-      npLeft?.classList.remove('np-left--embedding');
-      npLeft?.classList.remove('np-left--picking');
-      if (dsEl) dsEl.dataset.songFp = '';
-      renderNPModal();
-      if (!result.cacheOnly && !result.coverFile) _npOfferFolderCover(filepath);
-      if (S.queue[S.idx]?.filepath === filepath) Player.updateBar();
-      refreshQueueUI();
-      if (_isCurrentSong) {
-        clearTimeout(_netRecoveryTimer);
-        toast(t('player.toast.albumArtSaved'));
-        audioEl.addEventListener('loadedmetadata', () => { if (_wasPlaying) audioEl.play().catch(() => {}); }, { once: true });
-        audioEl.src = mediaUrl(filepath) + '&_t=' + Date.now();
-        audioEl.load();
-      }
-    } catch(err) {
-      npLeft?.classList.remove('np-left--embedding');
-      if (_isCurrentSong && _wasPlaying) audioEl.play().catch(() => {});
-      if (dsEl) dsEl.innerHTML =
-        `<span class="np-discogs-status" style="color:rgba(255,100,100,.8)">${t('player.npArt.embedFailed', { msg: esc(err?.message || 'error') })}</span>` +
-        `<button class="np-deezer-search-btn" id="np-deezer-search-btn" style="margin-top:6px">${t('player.npArt.tryAgain')}</button>` +
-        `<button class="np-discogs-cancel" id="np-discogs-back-btn" style="margin-top:4px">${t('player.npArt.back')}</button>`;
-      deezerThumb.classList.remove('selected');
-    }
+    await _npEmbedArt(filepath, { coverUrl }, {
+      retryHtml: `<button class="np-deezer-search-btn" id="np-deezer-search-btn" style="margin-top:6px">${t('player.npArt.tryAgain')}</button>`,
+      onError: () => deezerThumb.classList.remove('selected'),
+    });
     return;
   }
   // Click a Discogs thumbnail to embed (not a Deezer thumb — those are handled above)
@@ -27079,55 +25481,10 @@ document.getElementById('np-left').addEventListener('click', async e => {
   const filepath  = thumb.dataset.filepath;
   if (!filepath || !releaseId) return;
   thumb.classList.add('selected');
-  const dsEl    = document.getElementById('np-discogs-section');
-  const npLeft  = document.getElementById('np-left');
-  const _cacheOnly = ['wav','aiff','aif','w64'].includes((filepath || '').split('.').pop().toLowerCase());
-  const _label  = _cacheOnly ? t('player.npArt.savingArt') : t('player.npArt.embeddingArt');
-
-  // Snapshot playback state and pause BEFORE the API call.
-  // ffmpeg atomically replaces the file on disk; the browser must not be
-  // streaming it at that moment or it will get a mid-stream disconnect.
-  const _isCurrentSong = S.queue[S.idx]?.filepath === filepath;
-  const _wasPlaying    = _isCurrentSong && !audioEl.paused;
-  const _resumeAt      = _isCurrentSong ? audioEl.currentTime : 0;
-  if (_isCurrentSong && _wasPlaying) audioEl.pause();
-
-  // Show a full-panel spinner and block further interaction
-  if (dsEl) dsEl.innerHTML = _embedProgressHtml(_label, _cacheOnly);
-  npLeft?.classList.add('np-left--embedding');
-  try {
-    const result = await api('POST', 'api/v1/discogs/embed', { filepath, releaseId });
-    if (result?.aaFile) {
-      S.queue.forEach(q => { if (q.filepath === filepath) q['album-art'] = result.aaFile; });
-      _syncQueueToDb(); // persist new art into server queue so tab-sync restores it correctly
-    }
-    npLeft?.classList.remove('np-left--embedding');
-    npLeft?.classList.remove('np-left--picking');
-    // Force renderNPModal to reset the discogs section by clearing the cached fp
-    if (dsEl) dsEl.dataset.songFp = '';
-    // Re-render modal (shows new art + resets discogs section)
-    renderNPModal();
-    if (!result.cacheOnly && !result.coverFile) _npOfferFolderCover(filepath);
-    // Refresh player bar thumbnail + queue panel
-    if (S.queue[S.idx]?.filepath === filepath) Player.updateBar();
-    refreshQueueUI();
-    // Reload after ffmpeg rewrite with cache-buster and best-effort resume.
-    // If post-reload seek lands outside +/-1s, we fall back to 0 for safety.
-    if (_isCurrentSong) {
-      clearTimeout(_netRecoveryTimer); // prevent stall-recovery from interfering
-      toast(t('player.toast.albumArtSaved'));
-      _reloadCurrentSongAfterArtEmbed(filepath, _wasPlaying, _resumeAt);
-    }
-  } catch(err) {
-    npLeft?.classList.remove('np-left--embedding');
-    // Resume playback if we paused it — the file wasn't changed
-    if (_isCurrentSong && _wasPlaying) audioEl.play().catch(() => {});
-    if (dsEl) dsEl.innerHTML =
-      `<span class="np-discogs-status" style="color:rgba(255,100,100,.8)">${t('player.npArt.embedFailed', { msg: esc(err?.message || 'error') })}</span>` +
-      `<button class="np-discogs-btn" id="np-discogs-search-btn" style="margin-top:6px">${t('player.npArt.tryAgain')}</button>` +
-      `<button class="np-discogs-cancel" id="np-discogs-back-btn" style="margin-top:4px">${t('player.npArt.back')}</button>`;
-    thumb.classList.remove('selected');
-  }
+  await _npEmbedArt(filepath, { releaseId }, {
+    retryHtml: `<button class="np-discogs-btn" id="np-discogs-search-btn" style="margin-top:6px">${t('player.npArt.tryAgain')}</button>`,
+    onError: () => thumb.classList.remove('selected'),
+  });
 });
 // Live image preview when the user types/pastes a URL in the URL-paste input
 document.getElementById('np-left').addEventListener('input', e => {
@@ -27144,7 +25501,7 @@ document.getElementById('np-left').addEventListener('input', e => {
     return;
   }
   imgEl.onload  = () => { wrap.classList.remove('hidden'); if (statEl) statEl.style.display = 'none'; };
-  imgEl.onerror = () => { wrap.classList.add('hidden');    if (statEl) { statEl.textContent = 'Could not load image from that URL'; statEl.style.display = ''; } };
+  imgEl.onerror = () => { wrap.classList.add('hidden');    if (statEl) { statEl.textContent = t('player.npArt.loadFailed'); statEl.style.display = ''; } };
   imgEl.src = url;
 });
 // ID3 tag edit buttons inside the NP modal right panel
@@ -27165,49 +25522,7 @@ document.getElementById('np-right').addEventListener('click', async e => {
 document.getElementById('np-play-btn').addEventListener('click', () => Player.toggle());
 document.getElementById('np-prev-btn').addEventListener('click', () => Player.prev());
 document.getElementById('np-next-btn').addEventListener('click', () => Player.next());
-document.getElementById('np-prog-track').addEventListener('click', e => {
-  // NP modal seek is now handled by the container click in initNpSeekPreview.
-  // Keep this as a direct fallback for any programmatic calls.
-});
-// Seek arrow + time bubble on the NP-modal progress track
-(function initNpSeekPreview() {
-  const track     = document.getElementById('np-prog-track');
-  const container = track.closest('.np-progress');
-
-  const arrow = document.createElement('div');
-  arrow.className = 'seek-arrow';
-  container.appendChild(arrow);
-
-  const bubble = document.createElement('div');
-  bubble.className = 'seek-preview';
-  container.appendChild(bubble);
-
-  function onMove(e) {
-    const onCue = e.target.closest('.cue-tick');
-    const tRect = track.getBoundingClientRect();
-    const cRect = container.getBoundingClientRect();
-    const pct   = Math.max(0, Math.min(1, (e.clientX - tRect.left) / tRect.width));
-    const xPx   = tRect.left - cRect.left + pct * tRect.width;
-    arrow.style.left = xPx + 'px';
-    arrow.classList.toggle('sa-cue', !!onCue);
-    arrow.classList.add('sa-show');
-    if (onCue) { bubble.classList.remove('sp-show'); return; }
-    bubble.style.left = xPx + 'px';
-    if (audioEl.duration && Number.isFinite(audioEl.duration)) { bubble.textContent = fmt(pct * audioEl.duration); bubble.classList.add('sp-show'); }
-  }
-  function onLeave() { arrow.classList.remove('sa-show'); bubble.classList.remove('sp-show'); }
-  container.addEventListener('mousemove', onMove);
-  container.addEventListener('mouseleave', onLeave);
-  // Also hide when the song changes (crossfade doesn't trigger mouseleave)
-  document.addEventListener('velvet-song-change', onLeave);
-  container.addEventListener('click', e => {
-    if (e.target.closest('.cue-tick')) return;
-    if (S.queue[S.idx]?.isRadio) { _radioSpectrumEnabled = !_radioSpectrumEnabled; _drawWaveform(); return; }
-    const r = track.getBoundingClientRect();
-    const dur = _playerDurSec();
-    if (dur > 0) _seekCurrentTrack(Math.max(0, Math.min(1, (e.clientX - r.left) / r.width)) * dur);
-  });
-}());
+_initSeekPreview('np-prog-track', '.np-progress');
 // Time display toggle — click either time span (player bar or NP modal) to flip
 // between elapsed|total and total|countdown modes.
 document.getElementById('time-cur').addEventListener('click',      _toggleTimeFlipped);
@@ -27316,53 +25631,6 @@ document.getElementById('np-rate-stars').querySelectorAll('span').forEach((star,
   });
 });
 
-// ── PLAYLIST MODAL WIRING ─────────────────────────────────────
-
-// "New playlist" button in sidebar
-document.getElementById('new-pl-btn').addEventListener('click', () => showNewPlaylistModal());
-
-// "Save queue as playlist" button in queue panel
-document.getElementById('qp-save-btn').addEventListener('click', () => {
-  if (!S.queue.length) { toast(t('player.toast.queueEmpty')); return; }
-  showSavePlaylistModal();
-});
-
-// pl-new modal
-document.getElementById('pl-new-cancel').addEventListener('click', () => hideModal('pl-new-modal'));
-document.getElementById('pl-new-ok').addEventListener('click', async () => {
-  const name = document.getElementById('pl-new-name').value.trim();
-  if (!name) return;
-  hideModal('pl-new-modal');
-  try {
-    await api('POST', 'api/v1/playlist/new', { title: name });
-    await loadPlaylists();
-    toast(`Playlist "${name}" created`);
-    openPlaylist(name);
-  } catch(e) { toast(e.message?.includes('Already Exists') ? `"${name}" already exists` : 'Failed to create playlist'); }
-});
-document.getElementById('pl-new-name').addEventListener('keydown', e => {
-  if (e.key === 'Enter') document.getElementById('pl-new-ok').click();
-});
-
-// pl-save modal (save current queue into a named playlist)
-document.getElementById('pl-save-cancel').addEventListener('click', () => hideModal('pl-save-modal'));
-document.getElementById('pl-save-ok').addEventListener('click', async () => {
-  const name = document.getElementById('pl-save-name').value.trim();
-  if (!name) return;
-  hideModal('pl-save-modal');
-  try {
-    await api('POST', 'api/v1/playlist/save', { title: name, songs: S.queue.map(s => s.filepath) });
-    await loadPlaylists();
-    toast(t('player.toast.playlistSaved', { count: S.queue.length, name }));
-  } catch(e) { toast(t('player.toast.saveFailed')); }
-});
-document.getElementById('pl-save-name').addEventListener('keydown', e => {
-  if (e.key === 'Enter') document.getElementById('pl-save-ok').click();
-});
-
-// atp-cancel
-document.getElementById('atp-cancel').addEventListener('click', () => hideModal('atp-modal'));
-
 // ── BAR POSITION ─────────────────────────────────────────────
 function applyBarPos(top) {
   document.documentElement.classList.toggle('bar-top', top);
@@ -27397,6 +25665,7 @@ const _THEME_CLASSES = ['dark', 'light', 'hc', 'cb'];
 function applyTheme(theme, persist = true) {
   document.documentElement.classList.remove(..._THEME_CLASSES);
   if (_THEME_CLASSES.includes(theme)) document.documentElement.classList.add(theme);
+  _themeColorCache = null;
   document.querySelectorAll('.theme-seg-btn').forEach(btn => {
     btn.classList.toggle('active', btn.dataset.theme === theme);
   });
@@ -28011,7 +26280,7 @@ window.EGG = (() => {
     if (Math.abs(audioEl.playbackRate - r) > 0.0005) audioEl.playbackRate = r;
   }
   const _faderTop = () => F_CY + ((1 - fader) / 0.10) * F_HALF - F_H / 2;
-  const _faderTitle = f => { f.title = 'Pitch ' + ((fader - 1) * 100).toFixed(1) + '%'; };
+  const _faderTitle = f => { f.title = t('player.vinyl.pitch', { pct: ((fader - 1) * 100).toFixed(1) }); };
   function _mkFader(art) {
     const f = document.createElement('i');
     f.className = 'vinyl-fader';
@@ -28060,7 +26329,7 @@ window.EGG = (() => {
     });
     const ss = document.createElement('i');
     ss.className = 'vinyl-btn vinyl-ss';
-    ss.title = 'Start / Stop';
+    ss.title = t('player.vinyl.startStop');
     ss.addEventListener('click', e => { e.stopPropagation(); Player.toggle(); });
     const b33 = document.createElement('i');
     b33.className = 'vinyl-btn vinyl-b33' + (speed === 1 ? ' on' : '');
@@ -28178,22 +26447,12 @@ document.addEventListener('keydown', e => {
       }
       break;
     // ↑ ↓ volume ±5%
-    case 'ArrowUp': {
-      e.preventDefault();
-      const vUp = Math.min(100, Math.round(audioEl.volume * 100) + 5);
-      audioEl.volume = vUp / 100;
-      const slUp = document.getElementById('volume');
-      if (slUp) slUp.value = vUp;
-      _setVolPct(vUp);
-      break;
-    }
+    case 'ArrowUp':
     case 'ArrowDown': {
       e.preventDefault();
-      const vDn = Math.max(0, Math.round(audioEl.volume * 100) - 5);
-      audioEl.volume = vDn / 100;
-      const slDn = document.getElementById('volume');
-      if (slDn) slDn.value = vDn;
-      _setVolPct(vDn);
+      const sl = document.getElementById('volume');
+      sl.value = Math.max(0, Math.min(100, Number(sl.value) + (e.code === 'ArrowUp' ? 5 : -5)));
+      sl.dispatchEvent(new Event('input'));
       break;
     }
     case 'KeyK':
@@ -28204,10 +26463,7 @@ document.addEventListener('keydown', e => {
       break;
     case 'KeyS':
       if (!e.ctrlKey && !e.metaKey) {
-        if (_room) { _roomToggleShuffle(); break; }
-        S.shuffle = !S.shuffle;
-        document.getElementById('shuffle-btn').classList.toggle('active', S.shuffle);
-        _showInfoStrip('', _shuffleStripHtml(), 3000, true);
+        document.getElementById('shuffle-btn').click();
       }
       break;
     case 'KeyR':
@@ -28344,9 +26600,11 @@ function _toggleShortcutsHelp() {
 let _cmdkEl = null;
 function _cmdkBuildItems() {
   const items = [];
-  // VIEWS — every visible sidebar target, routed by clicking its nav button.
+  // VIEWS — every enabled sidebar target, routed by clicking its nav button.
+  // Feature-flagged buttons and sections carry .hidden; a button inside a
+  // collapsed sidebar section is still offered.
   document.querySelectorAll('.nav-btn[data-view]').forEach(btn => {
-    if (btn.offsetParent === null) return;                 // hidden / feature-flagged
+    if (btn.closest('.hidden')) return;
     const label = (btn.querySelector('[data-i18n]')?.textContent || btn.textContent || '').replace(/\s+/g, ' ').trim();
     const view  = btn.dataset.view;
     if (label && view) items.push({ group: 'views', label, run: () => document.querySelector(`.nav-btn[data-view="${view}"]`)?.click() });

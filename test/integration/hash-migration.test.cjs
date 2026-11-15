@@ -3,60 +3,32 @@
  * Verifies that when a file is re-indexed with a new hash (e.g. external tag editor
  * rewrites bytes and mtime changes), user_metadata and play_events rows are migrated
  * to the new hash — preserving play counts, ratings, stars, and play history.
+ * Runs the real migrateHash() from src/db/sqlite-backend.js against the real schema.
  */
 
 const { describe, it, before, after } = require('node:test');
 const assert = require('node:assert');
-const { DatabaseSync } = require('node:sqlite');
 const crypto = require('crypto');
 const os = require('os');
 const path = require('path');
 const fs = require('fs');
 
-// ---------------------------------------------------------------------------
-// Minimal in-memory schema — only the tables and columns that migrateHash touches
-// ---------------------------------------------------------------------------
+let backend, workDir;
+
+before(async () => {
+  workDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hash-migration-'));
+  backend = await import('../../src/db/sqlite-backend.js');
+  backend.init(workDir);
+});
+
+after(() => {
+  fs.rmSync(workDir, { recursive: true, force: true });
+});
+
 function createTestDb() {
-  const db = new DatabaseSync(':memory:');
-
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS files (
-      filepath TEXT NOT NULL,
-      vpath    TEXT NOT NULL,
-      hash     TEXT,
-      title    TEXT,
-      artist   TEXT,
-      album    TEXT,
-      PRIMARY KEY (filepath, vpath)
-    );
-
-    CREATE TABLE IF NOT EXISTS user_metadata (
-      hash    TEXT NOT NULL,
-      user    TEXT NOT NULL,
-      rating  INTEGER DEFAULT 0,
-      pc      INTEGER DEFAULT 0,
-      lp      INTEGER DEFAULT 0,
-      starred INTEGER DEFAULT 0,
-      PRIMARY KEY (hash, user)
-    );
-
-    CREATE TABLE IF NOT EXISTS play_events (
-      id         INTEGER PRIMARY KEY AUTOINCREMENT,
-      user_id    TEXT NOT NULL,
-      file_hash  TEXT NOT NULL,
-      started_at INTEGER NOT NULL,
-      duration   INTEGER DEFAULT 0
-    );
-  `);
-
+  const db = backend.getDB();
+  db.exec('DELETE FROM user_metadata; DELETE FROM play_events; DELETE FROM files;');
   return db;
-}
-
-// Inline migrateHash — mirrors src/db/sqlite-backend.js exactly
-function migrateHash(db, oldHash, newHash) {
-  if (!oldHash || !newHash || oldHash === newHash) return;
-  db.prepare('UPDATE user_metadata SET hash = ? WHERE hash = ?').run(newHash, oldHash);
-  db.prepare('UPDATE play_events SET file_hash = ? WHERE file_hash = ?').run(newHash, oldHash);
 }
 
 // ---------------------------------------------------------------------------
@@ -66,7 +38,7 @@ describe('Hash Migration', () => {
     it('should do nothing when oldHash is null', () => {
       const db = createTestDb();
       db.prepare("INSERT INTO user_metadata (hash, user, pc) VALUES ('abc', 'user1', 5)").run();
-      migrateHash(db, null, 'xyz');
+      backend.migrateHash(null, 'xyz');
       const row = db.prepare("SELECT pc FROM user_metadata WHERE hash = 'abc'").get();
       assert.strictEqual(row.pc, 5, 'row untouched when oldHash is null');
     });
@@ -74,7 +46,7 @@ describe('Hash Migration', () => {
     it('should do nothing when newHash is null', () => {
       const db = createTestDb();
       db.prepare("INSERT INTO user_metadata (hash, user, pc) VALUES ('abc', 'user1', 5)").run();
-      migrateHash(db, 'abc', null);
+      backend.migrateHash('abc', null);
       const row = db.prepare("SELECT pc FROM user_metadata WHERE hash = 'abc'").get();
       assert.strictEqual(row.pc, 5, 'row untouched when newHash is null');
     });
@@ -82,7 +54,7 @@ describe('Hash Migration', () => {
     it('should do nothing when oldHash === newHash', () => {
       const db = createTestDb();
       db.prepare("INSERT INTO user_metadata (hash, user, pc) VALUES ('abc', 'user1', 5)").run();
-      migrateHash(db, 'abc', 'abc');
+      backend.migrateHash('abc', 'abc');
       const row = db.prepare("SELECT pc FROM user_metadata WHERE hash = 'abc'").get();
       assert.strictEqual(row.pc, 5, 'row untouched when hashes are equal');
     });
@@ -98,7 +70,7 @@ describe('Hash Migration', () => {
       db.prepare('INSERT INTO user_metadata (hash, user, rating, pc, starred) VALUES (?, ?, ?, ?, ?)')
         .run(oldHash, 'alice', 4, 12, 1);
 
-      migrateHash(db, oldHash, newHash);
+      backend.migrateHash(oldHash, newHash);
 
       const gone = db.prepare('SELECT * FROM user_metadata WHERE hash = ?').get(oldHash);
       const moved = db.prepare('SELECT * FROM user_metadata WHERE hash = ?').get(newHash);
@@ -118,7 +90,7 @@ describe('Hash Migration', () => {
       db.prepare('INSERT INTO user_metadata (hash, user, pc) VALUES (?, ?, ?)').run(oldHash, 'alice', 3);
       db.prepare('INSERT INTO user_metadata (hash, user, pc) VALUES (?, ?, ?)').run(oldHash, 'bob', 7);
 
-      migrateHash(db, oldHash, newHash);
+      backend.migrateHash(oldHash, newHash);
 
       const aliceRow = db.prepare("SELECT pc FROM user_metadata WHERE hash = ? AND user = 'alice'").get(newHash);
       const bobRow   = db.prepare("SELECT pc FROM user_metadata WHERE hash = ? AND user = 'bob'").get(newHash);
@@ -136,7 +108,7 @@ describe('Hash Migration', () => {
       db.prepare('INSERT INTO user_metadata (hash, user, pc) VALUES (?, ?, ?)').run(oldHash, 'alice', 5);
       db.prepare('INSERT INTO user_metadata (hash, user, pc) VALUES (?, ?, ?)').run(otherHash, 'alice', 99);
 
-      migrateHash(db, oldHash, newHash);
+      backend.migrateHash(oldHash, newHash);
 
       const otherRow = db.prepare('SELECT pc FROM user_metadata WHERE hash = ?').get(otherHash);
       assert.strictEqual(otherRow.pc, 99, 'unrelated row must not be changed');
@@ -154,7 +126,7 @@ describe('Hash Migration', () => {
       db.prepare('INSERT INTO play_events (user_id, file_hash, started_at) VALUES (?, ?, ?)').run('alice', oldHash, 2000);
       db.prepare('INSERT INTO play_events (user_id, file_hash, started_at) VALUES (?, ?, ?)').run('alice', oldHash, 3000);
 
-      migrateHash(db, oldHash, newHash);
+      backend.migrateHash(oldHash, newHash);
 
       const oldEvents = db.prepare('SELECT COUNT(*) AS n FROM play_events WHERE file_hash = ?').get(oldHash);
       const newEvents = db.prepare('SELECT COUNT(*) AS n FROM play_events WHERE file_hash = ?').get(newHash);
@@ -172,7 +144,7 @@ describe('Hash Migration', () => {
       db.prepare('INSERT INTO play_events (user_id, file_hash, started_at) VALUES (?, ?, ?)').run('alice', oldHash, 1000);
       db.prepare('INSERT INTO play_events (user_id, file_hash, started_at) VALUES (?, ?, ?)').run('alice', otherHash, 9000);
 
-      migrateHash(db, oldHash, newHash);
+      backend.migrateHash(oldHash, newHash);
 
       const otherCount = db.prepare('SELECT COUNT(*) AS n FROM play_events WHERE file_hash = ?').get(otherHash);
       assert.strictEqual(otherCount.n, 1, 'unrelated play events must not be changed');
@@ -186,8 +158,7 @@ describe('Hash Migration', () => {
 
       // File as originally scanned
       const oldHash = crypto.createHash('md5').update('original file bytes chunk').digest('hex');
-      db.prepare('INSERT INTO files (filepath, vpath, hash, title, artist, album) VALUES (?, ?, ?, ?, ?, ?)')
-        .run('Rock/Queen/Bohemian Rhapsody.mp3', 'Music', oldHash, 'Bohemian Rhapsody', 'Queen', 'A Night at the Opera');
+      backend.insertFile({ filepath: 'Rock/Queen/Bohemian Rhapsody.mp3', vpath: 'Music', hash: oldHash, title: 'Bohemian Rhapsody', artist: 'Queen', album: 'A Night at the Opera' });
 
       // User has played it 42 times and rated it 5 stars
       db.prepare('INSERT INTO user_metadata (hash, user, rating, pc, starred) VALUES (?, ?, ?, ?, ?)').run(oldHash, 'admin', 5, 42, 1);
@@ -201,7 +172,7 @@ describe('Hash Migration', () => {
       assert.notStrictEqual(oldHash, newHash);
 
       // Scanner calls migrateHash
-      migrateHash(db, oldHash, newHash);
+      backend.migrateHash(oldHash, newHash);
 
       // Update files table with new hash (simulates scanner add-file)
       db.prepare('UPDATE files SET hash = ? WHERE filepath = ? AND vpath = ?')

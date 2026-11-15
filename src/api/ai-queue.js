@@ -14,7 +14,8 @@
 import Joi from 'joi';
 import * as config from '../state/config.js';
 import * as db from '../db/manager.js';
-import Scribble from '../state/lastfm.js';
+import { onEveryScanEnd } from '../state/scan-lock.js';
+import { similarArtistsFor } from './scrobbler.js';
 import { joiValidate } from '../util/validation.js';
 import { mergeGenreRows, toKey } from '../util/genre-merge.js';
 import { FAMILIES, keywordFamily } from '../util/genre-family.js';
@@ -26,6 +27,7 @@ import { parseBriefLocally } from '../util/ai-brief-parser.js';
 import { chartPosition, detectCharts, findChart } from '../util/ai-charts.js';
 import { noteAliases, noteLine, notesText } from '../util/ai-library-notes.js';
 import { expandVersionWords, versionFamilies } from '../util/version-words.js';
+import { childPrefixWithin } from '../util/vpath.js';
 
 // The library notes as the DJ reads them, refreshed when the admin or the
 // analysis changes them.
@@ -45,7 +47,6 @@ const BRIEF_TTL_MS = 15 * 60 * 1000;
 const BRIEF_MIN_GAP_MS = 3000;
 const BRIEF_PER_DAY = 200;
 const BUILD_MIN_GAP_MS = 1000;
-const SIMILAR_TIMEOUT_MS = 6000;
 const MAX_SEEDS = 5;
 const UNTAGGED_POOL = 3000;
 
@@ -94,30 +95,6 @@ Rules:
 You know music history. Use it: expand abbreviations and nicknames to the full artist name as it appears in the artist list, or as commonly written (FGTH → Frankie Goes To Hollywood, MJ → Michael Jackson, GNR → Guns N' Roses, RHCP → Red Hot Chili Peppers, NKOTB → New Kids on the Block, SAW → Stock Aitken Waterman; but OMD, ABBA, ELO are names). Turn scenes, labels and producers into what this library has: "Chicago house" → genre House plus years 1985–1992; "the SAW years" → 1986–1990; "Motown" → the Motown folder or genre when listed, else families disco/soft with years 1960–1975; "Ben Liebrand remixes" → keywords ["liebrand"]; "Italo" → Italo-Disco when listed. A producer or remixer named ("the Liebrand mixes", "Bob Sinclar's Cerrone", "Frankie Knuckles remixes") becomes keywords with that surname plus release "remix". A single year ("from 1984") is yearFrom and yearTo 1984; "around 1985" is 1984–1986; "classics" is up to 1995; "oldies" before 1975; "new" or "recent" the last two years; "the 12-inch years" 1982–1991. Tempo knowledge when no genre is named: italo 110–128, hi-NRG 125–140, disco 100–130, house 118–130, trance 130–145. Spell every genre, folder and artist exactly as the library lists them.
 - segments: a set in phases, when the listener describes a sequence — "start calm around 100 BPM for 15 minutes, then dance and disco from 100 to 120, then 30 minutes of club house with a higher BPM, then 30 minutes of dance, then trance". One entry per phase, in the listener's order, two phases at least: name (a few words in the listener's language), minutes or songs when they say how long the phase lasts (both null otherwise), genres from the genre list and/or families for that phase only, bpmFrom / bpmTo for that phase (from the words, or from the genre's average BPM in the genre list: "with a higher BPM" means above the phase before, trance sits around 135–140), energy: build when the phase rises ("from 100 to 120"), steady when it stays, cooldown when it falls. Every phase is picked from this library on its own and mixed into the next, so each phase must name what to play — a phase without genres, families or tempo is the whole library. The top-level genres, families, bpmFrom / bpmTo, energy, songs and minutes then stay empty: the phases decide; era, artists, exclusions and the listener's marks still apply to every phase. One mood, one tempo, one genre is never a set in phases — then segments is empty.
 - clarification: only when the request is not about music, or cannot be met from this library at all; then explain in the listener's language and leave the rest empty. Otherwise null.`;
-
-let _lastfm = null;
-function lastfm() {
-  const key = config.program.lastFM?.apiKey;
-  if (!key) return null;
-  if (!_lastfm || _lastfm._key !== key) {
-    _lastfm = new Scribble();
-    _lastfm.setKeys(key, config.program.lastFM?.apiSecret || '');
-    _lastfm._key = key;
-  }
-  return _lastfm;
-}
-
-function similarArtists(name) {
-  const client = lastfm();
-  if (!client) return Promise.resolve([]);
-  return new Promise(resolve => {
-    const timer = setTimeout(() => resolve([]), SIMILAR_TIMEOUT_MS);
-    client.GetSimilarArtists(name, data => {
-      clearTimeout(timer);
-      resolve((data?.similarartists?.artist || []).map(a => a.name).filter(Boolean).slice(0, 50));
-    }, 50);
-  });
-}
 
 function scopeOf(user, body) {
   const inclusions = computeChildInclusions(user);
@@ -444,17 +421,13 @@ async function resolveArtists(brief, scope, notes) {
   }
   const similarRank = new Map();
   let similarFound = 0;
-  if (brief.artistMode === 'feature' && seedNames.length && lastfm()) {
-    const lists = await Promise.all(seedNames.slice(0, MAX_SEEDS).map(similarArtists));
-    for (const names of lists) {
-      for (const [i, n] of names.entries()) {
-        const variants = db.resolveArtistNamesForDJ([n]);
-        if (!variants.length) continue;
-        similarFound++;
-        for (const v of variants) {
-          const k = artistKey(v);
-          if (!seedArtists.has(k)) similarRank.set(k, Math.min(similarRank.get(k) ?? Infinity, i + 1));
-        }
+  if (brief.artistMode === 'feature' && seedNames.length && config.program.lastFM?.apiKey) {
+    const lists = await Promise.all(seedNames.slice(0, MAX_SEEDS).map(n => similarArtistsFor(n, scope.vpaths)));
+    for (const { variantRankMap } of lists) {
+      similarFound += new Set(Object.values(variantRankMap)).size;
+      for (const [v, rank] of Object.entries(variantRankMap)) {
+        const k = artistKey(v);
+        if (!seedArtists.has(k)) similarRank.set(k, Math.min(similarRank.get(k) ?? Infinity, rank));
       }
     }
   }
@@ -498,16 +471,14 @@ function resolveCollections(brief, scope, notes) {
     if (hit) chosen.push(hit); else notes.push({ code: 'collectionUnknown', name: wanted });
   }
   if (!chosen.length) return {};
-  const folders = config.program.folders || {};
-  const rootOf = nm => (folders[nm]?.root || '').replace(/\/?$/, '/');
   const ignore = new Set(scope.opts.ignoreVPaths || []);
   const include = [];
   for (const nm of names) {
     if (chosen.includes(nm)) continue;
     // a parent stays when one of its children is chosen; the child becomes a prefix inside it
-    const childChosen = chosen.find(c => rootOf(c).startsWith(rootOf(nm)) && rootOf(c) !== rootOf(nm));
-    if (childChosen) include.push({ vpath: nm, prefix: rootOf(childChosen).slice(rootOf(nm).length) });
-    else ignore.add(nm);
+    const prefix = chosen.map(c => childPrefixWithin(nm, c)).find(p => p !== null);
+    if (prefix === undefined) ignore.add(nm);
+    else include.push({ vpath: nm, prefix });
   }
   return { ignoreVPaths: [...ignore], includeFilepathPrefixes: include.length ? include : scope.opts.includeFilepathPrefixes };
 }
@@ -814,7 +785,7 @@ function explainOutsideScope(notes, scope) {
   });
 }
 
-export async function buildQueue(brief, scope) {
+async function buildQueue(brief, scope) {
   const result = await buildQueueInScope(brief, scope);
   result.notes = explainOutsideScope(result.notes, scope);
   if (!result.songs.length && !result.notes.some(n => n.code === 'empty')) result.notes.push({ code: scope.narrowed ? 'emptyInSelection' : 'empty' });
@@ -995,6 +966,8 @@ function gate(req, res) {
 }
 
 export function setup(velvet) {
+  onEveryScanEnd(invalidateLibraryProfiles);
+
   velvet.get('/api/v1/ai/status', (req, res) => {
     res.json({ enabled: allowedFor(req.user), maxSongs: ai.settings().maxQueueSongs, families: FAMILIES });
   });

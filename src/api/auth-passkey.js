@@ -5,18 +5,23 @@ import {
   verifyAuthenticationResponse,
 } from '@simplewebauthn/server';
 import Joi from 'joi';
-import jwt from 'jsonwebtoken';
 import * as config from '../state/config.js';
-import * as db from '../db/sqlite-backend.js';
+import * as db from '../db/manager.js';
+import { signUserToken, setTokenCookie } from './auth.js';
 
 // In-memory challenge store with TTL of 5 minutes.
-// Keys are "reg:<username>" or "auth:<username>" (for auth without username)
-// or "auth-anon:<sessionId>" for unidentified authentication challenges.
+// Keys are "reg:<username>" or "auth:<challenge>".
 const CHALLENGE_TTL_MS = 5 * 60 * 1000;
+// auth/options is public, so the store is capped: a flood evicts the oldest entries instead of growing memory.
+const MAX_CHALLENGES = 10_000;
 const _challenges = new Map();
 
 function _storeChallenge(key, challenge) {
+  _challenges.delete(key);
   _challenges.set(key, { challenge, expiresAt: Date.now() + CHALLENGE_TTL_MS });
+  while (_challenges.size > MAX_CHALLENGES) {
+    _challenges.delete(_challenges.keys().next().value);
+  }
 }
 
 function _consumeChallenge(key) {
@@ -33,7 +38,7 @@ setInterval(() => {
   for (const [k, v] of _challenges) {
     if (now > v.expiresAt) _challenges.delete(k);
   }
-}, 60_000);
+}, 60_000).unref();
 
 function _rpId(req) {
   // Use configured rpId if set, otherwise derive from request host.
@@ -127,12 +132,8 @@ export function setupPublic(velvet) {
 
     db.updatePasskeyCounter(credentialId, verification.authenticationInfo.newCounter);
 
-    const token = jwt.sign({ username }, config.program.secret);
-    res.cookie('x-access-token', token, {
-      maxAge: 30 * 24 * 60 * 60 * 1000,
-      sameSite: 'Strict',
-      secure: req.secure || req.headers['x-forwarded-proto'] === 'https',
-    });
+    const token = signUserToken(username);
+    setTokenCookie(req, res, token);
 
     res.json({
       token,

@@ -39,7 +39,6 @@ PARALLEL_UPDATES = 0
 STATE_MAP = {
     "playing": MediaPlayerState.PLAYING,
     "paused": MediaPlayerState.PAUSED,
-    "buffering": MediaPlayerState.BUFFERING,
     "stopped": MediaPlayerState.IDLE,
     "idle": MediaPlayerState.IDLE,
 }
@@ -369,7 +368,7 @@ class VelvetRoomPlayer(CoordinatorEntity[VelvetCoordinator], MediaPlayerEntity):
         if not songs:
             raise HomeAssistantError(translation_domain=DOMAIN, translation_key="nothing_to_play")
 
-        active = self._room.get("state") in ("playing", "paused", "buffering")
+        active = self._room.get("state") in ("playing", "paused")
         if enqueue == MediaPlayerEnqueue.REPLACE or (enqueue == MediaPlayerEnqueue.PLAY and not active):
             async with self._guard():
                 room = await self._client.room_play(self._room_id, songs)

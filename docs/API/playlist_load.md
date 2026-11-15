@@ -2,8 +2,6 @@
 ----
   Load all songs from a saved playlist, including their metadata.
 
-  *(updated by GitHub Copilot, 2026-02-27)*
-
 * **URL**
 
   `/api/v1/playlist/load`
@@ -24,13 +22,13 @@
 * **Success Response:**
 
   * **Code:** 200
-  * **Content:** Array of playlist entry objects
+  * **Content:** Array of playlist entry objects, in playlist order
 
   ```json
   [
     {
       "id": 42,
-      "filepath": "VirtualPath/Artist/Album/track.mp3",
+      "filepath": "Music/Artist/Album/track.mp3",
       "metadata": {
         "artist": "Artist Name",
         "album": "Album Name",
@@ -47,16 +45,13 @@
   |---|---|---|
   | `id` | integer | Playlist entry row ID — used by `playlist/remove-song` |
   | `filepath` | string | Virtual path to the audio file |
-  | `metadata` | object | Full metadata from the database; empty object `{}` if not yet cached |
+  | `metadata` | object | Metadata from the database (same fields as `POST /api/v1/db/metadata`); empty object `{}` when the file is not in the library |
 
 * **Error Responses:**
 
-  * **Code:** 400 — missing `playlistname`
   * **Code:** 401 — missing or invalid token
-  * **Code:** 500 — database error
 
 * **Notes:**
 
-  * Metadata is now fully populated from the database (no longer blank).
-  * The `id` field is required when calling `POST /api/v1/playlist/remove-song` to remove a specific entry.
-  * Playlists are per-user; you will only see playlists belonging to the authenticated user.
+  * The body is not validated: a missing `playlistname` loads a playlist named `"undefined"` and returns `[]`.
+  * Playlists are per-user; you only see playlists belonging to the authenticated user.

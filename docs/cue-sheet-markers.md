@@ -18,18 +18,23 @@ The ticks appear in both the main player bar and inside the Now Playing modal.
 
 Some encoders write the CUE sheet directly into the audio file's tags (e.g., in a `CUESHEET` field of a FLAC file). Velvet uses [music-metadata](https://github.com/borewit/music-metadata) to extract this automatically.
 
-Look for `common.cuesheet` in the parsed metadata — if it contains at least one track with an `INDEX 01` entry, those timestamps are used.
+Velvet reads `common.cuesheet` from the parsed metadata. Each track's `INDEX 01` offset (in samples) is divided by the sample rate; the lead-out track (number 170) is skipped. At least **two** markers are needed, otherwise the embedded sheet is ignored.
 
 ### 2. Sidecar `.cue` file (fallback)
 
-If no embedded cue sheet is found, Velvet looks for a matching `.cue` file in the same directory:
+If no embedded cue sheet is found, Velvet looks for a matching `.cue` file in the same directory. The scanner tries:
 
-1. First tries `<audio-basename>.cue` — e.g. `my-mix.flac` → `my-mix.cue`
-2. Next tries `<audio-filename>.cue` — e.g. `my-mix.flac` → `my-mix.flac.cue`
-3. If there is exactly **one** `.cue` file in the directory, uses that.
-4. If there are **multiple** `.cue` files (e.g. two-disc set in a flat folder), reads the `FILE` directive of each candidate to find the one that references the current audio file.
+1. `<audio-filename>.cue` — e.g. `my-mix.flac` → `my-mix.flac.cue`
+2. `<audio-basename>.cue` — e.g. `my-mix.flac` → `my-mix.cue`
+3. the only `.cue` file in the directory, if there is exactly one
 
-The sidecar file must contain a `FILE` line that mentions the audio filename (case-insensitive). The standard `TRACK`/`TITLE`/`INDEX 01 MM:SS:FF` format is parsed where `FF` is frames (1/75th of a second).
+The play-time re-check (`GET /api/v1/db/cuepoints`) tries `<audio-basename>.cue`, then the only `.cue` in the directory. The album detail view tries `<audio-basename>.cue`, `<audio-filename>.cue`, the only `.cue`, and — when there are **several** `.cue` files (e.g. a two-disc set in a flat folder) — the one whose `FILE` directive references the audio file.
+
+The sidecar must have exactly one `FILE` line, and its file name must match the audio file's name ignoring the extension (case-insensitive) — so `FILE "album.wav"` works for `album.flac`. The standard `TRACK`/`TITLE`/`INDEX 01 MM:SS:FF` format is parsed where `FF` is frames (1/75th of a second). At least two tracks are needed.
+
+### 3. M4B chapters
+
+For `.m4b` files with no cue data, chapters are read with `ffprobe -show_chapters` (at least two chapters; untitled ones become `Chapter N`).
 
 ---
 
@@ -40,8 +45,8 @@ Cue point data is stored in the `cuepoints` column of the `files` table in `velv
 | Value | Meaning |
 |---|---|
 | `NULL` | Not yet checked — will be processed on the next scan |
-| `'[]'` | Checked during last scan, no cue data found (sentinel — embedded tag not re-parsed, but **sidecar `.cue` files ARE re-checked** on album open and on playback) |
-| `'[{"time":0,"title":"Track 1"}, ...]'` | JSON array of cue point objects |
+| `'[]'` | Checked, no cue data found (sentinel — embedded tag not re-parsed, but **sidecar `.cue` files ARE re-checked** on album open and on playback) |
+| `'[{"no":1,"title":"Intro","t":0}, ...]'` | JSON array of cue point objects |
 
 Each cue point object:
 ```json
@@ -52,13 +57,7 @@ Each cue point object:
 - `title` — track title from the cue sheet, or `null` if not present
 - `t` — seconds from the start of the file (float, rounded to 2 decimal places)
 
-### Existing databases (migration)
-
-If you already have an Velvet database created before this feature was added, the `cuepoints` column is added automatically on first boot via:
-
-```sql
-ALTER TABLE files ADD COLUMN cuepoints TEXT;
-```
+The `cuepoints` column is part of the `files` table schema.
 
 ---
 
@@ -66,9 +65,11 @@ ALTER TABLE files ADD COLUMN cuepoints TEXT;
 
 Cue detection is built into the incremental scanner using the same **smart patch** pattern as album art (`_needsArt`):
 
-1. **New file** — cue data is extracted during the full `parseMyFile()` pass and stored in `insertEntries()` immediately.
-2. **Existing file, `cuepoints IS NULL`** — `get-file` returns `_needsCue: true`. The scanner re-opens just that file, extracts cue data, and POSTs to `update-cue`. No full re-parse needed.
-3. **Existing file, `cuepoints` already set** — skipped entirely.
+1. **New or changed file** — cue data is extracted during the full `parseMyFile()` pass (embedded → sidecar → M4B chapters) and stored by `insertEntries()`.
+2. **Existing file, `cuepoints IS NULL`** — `get-files-batch` returns `_needsCue: true`. The scanner re-opens just that file, extracts cue data (same order), and POSTs the result or the `'[]'` sentinel to `update-cue`. No full re-parse needed.
+3. **Existing file, `cuepoints` already set** — skipped.
+
+If the player asks for cue points of a file that is still `NULL`, `GET /api/v1/db/cuepoints` extracts them on demand and stores the result.
 
 This means a library of 100k+ files is processed gradually across scans with no performance cliff.
 
@@ -84,19 +85,19 @@ Returns the cue points for a given file path.
 
 | Parameter | Required | Description |
 |---|---|---|
-| `fp` | Yes | The virtual filepath of the track (relative to the vpath root) |
+| `fp` | Yes | The track's filepath including the vpath (e.g. `Music/12 inches/DJ Mix.flac`) |
 
 **Success response** — `200 OK`
 
 ```json
 { "cuepoints": [
-    { "time": 0,     "title": "Track 01 - Intro" },
-    { "time": 45.2,  "title": "Track 02 - Main Theme" },
-    { "time": 193.8, "title": "Track 03 - Reprise" }
+    { "no": 1, "title": "Intro",      "t": 0 },
+    { "no": 2, "title": "Main Theme", "t": 45.2 },
+    { "no": 3, "title": "Reprise",    "t": 193.8 }
 ] }
 ```
 
-Returns `{ "cuepoints": [] }` when no data exists for that file.
+Returns `{ "cuepoints": [] }` when no data exists for that file (or on any error).
 
 **Authentication** — requires a valid `x-access-token` header or cookie (standard Velvet auth).
 
@@ -110,7 +111,7 @@ Internal — used by the scanner child process only (requires `scanApproved` mid
 {
   "filepath": "12 inches/DJ Mix.flac",
   "vpath": "Music",
-  "cuepoints": "[{\"time\":0,\"title\":\"Track 01\"}]"
+  "cuepoints": "[{\"no\":1,\"title\":\"Track 01\",\"t\":0},{\"no\":2,\"title\":\"Track 02\",\"t\":312.5}]"
 }
 ```
 
@@ -124,14 +125,14 @@ Called on every track change (normal play, next/prev, Auto-DJ crossfade handoff,
 
 ### `renderCueMarkers()`
 
-Builds `<button class="cue-tick">` elements and inserts them into `#cue-markers` (main player) and `#np-cue-markers` (Now Playing modal). Each tick:
+Builds `<span class="cue-tick">` elements and inserts them into `#cue-markers` (main player) and `#np-cue-markers` (Now Playing modal). Each tick:
 
 - Is positioned as `left: <pct>%` based on `t / duration`
-- Shows a tooltip via `data-label` attribute (rendered via CSS `::after` as `"<no>. <title>"`) on hover
-- Seeks `audioEl.currentTime` on click using `e.stopPropagation()` to avoid conflicting with the seek bar's own click handler
+- Shows a tooltip via `data-label` attribute (rendered via CSS `::after` as `"<no>. <title>"`, or `Track <no>` without a title) on hover
+- Seeks the current track on click, using `e.stopPropagation()` to avoid conflicting with the seek bar's own click handler
 - Track 1 at `t=0` is excluded by the filter `cp.t > 0` — the very start needs no marker
 
-Markers are cleared and re-rendered on every track change.
+Markers are cleared on every track change and rendered once the duration is known. M4B chapters also drive the audiobook chapter bar.
 
 ---
 
@@ -140,11 +141,11 @@ Markers are cleared and re-rendered on every track change.
 | Class | Element | Description |
 |---|---|---|
 | `.cue-markers` | Container `<div>` | Absolutely positioned overlay inside `.prog-track` |
-| `.cue-tick` | `<button>` | Individual tick mark; 12px wide hit zone |
+| `.cue-tick` | `<span>` | Individual tick mark; 12px wide hit zone |
 | `.cue-tick::before` | Pseudo | The visible 4px stem — amber (`rgba(255,190,30,.9)`) in dark mode, purple (`rgba(109,60,230,.8)`) in light mode |
 | `.cue-tick::after` | Pseudo | Tooltip bubble shown on hover |
 
-The tick container uses `top: 0; bottom: 0` so ticks are contained entirely within the seek bar rail (currently 6px tall, 8px on hover).
+The tick container uses `inset: 0` so ticks are contained entirely within the seek bar rail (`.prog-track`, 5px tall).
 
 ---
 
@@ -155,5 +156,5 @@ The tick container uses `top: 0; bottom: 0` so ticks are contained entirely with
   1. When the user opens the album detail view (`GET /api/v1/albums/detail`) — if a valid `.cue` is found, cuepoints are written to the DB immediately.
   2. When the file is played (`GET /api/v1/db/cuepoints`) — the sidecar is re-checked synchronously before returning the empty result.
   This means users can fix or add a sidecar `.cue` file and the changes will be picked up **without a full rescan** — just open the album or play the track.
-- **Duration must be available** in the `<audio>` element for percentage positions to be calculated correctly. If `audioEl.duration` is `NaN` or `0` on the first render call, the ticks will all pile up at position 0. `renderCueMarkers()` also re-fires on `loadedmetadata` to correct this.
-- **Sidecar `.cue` multi-disc sets** — when two FLAC+CUE pairs are placed in the **same flat folder** (e.g. `Album/disc1.flac` + `Album/disc1.cue` + `Album/disc2.flac` + `Album/disc2.cue`), the album browser treats each file as its own virtual disc and displays CD1 / CD2 tabs, exactly as it does when the pairs are in named subfolders (`CD1/`, `CD2/`). Both the `_buildDiscList` logic and the `_findCuePath` sidecar lookup were updated to handle this case — the CUE file is matched by reading the `FILE` directive when the filename alone is ambiguous.
+- **Duration must be available** in the `<audio>` element for percentage positions to be calculated. `renderCueMarkers()` does nothing while `audioEl.duration` is unknown and is called again when the duration becomes available.
+- **Sidecar `.cue` multi-disc sets** — when two FLAC+CUE pairs are placed in the **same flat folder** (e.g. `Album/disc1.flac` + `Album/disc1.cue` + `Album/disc2.flac` + `Album/disc2.cue`), the album browser treats each file as its own virtual disc and displays CD1 / CD2 tabs, exactly as it does when the pairs are in named subfolders (`CD1/`, `CD2/`). The album detail lookup (`_findCuePath`) matches the CUE file by its `FILE` directive when the filename alone is ambiguous. The scanner and the play-time check do not do this matching; with several `.cue` files they only find a sidecar named after the audio file.

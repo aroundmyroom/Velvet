@@ -1,9 +1,9 @@
 import crypto from 'node:crypto';
 
 export const SUITES = ['25519_ChaChaPoly_SHA256', '25519_AESGCM_SHA256'];
-export const MAX_NOISE_MESSAGE = 65535;
-export const TAG_LEN = 16;
-export const PSK_CATEGORIES = ['lt', 'pr', 'sn'];
+const MAX_NOISE_MESSAGE = 65535;
+const TAG_LEN = 16;
+const PSK_CATEGORIES = ['lt', 'pr', 'sn'];
 
 const DH_LEN = 32;
 const HASH_LEN = 32;
@@ -46,7 +46,7 @@ function dh(privateKey, publicKey) {
   }
 }
 
-function hash(...parts) {
+export function sha256(...parts) {
   const h = crypto.createHash('sha256');
   for (const p of parts) h.update(p);
   return h.digest();
@@ -137,7 +137,7 @@ class SymmetricState {
   constructor(suite, protocolName) {
     this.suite = suite;
     const name = Buffer.from(protocolName, 'ascii');
-    this.h = name.length <= HASH_LEN ? Buffer.concat([name, Buffer.alloc(HASH_LEN - name.length)]) : hash(name);
+    this.h = name.length <= HASH_LEN ? Buffer.concat([name, Buffer.alloc(HASH_LEN - name.length)]) : sha256(name);
     this.ck = this.h;
     this.cipher = new CipherState(suite);
   }
@@ -152,7 +152,7 @@ class SymmetricState {
   }
 
   mixHash(data) {
-    this.h = hash(this.h, data);
+    this.h = sha256(this.h, data);
   }
 
   mixKey(ikm) {

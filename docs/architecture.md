@@ -4,9 +4,54 @@ Paste any diagram block into [mermaid.live](https://mermaid.live) to view / expo
 
 ---
 
+## 0. Module structure
+
+Velvet is one Node.js process (ESM, Express 5, `node:sqlite`). `src/server.js` loads the config, opens the database,
+mounts the web apps and calls `setup(velvet)` on every API module.
+
+| Folder | What lives there |
+|---|---|
+| `src/api/` | One file per feature area. Each exports `setup(velvet)` and registers its Express routes (`/api/v1/...`, Subsonic `/rest/*` in `subsonic.js`, DLNA in `dlna.js`). Routes are listed in [API.md](API.md). |
+| `src/db/` | The database layer. `manager.js` is the only entry point: every other module imports `* as db from '../db/manager.js'`. `sqlite-backend.js` holds the SQL and is imported only by `src/db/`. Also here: `scanner.mjs` (the scan, run as a forked child process by `task-queue.js`), `sql-clauses.js` (shared WHERE helpers), `album-art-select.js`, `wrapped-stats.mjs`, and the image-compress child process. |
+| `src/state/` | Process-wide state: `config.js` (Joi schema + live config), `scan-lock.js` (pauses workers while a scan runs), `bg-task-broker.js` (serialises main-thread DB-writing background tasks), `scan-progress.js`, `lastfm.js`, `shutdown.js` (ordered shutdown hooks: services, then HTTP, then DB). |
+| `src/util/` | Shared helpers (path security, SSRF checks, vpath logic, auth, validation, ffmpeg/fpcalc/rsgain bootstrap) and the worker-thread scripts (`*-worker.mjs`). |
+| `src/autodj/` | Server-side Auto-DJ: `scoring.js` (server copy of the browser scoring, kept in step by `test/autodj-parity.test.mjs`), `pool.js` (candidate pool, shared with `POST /api/v1/db/random-songs`), `radio.js` (radio chain), `library.js` (wires the chain to the DB, Last.fm and user prefs). Used by Rooms, Subsonic similar songs and `POST /api/v1/autodj/next`. |
+| `src/sendspin/` | Velvet Rooms (Sendspin protocol): rooms, scheduler, audio pipeline, per-room EQ, pairing and trust store, mDNS discovery, Sonos followers. Routes in `src/api/sendspin.js`. See [rooms.md](rooms.md). |
+| `src/smartplaylist/` | ML smart playlists (feature extraction, generator, routes), behind `BETA_SMART_PLAYLIST` in `src/beta-flags.js`. |
+
+**Worker threads.** Long-running library jobs run in `node:worker_threads` workers hosted by
+`createWorkerController()` in `src/util/worker-controller.js`: AcoustID (`acoustid-worker.mjs`), ReplayGain
+(`rg-analysis-worker.mjs`), MusicBrainz enrichment and text search (`mb-enrich-worker.mjs`,
+`mb-text-search-worker.mjs`), BPM/key (`ab-bpm-worker.mjs`, `essentia-bpm-worker.mjs`) and genre enrichment
+(`genre-enricher-worker.mjs`). The controller handles start/stop, crash restart (a worker restarted while a scan runs starts paused), pause
+during a scan, a staggered auto-start after each scan and the `workerAutostart` config flags. A worker that reports a
+fatal error (for example AcoustID with a missing or invalid API key) is stopped for good: no crash restart, and its
+auto-start flag is turned off. The artist-index rebuild
+(`artist-rebuild-worker.mjs`) is started from `src/db/sqlite-backend.js`.
+
+**Web apps** (`webapp/`, served statically):
+
+| Path | App |
+|---|---|
+| `index.html` + `app.js` | Main player (single-page app) |
+| `admin/` | Admin panel (Vue 2, `admin/index.js`) |
+| `mobile/` | Mobile PWA |
+| `tizen/` | Samsung TV app |
+| `remote/` | Jukebox remote page (`/remote/:code`) |
+| `server-remote/` | Remote for Server Audio (MPV) |
+| `shared/` | Shared-playlist page |
+| `qr/` | QR code page |
+| `locales/` | i18n files (12 languages) |
+
+Static rules about this structure (DB boundary, routes documented, no duplicate functions, and more) are enforced by
+the architecture guard tests: see [dev/architecture-guards.md](dev/architecture-guards.md).
+
+---
+
 ## 1. Playback Pipeline
 
-How a song gets from storage to speaker — three output paths.
+How a song gets from storage to speaker in the web player — three output paths. Velvet Rooms are a fourth: the
+server plays the queue itself (`src/sendspin/`), see [rooms.md](rooms.md).
 
 ```mermaid
 flowchart TD
@@ -24,15 +69,15 @@ flowchart TD
 
     PLAYER --> CAST{"Cast\nmode?"}
 
-    CAST -->|"S.castingToMpv"| MPV["POST /api/v1/server-playback/cast\n→ MPV process on server\n→ Server's audio output"]
-    CAST -->|"S.castingToSonos"| SONOS["POST /api/v1/sonos/cast\n{ filepath, title, artist,\n  album, aaFile, seekTo }\n→ UPnP SOAP port 1400"]
+    CAST -->|"S.castingToMpv"| MPV["POST /api/v1/server-playback/queue/clear\n+ queue/add { filepath, seekTo, rg* }\n→ MPV process on server\n→ Server's audio output"]
+    CAST -->|"S.castingToSonos"| SONOS["POST /api/v1/sonos/cast-queue\n{ ip, tracks, index, seekTo, paused }\n→ UPnP SOAP port 1400"]
     CAST -->|"none"| BROWSER
 
     SONOS --> SONOSDEV["📻 Sonos device\nstreams from Velvet URL"]
     MPV --> MPVDEV["🖥️ Server speaker\n(MPV process)"]
 
-    subgraph "Position sync (3 s poll)"
-        SONOSDEV -->|"GET transport-status"| DRIFT["Drift > 5 s?\naudioEl.currentTime = sonosPos"]
+    subgraph "Sonos health poll (10 s)"
+        SONOSDEV -->|"GET transport-status"| HEALTH["3 unreachable replies in a row\n→ fall back to browser output\n(progress bar stays audioEl time)"]
     end
 
     subgraph "CUE sheet seek"
@@ -58,10 +103,10 @@ flowchart TD
     DISK --> SCAN
     SIDECAR --> SCAN
 
-    subgraph "Scan pipeline (src/db/scanner.mjs)"
-        SCAN["Walk vpath root dir\nhash changed? → re-parse\nhash same? → update sID only"]
+    subgraph "Scan pipeline (forked child src/db/scanner.mjs)"
+        SCAN["Walk vpath root dir\nPOST /scanner/get-files-batch\nmtime changed / no hash / on-demand row? → re-parse\nmtime same? → stamp sID, fill missing pieces"]
         SCAN --> PARSER["music-metadata library\nRead: title/artist/album/year\ntrack/BPM/key/duration\nembedded album-art\nCUE sheet → cuepoints[]"]
-        PARSER --> DBWRITE["INSERT / UPDATE files table\nfields: title, artist, album,\nyear, track, bpm, musical_key,\nduration, hash, aaFile, cuepoints"]
+        PARSER --> DBWRITE["POST /api/v1/scanner/add-files (batches)\nserver (src/api/scanner.js) writes each batch\nin one short transaction: replace files rows\nfields: title, artist, album, year, track,\nbpm, musical_key, duration, hash, aaFile, cuepoints"]
     end
 
     DBWRITE --> SQLITE[("SQLite\nsave/db/velvet.sqlite\ntable: files")]
@@ -82,13 +127,13 @@ flowchart TD
         SQLITE --> SEARCH["FTS5 full-text search\n(title / artist / album /\nfilepath / cross-field)"]
         SQLITE --> ALBLIB["Album library\n(src/api/albums-browse.js)\ngroup by folder → album objects\n+ disc/track/cuepoints"]
         SQLITE --> ARTAPI["Artists API\n(src/api/artists-browse.js)\nnormalized name index\nMBID / fanart / bio"]
-        SQLITE --> RANDOM["Random / Auto-DJ\nBPM windows (±8 + octave)\nkey (Camelot wheel)\nrecency / rating / artist cooldown"]
+        SQLITE --> RANDOM["Random / Auto-DJ pool\n(src/autodj/pool.js)\nhard scope only: collections,\nrating, duration, similar artists,\nartist cooldown"]
     end
 
-    SEARCH --> VSEARCH["viewSearch()\nAlbums → viewAlbumDetail()\nTracks → beforePlay() → viewAlbumDetail()\nArtists → viewArtistProfile()"]
+    SEARCH --> VSEARCH["viewSearch()\nAlbums → viewAlbumDetail()\nTracks → beforePlay() → viewAlbumDetail()\nArtists → viewArtistProfile2()"]
     ALBLIB --> VALBDET["viewAlbumDetail()\nDisc tabs / CUE track rows\nPlay All / Add All\n'Album mode' info bar"]
-    ARTAPI --> VART["viewArtists()\nviewArtistProfile()\nfanart hero + bio + similar artists"]
-    RANDOM --> AUTODJ["Auto-DJ\n_djApiCall() → random-songs\napply BPM / key / artist filters"]
+    ARTAPI --> VART["viewArtists()\nviewArtistProfile2()\nfanart hero + bio + similar artists"]
+    RANDOM --> AUTODJ["Auto-DJ\n_djFetchBatch() → random-songs\n_djScoreSong(): BPM / key / genre\n/ era / artist scored, not filtered"]
 
     VSEARCH --> QUEUE
     VALBDET --> QUEUE
@@ -112,10 +157,10 @@ flowchart LR
 
         HOME["viewHome()\nDashboard + recently added"]
         ALBUMS["viewAlbumLibrary()\nviewAlbumSeries()\nviewAlbumDetail()"]
-        ARTISTS["viewArtists()\nviewArtistProfile()\nviewArtistAlbums()"]
+        ARTISTS["viewArtists()\nviewArtistProfile2()\nviewArtistTracks()"]
         SEARCH["viewSearch()\nFull-text multi-category"]
         FILES["viewFiles()\nFile explorer\n(recordings / YouTube)\nZIP download + select mode"]
-        PLAYLISTS["viewPlaylists()\nviewSmartPlaylists()\nviewPlayingNow()"]
+        PLAYLISTS["openPlaylist()\nviewSmartPlaylists()\nviewPlayingNow()"]
         GENRES["viewGenres()\nviewDecades()"]
         RADIO["Radio stations\nNow-playing ICY\nScheduled recording"]
         STATS["viewMostPlayed()\nviewRated()\nviewPlayed()\nviewRecent()"]
@@ -184,66 +229,70 @@ flowchart LR
 
 How Auto-DJ selects, filters, and queues the next track.
 
-### Scoring engine (v0.3.22+)
+### Scoring engine
 
-Each `_djApiCall()` round asks the server for a candidate; instead of accepting
-the first unblocked one, the client makes up to 5 attempts, scores every
-unblocked candidate with `_djScoreSong()`, and keeps the best (stopping early
-at a score ≥0.75). Weights: harmonic (Camelot) fit 25%, genre compatibility
-15% (a transition matrix, not a binary same/different check), Last.fm
-similarity rank 20%, BPM proximity 20%, year/era proximity 10% (rolling
-average of the last 8 picked years — same pattern as the BPM anchor, prevents
-era drift over a long similar-artist chain), artist diversity 10%. Songs whose
-artist isn't in the current similar-artist list are hard-capped at 0.25 so a
-tier-2/3 fallback pick never outscores a legitimate similar-artist match.
+`_djFetchBatch()` makes one `POST /api/v1/db/random-songs` request with
+`returnAll: true`. The server (`src/autodj/pool.js`) applies only the hard
+scope — selected collections, minimum rating, track-length window, audiobook
+exclusions, the similar-artist list and the artist cooldown — and returns a
+batch of up to 500 songs. `_djPickSong()` drops keyword-blocked songs, songs in
+the last 30 of the queue and (when possible) artists from the last 3 picks,
+then scores every candidate with `_djScoreSong()` and keeps the best.
 
-The BPM/Camelot anchors only ever update from actual DJ-picked songs, never
-from a manually-played track — so switching Auto-DJ on mid-playback doesn't
-lock the session to an unrelated tempo.
+Weights: similar-artist (Last.fm rank) 35%, BPM proximity 25%, genre 13%,
+harmonic (Camelot) fit 7%, year/era proximity 10%, artist diversity 10%.
+Without similar-artist data the 35% is spread over BPM, genre and harmonic.
+BPM, key and genre are scored, never filtered. Full details:
+[autodj-scoring.md](autodj-scoring.md).
 
-The Tizen TV app (`webapp/tizen/app.js`) runs a self-contained port of this
-same engine with fixed defaults (no settings screen to configure it from) —
-see `docs/tizen-tv.md`.
+The BPM and year anchors are the average of the last 8 DJ-picked songs; a
+manually started song clears them, so switching Auto-DJ on mid-playback does
+not lock the session to an unrelated tempo. A genre-drift guard re-picks when
+one genre runs 3+ times in a row or fills 40% of the last 25 picks.
+
+The same scoring runs on the server in `src/autodj/` (`scoring.js` is a copy
+of the browser code, checked by `test/autodj-parity.test.mjs`). The server
+uses it for Velvet Rooms, for Subsonic similar songs, and for
+`POST /api/v1/autodj/next`, which the Tizen TV app and the Server Audio remote
+call instead of running their own Auto-DJ — see `docs/tizen-tv.md`.
 
 ```mermaid
 flowchart TD
     SONGEND["🎵 Song ending\n(or DJ turned on\nwith empty queue)"]
 
-    SONGEND --> PREFETCH["autoDJPrefetch()\nFires ~45 s before end\n(crossfade trigger point)"]
-    SONGEND -->|"Prefetch wasn't ready"| FETCH["autoDJFetch()\nFires immediately on ended\nWaits up to 12 s for in-flight prefetch"]
+    SONGEND --> PREFETCH["autoDJPrefetch()\n2 s after a track starts, and again\n25 s (45 s with similar artists)\nor crossfade + 15 s before the end"]
+    SONGEND -->|"Prefetch wasn't ready"| FETCH["autoDJFetch()\nFires on ended\nWaits up to 12 s for in-flight prefetch"]
 
-    PREFETCH --> DJAPI
-    FETCH --> DJAPI
+    PREFETCH --> PICK
+    FETCH --> PICK
 
-    subgraph "Filters built in _djApiCall()"
-        DJAPI["POST /api/v1/db/random-songs\n{ ignoreList, ignoreVPaths,\n  artists, ignoreArtists,\n  bpmRanges, musicalKeys,\n  minRating, ... }"]
+    PICK["_djNextPick()\n→ _djPickSong()"] --> DJAPI
 
-        VPATHS["vpath scope\nS.djVpaths (user selection)\nor all music vpaths\nExcludes audio-books\nChild-vpath → filepathPrefix filter"]
-        SIMILAR["Similar artists mode\nGET /api/v1/lastfm/similar-artists\nCache per artist (1 call/song)\nFallback: random if no library match"]
-        BPM["BPM continuity\n_bpmAnchor locked on first DJ call\n(never drifts with current song)\nRanges: normal ±tol, half ±tol/2, double ±tol×2\nFree pick if no BPM context"]
-        HARMONIC["Harmonic mixing\nCamelot wheel neighbours\n(±1 semitone + parallel keys)\nRequires musical_key in DB"]
-        MINRATING["Min. rating filter\nS.djMinRating (1–10)"]
-        IGNORELIST["Ignore list\nd.ignoreList from server\n(prevents immediate repeat)"]
+    subgraph "Hard scope sent by _djFetchBatch()"
+        DJAPI["POST /api/v1/db/random-songs\n{ _djScopeBody(), ignoreList,\n  artists, ignoreArtists,\n  returnAll: true }"]
+
+        VPATHS["vpath scope\nS.djVpaths (user selection)\nor all vpaths; audiobooks excluded\nChild vpath → filepathPrefix /\nincludeFilepathPrefixes"]
+        SIMILAR["Similar artists mode\nGET /api/v1/lastfm/similar-artists\nCached per artist (1 call/song)\nNo result → keep the last list"]
+        RATING["minRating, min/maxDuration"]
+        COOL["ignoreArtists = last 15 artists\n(DJ_ARTIST_COOLDOWN)"]
     end
 
-    DJAPI --> VPATHS & SIMILAR & BPM & HARMONIC & MINRATING & IGNORELIST
+    DJAPI --> VPATHS & SIMILAR & RATING & COOL
 
-    DJAPI --> CANDIDATE["candidate song returned"]
+    DJAPI --> BATCH["batch of up to 500 songs"]
 
-    CANDIDATE --> BLOCK{"_djSongBlocked()?\nKeyword filter\n+ BPM range check\n+ Camelot check"}
+    BATCH --> FILTER["Drop: keyword filter (_djSongBlocked)\nlast 30 queued paths\nartists of the last 3 picks"]
+    FILTER --> SCORE["_djScoreSong() on every candidate\nkeep the highest score"]
+    SCORE --> ESCAPE{"Genre drift?\n3+ same genre in a row\nor 40% of last 25"}
+    ESCAPE -->|"Yes → re-pick outside that genre"| DJAPI
+    ESCAPE -->|"No"| PUSH["song._dj = true\nS.queue.push(song)\n_pruneQueue()\n(cap 500, keep 10 behind cursor)"]
 
-    BLOCK -->|"Blocked (up to 3 retries)"| DJAPI
-    BLOCK -->|"Passes"| ARTISTCOOL{"Same artist\nin last 15 songs?\n(DJ_ARTIST_COOLDOWN)"}
-
-    ARTISTCOOL -->|"Yes → retry"| DJAPI
-    ARTISTCOOL -->|"No"| PUSH["song._dj = true\nS.queue.push(song)\n_pruneQueue()\n(cap 500, keep 10 behind cursor)"]
-
-    PUSH --> STRIP["_showDJStrip()\nInfo strip: 'Similar to [artist]'\nPills: other candidate artists"]
+    PUSH --> STRIP["_showDJStrip()\nInfo strip: 'Similar to [artist]'"]
     PUSH --> PLAY2["Player.playAt(idx)\n(fetch path only)"]
-    PUSH --> ANCHOR["Lock/update anchors\n_bpmAnchor\n_camelotAnchor\n_camelotAnchorNeighbours\nReset if manual pick (!song._dj)"]
+    PUSH --> ANCHOR["Player.playAt on a DJ song\n→ push BPM / year history\n→ set _camelotAnchor"]
 
     subgraph "State reset"
-        MANPICK["User manually picks song\nPlayer.playAt → !s._dj\n→ reset all anchors\nArtist history cleared on setQueue"]
+        MANPICK["User manually starts a song\nPlayer.playAt → !s._dj\n→ clear BPM / year history\nand Camelot anchor"]
     end
 ```
 
@@ -310,7 +359,7 @@ How artist metadata and images are fetched from external services and stored.
 
 ```mermaid
 flowchart TD
-    CLIENT["viewArtistProfile()\nGET /api/v1/artists/profile?key="]
+    CLIENT["viewArtistProfile2()\nGET /api/v1/artists/profile?key="]
 
     subgraph "SQLite: artists table"
         DB_CACHE[("canonicalName, bio, imageFile\nfanartFile, mbid, imageSource\ngenre, country, formedYear\nenrichedAt / lastFetched")]
@@ -346,7 +395,7 @@ flowchart TD
 
     RETURN --> UI
 
-    subgraph "viewArtistProfile() renders"
+    subgraph "viewArtistProfile2() renders"
         UI["Fanart hero banner (1280×480)\nArtist thumbnail (400×400)\nBio chip\nSimilar artists list (Last.fm)\nAlbum grid (albums-browse.js)\nManual image override (admin)"]
     end
 
@@ -395,7 +444,7 @@ flowchart TD
         GROUPALBUM --> SERIES["Multiple albums under artist\n→ Series + per-album cards\nbuildAlbumFromData() × N"]
     end
 
-    ALBUM1 & ALBUM2 & SERIES --> TRACKLIST
+    ALBUM1 & SERIES --> TRACKLIST
 
     subgraph "buildTrackListFromEntries()"
         TRACKLIST["Sort by track number → filename\nPer track:\n  filepath = dbVpath + '/' + row.filepath\n  title, artist, number, duration, aaFile\n  cuepoints: JSON.parse(row.cuepoints)\n  (only if length >= 2)"]

@@ -1,5 +1,4 @@
 import { spawn } from 'node:child_process';
-import { EventEmitter } from 'node:events';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { ffmpegBin } from '../util/ffmpeg-bootstrap.js';
 import { parseFlacFrameHeader } from './audio.js';
@@ -7,30 +6,30 @@ import { serverNow } from './scheduler.js';
 import { cleanText } from './connection.js';
 
 export const SOURCE_ROLE = 'source@v1';
-export const MAX_SOURCE_RATE = 384_000;
-export const MAX_SOURCE_CHANNELS = 8;
-export const MAX_CHUNK_MS = 150;
+const MAX_SOURCE_RATE = 384_000;
+const MAX_SOURCE_CHANNELS = 8;
+const MAX_CHUNK_MS = 150;
 // Jitter buffer between the arriving source audio and the room's clock.
 export const TARGET_MS = 150;
 // Above target + this the oldest audio is dropped (a burst after a stall must not add latency for good).
 export const MAX_EXCESS_MS = 250;
 // Rate correction is bounded: +-1000 ppm is ~1.7 cents, inaudible; a source further off is broken, not drifting.
-export const MAX_PPM = 1000;
+const MAX_PPM = 1000;
 // Critically damped PI on the buffer level (s^2 + kp s + ki, ki = kp^2/4): time constant ~2/kp = 100 s.
-export const KP = 0.02;
-export const KI = KP * KP / 4;
-export const LEVEL_EMA_MS = 1000;
+const KP = 0.02;
+const KI = KP * KP / 4;
+const LEVEL_EMA_MS = 1000;
 // A chunk later than the recent best delay by this much is stale backlog (spec: never burst stale audio).
-export const STALE_MS = 500;
-export const STALE_WINDOW_MS = 5000;
+const STALE_MS = 500;
+const STALE_WINDOW_MS = 5000;
 // Timestamps that move more than this against the sample count are a discontinuity (counted, never cut at).
-export const JUMP_MS = 20;
-export const STALL_MS = 250;
+const JUMP_MS = 20;
+const STALL_MS = 250;
 // A source may not run ahead of real time by more than this (bounds decode work per connection).
-export const MAX_AHEAD_US = 1_000_000;
-export const TICK_MS = 10;
+const MAX_AHEAD_US = 1_000_000;
+const TICK_MS = 10;
 // Shorter chunks are refused: per-chunk work must stay proportional to the audio it carries.
-export const MIN_CHUNK_MS = 1;
+const MIN_CHUNK_MS = 1;
 // Bytes queued to the ffmpeg decoder, in seconds of the input's uncompressed size: above this chunks are
 // dropped, and a decoder that stays behind for BACKLOG_END_MS ends the line-in.
 export const BACKLOG_MS = 1500;
@@ -93,7 +92,7 @@ export function flacMaxBytes(samples, frames, channels, bitDepth) {
 // frame data. -> { samples, frames } | null when the chunk does not start with a frame header. Throws
 // SourceError('bad_chunk') for a frame larger than STREAMINFO's maximum block size (a few header bytes could
 // otherwise declare 65535 samples, or hide megabytes as one sample).
-export function flacFrameScan(data, maxBlock, limit, info = null) {
+function flacFrameScan(data, maxBlock, limit, info = null) {
   const first = parseFlacFrameHeader(data, 0);
   if (!first || !flacHeaderFits(data, 0, info)) return null;
   const tooBig = (h) => new SourceError('bad_chunk', `flac frame of ${h.blockSize} samples above the stream's maximum ${maxBlock}`);
@@ -156,7 +155,7 @@ export function pcmToStereo(buf, bitDepth, channels) {
   return out;
 }
 
-export function stereoToS32(f) {
+function stereoToS32(f) {
   const out = new Int32Array(f.length);
   for (let i = 0; i < f.length; i++) {
     const v = f[i];
@@ -295,7 +294,7 @@ export class LiveResampler {
 // FLAC (and PCM at another rate) goes through one long-lived ffmpeg per input stream: codec header first, then
 // the chunks as they come; out comes float stereo at the room's rate. ffmpeg's own resampler does the nominal
 // rate change; LiveResampler only the clock error.
-export function createFfmpegDecoder({ fmt, outRate, onPcm, onError, ffmpeg = ffmpegBin() }) {
+function createFfmpegDecoder({ fmt, outRate, onPcm, onError, ffmpeg = ffmpegBin() }) {
   const input = fmt.codec === 'flac'
     ? ['-f', 'flac']
     : ['-f', `s${fmt.bitDepth}le`, '-ar', String(fmt.rate), '-ac', String(fmt.channels)];
@@ -559,7 +558,7 @@ export class SourceSession {
 const hasSource = (conn) => conn?.negotiatedRoles?.includes(SOURCE_ROLE);
 
 // Policy: which device streams into which room, explicit approval, start/stop, auto-switch on line sense.
-export class SourceManager extends EventEmitter {
+export class SourceManager {
   #server;
   #rooms;
   #store;
@@ -569,7 +568,6 @@ export class SourceManager extends EventEmitter {
   #unsub = [];
 
   constructor({ server, rooms, logger = null, now = serverNow, ffmpeg, resampler = {}, tickMs = TICK_MS }) {
-    super();
     this.#server = server;
     this.#rooms = rooms;
     this.#store = server.trustStore;
@@ -611,17 +609,13 @@ export class SourceManager extends EventEmitter {
     });
     on('state', (next, prev2) => this.#onState(s, next, prev2));
     on('activated', ({ roles }) => this.#onActivated(s, roles));
-    on('source-start', (format) => {
-      s.onStart(format);
-      this.#changed(s);
-    });
+    on('source-start', (format) => s.onStart(format));
     on('source-end', (why) => {
       s.onEnd();
       if (s.roomId) {
         this.#log?.info?.(`[sendspin] ${s.clientId.slice(0, 8)} ended its line-in (${why})`);
         this.stop(s.clientId);
       }
-      this.#changed(s);
     });
     on('source-declined', () => {
       this.#log?.info?.(`[sendspin] ${s.clientId.slice(0, 8)} declined to stream its input`);
@@ -637,10 +631,8 @@ export class SourceManager extends EventEmitter {
         this.#log?.warn?.(`[sendspin] ${s.clientId.slice(0, 8)} line-in stopped: its decoder stayed more than ${BACKLOG_END_MS / 1000} s behind`);
         this.stop(s.clientId);
         s.lastError = 'overloaded';
-        this.#changed(s);
       }
     });
-    this.#changed(s);
   }
 
   #detach(conn) {
@@ -658,7 +650,6 @@ export class SourceManager extends EventEmitter {
       this.#log?.info?.(`[sendspin] line-in from ${s.clientId.slice(0, 8)} stopped (${why})`);
       this.#safeRoom(() => this.#rooms.stopLive(roomId, s.clientId));
     }
-    this.emit('change', s.clientId);
   }
 
   #safeRoom(fn) {
@@ -678,14 +669,12 @@ export class SourceManager extends EventEmitter {
       s.signal = null;
       if (s.roomId) this.stop(s.clientId);
     }
-    this.#changed(s);
   }
 
   #onState(s, next, prev) {
     if (!next.available) {
       s.signal = null;
       if (s.roomId) this.stop(s.clientId);
-      this.#changed(s);
       return;
     }
     if (s.startPending) this.#sendStart(s);
@@ -693,7 +682,6 @@ export class SourceManager extends EventEmitter {
     const changed = signal !== null && (signal !== s.signal || prev?.available === false);
     s.signal = signal ?? s.signal;
     if (changed) this.#autoSwitch(s, signal);
-    this.#changed(s);
   }
 
   #autoSwitch(s, signal) {
@@ -715,8 +703,6 @@ export class SourceManager extends EventEmitter {
   #trustChanged(id) {
     const s = this.#sessions.get(id);
     if (s && s.roomId && !this.#store.isSourceAllowed(id)) this.stop(id);
-    if (s) this.#changed(s);
-    else this.emit('change', id);
   }
 
   #liveEnded(roomId, sourceId) {
@@ -744,14 +730,12 @@ export class SourceManager extends EventEmitter {
     }
     const changed = await this.#server.allowSource(clientId, on);
     if (!on) this.stop(clientId);
-    this.emit('change', clientId);
     return changed;
   }
 
   async setAutoSwitch(clientId, on, roomId) {
     if (!this.#store.isSourceAllowed(clientId)) throw new SourceError('not_allowed', 'the device is not allowed as a source');
     await this.#store.setSourcePolicy(clientId, roomId === undefined ? { autoSwitch: on } : { autoSwitch: on, roomId });
-    this.emit('change', clientId);
   }
 
   start(roomId, clientId) {
@@ -775,7 +759,6 @@ export class SourceManager extends EventEmitter {
     }
     this.#store.setSourcePolicy(clientId, { roomId }).catch((err) => this.#log?.warn?.(`[sendspin] trust store update failed: ${err.message}`));
     this.#sendStart(s);
-    this.#changed(s);
   }
 
   stop(clientId) {
@@ -793,7 +776,6 @@ export class SourceManager extends EventEmitter {
     }
     this.#server.setSourcePlayback(clientId, false);
     if (roomId) this.#safeRoom(() => this.#rooms.stopLive(roomId, clientId));
-    this.#changed(s);
   }
 
   stopRoom(roomId) {
@@ -802,10 +784,6 @@ export class SourceManager extends EventEmitter {
 
   #name(clientId) {
     return this.#store.record(clientId)?.name ?? this.#store.approval(clientId)?.name ?? this.#sessions.get(clientId)?.conn.info?.name ?? clientId.slice(0, 8);
-  }
-
-  #changed(s) {
-    this.emit('change', s.clientId);
   }
 
   session(clientId) {
@@ -856,6 +834,5 @@ export class SourceManager extends EventEmitter {
     }
     this.#sessions.clear();
     for (const off of this.#unsub.splice(0)) off();
-    this.removeAllListeners();
   }
 }

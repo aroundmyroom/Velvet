@@ -8,8 +8,9 @@
  * folder at it. Nothing is written without approval unless `albumArt.autoApprove`
  * is set.
  *
- * The suggestion pass runs through the bg-broker, so it is serialised and never
- * runs while a library scan is in progress. With `albumArt.autoSuggestNewContent`
+ * The suggestion pass runs through the bg-broker in chunks of a few albums, so it
+ * never runs while a library scan is in progress and never blocks other
+ * background tasks for the length of a whole pass. With `albumArt.autoSuggestNewContent`
  * enabled it re-runs automatically after every scan to pick up newly added,
  * art-less folders.
  *
@@ -44,15 +45,17 @@ import winston from 'winston';
 import * as config from '../state/config.js';
 import * as db from '../db/manager.js';
 import * as broker from '../state/bg-task-broker.js';
-import * as admin from '../util/admin.js';
 import { onEveryScanEnd, isScanRunning } from '../state/scan-lock.js';
 import { resolvePathWithinRoot } from '../util/path-security.js';
+import { rootFolders } from '../util/vpath.js';
+import { artFileName, writeArtWithThumbs } from '../util/art-cache.js';
 import { fetchPublicUrlBuffer, isPrivateHost } from '../util/ssrf-check.js';
 import { suggestCovers, getReleaseCoverBuf } from './discogs.js';
 import { joiValidate } from '../util/validation.js';
 
 const PER_RUN_CAP      = 200;        // albums per suggestion pass
 const PACE_MS          = 1500;       // delay between albums (Discogs rate limit)
+const CHUNK_SIZE       = 10;         // albums per broker task, so other tasks get a turn
 const SUGGESTED_TTL_MS = 30 * 24 * 60 * 60 * 1000; // re-query a suggested/notfound album after 30d
 const ERROR_TTL_MS     = 24 * 60 * 60 * 1000;       // retry an errored album after 24h
 
@@ -66,52 +69,6 @@ const _state = {
   lastError:    null,
 };
 
-function _db() { return db.getDB(); }
-
-function _ensureTable() {
-  _db().exec(`
-    CREATE TABLE IF NOT EXISTS album_art_workshop (
-      album_key       TEXT PRIMARY KEY,
-      vpath           TEXT NOT NULL,
-      album_id        TEXT,
-      dir             TEXT NOT NULL,
-      album           TEXT,
-      artist          TEXT,
-      status          TEXT,
-      suggestions     TEXT,
-      last_attempt_ts INTEGER,
-      attempts        INTEGER DEFAULT 0,
-      outcome         TEXT,
-      applied_cover   TEXT
-    );
-    CREATE INDEX IF NOT EXISTS idx_aaw_status ON album_art_workshop(status);
-    CREATE TABLE IF NOT EXISTS album_art_shelf (
-      vpath  TEXT NOT NULL,
-      prefix TEXT NOT NULL,
-      ts     INTEGER,
-      PRIMARY KEY (vpath, prefix)
-    );
-  `);
-  // Migrations: source filter + restore-snapshot columns (idempotent).
-  for (const col of [
-    'top_source TEXT',        // primary suggestion source — enables a paginated source filter
-    'prev_aaFile TEXT',       // snapshot before apply — for true restore/undo
-    'prev_art_source TEXT',
-    'prev_cover_file TEXT',
-    'prev_cover_backup TEXT', // filename of the backed-up folder cover (cover.velvet-prev.jpg)
-    'applied_aaFile TEXT',    // the aaFile this workshop wrote (for the Applied view)
-    'had_art INTEGER',        // 1 if the album already had art before this apply
-  ]) {
-    try { _db().exec(`ALTER TABLE album_art_workshop ADD COLUMN ${col}`); } catch { /* already exists */ }
-  }
-  _db().exec('CREATE INDEX IF NOT EXISTS idx_aaw_top_source ON album_art_workshop(top_source)');
-}
-
-function _loadShelves() {
-  _ensureTable();
-  return _db().prepare('SELECT vpath, prefix, ts FROM album_art_shelf ORDER BY vpath, prefix').all();
-}
-
 // A folder is shelved if any shelf prefix equals the album dir or is a parent of it.
 function _isShelved(shelves, vpath, dir) {
   return shelves.some(s => s.vpath === vpath && (dir === s.prefix || dir.startsWith(s.prefix + '/')));
@@ -123,8 +80,7 @@ function _isShelved(shelves, vpath, dir) {
 // as the set of every proper ancestor of every audio file's directory.
 function _containerDirs() {
   const set = new Set();
-  const rows = _db().prepare("SELECT vpath, filepath FROM files WHERE format IS NOT NULL").all();
-  for (const r of rows) {
+  for (const r of db.artWorkshopAudioFilepaths()) {
     const dir = _dirOf(r.filepath);
     let idx = dir.indexOf('/');
     while (idx !== -1) {
@@ -133,22 +89,6 @@ function _containerDirs() {
     }
   }
   return set;
-}
-
-function _rootFolders() {
-  const folders = config.program.folders || {};
-  const roots = {};
-  for (const [name, cfg] of Object.entries(folders)) {
-    if (!cfg.root) continue;
-    const myRoot  = cfg.root.replace(/\/?$/, '/');
-    const isChild = Object.entries(folders).some(([other, otherCfg]) => {
-      if (other === name) return false;
-      const otherRoot = (otherCfg.root || '').replace(/\/?$/, '/');
-      return myRoot.startsWith(otherRoot) && myRoot !== otherRoot;
-    });
-    if (!isChild) roots[name] = cfg.root;
-  }
-  return roots;
 }
 
 function _dirOf(filepath) {
@@ -189,78 +129,25 @@ function _deriveQuery(row) {
   return { artist, title };
 }
 
-// Albums (folder = album, via the folder-based album_id) where no track has art.
-function _selectArtlessAlbums() {
-  return _db().prepare(`
-    SELECT vpath, album_id,
-           MIN(filepath)                          AS sample_filepath,
-           MAX(album)                             AS album,
-           MAX(COALESCE(album_artist, artist))    AS artist,
-           MAX(year)                              AS year,
-           COUNT(*)                               AS track_count
-    FROM files
-    WHERE format IS NOT NULL
-    GROUP BY vpath, album_id
-    HAVING MAX(NULLIF(aaFile, '')) IS NULL
-  `).all();
-}
-
 function _albumKey(vpath, albumId) { return `${vpath}|${albumId}`; }
-
-// The MusicBrainz release id for an album folder (any track that carries one),
-// used to fetch the official Cover Art Archive cover as the preferred source.
-function _releaseIdForAlbum(vpath, albumId) {
-  try {
-    const r = _db().prepare(
-      'SELECT mb_release_id FROM files WHERE vpath = ? AND album_id = ? AND mb_release_id IS NOT NULL LIMIT 1'
-    ).get(vpath, albumId);
-    return r?.mb_release_id || null;
-  } catch { return null; }
-}
 
 // Sync the workshop table with the current art-less album set: insert new
 // candidates as 'pending', and drop rows whose album now has art (resolved
 // elsewhere) unless they were explicitly applied/skipped.
 function _reconcileCandidates() {
-  _ensureTable();
-  const rows       = _selectArtlessAlbums();
-  const shelves    = _loadShelves();
+  const shelves    = db.artWorkshopShelves();
   const containers = _containerDirs();
-  const rawDb      = _db();
-  const existing = new Map(
-    rawDb.prepare('SELECT album_key, status FROM album_art_workshop').all().map(r => [r.album_key, r.status])
-  );
-  const seen = new Set();
-  const ins = rawDb.prepare(`
-    INSERT INTO album_art_workshop (album_key, vpath, album_id, dir, album, artist, status, attempts)
-    VALUES (?, ?, ?, ?, ?, ?, 'pending', 0)
-    ON CONFLICT(album_key) DO UPDATE SET dir = excluded.dir, album = excluded.album, artist = excluded.artist
-  `);
-  const knownVpaths = new Set(Object.keys(_rootFolders()));
-  rawDb.exec('BEGIN');
-  try {
-    for (const r of rows) {
-      if (!knownVpaths.has(r.vpath)) continue;
-      const dir = _dirOf(r.sample_filepath);
-      if (_isShelved(shelves, r.vpath, dir)) continue;
-      if (containers.has(r.vpath + '\u0000' + dir)) continue;
-      const key = _albumKey(r.vpath, r.album_id);
-      seen.add(key);
-      ins.run(key, r.vpath, r.album_id, dir, r.album || null, r.artist || null);
-    }
-    // Forget rows that no longer match an art-less album, except applied/skipped
-    // history we want to keep as a cooldown record.
-    for (const [key, status] of existing) {
-      if (!seen.has(key) && status !== 'applied' && status !== 'skipped') {
-        rawDb.prepare('DELETE FROM album_art_workshop WHERE album_key = ?').run(key);
-      }
-    }
-    rawDb.exec('COMMIT');
-  } catch (e) {
-    try { rawDb.exec('ROLLBACK'); } catch { /* no txn */ }
-    throw e;
+  const knownVpaths = new Set(Object.keys(rootFolders()));
+  const candidates = [];
+  for (const r of db.artWorkshopArtlessAlbums()) {
+    if (!knownVpaths.has(r.vpath)) continue;
+    const dir = _dirOf(r.sample_filepath);
+    if (_isShelved(shelves, r.vpath, dir)) continue;
+    if (containers.has(r.vpath + '\u0000' + dir)) continue;
+    candidates.push({ albumKey: _albumKey(r.vpath, r.album_id), vpath: r.vpath, albumId: r.album_id, dir, album: r.album, artist: r.artist });
   }
-  return seen.size;
+  db.artWorkshopReconcile(candidates);
+  return candidates.length;
 }
 
 function _needsSuggest(row, now) {
@@ -272,24 +159,47 @@ function _needsSuggest(row, now) {
   return false; // applied / skipped — never re-query
 }
 
-async function _runSuggestPass(nowMs, opts = {}) {
+function _suggestPass(opts = {}) {
   const caaOnly = !!opts.caaOnly;
+  const nowMs = Date.now();
+  let rows = null;
+  return async () => {
+    const more = await _runSuggestChunk(nowMs, caaOnly, rows ?? (rows = _beginSuggestPass(nowMs, caaOnly)));
+    if (!more) _endSuggestPass();
+    return more;
+  };
+}
+
+function _beginSuggestPass(nowMs, caaOnly) {
   _state.running   = true;
   _state.startedAt = nowMs;
   _state.processed = 0;
   _state.lastError = null;
   try {
     _reconcileCandidates();
-    let rows = _db().prepare(`
-      SELECT album_key, vpath, album_id, dir, album, artist, status, last_attempt_ts
-      FROM album_art_workshop
-    `).all().filter(r => _needsSuggest(r, nowMs));
+    let rows = db.artWorkshopAllRows().filter(r => _needsSuggest(r, nowMs));
     // MusicBrainz-only pass: only albums that carry a release id can resolve a CAA cover.
-    if (caaOnly) rows = rows.filter(r => !!_releaseIdForAlbum(r.vpath, r.album_id));
-    rows = rows.slice(0, PER_RUN_CAP);
+    if (caaOnly) rows = rows.filter(r => !!db.artWorkshopReleaseId(r.vpath, r.album_id));
+    return rows.slice(0, PER_RUN_CAP);
+  } catch (e) {
+    _state.lastError = e.message;
+    winston.error(`[album-art] suggestion pass error: ${e.message}`);
+    return [];
+  }
+}
 
-    for (const row of rows) {
-      if (_state.stopping) break;
+function _endSuggestPass() {
+  if (!_state.lastError) _state.lastRunAt = Date.now();
+  _state.running      = false;
+  _state.stopping     = false;
+  _state.currentAlbum = null;
+}
+
+// Takes up to CHUNK_SIZE rows off `rows`; true while more remain.
+async function _runSuggestChunk(nowMs, caaOnly, rows) {
+  try {
+    for (const row of rows.splice(0, CHUNK_SIZE)) {
+      if (_state.stopping) return false;
       _state.currentAlbum = `${row.artist || '?'} — ${row.album || row.dir}`;
       let suggestions = [];
       let status = 'notfound';
@@ -300,7 +210,7 @@ async function _runSuggestPass(nowMs, opts = {}) {
           album:    q.title,
           title:    q.title,
           filepath: `${row.vpath}/${row.dir}/x`,
-          mbReleaseId: _releaseIdForAlbum(row.vpath, row.album_id),
+          mbReleaseId: db.artWorkshopReleaseId(row.vpath, row.album_id),
           onlyCaa:  caaOnly,
         });
         status = suggestions.length ? 'suggested' : 'notfound';
@@ -308,11 +218,7 @@ async function _runSuggestPass(nowMs, opts = {}) {
         status = 'error';
         winston.warn(`[album-art] suggest failed for ${row.album_key}: ${e.message}`);
       }
-      _db().prepare(`
-        UPDATE album_art_workshop
-        SET suggestions = ?, status = ?, last_attempt_ts = ?, attempts = attempts + 1, outcome = ?, top_source = ?
-        WHERE album_key = ?
-      `).run(JSON.stringify(suggestions), status, nowMs, status, suggestions[0]?.source || null, row.album_key);
+      db.artWorkshopSaveSuggestions(row.album_key, suggestions, status, nowMs);
 
       if (status === 'suggested' && config.program.albumArt?.autoApprove) {
         try { await _applyCover(row.album_key, suggestions[0]); } catch (e) {
@@ -322,14 +228,11 @@ async function _runSuggestPass(nowMs, opts = {}) {
       _state.processed += 1;
       await new Promise(r => setTimeout(r, PACE_MS));
     }
-    _state.lastRunAt = Date.now();
+    return rows.length > 0 && !_state.stopping;
   } catch (e) {
     _state.lastError = e.message;
     winston.error(`[album-art] suggestion pass error: ${e.message}`);
-  } finally {
-    _state.running      = false;
-    _state.stopping     = false;
-    _state.currentAlbum = null;
+    return false;
   }
 }
 
@@ -383,9 +286,9 @@ async function _checkWritable(dir) {
 // Download → write cover.jpg into the album folder → cache + thumbnails → point
 // every track in that folder at the cached image.
 async function _applyCover(albumKey, choice) {
-  const row = _db().prepare('SELECT * FROM album_art_workshop WHERE album_key = ?').get(albumKey);
+  const row = db.artWorkshopRow(albumKey);
   if (!row) throw new Error('Unknown albumKey');
-  const root = _rootFolders()[row.vpath];
+  const root = rootFolders()[row.vpath];
   if (!root) throw new Error(`vpath ${row.vpath} is not a root folder`);
 
   const folderAbs = resolvePathWithinRoot(root, row.dir);
@@ -402,9 +305,7 @@ async function _applyCover(albumKey, choice) {
 
   // Snapshot the album's current art BEFORE overwriting, so a wrong apply can be
   // restored exactly. The old cached aaFile is intentionally NOT deleted here.
-  const prevRow = _db().prepare(
-    'SELECT aaFile, art_source, cover_file FROM files WHERE vpath = ? AND album_id = ? LIMIT 1'
-  ).get(row.vpath, row.album_id) || {};
+  const prevRow = db.artWorkshopAlbumArt(row.vpath, row.album_id) || {};
   const hadArt = prevRow.aaFile ? 1 : 0;
   let prevCoverBackup = row.prev_cover_backup || null;
   const coverPathPre = resolvePathWithinRoot(folderAbs, 'cover.jpg');
@@ -426,42 +327,25 @@ async function _applyCover(albumKey, choice) {
   fs.writeFileSync(coverPath, jpeg);
 
   const artDir  = config.program.storage.albumArtDirectory;
-  const aaFile  = crypto.createHash('sha256').update(jpeg).digest('hex') + '.jpg';
-  const artPath = resolvePathWithinRoot(artDir, aaFile);
-  if (!fs.existsSync(artPath)) fs.writeFileSync(artPath, jpeg);
-  for (const [pref, sz] of [['zs-', 92], ['zl-', 256], ['zm-', 512]]) {
-    try {
-      await sharp(jpeg).resize(sz, sz, { fit: 'inside', withoutEnlargement: true })
-        .toFile(resolvePathWithinRoot(artDir, pref + aaFile));
-    } catch (e) { console.debug('[velvet]', e?.message ?? e); }
-  }
+  const aaFile  = artFileName(jpeg, 'jpg');
+  if (!await writeArtWithThumbs(artDir, jpeg, aaFile)) console.debug('[velvet] art workshop: could not make thumbnails for', aaFile);
 
-  _db().prepare(
-    `UPDATE files SET aaFile = ?, art_source = 'workshop', cover_file = 'cover.jpg' WHERE vpath = ? AND album_id = ?`
-  ).run(aaFile, row.vpath, row.album_id);
+  db.artWorkshopSetAlbumArt(row.vpath, row.album_id, aaFile, 'workshop', 'cover.jpg');
 
-  // First apply for this album snapshots the ORIGINAL art (COALESCE keeps it across
-  // re-applies); applied_aaFile/status always reflect the latest apply.
+  // First apply for this album snapshots the ORIGINAL art; applied_aaFile/status always reflect the latest apply.
   const firstApply = !row.applied_aaFile;
-  _db().prepare(
-    `UPDATE album_art_workshop SET
-       status = 'applied', applied_cover = ?, outcome = 'applied', last_attempt_ts = ?,
-       applied_aaFile = ?,
-       prev_aaFile      = COALESCE(prev_aaFile, ?),
-       prev_art_source  = COALESCE(prev_art_source, ?),
-       prev_cover_file  = COALESCE(prev_cover_file, ?),
-       prev_cover_backup= COALESCE(prev_cover_backup, ?),
-       had_art          = COALESCE(had_art, ?)
-     WHERE album_key = ?`
-  ).run(
-    choice.source || 'manual', Date.now(), aaFile,
-    firstApply ? (prevRow.aaFile || null) : null,
-    firstApply ? (prevRow.art_source || null) : null,
-    firstApply ? (prevRow.cover_file || null) : null,
+  db.artWorkshopMarkApplied(albumKey, {
+    source: choice.source || 'manual',
+    ts: Date.now(),
+    aaFile,
+    prev: {
+      aaFile:    firstApply ? (prevRow.aaFile || null) : null,
+      artSource: firstApply ? (prevRow.art_source || null) : null,
+      coverFile: firstApply ? (prevRow.cover_file || null) : null,
+    },
     prevCoverBackup,
     hadArt,
-    albumKey,
-  );
+  });
 
   return { aaFile, cover: 'cover.jpg' };
 }
@@ -470,10 +354,10 @@ async function _applyCover(albumKey, choice) {
 // art and put the folder cover.jpg back (from the backup, or remove it if the
 // album had no art before). Returns the album to 'suggested' so it can be re-fixed.
 async function _restoreCover(albumKey) {
-  const row = _db().prepare('SELECT * FROM album_art_workshop WHERE album_key = ?').get(albumKey);
+  const row = db.artWorkshopRow(albumKey);
   if (!row) throw new Error('Unknown albumKey');
   if (!row.applied_aaFile) throw new Error('Nothing to restore');
-  const root = _rootFolders()[row.vpath];
+  const root = rootFolders()[row.vpath];
   const folderAbs = root ? resolvePathWithinRoot(root, row.dir) : null;
 
   // Restore the folder cover.jpg.
@@ -488,61 +372,44 @@ async function _restoreCover(albumKey) {
   }
 
   // Restore the DB art pointers on every track of the album.
-  _db().prepare(
-    'UPDATE files SET aaFile = ?, art_source = ?, cover_file = ? WHERE vpath = ? AND album_id = ?'
-  ).run(row.prev_aaFile || null, row.prev_art_source || null, row.prev_cover_file || null, row.vpath, row.album_id);
+  db.artWorkshopSetAlbumArt(row.vpath, row.album_id, row.prev_aaFile || null, row.prev_art_source || null, row.prev_cover_file || null);
 
   // Re-open the album for fixing; clear the apply snapshot.
   const back = (row.suggestions && JSON.parse(row.suggestions).length) ? 'suggested' : 'pending';
-  _db().prepare(
-    `UPDATE album_art_workshop SET status = ?, applied_cover = NULL, outcome = NULL,
-       applied_aaFile = NULL, prev_aaFile = NULL, prev_art_source = NULL,
-       prev_cover_file = NULL, prev_cover_backup = NULL, had_art = NULL, last_attempt_ts = ?
-     WHERE album_key = ?`
-  ).run(back, Date.now(), albumKey);
+  db.artWorkshopClearApplied(albumKey, back, Date.now());
 
   return { ok: true, status: back, restoredAaFile: row.prev_aaFile || null };
 }
 
 function _statusCounts() {
-  _ensureTable();
-  const rows = _db().prepare(
-    'SELECT status, COUNT(*) AS n FROM album_art_workshop GROUP BY status'
-  ).all();
   const c = { pending: 0, suggested: 0, applied: 0, skipped: 0, notfound: 0, error: 0 };
-  for (const r of rows) if (r.status in c) c[r.status] = r.n;
+  for (const r of db.artWorkshopStatusCounts()) if (r.status in c) c[r.status] = r.n;
   return c;
 }
 
 // Counts of currently-suggested albums grouped by primary source — drives the
 // source filter chips (All / MusicBrainz / Discogs / Deezer / iTunes).
 function _sourceCounts() {
-  _ensureTable();
-  const rows = _db().prepare(
-    "SELECT top_source AS s, COUNT(*) AS n FROM album_art_workshop WHERE status = 'suggested' GROUP BY top_source"
-  ).all();
   const c = { all: 0, musicbrainz: 0, discogs: 0, deezer: 0, itunes: 0 };
-  for (const r of rows) { c.all += r.n; if (r.s in c) c[r.s] += r.n; }
+  for (const r of db.artWorkshopSourceCounts()) { c.all += r.n; if (r.s in c) c[r.s] += r.n; }
   return c;
 }
 
 async function _persistAlbumArtConfig(patch) {
   config.program.albumArt = { ...(config.program.albumArt || {}), ...patch };
-  const loadConfig = await admin.loadFile(config.configFile);
-  loadConfig.albumArt = { ...(loadConfig.albumArt || {}), ...patch };
-  await admin.saveFile(loadConfig, config.configFile);
+  await config.updateConfigFile(c => { c.albumArt = { ...c.albumArt, ...patch }; });
 }
 
 function _startPass(opts = {}) {
   if (_state.running) return 'already_running';
   _state.stopping = false;
   const label = opts.caaOnly ? 'Album-Art MusicBrainz pass' : 'Album-Art suggestion pass';
-  broker.submit('album-art-suggest', label, () => _runSuggestPass(Date.now(), opts));
+  broker.submitChunks('album-art-suggest', label, _suggestPass(opts));
   return 'queued';
 }
 
 export function setup(app) {
-  try { _ensureTable(); } catch (e) { winston.warn('[album-art] table init failed: ' + e.message); }
+  try { db.artWorkshopEnsureTables(); } catch (e) { winston.warn('[album-art] table init failed: ' + e.message); }
 
   // After every scan, refresh candidates and (if enabled) auto-fetch suggestions
   // for newly added art-less folders.
@@ -591,41 +458,18 @@ export function setup(app) {
     const status = String(req.query.status || '').trim();
     const q      = String(req.query.q || '').trim();
     const source = String(req.query.source || '').trim();
-    _ensureTable();
-    const clauses = [];
-    const filter  = [];
-    if (status) { clauses.push('status = ?'); filter.push(status); }
-    if (source) { clauses.push('top_source = ?'); filter.push(source); }
-    if (q) {
-      clauses.push('(dir LIKE ? OR album LIKE ? OR artist LIKE ?)');
-      const like = '%' + q + '%';
-      filter.push(like, like, like);
-    }
-    const where = clauses.length ? 'WHERE ' + clauses.join(' AND ') : '';
+    const filter = { status, source, q };
 
     // Lightweight mode: return every matching folder (no pagination, no suggestions)
     // so the UI can "select all found" across pages for bulk shelve.
     if (req.query.keys === '1') {
-      const keyRows = _db().prepare(`
-        SELECT album_key, vpath, dir FROM album_art_workshop ${where}
-        ORDER BY (status = 'suggested') DESC, artist, album
-      `).all(...filter);
+      const keyRows = db.artWorkshopCandidateKeys(filter);
       return res.json({ keys: keyRows.map(r => ({ albumKey: r.album_key, vpath: r.vpath, dir: r.dir })) });
     }
 
-    const rows = _db().prepare(`
-      SELECT album_key, vpath, album_id, dir, album, artist, status, suggestions, applied_cover,
-             applied_aaFile, top_source, last_attempt_ts
-      FROM album_art_workshop ${where}
-      ORDER BY (status = 'suggested') DESC, artist, album
-      LIMIT ? OFFSET ?
-    `).all(...filter, limit, offset);
-    const total = _db().prepare(
-      `SELECT COUNT(*) AS n FROM album_art_workshop ${where}`
-    ).get(...filter).n;
     // For the Applied view, surface the live cover (aaFile) so the user can SEE
     // what was stored, plus whether a restore is possible.
-    const liveArt = _db().prepare('SELECT aaFile FROM files WHERE vpath = ? AND album_id = ? AND aaFile IS NOT NULL LIMIT 1');
+    const { total, rows } = db.artWorkshopCandidates(filter, limit, offset);
     res.json({
       total,
       candidates: rows.map(r => ({
@@ -637,7 +481,7 @@ export function setup(app) {
         status:      r.status,
         appliedCover: r.applied_cover,
         topSource:   r.top_source,
-        appliedAaFile: r.status === 'applied' ? (liveArt.get(r.vpath, r.album_id)?.aaFile || r.applied_aaFile || null) : null,
+        appliedAaFile: r.status === 'applied' ? (r.liveAaFile || r.applied_aaFile || null) : null,
         canRestore:  r.status === 'applied' && !!r.applied_aaFile,
         lastAttempt: r.last_attempt_ts,
         suggestions: r.suggestions ? JSON.parse(r.suggestions) : [],
@@ -665,22 +509,18 @@ export function setup(app) {
       allSources: Joi.boolean(),
     }).validate(req.body);
     if (error) return res.status(400).json({ error: error.message });
-    _ensureTable();
-    const row = _db().prepare('SELECT * FROM album_art_workshop WHERE album_key = ?').get(value.albumKey);
+    const row = db.artWorkshopRow(value.albumKey);
     if (!row) return res.status(404).json({ error: 'Unknown albumKey' });
     try {
       const q = _deriveQuery(row);
       const suggestions = await suggestCovers({
         artist: q.artist, album: q.title, title: q.title,
         filepath: `${row.vpath}/${row.dir}/x`,
-        mbReleaseId: _releaseIdForAlbum(row.vpath, row.album_id),
+        mbReleaseId: db.artWorkshopReleaseId(row.vpath, row.album_id),
         allSources: value.allSources,
       });
       const status = suggestions.length ? 'suggested' : 'notfound';
-      _db().prepare(`
-        UPDATE album_art_workshop SET suggestions = ?, status = ?, last_attempt_ts = ?, attempts = attempts + 1, outcome = ?, top_source = ?
-        WHERE album_key = ?
-      `).run(JSON.stringify(suggestions), status, Date.now(), status, suggestions[0]?.source || null, value.albumKey);
+      db.artWorkshopSaveSuggestions(value.albumKey, suggestions, status, Date.now());
       res.json({ status, suggestions });
     } catch (e) {
       res.status(502).json({ error: e.message });
@@ -714,11 +554,10 @@ export function setup(app) {
     if (!adminOnly(req, res)) return;
     const schema = Joi.object({ albumKeys: Joi.array().items(Joi.string()).min(1).max(500).required() });
     try { joiValidate(schema, req.body); } catch (e) { return res.status(400).json({ error: e.message }); }
-    _ensureTable();
     const applied = [];
     const failed = [];
     for (const albumKey of req.body.albumKeys) {
-      const row = _db().prepare('SELECT suggestions FROM album_art_workshop WHERE album_key = ?').get(albumKey);
+      const row = db.artWorkshopRow(albumKey);
       const top = row?.suggestions ? (JSON.parse(row.suggestions)[0] || null) : null;
       if (!top) { failed.push({ albumKey, error: 'no suggestion' }); continue; }
       try {
@@ -736,7 +575,6 @@ export function setup(app) {
     if (!adminOnly(req, res)) return;
     const { error, value } = Joi.object({ albumKey: Joi.string().required() }).validate(req.body);
     if (error) return res.status(400).json({ error: error.message });
-    _ensureTable();
     try {
       res.json(await _restoreCover(value.albumKey));
     } catch (e) {
@@ -750,20 +588,7 @@ export function setup(app) {
     if (!adminOnly(req, res)) return;
     const q = String(req.query.q || '').trim();
     if (q.length < 2) return res.json({ albums: [] });
-    const like = '%' + q + '%';
-    const rows = _db().prepare(`
-      SELECT vpath, album_id,
-             MIN(filepath)                        AS sample_filepath,
-             MAX(album)                           AS album,
-             MAX(COALESCE(album_artist, artist))  AS artist,
-             MAX(aaFile)                          AS aaFile,
-             COUNT(*)                             AS track_count
-      FROM files
-      WHERE format IS NOT NULL AND (album LIKE ? OR artist LIKE ? OR album_artist LIKE ?)
-      GROUP BY vpath, album_id
-      ORDER BY artist, album
-      LIMIT 40
-    `).all(like, like, like);
+    const rows = db.artWorkshopFindAlbums(q);
     res.json({
       albums: rows.map(r => ({
         albumKey: _albumKey(r.vpath, r.album_id),
@@ -784,36 +609,24 @@ export function setup(app) {
     if (!adminOnly(req, res)) return;
     const { error, value } = Joi.object({ albumKey: Joi.string().required() }).validate(req.body);
     if (error) return res.status(400).json({ error: error.message });
-    _ensureTable();
     const i = value.albumKey.lastIndexOf('|');
     if (i < 1) return res.status(400).json({ error: 'bad albumKey' });
     const vpath = value.albumKey.slice(0, i);
     const albumId = value.albumKey.slice(i + 1);
-    const info = _db().prepare(`
-      SELECT MIN(filepath) AS sample, MAX(album) AS album,
-             MAX(COALESCE(album_artist, artist)) AS artist, MAX(aaFile) AS aaFile
-      FROM files WHERE vpath = ? AND album_id = ?
-    `).get(vpath, albumId);
+    const info = db.artWorkshopAlbumInfo(vpath, albumId);
     if (!info?.sample) return res.status(404).json({ error: 'Album not found' });
     const dir = _dirOf(info.sample);
-    _db().prepare(`
-      INSERT INTO album_art_workshop (album_key, vpath, album_id, dir, album, artist, status, attempts)
-      VALUES (?, ?, ?, ?, ?, ?, 'pending', 0)
-      ON CONFLICT(album_key) DO UPDATE SET dir = excluded.dir, album = excluded.album, artist = excluded.artist
-    `).run(value.albumKey, vpath, albumId, dir, info.album || null, info.artist || null);
+    db.artWorkshopUpsertCandidate({ albumKey: value.albumKey, vpath, albumId, dir, album: info.album, artist: info.artist });
     try {
       const q = _deriveQuery({ dir, artist: info.artist, album: info.album });
       const suggestions = await suggestCovers({
         artist: q.artist, album: q.title, title: q.title,
         filepath: `${vpath}/${dir}/x`,
-        mbReleaseId: _releaseIdForAlbum(vpath, albumId),
+        mbReleaseId: db.artWorkshopReleaseId(vpath, albumId),
         allSources: true,
       });
       const status = suggestions.length ? 'suggested' : 'notfound';
-      _db().prepare(`
-        UPDATE album_art_workshop SET suggestions = ?, status = ?, last_attempt_ts = ?, attempts = attempts + 1, outcome = ?, top_source = ?
-        WHERE album_key = ?
-      `).run(JSON.stringify(suggestions), status, Date.now(), status, suggestions[0]?.source || null, value.albumKey);
+      db.artWorkshopSaveSuggestions(value.albumKey, suggestions, status, Date.now());
       res.json({ status, suggestions, current: { aaFile: info.aaFile || null, hasArt: !!info.aaFile } });
     } catch (e) {
       res.status(502).json({ error: e.message });
@@ -824,10 +637,7 @@ export function setup(app) {
     if (!adminOnly(req, res)) return;
     const { error, value } = Joi.object({ albumKey: Joi.string().required() }).validate(req.body);
     if (error) return res.status(400).json({ error: error.message });
-    _ensureTable();
-    const changed = _db().prepare(
-      `UPDATE album_art_workshop SET status = 'skipped', outcome = 'skipped', last_attempt_ts = ? WHERE album_key = ?`
-    ).run(Date.now(), value.albumKey).changes;
+    const changed = db.artWorkshopSkip(value.albumKey, Date.now());
     if (!changed) return res.status(404).json({ error: 'Unknown albumKey' });
     res.json({ ok: true });
   });
@@ -850,8 +660,8 @@ export function setup(app) {
 
   app.get('/api/v1/admin/art/shelves', (req, res) => {
     if (!adminOnly(req, res)) return;
-    const shelves = _loadShelves();
-    const artless = _selectArtlessAlbums();
+    const shelves = db.artWorkshopShelves();
+    const artless = db.artWorkshopArtlessAlbums();
     res.json({
       shelves: shelves.map(s => ({
         vpath:  s.vpath,
@@ -879,20 +689,8 @@ export function setup(app) {
     if (!adminOnly(req, res)) return;
     const { error, value } = _shelfSchema.validate(req.body);
     if (error) return res.status(400).json({ error: error.message });
-    _ensureTable();
-    const ins = _db().prepare(
-      'INSERT INTO album_art_shelf (vpath, prefix, ts) VALUES (?, ?, ?) ON CONFLICT(vpath, prefix) DO NOTHING'
-    );
-    const del = _db().prepare(
-      `DELETE FROM album_art_workshop WHERE vpath = ? AND (dir = ? OR dir LIKE ? || '/%') AND status != 'applied'`
-    );
-    const now = Date.now();
-    let removed = 0;
     const list = _shelfList(value);
-    for (const f of list) {
-      ins.run(f.vpath, f.prefix, now);
-      removed += del.run(f.vpath, f.prefix, f.prefix).changes;
-    }
+    const removed = db.artWorkshopShelve(list, Date.now());
     res.json({ ok: true, removed, count: list.length });
   });
 
@@ -900,10 +698,7 @@ export function setup(app) {
     if (!adminOnly(req, res)) return;
     const { error, value } = _shelfSchema.validate(req.body);
     if (error) return res.status(400).json({ error: error.message });
-    _ensureTable();
-    const del = _db().prepare('DELETE FROM album_art_shelf WHERE vpath = ? AND prefix = ?');
-    let changed = 0;
-    for (const f of _shelfList(value)) changed += del.run(f.vpath, f.prefix).changes;
+    const changed = db.artWorkshopUnshelve(_shelfList(value));
     if (!changed) return res.status(404).json({ error: 'Shelf entry not found' });
     try { _reconcileCandidates(); } catch (e) { console.debug('[velvet]', e?.message ?? e); }
     res.json({ ok: true, count: changed });

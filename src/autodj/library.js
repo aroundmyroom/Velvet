@@ -5,7 +5,10 @@ import * as config from '../state/config.js';
 import * as db from '../db/manager.js';
 import { similarArtistsFor } from '../api/scrobbler.js';
 import { genreFamilyResolver } from '../util/genre-family-cache.js';
-import { buildRadio, songFromRow } from './radio.js';
+import { buildRadio, songFromRow, keywordBlocked } from './radio.js';
+import { batchCandidatePool } from './pool.js';
+import { ARTIST_COOLDOWN } from './scoring.js';
+import { rootVpathOf } from '../util/vpath.js';
 
 // The library-wide pool (no similar-artist list) is drawn from one random
 // sample per request instead of loading the whole library for every pick.
@@ -41,14 +44,9 @@ function nonMusicScope(vpaths) {
   const excludeFilepathPrefixes = [];
   for (const [name, f] of Object.entries(folders)) {
     if (!NOT_RADIO.has(f.type || 'music') || !f.root) continue;
-    const root = f.root.replace(/\/?$/, '/');
-    const parent = Object.entries(folders).find(([other, o]) =>
-      other !== name && o.root && root.startsWith(o.root.replace(/\/?$/, '/')) && root !== o.root.replace(/\/?$/, '/'));
-    if (parent) {
-      if (vpaths.includes(parent[0])) excludeFilepathPrefixes.push({ vpath: parent[0], prefix: root.slice(parent[1].root.replace(/\/?$/, '/').length) });
-    } else {
-      ignoreVPaths.push(name);
-    }
+    const { vpath: root, prefix } = rootVpathOf(name, folders);
+    if (root === name) ignoreVPaths.push(name);
+    else if (vpaths.includes(root)) excludeFilepathPrefixes.push({ vpath: root, prefix });
   }
   return { ignoreVPaths, excludeFilepathPrefixes };
 }
@@ -185,11 +183,25 @@ export async function radioForUser({ seedRow, count, username, vpaths }) {
  * the room carries on from pick to pick. historyRows: what the room played
  * before the seed, oldest first. Returns { row, state } or null.
  */
-export async function nextForRoom({ seedRow, seedIsDj, historyRows = [], username, vpaths, settings = {}, state = null }) {
+export function nextForRoom(args) {
+  return pickNext({ ...args, label: 'room pick' });
+}
+
+function pickScope(vpaths, own) {
+  const base = nonMusicScope(vpaths);
+  return {
+    ...base,
+    ...own,
+    ignoreVPaths: [...new Set([...base.ignoreVPaths, ...(own.ignoreVPaths || [])])],
+    excludeFilepathPrefixes: [...base.excludeFilepathPrefixes, ...(own.excludeFilepathPrefixes || [])],
+  };
+}
+
+async function pickNext({ seedRow, seedIsDj, historyRows = [], username, vpaths, settings = {}, state = null, label }) {
   const t0 = Date.now();
   const families = genreFamilyResolver();
   const toSong = row => songFromRow(row, families);
-  const scope = { ...nonMusicScope(vpaths), ...(settings.scope || {}) };
+  const scope = pickScope(vpaths, settings.scope || {});
   const fetchRows = opts => db.getAllFilesWithMetadata(vpaths, username, opts);
   const { songs, trace, state: next } = await buildRadio({
     seed: toSong(seedRow),
@@ -214,6 +226,52 @@ export async function nextForRoom({ seedRow, seedIsDj, historyRows = [], usernam
   const row = db.getSongsByRowids([songs[0].id], username).get(songs[0].id);
   if (!row) return null;
   const t = trace[0] || {};
-  console.log(`[autodj] room pick user=${username} after "${seedRow.artist || '?'} — ${seedRow.title || '?'}" → "${row.artist || '?'} — ${row.title || '?'}" in ${Date.now() - t0}ms (${[].concat(t.note || []).join('; ')}${t.similarSource ? `, similar to "${t.similarSource}"` : ''})`);
+  console.log(`[autodj] ${label} user=${username} after "${seedRow.artist || '?'} — ${seedRow.title || '?'}" → "${row.artist || '?'} — ${row.title || '?'}" in ${Date.now() - t0}ms (${[].concat(t.note || []).join('; ')}${t.similarSource ? `, similar to "${t.similarSource}"` : ''})`);
   return { row, state: next };
+}
+
+function recentArtists(rows) {
+  const out = [];
+  const seen = new Set();
+  for (let i = rows.length - 1; i >= 0; i--) {
+    const a = (rows[i].artist || rows[i].album_artist || '').trim();
+    if (!a || seen.has(ignoreKey(a))) continue;
+    seen.add(ignoreKey(a));
+    out.unshift(a);
+  }
+  return out;
+}
+
+function randomPick({ historyRows, username, vpaths, settings }) {
+  const scope = pickScope(vpaths, settings.scope);
+  const fetchRows = opts => db.getAllFilesWithMetadata(vpaths, username, opts);
+  const cooldown = recentArtists(historyRows).slice(-ARTIST_COOLDOWN);
+  const pool = (cooldown.length && batchCandidatePool(fetchRows, { ...scope, ignoreArtists: cooldown })) || batchCandidatePool(fetchRows, scope);
+  if (!pool) return null;
+  const recent = new Set(historyRows.map(r => `${r.vpath}/${r.filepath}`));
+  const allowed = pool.songs.filter(r => !keywordBlocked(songFromRow(r), settings.filterWords));
+  const fresh = allowed.filter(r => !recent.has(`${r.vpath}/${r.filepath}`));
+  const cands = fresh.length ? fresh : allowed;
+  return cands.length ? cands[Math.floor(Math.random() * cands.length)] : null; // NOSONAR: non-security random music pick
+}
+
+/**
+ * The next Auto-DJ song for a client that keeps no DJ state of its own (TV app,
+ * Server Remote): the room engine with the user's synced Auto-DJ prefs
+ * (similar artists, keyword filter, minimum rating unless scope sets one).
+ * historyRows: recently played rows, oldest first; they seed the artist
+ * cooldown and are never repeated. Without a seed the pick is random within
+ * the scope. Returns a full files row or null.
+ */
+export async function nextForUser({ seedRow = null, historyRows = [], username, vpaths, scope = {} }) {
+  const prefs = userPrefs(username);
+  const minRating = scope.minRating ?? (Number.parseInt(prefs.dj_min_rating || '0', 10) || undefined);
+  const settings = { similar: prefs.dj_similar === '1', filterWords: filterWords(prefs), scope: { ...scope, minRating } };
+  if (!seedRow) {
+    const row = randomPick({ historyRows, username, vpaths, settings });
+    return row ? db.getSongsByRowids([row.id], username).get(row.id) ?? null : null;
+  }
+  const state = { artistHistory: recentArtists([...historyRows, seedRow]) };
+  const picked = await pickNext({ seedRow, seedIsDj: false, historyRows, username, vpaths, settings, state, label: 'client pick' });
+  return picked?.row ?? null;
 }

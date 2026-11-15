@@ -3,7 +3,7 @@ services:
     # Pull the pre-built image from GitHub Container Registry (recommended):
     #   image: ghcr.io/aroundmyroom/velvet:latest
     # Or pin to a specific release:
-    #   image: ghcr.io/aroundmyroom/velvet:v1.0.0
+    #   image: ghcr.io/aroundmyroom/velvet:v0.9.3
     # Or use a locally built image:
     #   image: velvet
     image: ghcr.io/aroundmyroom/velvet:latest

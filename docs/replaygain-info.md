@@ -23,27 +23,27 @@ to a consistent reference level of **−18 LUFS**.
 | `rg_lra` | Loudness Range — dynamic width of the recording |
 | `rg_album_gain_db` | Shared album-level gain across all tracks of the same album |
 | `rg_album_peak_dbfs` | Worst-case true peak across the album |
-| `rg_measured_ts` | Unix timestamp of measurement (−1 = failed) |
-| `rg_measurement_tool` | `"rsgain"` or `"ffmpeg"` |
+| `rg_measured_ts` | Unix timestamp of measurement (`NULL` = queued, −1 = failed, −2 = shelved) |
+| `rg_measurement_tool` | `"rsgain"` or `"ffmpeg"`; for failed rows the reason code |
+| `rg_measurement_error` | Error text from rsgain/ffmpeg for failed rows |
 
-Tag-sourced fallback values (read at scan time) are also stored:
-`rg_tag_track_gain`, `rg_tag_track_peak`, `rg_tag_album_gain`,
-`rg_tag_album_peak`, `r128_track_gain_db`, `r128_album_gain_db`.
+`rg_lra` is only filled by the ffmpeg path — rsgain's `custom -O` output has no LRA.
+
+The scanner stores the file's existing ReplayGain track gain tag as
+`replaygainTrackDb`. There are no separate `rg_tag_*` or `r128_*` columns
+(they were never filled and have been removed).
 
 ### Player-side application
 
 The player reads the `rg` object from the track metadata response
-(`GET /api/v1/db/metadata`). `resolveTrackGain()` applies a priority chain:
+(`POST /api/v1/db/metadata`): `{ trackGain, truePeak, albumGain, albumPeak, src }`.
+`trackGain` comes from `resolveTrackGain()` (see [Priority chain](#priority-chain--resolvetrackgain));
+`albumGain` is the measured album gain only.
 
-1. **Measured value** — from the worker analysis (`rg_track_gain_db` /
-   `rg_album_gain_db`). Most accurate.
-2. **R128 tag** — `R128_TRACK_GAIN` / `R128_ALBUM_GAIN` from Opus files, with
-   a +5 dB reference offset (Opus uses −23 LUFS; we normalise to −18 LUFS).
-3. **ReplayGain tag** — classic `REPLAYGAIN_TRACK_GAIN` / `REPLAYGAIN_ALBUM_GAIN`
-   already embedded in the file at scan time.
-
-The resolved gain is applied via a Web Audio `GainNode`. Three user settings
-control the final level:
+The resolved gain is applied via a Web Audio `GainNode` and shown as a badge
+in the player bar (`RG` for a measured gain, `RG tag` for a gain from the file's tag, plus the dB value). Loudness
+normalisation is switched on with its own toggle in the player's Playback
+settings; three more settings control the final level:
 
 - **Mode** — *Track* (each track normalised independently) or *Album* (use the
   album gain to preserve the relative loudness dynamics within an album — a
@@ -54,30 +54,40 @@ control the final level:
 - **Clip Prevention** — when enabled, the gain is reduced if it would cause the
   true peak to exceed 0 dBTP after adjustment.
 
-Settings are persisted in `localStorage` and synced across devices via user
-preferences.
+Settings are stored per user in `localStorage`. Only the on/off toggle is
+also synced across devices via user preferences; mode, pre-amp and clip
+prevention stay on the device.
 
 ### Transcode path
 
-When the player requests a server-side transcode (e.g. for format conversion
-or bitrate reduction), the resolved gain is passed through to ffmpeg via a
-`volume=<linear>,alimiter` filter chain, so even transcoded streams arrive at
-the correct loudness.
+`spawnTranscode()` in `src/api/transcode.js` takes no gain: transcoded
+streams (player and Subsonic) are not loudness-adjusted on the server. In the
+web player the `GainNode` still applies the gain on top.
+
+### Velvet Rooms and Subsonic
+
+Velvet Rooms resolve the gain on the server with the same chain
+(`rgGainDb()` in `src/util/replaygain.js`, which calls `resolveTrackGain()` in `src/api/db.js`); rooms always apply clip
+prevention (an unknown peak is treated as 0 dBFS) and cap the gain to
+−30…+20 dB. Subsonic clients get an
+OpenSubsonic `replayGain` object (track gain/peak from the same chain, album
+gain/peak from the measured values).
 
 ### MPV cast path
 
 When the user activates **Cast to server speaker** (MPV), the browser sends
 the RG mode, pre-amp and clip-prevention settings along with the track filepath.
 The server resolves the gain from the database using the same priority chain as
-the browser player, then applies it via MPV's IPC command:
+the browser player (`rgGainDb()` in `src/util/replaygain.js`), then applies it via MPV's IPC command:
 
 ```
 { "command": ["af", "set", "volume=<linear>"] }
 ```
 
-This fires immediately after MPV's `file-loaded` event, ensuring every cast
-track plays at the correct loudness level. If a track has no RG data, the filter
-is cleared and MPV plays at its natural level.
+The stereo balance filter is added to the same chain when set. This fires
+after MPV's `file-loaded` event, so every cast track plays at the right
+level. If a track has no RG data (or normalisation is off), the volume filter
+is left out and MPV plays at its natural level.
 
 ---
 
@@ -155,14 +165,18 @@ Two tools can measure EBU R128 / BS.1770-4:
 - Per-file spawning is fast; true-peak detection is more accurate than ffmpeg's.
 
 **ffmpeg is the fallback** on platforms where no rsgain binary is available
-(Docker arm64, Windows, macOS). The accuracy difference is immaterial in
-practice — both give results within the measurement uncertainty of the standard.
+(anything other than Linux x64, e.g. Docker arm64, Windows, macOS). When rsgain
+is available it is used for every file — there is no per-file fallback to
+ffmpeg; files rsgain cannot measure are marked failed. The accuracy difference
+is immaterial in practice — both give results within the measurement
+uncertainty of the standard.
 
-The binary is auto-downloaded from the
+The binary is auto-downloaded (latest release) from the
 [complexlogic/rsgain GitHub releases](https://github.com/complexlogic/rsgain)
 using the same bootstrap pattern as ffmpeg itself (`bin/rsgain/rsgain`).
-Minimum required version: **3.7** (tested; uses `custom --tagmode=s -O` for
-per-file tab-delimited output). The Dockerfile pre-downloads it for x64 container builds.
+Minimum required major version: **3** (tested with 3.7; uses
+`custom --tagmode=s -O` — scan only, no tag writing — for per-file
+tab-delimited output). The Dockerfile pre-downloads it for x64 container builds.
 
 ---
 
@@ -175,7 +189,7 @@ an artistic decision. Album gain preserves this relationship.
 
 **Album grouping**: tracks are grouped by `mb_album_dir` (the MusicBrainz
 album directory field) when available, or by `(vpath, album_artist/artist,
-album)` when not. This matches the same grouping used by the Tag Workshop.
+album)` when not.
 
 **Album gain calculation**: once all tracks in a group are measured, the
 worker computes the mean integrated loudness across the group and derives a
@@ -199,15 +213,15 @@ track and album gain values.
 The measurement runs in a **Node.js worker thread** (`rg-analysis-worker.mjs`)
 so it never blocks the HTTP server or the main DB writer.
 
-- **Batch size**: 50 files per cycle, with a 50 ms yield between files to
-  avoid I/O saturation on spinning disks.
-- **Idle sleep**: when the queue is empty, the worker sleeps for 60 seconds
-  before re-checking.
+- **Batch size**: 50 files per cycle, with a 250 ms pause between files to
+  leave room for other workers and disk I/O.
+- **Empty queue**: when nothing is left to measure, the worker exits. It is
+  started again by the post-scan auto-start (see below).
 - **Failure handling**: files that fail measurement are marked
   `rg_measured_ts = −1` with a reason code (`measure_failed`, `timed_out`,
-  `file_not_found`, `missing_vpath`, `resource_fork`) and the actual error
-  text from rsgain/ffmpeg stored in `rg_measurement_error`. They are excluded
-  from normal queue cycling.
+  `file_not_found`, `missing_vpath`, `invalid_path`, `resource_fork`) and the
+  actual error text from rsgain/ffmpeg stored in `rg_measurement_error`. They
+  are excluded from normal queue cycling.
 - **Timeout**: proportional to file duration — `max(120 s, duration × 0.5 s)`
   so long files (audiobooks, megamixes) get a realistic budget instead of a
   hard 2-minute cap.
@@ -215,32 +229,50 @@ so it never blocks the HTTP server or the main DB writer.
   (silence, test tones, macOS resource forks, unsupported containers) can be
   permanently excluded via the Shelve button in the failed files modal.
   Shelved files survive Reset All and are never touched by the worker again.
-- **Smart Reset Failed**: the "Reset Failed" button checks each failed file on
-  disk. Files missing from disk are purged from the DB (preventing a retry
-  cycle); only files that still exist are re-queued for retry.
+- **Reset Failed**: the "Reset Failed" button re-queues every failed file for
+  another try (`POST /api/v1/admin/rg/reset-failed` → `{ reset }`). It never
+  deletes library rows: a file that looks missing may sit on a mount that is
+  offline, and only the scanner removes files that are really gone.
 - **macOS resource forks**: files whose basename starts with `._` are
   immediately marked `resource_fork` without running rsgain — they are never
   audio and should be shelved.
-- **Re-measurement with rsgain**: when rsgain becomes available after a prior
-  ffmpeg-only run, files previously measured by ffmpeg are added back to the
-  queue for re-measurement (more accurate true-peak detection).
-- **Auto-start**: the API module starts the worker automatically 60 seconds
-  after server boot if there are unmeasured files in the queue — no manual
-  action needed.
+- **Re-measurement with rsgain**: when rsgain is available, files previously
+  measured by ffmpeg are part of the worker's queue again (more accurate
+  true-peak detection). They do not count as "queued" for auto-start.
+- **Lifecycle**: the worker (`rg-analysis`) runs through the shared worker
+  controller `src/util/worker-controller.js`:
+  - 60 seconds after server boot it starts on its own if unmeasured files are queued.
+  - It pauses while a library file scan runs and resumes when the scan ends.
+    After every scan it auto-starts (staggered 5 s apart with the other
+    background workers) if files are queued.
+  - Auto-start is skipped when 500 or more files are queued — press Start in Admin.
+  - Auto-start is also skipped while a Reset All undo backup exists.
+  - **Stop** saves `workerAutostart.rg-analysis = false` to the config file, so
+    it no longer starts on its own; **Start** sets it back to `true`. See
+    [json_config.md](json_config.md#background-workers-workerautostart).
+  - **Start** during a scan returns `status: "pending"`; the worker launches
+    when the scan ends. Stop force-terminates the worker after 30 s.
+  - The worker is not restarted automatically after a crash.
 
 ---
 
 ## Admin UI — Normalisation Workshop
 
-The **Normalisation Workshop** panel (Admin → Tools → Normalisation) shows:
+The **Normalisation Workshop** panel (Admin → Normalisation) shows:
 
 - Which measurement tool is active (rsgain or ffmpeg fallback)
-- Library progress: measured / total / pending / failed / shelved / existing tags
-- Per-tool breakdown (how many measured by rsgain vs ffmpeg)
-- Start / Stop / Reset Failed / Undo Reset All controls
+- Library progress: measured / not yet measured / failed / shelved / has existing RG tags
+- Start / Stop / Reset Failed / Reset All / Undo Reset controls
 - Live status polling (every 3 s while running, 15 s while idle)
 
-When the library scanner refreshes a file because its path, mtime, or hash changed, Velvet now preserves any existing ReplayGain analysis for that row instead of treating it as brand-new pending work. That prevents false jumps in the workshop's pending count after rescans of already-analysed files.
+`GET /api/v1/admin/rg/status` also returns a per-tool count (`measured_rsgain`,
+`measured_ffmpeg`). The "has existing RG tags" count (`has_tags`) counts the
+tracks that carry a ReplayGain track gain tag (`replaygainTrackDb` is set).
+
+When the library scanner re-inserts a file because its path, mtime or hash
+changed, Velvet keeps the existing ReplayGain measurement (or copies it from
+another row with the same content hash) instead of queueing the file again.
+That prevents false jumps in the "not yet measured" count after rescans.
 
 ### Failed file inspector
 
@@ -253,7 +285,7 @@ Clicking the **Failed ℹ** row opens a modal listing every failed file with:
 
 ### Undo Reset All
 
-Before clearing all measurements, `resetRgAll()` snapshots the existing data into a `rg_backup` table. An amber banner appears in the admin UI letting you undo the reset at any time until the worker starts again (the backup is discarded once re-measurement begins). The backup survives server restarts.
+Before clearing all measurements (shelved rows are left alone), `resetRgAll()` snapshots the existing data into a `rg_backup` table. An amber banner appears in the admin UI letting you undo the reset until you press **Start** again (an explicit Start discards the backup). While the backup exists the worker does not auto-start. The backup survives server restarts. Reset All and Undo both return 409 while the worker runs.
 
 ---
 
@@ -263,17 +295,18 @@ When the player requests metadata, `resolveTrackGain(row, mode)` determines
 the best available gain in this priority order:
 
 ```
-1. Measured (rg_track_gain_db / rg_album_gain_db)  ← preferred
-2. R128 tag  (r128_track_gain_db + 5.0 dB offset)  ← Opus native
-3. ReplayGain tag (rg_tag_track_gain)               ← classic embedded tag
-4. null                                             ← no normalisation
+0. Album mode only: measured album gain (rg_album_gain_db, rg_album_peak_dbfs)
+1. Measured track gain (rg_track_gain_db, rg_true_peak_dbfs)  ← preferred
+2. ReplayGain tag (replaygainTrackDb)                          ← classic embedded tag
+3. null                                                        ← no normalisation
 ```
 
-The +5 dB offset on R128 converts from Opus's −23 LUFS reference to the
-−18 LUFS reference used everywhere else in the system.
+Opus `R128_*` tags are not read as a separate source; Opus files get their
+gain from the measurement worker. Only measured values carry a peak, so clip
+prevention only works for measured gains.
 
-`mode` is `'track'` (default) or `'album'`. When `'album'` is requested and
-no album gain is available, the function falls back to track gain silently.
+`mode` is `'track'` or `'album'`. When `'album'` is requested and no measured
+album gain exists, the function falls back to the track chain silently.
 
 ---
 
@@ -284,8 +317,9 @@ no album gain is available, the function falls back to track gain silently.
   writeback is intentionally out of scope.
 - **No shell injection**: rsgain is spawned via Node.js `spawn()` with an
   explicit argument array — no shell interpolation.
-- **WAL mode**: the worker opens the DB in WAL mode with a 30-second busy
-  timeout, so measurement writes never block the main server.
+- **WAL mode**: the worker opens the DB in WAL mode with a 5-minute busy
+  timeout, so measurement writes wait for long scanner transactions instead
+  of failing.
 - **True-peak clipping prevention**: when Clip Prevention is enabled, the
   player reduces gain further if `gain + resolvedPeak > 0 dBTP` to avoid
   audible clipping after the GainNode.
@@ -299,10 +333,12 @@ no album gain is available, the function falls back to track gain silently.
 | `src/util/rsgain-bootstrap.js` | Download/verify rsgain binary |
 | `src/util/rg-analysis-worker.mjs` | Background measurement worker thread |
 | `src/api/rg-analysis.js` | REST API + worker lifecycle |
-| `src/db/sqlite-backend.js` | DB schema (14 RG columns) + helper functions |
-| `src/db/scanner.mjs` | Reads existing RG/R128 tags at scan time |
+| `src/util/worker-controller.js` | Shared start/stop/pause/auto-start logic for background workers |
+| `src/db/sqlite-backend.js` | DB schema (RG columns, `rg_backup`) + helper functions |
+| `src/db/scanner.mjs` | Reads the existing ReplayGain track gain tag at scan time |
 | `src/api/db.js` | `resolveTrackGain()` + `rg` object in metadata response |
-| `src/api/transcode.js` | `spawnTranscode(gainDb)` — gain applied to transcode |
+| `src/util/replaygain.js` | `rgGainDb()` — server-side gain with pre-amp/clip (MPV, rooms) |
+| `src/api/transcode.js` | `spawnTranscode()` — transcodes without loudness adjustment |
 | `webapp/app.js` | Player: `_applyRGGain()`, mode/preamp/clip settings |
 | `webapp/admin/index.js` | Normalisation Workshop admin component |
-| `docs/replaygain-plan.md` | Original design plan (pre-implementation) |
+| `docs/dev/history/replaygain-plan.md` | Original design plan (pre-implementation, archived) |

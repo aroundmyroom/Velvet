@@ -16,7 +16,6 @@ export function startScan(scanId, vpath, expected, resumeOffset = 0) {
     expected,           // null means no baseline (first scan)
     scanned: resumeOffset,  // pre-seed with already-done files so % is correct on resume
     added: 0,           // files actually inserted into the DB
-    countingFound: 0,   // grows during pre-count walk (first scans only)
     currentFile: null,
     startedAt: Date.now(),
     _rateBase: resumeOffset,  // rate window starts from the resume point
@@ -26,7 +25,7 @@ export function startScan(scanId, vpath, expected, resumeOffset = 0) {
 }
 
 /**
- * Called by the get-file endpoint for each file processed.
+ * Called by the get-files-batch endpoint for each file processed.
  * @param {string} scanId
  * @param {string} filepath
  */
@@ -45,13 +44,14 @@ export function tick(scanId, filepath) {
 }
 
 /**
- * Called when a new file is inserted into the DB.
+ * Called when new files are inserted into the DB.
  * @param {string} scanId
+ * @param {number} count
  */
-export function tickInsert(scanId) {
+export function tickInsert(scanId, count) {
   const s = _scans.get(scanId);
   if (!s) return;
-  s.added++;
+  s.added += count;
 }
 
 /**
@@ -63,18 +63,6 @@ export function setExpected(scanId, expected) {
   const s = _scans.get(scanId);
   if (!s) return;
   s.expected = expected;
-}
-
-/**
- * Update the in-progress counting total during the pre-count walk.
- * Called every 5 000 files so the UI shows activity rather than a blank bar.
- * @param {string} scanId
- * @param {number} found
- */
-export function updateCountingFound(scanId, found) {
-  const s = _scans.get(scanId);
-  if (!s) return;
-  s.countingFound = found;
 }
 
 /**
@@ -109,7 +97,6 @@ export function getAll() {
       scanned: s.scanned,
       added: s.added,
       expected: s.expected,
-      countingFound: s.countingFound || 0,
       pct,
       currentFile: s.currentFile,
       elapsedSec,

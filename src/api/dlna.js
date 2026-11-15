@@ -18,17 +18,10 @@
  * Browse hierarchy
  * ─────────────────
  *   Root (0)
- *   └── Music (music)
- *       ├── [VPath] (lib-<b64>)
- *       │   ├── Folders   (folders-<b64>)    — directory tree
- *       │   ├── Artists   (artists-<b64>)    — artist → albums → tracks
- *       │   ├── Albums    (albums-<b64>)     — flat album list → tracks
- *       │   ├── Genres    (genres-<b64>)     — genre → artists → albums
- *       │   └── All Tracks(tracks-<b64>)     — sortable flat track list
- *       ├── Recently Added (recent)          — last 200 by ts
- *       ├── Most Played    (mostplayed)       — by play_events count
- *       ├── By Year        (years)            — year buckets
- *       └── Playlists      (playlists)        — user playlists
+ *   └── one container per DLNA-enabled folder (src_<b64>)  — see resolveDlnaSources()
+ *       └── folder tree of any depth (dir_<b64>) → tracks (track-<b64>)
+ *
+ * Browse, Search and /media only reach files inside the DLNA-enabled folders.
  *
  * Security
  * ─────────
@@ -52,11 +45,13 @@ const require = createRequire(import.meta.url);
 
 import * as config    from '../state/config.js';
 import * as db        from '../db/manager.js';
-import * as adminUtil from '../util/admin.js';
 import { joiValidate } from '../util/validation.js';
+import { resolveMediaPath } from '../util/media-access.js';
 import { ffmpegBin }            from '../util/ffmpeg-bootstrap.js';
+import { xmlEscape as xmlEsc } from '../util/xml.js';
 import { resolveDlnaSources } from './albums-browse.js';
-import { buildOrderBy, tokenizeSearch, searchNodeToSql } from './dlna-query.js';
+import { tokenizeSearch, SearchParser } from './dlna-query.js';
+import { normalizeRelPath } from '../util/vpath.js';
 
 // ── Module state ──────────────────────────────────────────────────────────────
 
@@ -125,24 +120,6 @@ function _stopSsdp() {
 }
 
 // ── XML / SOAP helpers ────────────────────────────────────────────────────────
-
-// XML 1.0 forbids C0 control chars (except \x09 HT, \x0A LF, \x0D CR),
-// lone UTF-16 surrogate halves (U+D800–U+DFFF), and the two non-characters
-// U+FFFE/U+FFFF. Mojibake-ridden ID3 tags occasionally smuggle these in;
-// without stripping them, a rogue \x00 or \uD800 would emit &#x0; / &#xD800;
-// and crash strict DIDL parsers on renderers like Plex, Sonos, or LG TVs.
-// eslint-disable-next-line no-control-regex
-const XML_INVALID_CTRL = /[\x00-\x08\x0B\x0C\x0E-\x1F]/g;
-const XML_INVALID_SURR = /[\uD800-\uDFFF\uFFFE\uFFFF]/g;
-
-function xmlEsc(s) {
-  if (s == null) return '';
-  return String(s)
-    .replaceAll(XML_INVALID_CTRL, '')
-    .replaceAll(XML_INVALID_SURR, '')
-    .replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;')
-    .replaceAll('"', '&quot;').replaceAll("'", '&apos;');
-}
 
 function xmlUnescape(s) {
   return String(s || '')
@@ -275,9 +252,6 @@ function trackItem(track, parentId) {
 function b64e(s) { return Buffer.from(String(s)).toString('base64url'); }
 function b64d(s) { try { return Buffer.from(String(s), 'base64url').toString(); } catch { return ''; } }
 
-function _vpathId(vpath)          { return `lib-${b64e(vpath)}`; }
-function idToVpath(id)           { return b64d(id.replace(/^lib-/, '')); }
-
 function trackId(vpath, filepath){ return `track-${b64e(vpath + '\x00' + filepath)}`; }
 function trackIdDecode(id) {
   const raw = b64d(id.replace(/^track-/, ''));
@@ -285,30 +259,15 @@ function trackIdDecode(id) {
   return i === -1 ? { vpath: '', filepath: raw } : { vpath: raw.slice(0, i), filepath: raw.slice(i + 1) };
 }
 
-function _dirId(vpath, relPath)   { return `dir-${b64e(vpath + '\x00' + relPath)}`; }
-function _dirIdDecode(id) {
-  const raw = b64d(id.replace(/^dir-/, ''));
-  const i = raw.indexOf('\x00');
-  return i === -1 ? { vpath: '', relPath: raw } : { vpath: raw.slice(0, i), relPath: raw.slice(i + 1) };
-}
-
-function _genreId(vpath, genre)   { return `genre-${b64e(vpath + '\x00' + (genre ?? ''))}`; }
-function _genreIdDecode(id) {
-  const raw = b64d(id.replace(/^genre-/, ''));
-  const i = raw.indexOf('\x00');
-  return i === -1 ? { vpath: '', genre: raw } : { vpath: raw.slice(0, i), genre: raw.slice(i + 1) };
-}
-
-function _playlistId(name, user)  { return `playlist-${b64e(name + '\x00' + user)}`; }
-function _playlistIdDecode(id) {
-  const raw = b64d(id.replace(/^playlist-/, ''));
-  const i = raw.indexOf('\x00');
-  return i === -1 ? { name: raw, user: '' } : { name: raw.slice(0, i), user: raw.slice(i + 1) };
-}
-
-// ── AlbumsOnly source helpers ─────────────────────────────────────────────────
-// Loads all files for each albumsOnly source once, then filters in-memory.
+// ── DLNA source helpers ───────────────────────────────────────────────────────
+// Loads all files for each DLNA-enabled source once, then filters in-memory.
 // Uses the same 5-min cache strategy as albums-browse.js.
+
+function _inSources(sources, vpath, filepath) {
+  const rel = normalizeRelPath(filepath);
+  if (rel === null) return false;
+  return sources.some(s => s.dbVpath === vpath && (!s.prefix || rel.startsWith(s.prefix)));
+}
 
 const _sourceFilesCache = new Map();
 const _childrenCache    = new Map();
@@ -538,7 +497,7 @@ async function handleBrowse(body, res) {
   if (objectId === '0')              return _browseRoot(res, browseFlag, sources, pg);
   if (objectId.startsWith('src_'))   return _browseSrc(res, objectId, browseFlag, sources, pg);
   if (objectId.startsWith('dir_'))   return _browseDir(res, objectId, browseFlag, sources, pg);
-  if (objectId.startsWith('track-')) return _browseTrack(res, objectId);
+  if (objectId.startsWith('track-')) return _browseTrack(res, objectId, sources);
   return sendXml(res, soapError(701, 'No Such Object'), 500);
 }
 
@@ -598,30 +557,35 @@ function _browseDir(res, objectId, browseFlag, sources, pg) {
   return sendBrowse(res, slice.join(''), slice.length, all.length);
 }
 
-function _browseTrack(res, objectId) {
+function _browseTrack(res, objectId, sources) {
   const { vpath, filepath } = trackIdDecode(objectId);
-  const row = db.getDB().prepare(
-    'SELECT title, artist, album, year, genre, filepath, vpath, aaFile, duration, track, disk, hash FROM files WHERE vpath=? AND filepath=? LIMIT 1'
-  ).get(vpath, filepath);
+  const row = _inSources(sources, vpath, filepath) ? db.getDlnaTrack(vpath, filepath) : null;
   if (!row) return sendXml(res, soapError(701, 'No Such Object'), 500);
   return sendBrowse(res, trackItem(row, '-1'), 1, 1);
 }
 
 // ── Search handler ────────────────────────────────────────────────────────────
-function handleSearch(body, res) {
+// Search scope: the whole DLNA tree (ID 0), one source (src_…) or one folder (dir_…)
+function _searchScope(containerId, sources) {
+  if (containerId.startsWith('src_')) {
+    const vpathName = decSrc(containerId);
+    return sources.filter(s => s.vpathName === vpathName);
+  }
+  if (containerId.startsWith('dir_')) {
+    const { dbVpath, dirPath } = decDir(containerId);
+    return _inSources(sources, dbVpath, dirPath) ? [{ dbVpath, prefix: dirPath + '/' }] : [];
+  }
+  return sources;
+}
+
+async function handleSearch(body, res) {
   const containerId = soapField(body, 'ContainerID') || '0';
   const criteria    = soapField(body, 'SearchCriteria');
   const startIdx    = Math.max(0, Number.parseInt(soapField(body, 'StartingIndex') || '0', 10) || 0);
   const rawCount    = Math.max(0, Number.parseInt(soapField(body, 'RequestedCount') || '0', 10) || 0);
   const reqCount    = rawCount === 0 ? MAX_BROWSE_COUNT : Math.min(rawCount, MAX_BROWSE_COUNT);
   const sortTerms   = parseSortCriteria(soapField(body, 'SortCriteria'));
-
-  // Limit search scope to a specific vpath if ID is a lib-xx container.
-  let scopedVpath = null;
-  if (containerId !== '0' && containerId !== 'music') {
-    const m = /^lib-(.+)$/.exec(containerId);
-    if (m) scopedVpath = idToVpath(containerId);
-  }
+  const scope       = _searchScope(containerId, await resolveDlnaSources());
 
   let ast = null;
   if (criteria && criteria.trim() !== '*') {
@@ -633,13 +597,7 @@ function handleSearch(body, res) {
   }
 
   // Keep SQL fixed/parameterized; apply parsed criteria and sort in-memory.
-  const raw = db.getDB();
-  const scopedRows = raw.prepare(`
-    SELECT f.title, f.artist, f.album, f.year, f.genre, f.filepath, f.vpath,
-           f.aaFile, f.duration, f.track, f.disk, f.hash
-    FROM files f
-    WHERE (? IS NULL OR f.vpath = ?)
-  `).all(scopedVpath, scopedVpath);
+  const scopedRows = db.getDlnaTracks(scope);
 
   const filtered = ast ? scopedRows.filter(r => _evalSearchAst(r, ast)) : scopedRows;
   filtered.sort((a, b) => _compareSort(a, b, sortTerms));
@@ -721,6 +679,23 @@ function _registerSubscriber(callback, timeoutSecs) {
   const expiry = Date.now() + timeoutSecs * 1000;
   _subscribers.set(sid, { sid, callback, expiry, seq: 0 });
   return sid;
+}
+
+// NOTIFY goes only back to the subscribing device itself (UPnP practice), never to a
+// host of the subscriber's choosing. -> the first callback URL, or null.
+function genaCallbackFor(callbackHeader, remoteAddress) {
+  const first = /<([^>]*)>/.exec(String(callbackHeader || ''))?.[1]?.trim();
+  if (!first) return null;
+  let u;
+  try { u = new URL(first); } catch { return null; }
+  const host = u.hostname.replace(/^\[|\]$/g, '');
+  const peer = String(remoteAddress || '').replace(/^::ffff:/i, '');
+  return u.protocol === 'http:' && host === peer ? first : null;
+}
+
+function genaTimeoutSecs(timeoutHeader) {
+  const secs = Number.parseInt(String(timeoutHeader || '').replace(/^Second-/i, ''), 10);
+  return Number.isFinite(secs) && secs > 0 ? Math.min(secs, GENA_DEFAULT_TIMEOUT) : GENA_DEFAULT_TIMEOUT;
 }
 
 function _renewSubscriber(sid, timeoutSecs) {
@@ -932,8 +907,7 @@ function parseNpt(nptStr) {
   return parts[0] * 3600 + parts[1] * 60 + parts[2];
 }
 
-function timeSeekMiddleware(rootMap) {
-  // rootMap: { [vpathEncoded]: folderRoot }
+function timeSeekMiddleware() {
   return function (req, res, next) {
     const tsHeader = req.headers['timeseekrange.dlna.org'];
     if (!tsHeader) return next();
@@ -944,21 +918,8 @@ function timeSeekMiddleware(rootMap) {
     const startSec = parseNpt(m[1]);
     if (Number.isNaN(startSec) || startSec < 0) return next();
 
-    // Resolve the file path from URL
-    // URL: /media/:vpathEncoded/rest/of/path
-    const urlParts = req.path.slice(1).split('/'); // strip leading /
-    // req.path under the sub-app starts from /media/:vp/... but we mount with .use('/media')
-    // so req.path = '/:vpEncoded/rest/of/path'
-    const vpEncoded = decodeURIComponent(urlParts[0] || '');
-    const relPath   = urlParts.slice(1).map(decodeURIComponent).join(path.sep);
-    const root      = rootMap[vpEncoded] || rootMap[decodeURIComponent(vpEncoded)];
-    if (!root) return next();
-
-    const filePath = path.join(root, relPath);
-    // Security: must remain within root
-    if (!filePath.startsWith(root + path.sep) && filePath !== root) {
-      return res.status(403).end();
-    }
+    const { filePath, status } = resolveMediaPath(req.path, config.program.folders);
+    if (!filePath) return res.status(status).end();
 
     if (!fs.existsSync(filePath)) return next();
 
@@ -1116,20 +1077,20 @@ function buildDlnaApp() {
   app.use('/dlna/events/content-directory', (req, res) => {
     const method = req.method.toUpperCase();
     if (method === 'SUBSCRIBE') {
-      const callbackRaw = req.headers['callback'] || req.headers['Callback'] || '';
-      const callbackUrl = callbackRaw.replaceAll(/^<|>$/g, '').trim();
-      const nt          = req.headers['nt'] || req.headers['NT'] || '';
-      const timeoutHdr  = req.headers['timeout'] || req.headers['Timeout'] || `Second-${GENA_DEFAULT_TIMEOUT}`;
-      const secs        = Number.parseInt(timeoutHdr.replace(/Second-/i, ''), 10) || GENA_DEFAULT_TIMEOUT;
+      const callbackRaw = req.headers['callback'] || '';
+      const nt          = req.headers['nt'] || '';
+      const secs        = genaTimeoutSecs(req.headers['timeout']);
 
       // Renewal
-      const existingSid = req.headers['sid'] || req.headers['SID'] || '';
-      if (existingSid && !callbackUrl) {
+      const existingSid = req.headers['sid'] || '';
+      if (existingSid && !callbackRaw) {
         if (!_renewSubscriber(existingSid, secs)) return res.status(412).end();
         return res.set({ 'SID': existingSid, 'TIMEOUT': `Second-${secs}` }).status(200).end();
       }
 
-      if (!callbackUrl || nt !== 'upnp:event') return res.status(400).end();
+      const callbackUrl = genaCallbackFor(callbackRaw, req.socket.remoteAddress);
+      if (!callbackRaw || nt !== 'upnp:event') return res.status(400).end();
+      if (!callbackUrl) return res.status(412).end();
       const sid = _registerSubscriber(callbackUrl, secs);
       res.set({ 'SID': sid, 'TIMEOUT': `Second-${secs}` }).status(200).end();
       // Send initial event asynchronously so SUBSCRIBE gets a fast 200 first
@@ -1154,20 +1115,21 @@ function buildDlnaApp() {
   });
 
   // ── Media serving with time-seek support ─────────────────────────────────
-  // Build a vpathEncoded → root map for the time-seek middleware
-  const rootMap = {};
-  const folders = config.program.folders || {};
-  for (const [name, cfg] of Object.entries(folders)) {
-    rootMap[encodeURIComponent(name)] = cfg.root;
-  }
-
-  // Time-seek intercept (must come BEFORE express.static)
-  app.use('/media', timeSeekMiddleware(rootMap));
-
-  // Static file serving per vpath
-  for (const [name, cfg] of Object.entries(folders)) {
-    app.use('/media/' + encodeURIComponent(name), express.static(cfg.root));
-  }
+  // One resolver instead of per-vpath mounts: Express 5 rejects ( ) ! * etc. in mount paths.
+  app.use('/media', async (req, res, next) => {
+    const media = resolveMediaPath(req.path, config.program.folders);
+    if (!media.filePath) return res.status(media.status).end();
+    if (!_inSources(await resolveDlnaSources(), media.vpath, media.relPath)) return res.status(404).end();
+    next();
+  });
+  app.use('/media', timeSeekMiddleware());
+  app.use('/media', (req, res, next) => {
+    if (req.method !== 'GET' && req.method !== 'HEAD') return next();
+    const media = resolveMediaPath(req.path, config.program.folders);
+    res.sendFile(media.filePath, err => {
+      if (err && !res.headersSent) res.status(err.status || 404).end();
+    });
+  });
 
   // Album art serving
   app.use('/album-art', express.static(config.program.storage.albumArtDirectory));
@@ -1184,9 +1146,9 @@ export function bumpSystemUpdateID() {
   _sourceFilesCache.clear();
 }
 
-export function isRunning() { return _running; }
+function isRunning() { return _running; }
 
-export async function start() {
+async function start() {
   if (_running) return;
 
   const port    = config.program.dlna?.port || 10293;
@@ -1212,7 +1174,7 @@ export async function start() {
   }
 }
 
-export async function stop() {
+async function stop() {
   _running = false;
   _stopSsdp();
 
@@ -1240,7 +1202,6 @@ export function setup(velvet) {
       enabled: config.program.dlna?.enabled || false,
       port:    config.program.dlna?.port    || 10293,
       name:    config.program.dlna?.name    || 'Velvet',
-      browse:  config.program.dlna?.browse  || 'dirs',
       running: isRunning(),
     });
   });
@@ -1253,7 +1214,6 @@ export function setup(velvet) {
       enabled: Joi.boolean().optional(),
       port:    Joi.number().integer().min(1024).max(65535).optional(),
       name:    Joi.string().allow('').max(64).optional(),
-      browse:  Joi.string().valid('dirs', 'artist', 'album', 'genre', 'flat').optional(),
     }).min(1);
     joiValidate(schema, req.body);
 
@@ -1261,15 +1221,13 @@ export function setup(velvet) {
     if (req.body.enabled !== undefined) config.program.dlna.enabled = req.body.enabled;
     if (req.body.port    !== undefined) config.program.dlna.port    = req.body.port;
     if (req.body.name    !== undefined) config.program.dlna.name    = req.body.name;
-    if (req.body.browse  !== undefined) config.program.dlna.browse  = req.body.browse;
 
-    const raw = await adminUtil.loadFile(config.configFile);
-    if (!raw.dlna) raw.dlna = {};
-    if (req.body.enabled !== undefined) raw.dlna.enabled = req.body.enabled;
-    if (req.body.port    !== undefined) raw.dlna.port    = req.body.port;
-    if (req.body.name    !== undefined) raw.dlna.name    = req.body.name;
-    if (req.body.browse  !== undefined) raw.dlna.browse  = req.body.browse;
-    await adminUtil.saveFile(raw, config.configFile);
+    await config.updateConfigFile(raw => {
+      if (!raw.dlna) raw.dlna = {};
+      if (req.body.enabled !== undefined) raw.dlna.enabled = req.body.enabled;
+      if (req.body.port    !== undefined) raw.dlna.port    = req.body.port;
+      if (req.body.name    !== undefined) raw.dlna.name    = req.body.name;
+    });
 
     if (req.body.enabled === true  && !isRunning()) {
       await start().catch(e => { throw new Error('DLNA failed to start: ' + e.message); });

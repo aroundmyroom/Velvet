@@ -5,7 +5,7 @@
  * INDEPENDENTLY so the user can compare results and choose which to apply:
  *
  *   Last.fm     (artist.getTopTags)        — ~250 ms/call
- *   MusicBrainz (artist tags via MBID)     — ~1100 ms/call
+ *   MusicBrainz (artist tags via MBID)     — paced by the shared MB limiter
  *   Discogs     (release styles)           — ~600 ms/call
  *
  * Each source has its own state column. The worker processes all three for
@@ -16,7 +16,7 @@
  * workerData:
  *   { dbPath, lastfmApiKey, discogs: { apiKey, apiSecret, userAgentTag } | null }
  *
- * Messages from main → { type: 'stop' }
+ * Messages from main → { type: 'stop' | 'pause' | 'resume' | 'mb-token' }
  * Messages to main:
  *   { type: 'ready' }
  *   { type: 'progress', currentArtist, currentPhase, processedCount }
@@ -24,13 +24,17 @@
  *   { type: 'fileError', message }
  *   { type: 'error', message }
  *   { type: 'stopped' }
+ *   { type: 'mb-token', id }   (asks the host for a MusicBrainz request slot)
  */
 
 import { workerData, parentPort } from 'node:worker_threads';
-import { DatabaseSync } from 'node:sqlite';
-import https from 'node:https';
-import http from 'node:http';
+import { openWorkerDb } from '../db/worker-connection.js';
+import { fetchPublicJson } from './ssrf-check.js';
+import { discogsHeaders } from './discogs-headers.js';
 import { stripDigitPrefix } from './artist-normalize.js';
+import { primaryArtist } from './artist-credit.js';
+import { MB_USER_AGENT, mbAcquire } from './mb-client.mjs';
+import { sleep, idle, stopRequested, dbWriteWithRetry } from './worker-helpers.mjs';
 
 const { dbPath, lastfmApiKey, discogs } = workerData;
 
@@ -82,27 +86,16 @@ function isGenre(tag) {
   return true;
 }
 
-const _MB_UA = 'Velvet/dev (https://github.com/aroundmyroom/Velvet)';
 const DELAY_LASTFM   = 250;
-const DELAY_MB       = 1100;
 const DELAY_DISCOGS  = 600;
 const DELAY_SKIP     = 50;
 const IDLE_SLEEP_MS  = 60_000;
 const STATUS_EVERY   = 10;
 
-let _stopRequested  = false;
 let _processedCount = 0;
 
-parentPort.on('message', msg => {
-  if (msg?.type === 'stop') _stopRequested = true;
-});
-
 // ── SQLite (own connection) ───────────────────────────────────────────────────
-const db = new DatabaseSync(dbPath, { timeout: 30_000 });
-db.exec('PRAGMA busy_timeout = 30000');
-db.exec('PRAGMA journal_mode=WAL');
-db.exec('PRAGMA synchronous = NORMAL');
-db.exec('PRAGMA cache_size = -4000');
+const db = openWorkerDb(dbPath);
 
 // Prepared statements — queue lookups
 // Per-source single-row lookups (used when a source still has work but the
@@ -278,34 +271,15 @@ function getStats() {
 }
 
 // ── HTTP ──────────────────────────────────────────────────────────────────────
-function downloadJson(url, headers = null) {
-  return new Promise((resolve, reject) => {
-    const mod = url.startsWith('https') ? https : http;
-    const opts = { headers: { connection: 'close', ...headers } };
-    const req = mod.get(url, opts, res => {
-      if (res.statusCode !== 200) {
-        res.resume();
-        return reject(new Error(`HTTP ${res.statusCode}`));
-      }
-      const chunks = [];
-      res.on('data', c => chunks.push(c));
-      res.on('end', () => {
-        try { resolve(JSON.parse(Buffer.concat(chunks).toString())); }
-        catch (e) { reject(e); }
-      });
-      res.on('error', reject);
-    });
-    req.setTimeout(10_000, () => req.destroy(new Error('timeout')));
-    req.on('error', reject);
-  });
-}
+const HTTP_TIMEOUT_MS = 10_000;
+const _dgHeaders = discogsHeaders(discogs);
 
 // ── Phase 1: Last.fm ──────────────────────────────────────────────────────────
 async function fetchLastfm(artistName) {
   if (!lastfmApiKey) throw new Error('No Last.fm API key configured');
-  const clean = artistName.replace(/\s+(feat\.|ft\.|featuring|vs\.?)\s+.*/i, '').trim();
+  const clean = primaryArtist(artistName);
   const url = `https://ws.audioscrobbler.com/2.0/?method=artist.getTopTags&artist=${encodeURIComponent(clean)}&api_key=${lastfmApiKey}&format=json&autocorrect=1`;
-  const data = await downloadJson(url);
+  const data = await fetchPublicJson(url, { timeout: HTTP_TIMEOUT_MS });
   if (data.error) return null;
   const tags = Array.isArray(data?.toptags?.tag) ? data.toptags.tag : [];
   return tags
@@ -323,7 +297,8 @@ function getMbid(normArtist) {
 
 async function fetchMusicBrainz(mbid) {
   const url = `https://musicbrainz.org/ws/2/artist/${mbid}?inc=tags&fmt=json`;
-  const data = await downloadJson(url, { 'User-Agent': _MB_UA });
+  await mbAcquire();
+  const data = await fetchPublicJson(url, { headers: { 'User-Agent': MB_USER_AGENT }, timeout: HTTP_TIMEOUT_MS });
   const tags = Array.isArray(data?.tags) ? data.tags : [];
   return tags
     .filter(t => Number(t.count) > 0 && isGenre(t.name))
@@ -333,17 +308,9 @@ async function fetchMusicBrainz(mbid) {
 
 // ── Phase 3: Discogs ──────────────────────────────────────────────────────────
 async function fetchDiscogs(artistName) {
-  if (!discogs?.apiKey) return null;
-  const ua = discogs.userAgentTag
-    ? `Velvet/dev/${discogs.userAgentTag} +https://github.com/aroundmyroom/Velvet`
-    : 'Velvet/dev +https://github.com/aroundmyroom/Velvet';
-  const headers = {
-    'User-Agent': ua,
-    'Authorization': `Discogs key=${discogs.apiKey}, secret=${discogs.apiSecret}`,
-  };
-  const clean = artistName.replace(/\s+(feat\.|ft\.|featuring|vs\.?)\s+.*/i, '').trim();
+  const clean = primaryArtist(artistName);
   const url = `https://api.discogs.com/database/search?artist=${encodeURIComponent(clean)}&type=release&per_page=10&sort=have&sort_order=desc`;
-  const data = await downloadJson(url, headers);
+  const data = await fetchPublicJson(url, { headers: _dgHeaders, timeout: HTTP_TIMEOUT_MS });
   const results = Array.isArray(data?.results) ? data.results : [];
   if (!results.length) return null;
   const tally = new Map();
@@ -358,32 +325,7 @@ async function fetchDiscogs(artistName) {
   return [...tally.entries()].sort((a, b) => b[1] - a[1])[0][0];
 }
 
-// ── DB write retry ───────────────────────────────────────────────────────────
-// SQLite in WAL mode still serialises writers. When the main thread holds the
-// write lock (scan, artist rebuild, Sonos metadata, etc.) a direct .run()
-// throws "database is locked" even with busy_timeout set, because Node's
-// synchronous sqlite binding doesn't honour the async busy_timeout contract.
-// Retry for up to ~3 minutes (60 × 3 s) before giving up on a single write.
-const DB_RETRY_ATTEMPTS = 60;
-const DB_RETRY_DELAY_MS = 3_000;
-
-async function dbWriteWithRetry(fn) {
-  for (let i = 0; i < DB_RETRY_ATTEMPTS; i++) {
-    try {
-      return fn();
-    } catch (err) {
-      const locked = err && typeof err.message === 'string' &&
-        (err.message.includes('database is locked') || err.message.includes('SQLITE_BUSY'));
-      if (!locked || i === DB_RETRY_ATTEMPTS - 1) throw err;
-      if (_stopRequested) throw err;
-      console.warn(`[genre-enricher] DB locked, retry ${i + 1}/${DB_RETRY_ATTEMPTS}...`);
-      await sleep(DB_RETRY_DELAY_MS);
-    }
-  }
-}
-
 // ── Helpers ───────────────────────────────────────────────────────────────────
-function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 function postProgress(artist, phase) {
   parentPort.postMessage({ type: 'progress', currentArtist: artist, currentPhase: phase, processedCount: _processedCount });
 }
@@ -427,18 +369,18 @@ async function runMb(row) {
     }
     const genre = _lc(await fetchMusicBrainz(mbid));
     await dbWriteWithRetry(() => _setMb.run(genre ?? null, genre ? 'ok' : 'nf', row.norm));
-    return DELAY_MB;
+    return DELAY_SKIP;
   } catch (e) {
     try { await dbWriteWithRetry(() => _setMb.run(null, 'error', row.norm)); } catch { /* ignore */ }
     parentPort.postMessage({ type: 'fileError', message: `MusicBrainz "${name}": ${e.message}` });
-    return DELAY_MB;
+    return DELAY_SKIP;
   }
 }
 
 async function runDiscogs(row) {
   const name = cleanName(row);
   postProgress(name, 'discogs');
-  if (!discogs?.apiKey) {
+  if (!_dgHeaders) {
     await dbWriteWithRetry(() => _setDg.run(null, 'nf', row.norm));
     return DELAY_SKIP;
   }
@@ -468,7 +410,7 @@ async function run() {
   parentPort.postMessage({ type: 'ready' });
   postStats();
 
-  while (!_stopRequested) {
+  while (!stopRequested()) {
     // Pick the next artist that still has any source NULL, then enrich ALL
     // missing sources for that artist in a single pass. This makes the three
     // counters (Last.fm / MB / Discogs) advance together and the compare table
@@ -477,13 +419,13 @@ async function run() {
     const row = _findAnyQueue.get();
     if (row) {
       if (_isJunkArtist(row.artist)) {
-        _markJunk.run(row.norm);
+        await dbWriteWithRetry(() => _markJunk.run(row.norm));
         bump();
         continue;
       }
-      if (row.need_lf) { await sleep(await runLastfm(row)); if (_stopRequested) break; }
-      if (row.need_mb) { await sleep(await runMb(row));     if (_stopRequested) break; }
-      if (row.need_dg) { await sleep(await runDiscogs(row));if (_stopRequested) break; }
+      if (row.need_lf) { await sleep(await runLastfm(row)); if (stopRequested()) break; }
+      if (row.need_mb) { await sleep(await runMb(row));     if (stopRequested()) break; }
+      if (row.need_dg) { await sleep(await runDiscogs(row));if (stopRequested()) break; }
       bump();
       continue;
     }
@@ -500,7 +442,7 @@ async function run() {
 
     // All queues drained — flush stats and idle
     postStats();
-    for (let i = 0; i < IDLE_SLEEP_MS / 1000 && !_stopRequested; i++) await sleep(1000);
+    await idle(IDLE_SLEEP_MS);
   }
 
   postStats();

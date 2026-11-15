@@ -104,7 +104,7 @@
 </head>
 <body>
 
-  <button class="theme-btn" title="Toggle theme" onclick="toggleTheme()">
+  <button class="theme-btn" id="theme-btn" title="Toggle theme">
     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
       <circle cx="12" cy="12" r="5"/>
       <line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/>
@@ -125,17 +125,17 @@
   <div class="card">
     <div class="field">
       <label>Server URL</label>
-      <input type="text" id="server-url" placeholder="https://…" oninput="run()">
+      <input type="text" id="server-url" placeholder="https://…">
     </div>
     <div class="field">
       <label>Username</label>
-      <input type="text" id="server-username" placeholder="Username" oninput="run()">
+      <input type="text" id="server-username" placeholder="Username">
     </div>
     <div class="field">
       <label>Password</label>
-      <input type="password" id="server-password" placeholder="Password" oninput="run()">
+      <input type="password" id="server-password" placeholder="Password">
     </div>
-    <button class="btn-primary" onclick="run()">
+    <button class="btn-primary" id="regen-btn">
       <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
         <polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 .49-4"/>
       </svg>
@@ -150,71 +150,6 @@
     <p class="hint">Scan with the Velvet mobile app to connect instantly</p>
   </div>
 
-  <script>
-    function applyTheme(light) {
-      document.documentElement.classList.toggle('light', light);
-    }
-    function toggleTheme() {
-      const isLight = document.documentElement.classList.contains('light');
-      localStorage.setItem('ms2_theme', isLight ? '' : 'light');
-      applyTheme(!isLight);
-    }
-    applyTheme(localStorage.getItem('ms2_theme') === 'light');
-
-    // Pre-fill username from GUIv2 session token
-    const token = localStorage.getItem('ms2_token');
-    if (token) {
-      try {
-        const decoded = jwt_decode(token);
-        if (decoded.username) document.getElementById('server-username').value = decoded.username;
-      } catch(e) { /* unreadable token, leave blank */ }
-    }
-    document.getElementById('server-url').value = window.location.origin;
-
-    function run() {
-      const url  = document.getElementById('server-url').value.trim();
-      const user = document.getElementById('server-username').value.trim();
-      const pass = document.getElementById('server-password').value;
-      const out  = document.getElementById('qr-output');
-
-      if (!url || !user || !pass) {
-        out.textContent = '';
-        var ph1 = document.createElement('span');
-        ph1.className = 'qr-placeholder';
-        ph1.textContent = 'Fill in all fields to generate a QR code';
-        out.appendChild(ph1);
-        return;
-      }
-
-      try {
-        // Encode as a deep-link URL so phone cameras open the mobile PWA directly.
-        // The credentials are in the hash (never sent to server) for privacy.
-        const hash = encodeURIComponent('|' + url + '|' + user + '|' + pass);
-        const deepLink = url + '/mobile/#qr=' + hash;
-        const QRC = qrcodegen.QrCode;
-        const qr  = QRC.encodeText(deepLink, QRC.Ecc.MEDIUM);
-        const svgText = qr.toSvgString(2).replace(/<\?xml[^?]*\?>\s*/i, '');
-        const parsed = new DOMParser().parseFromString(svgText, 'image/svg+xml');
-        const svg = parsed.documentElement;
-        out.textContent = '';
-        if (svg && svg.nodeName.toLowerCase() === 'svg') {
-          out.appendChild(svg);
-        } else {
-          var ph2 = document.createElement('span');
-          ph2.className = 'qr-placeholder';
-          ph2.textContent = 'Could not generate QR code';
-          out.appendChild(ph2);
-        }
-      } catch(e) {
-        out.textContent = '';
-        var ph3 = document.createElement('span');
-        ph3.className = 'qr-placeholder';
-        ph3.textContent = 'Could not generate QR code';
-        out.appendChild(ph3);
-      }
-    }
-
-    run();
-  </script>
+  <script src="/qr/qr-page.js"></script>
 </body>
 </html>

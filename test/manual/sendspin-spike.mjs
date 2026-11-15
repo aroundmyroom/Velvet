@@ -29,7 +29,6 @@ const server = new SendspinServer({ dataDir: dir, host: discover ? '0.0.0.0' : '
 const MAX_AHEAD_US = BigInt(process.env.MAX_AHEAD_MS ?? 3000) * 1000n;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 let times = 0;
-server.on('time', () => { times++; });
 server.on('state', (conn, s) => log(`client/state available=${s.available} player=${JSON.stringify(s.player)}`));
 server.on('goodbye', (conn, reason) => log(`client/goodbye ${reason}`));
 server.on('client-removed', (conn, info) => log(`closed code=${info.code} goodbye=${info.goodbye}`));
@@ -114,6 +113,7 @@ async function play(conn) {
 }
 
 server.on('client', (conn, info) => {
+  conn.on('time', () => { times++; });
   log(`client "${info.name}" ${conn.direction} suite=${conn.suite} psk=${conn.pskCategory} roles=${JSON.stringify(info.supportedRoles)} formats=${JSON.stringify(info.player?.supportedFormats)}`);
   play(conn).catch((err) => {
     log(`play failed: ${err.stack}`);
@@ -123,7 +123,6 @@ server.on('client', (conn, info) => {
 
 await server.start();
 if (connectUrl) server.connectTo(connectUrl);
-server.on('discovered', (svc) => log(`mDNS found "${svc.name}" at ${svc.url}`));
 log(connectUrl ? `dialing ${connectUrl}` : 'waiting for a client on ws://127.0.0.1:8927/sendspin');
 setTimeout(() => {
   log('timeout');

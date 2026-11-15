@@ -1,7 +1,23 @@
 # BPM & Harmonic Mixing — Full Implementation Plan
 
-> **Status**: Planning — awaiting tier-by-tier approval before implementation.
-> Each tier section ends with **APPROVE / REJECT** — read, decide, and let me know.
+> **Status**: Built. All three tiers, the admin panel and the Auto-DJ use are in the code.
+> Some parts were built differently from this plan (see the table below and the
+> **Built:** notes in each section). The **APPROVE / REJECT** lines are left from the
+> planning stage. User guide: [`docs/bpm-harmonic.md`](../bpm-harmonic.md).
+> Octave (half/double tempo) correction: [`docs/bpm-plan.md`](../bpm-plan.md).
+
+### Build status
+
+| Part | State | Where |
+|------|-------|-------|
+| DB columns `bpm`, `musical_key`, `bpm_source`, `ab_status`, `bpm_status` (+ `bpm_raw`) | Built | `src/db/sqlite-backend.js` `init()` |
+| Tier 1 — tags | Built | `src/db/scanner.mjs` `parseMyFile()` |
+| Tier 0 — AcousticBrainz | Built | `src/util/ab-bpm-worker.mjs`, `src/api/bpm-analysis.js` |
+| Tier 2 — Essentia | Built, but with **essentia.js (WASM)** + ffmpeg, not the Essentia binary | `src/util/essentia-bpm-worker.mjs` |
+| `src/util/essentia-bootstrap.js`, `bin/essentia/`, `profile.yaml` | **Not built** (not needed with WASM) | — |
+| Admin panel | Built | `bpm-workshop-view` in `webapp/admin/index.js` |
+| Auto-DJ use | Built, as **soft scoring**, not as hard filters | `_djScoreSong()` in `webapp/app.js`; `scoreSong()` in `src/autodj/scoring.js` |
+| Camelot helpers | Built | `webapp/app.js` (`_CAMELOT`, `toCamelot`, `camelotNeighbours`); server: `src/util/camelot.js`, `src/autodj/scoring.js` |
 
 ---
 
@@ -13,6 +29,11 @@ Adding BPM and key data unlocks two complementary DJ techniques:
 - **BPM continuity** — the next song is within ±N BPM of the current track (configurable tolerance, default ±8). No jarring tempo jumps during crossfade.
 - **Harmonic mixing (Camelot Wheel)** — the next song shares a compatible key. Avoids tonal clashes. The DJ industry standard.
 - Both can be enabled independently or together. The filter is **NULL-permissive**: songs without BPM/key data remain in the Auto-DJ pool — the library never runs dry even during early collection.
+
+**Built:** the web player does not filter on BPM/key. It fetches a candidate pool
+(`POST /api/v1/db/random-songs` with `returnAll: true`) and scores each song in
+`_djScoreSong()`; a song without BPM or key gets a neutral score, so it stays in the
+pool. Rooms score the same way on the server (`src/autodj/scoring.js`).
 
 ---
 
@@ -44,6 +65,9 @@ Three independent sources are queried in priority order. Each tier fills in data
 
 **Essentia wins** because: single binary for BPM + key in one pass, prebuilt static binary (same bootstrap pattern as `rsgain`/`yt-dlp`), first-30 s mode gives ~90 % accuracy at 10 % of full-analysis CPU time, and it is the same engine that powers AcousticBrainz.
 
+**Built:** Velvet uses the `essentia.js` npm package (WASM) instead of the binary.
+ffmpeg decodes the audio; `RhythmExtractor2013` gives BPM and `KeyExtractor` gives the key.
+
 **AcousticBrainz** stopped collecting in July 2022, but the API and website remain live as read-only. MetaBrainz has not announced a shutdown. Treated as best-effort: if it goes offline, Tier 2 handles all remaining files.
 
 ---
@@ -66,7 +90,10 @@ Industry standard for harmonic mixing. Each key maps to a 2-character code (`1A`
 - `(N−1)A`, `(N−1)B` — one step CCW
 - `(N+1)A`, `(N+1)B` — one step CW
 
-This gives 6 compatible keys per song. Inline JS in `webapp/app.js`:
+This gives 6 compatible keys per song. Inline JS in `webapp/app.js` (built; the real
+`_CAMELOT` map also has the enharmonic names `G# minor`, `D# minor`, `A# minor`,
+`G# major`, `D# major`, `A# major`). The server copy is `CAMELOT` / `CAMELOT_TO_KEYS` /
+`toCamelot()` in `src/util/camelot.js`, and `camelotNeighbours()` in `src/autodj/scoring.js`:
 
 ```js
 const _CAMELOT = {
@@ -106,7 +133,7 @@ function camelotNeighbours(code) {
 
 ## DB schema — full migration
 
-All new columns are added in `src/db/sqlite-backend.js` `initDB()` inside the existing migration block (same pattern as `bit_depth`, `mb_release_id`, etc.). Columns are nullable — no existing rows are affected.
+All new columns are added in `src/db/sqlite-backend.js` `init()` inside the existing migration block (same pattern as `bit_depth`, `mb_release_id`, etc.). Columns are nullable — no existing rows are affected.
 
 ```sql
 ALTER TABLE files ADD COLUMN bpm            INTEGER;
@@ -129,8 +156,17 @@ ALTER TABLE files ADD COLUMN bpm_status     TEXT;
   -- 'error' = Essentia failed (reset-able and retriable)
 ```
 
+**Built:** these columns exist, plus `bpm_raw REAL` (the value before genre octave
+correction, see `docs/bpm-plan.md`) and indexes `idx_files_bpm`, `idx_files_musical_key`.
+`bpm` has INTEGER type, but the Essentia worker writes one decimal (e.g. `128.5`), so
+values can be fractional. `bpm_status` can also be `'pending'` (in progress) or
+`'genre-corrected'`.
+
 **Priority rules:**
 1. Scanner (Tier 1) writes `bpm`/`musical_key` only if currently NULL (`COALESCE` in UPDATE).
+   **Built differently:** unchanged files are not re-parsed. When a changed file is
+   re-inserted, the old value is kept if the file has no BPM/key tag
+   (`_preserveBpm` / `_preserveMusicalKey` in `src/api/scanner.js` → `src/db/scanner.mjs`).
 2. AB worker (Tier 0) overwrites tag values (AB = Essentia-quality, more reliable than user tags).
 3. Essentia worker (Tier 2) always writes its own result regardless of source.
 
@@ -141,6 +177,12 @@ ALTER TABLE files ADD COLUMN bpm_status     TEXT;
 # TIER 0 — AcousticBrainz API Lookup
 
 > **APPROVE / REJECT**
+
+> **Built** in `src/util/ab-bpm-worker.mjs` + `src/api/bpm-analysis.js`. Differences from
+> the plan: ~2.8 req/s (350 ms between requests), 8 s HTTP timeout, User-Agent
+> `Velvet/1.0 (https://github.com/aroundmyroom/Velvet)`, the queue also retries
+> `ab_status='error'` rows, an extra `POST /api/v1/admin/bpm/ab/reset-not-found`
+> route, and the worker auto-starts (see "Workers are opt-in" below).
 
 ### What it does
 
@@ -154,7 +196,7 @@ File must have `acoustid_status = 'found'` AND `mbid IS NOT NULL`. Already colle
 
 ```
 GET https://acousticbrainz.org/api/v1/{mbid}/low-level
-User-Agent: mStreamVelvet/1.0 (https://github.com/aroundmyroom/mStream; ...)
+User-Agent: Velvet/1.0 (https://github.com/aroundmyroom/Velvet)
 ```
 
 **Response parsing:**
@@ -176,9 +218,12 @@ Note: AB live API field is `tonal.key_key` + `tonal.key_scale`. Essentia's local
 
 ### Rate and runtime
 
-1,100 ms between requests (same as `mb-enrich-worker.mjs`):
+Plan: 1,100 ms between requests (same as `mb-enrich-worker.mjs`):
 - 91,992 requests × 1.1 s = ~28 h at 1 req/s
 - Can be stopped and resumed. Progress is saved per `ab_status`.
+
+**Built:** `RATE_DELAY_MS = 350` (~2.8 req/s), so a full run of 91,992 files takes
+about 9 h.
 
 ### New files
 
@@ -199,13 +244,12 @@ Queue SQL:
   FROM files
   WHERE acoustid_status = 'found'
     AND mbid IS NOT NULL
-    AND ab_status IS NULL
-  ORDER BY rowid
+    AND (ab_status IS NULL OR ab_status = 'error')   -- built: errors are retried
   LIMIT 50
 
 Per-request:
   GET https://acousticbrainz.org/api/v1/{mbid}/low-level
-  Timeout: 25 s
+  Timeout: 8 s (built; plan said 25 s)
 
 On 200:
   Parse bpm (20–300) and key (non-empty, ≤ 12 chars)
@@ -236,9 +280,14 @@ POST /api/v1/admin/bpm/ab/start          start AB worker (admin only)
 POST /api/v1/admin/bpm/ab/stop           stop after current file
 GET  /api/v1/admin/bpm/status            combined status (both workers + coverage)
 POST /api/v1/admin/bpm/ab/reset-failed   reset ab_status='error' → NULL (re-queue)
+POST /api/v1/admin/bpm/ab/reset-not-found  reset ab_status='not_found' → NULL (built extra; 409 while AB runs)
 POST /api/v1/admin/bpm/reset-all         clear bpm/musical_key/bpm_source/ab_status/bpm_status
                                          for entire library (requires confirmation, workers must be stopped)
 ```
+
+All built. Every `/api/v1/admin/bpm/*` route returns 403 for non-admins. Start replies
+`{ ok: true }`, `{ ok: true, status: 'already_running' }` or `{ ok: true, status: 'pending' }`
+(queued while a file scan runs). Reset routes reply `{ ok: true, reset: <count> }`.
 
 `GET /api/v1/admin/bpm/status` response shape:
 ```json
@@ -269,14 +318,14 @@ POST /api/v1/admin/bpm/reset-all         clear bpm/musical_key/bpm_source/ab_sta
 | BPM out of range (< 20 or > 300) | Discard BPM, store key if valid. `ab_status='done'` |
 | Key string empty or > 12 chars | Discard key, store BPM if valid |
 | Both BPM and key invalid | `ab_status='error'` |
-| Network timeout (> 25 s) | `ab_status='error'`, continue |
+| Network timeout (> 8 s built; plan 25 s) | `ab_status='error'`, continue |
 | HTTP 429 | Back off 5 s, retry once; if still 429 → `ab_status='error'` |
 | AB goes offline permanently | All pending land in `ab_status='error'` → reset-failed → Tier 2 handles them |
 | Worker crashes | `_worker.on('error')` + `_worker.on('exit')` in parent resets `_running`, logs |
-| DB locked (scanner/other worker running) | Retry up to 3 min (same pattern as `mb-enrich-worker.mjs`) |
+| DB locked (scanner/other worker running) | `busy_timeout` 5 min + `dbWriteWithRetry()` from `src/util/worker-helpers.mjs` |
 | Server restart mid-run | `ab_status IS NULL` files continue from rowid ordering; `ab_status='error'` files stay reset-able |
 | Stop requested | Drain after current HTTP request completes, send `{ type: 'stopped' }`, exit |
-| Pending state after crash (if used) | On worker start: reset any `ab_status='pending'` → NULL before beginning queue |
+| Pending state after crash | Built: rows are set to `ab_status='pending'` while in flight; on worker start any `'pending'` → NULL |
 
 ### Test scenarios (Tier 0)
 
@@ -286,9 +335,9 @@ POST /api/v1/admin/bpm/reset-all         clear bpm/musical_key/bpm_source/ab_sta
 4. **Concurrent scanner write** — SQLite PRAGMA busy_timeout 60 s handles the lock; retry succeeds.
 5. **Reset failed** — 5 rows have `ab_status='error'` → POST ab/reset-failed → all 5 reset to NULL → queued count increases by 5 on next status poll.
 6. **Stop / resume** — worker stopped at 5,000 processed → `ab_status IS NULL` for remaining 86,992 → restart → resumes from first `ab_status IS NULL` row in rowid order.
-7. **Worker already running** — second POST /ab/start → `{ status: 'already_running' }`, no duplicate spawned.
+7. **Worker already running** — second POST /ab/start → `{ ok: true, status: 'already_running' }`, no duplicate spawned.
 8. **Non-admin call** — POST /ab/start from non-admin user → HTTP 403.
-9. **reset-all while running** — POST /reset-all returns HTTP 409 "Stop the worker before resetting".
+9. **reset-all while running** — POST /reset-all returns HTTP 409 "Stop all workers before resetting".
 
 ---
 
@@ -303,6 +352,11 @@ POST /api/v1/admin/bpm/reset-all         clear bpm/musical_key/bpm_source/ab_sta
 `music-metadata` already reads `common.bpm` and `common.key` from ID3 TBPM/TKEY, Vorbis BPM/INITIALKEY, MP4 `tmpo`, etc. The scanner already parses these but currently discards them. This tier simply stores them in the DB on every scan.
 
 **Passive — no admin panel or worker needed.** Tag data is written during normal library scans. Coverage is low (~3 % BPM, ~1 % key) but it is instant and requires zero extra work from the user.
+
+> **Built.** The code below is in `parseMyFile()` (it sets `songInfo._bpm` and
+> `songInfo._musicalKey`). The insert in `src/db/sqlite-backend.js` sets
+> `bpm_source='tag'` when either value is present. There is no `COALESCE` update; see
+> the "Priority rules" note above for how analysed values survive a re-scan.
 
 ### Changes
 
@@ -331,6 +385,8 @@ Pass `_bpm` and `_musicalKey` to `insertFileRow` / `updateFileRow`.
 - `insertFileRow`: add `_bpm`, `_musicalKey` params, write only if non-null
 - `updateFileRow`: use `COALESCE(bpm, ?)` — **never overwrite non-NULL value** (preserves AB/Essentia results on re-scan)
 - `renderMetadataObj()` + `mapFileRow()`: expose `bpm` and `musical_key` in API response
+  (built: `renderMetadataObj()` in `src/api/db.js` returns `metadata.bpm` rounded to an
+  integer and `metadata["musical-key"]`, with a hyphen)
 
 **Priority (UPDATE SQL):**
 ```sql
@@ -346,7 +402,7 @@ bpm_source  = CASE WHEN bpm IS NULL AND ? IS NOT NULL THEN 'tag' ELSE bpm_source
 | `common.bpm` is `"128.5"` | `Math.round(Number(...))` → 129 |
 | `common.bpm` is `"0"` or `"9999"` | Rejected by 20–300 range check |
 | `common.key` is null or empty | Rejected by length check |
-| `common.key` is a Camelot code `"8A"` | Stored as-is; `toCamelot("8A")` returns `"8A"` if map includes self-referential entries |
+| `common.key` is a Camelot code `"8A"` | Stored as-is. Not built: the `_CAMELOT` map has no self-referential entries, so `toCamelot("8A")` returns `null` and the key is treated as unknown |
 | Re-scan after Tier 0 or Tier 2 ran | `COALESCE` in UPDATE preserves the better data source |
 | `common.bpm` is NaN after Number() | `Number.isFinite(n)` check rejects it |
 
@@ -373,7 +429,21 @@ For all files still missing BPM or key after Tiers 0 and 1, run the Essentia `st
 
 **Estimated runtime:** With ~60,000–75,000 files remaining after Tiers 0+1, and ~3 s per file + 200 ms cooldown: approximately 55–70 hours of continuous runtime. Stop and resume at any time — progress is saved per `bpm_status`.
 
-### New binary: Essentia
+> **Built differently** in `src/util/essentia-bpm-worker.mjs` (no binary, no bootstrap):
+> - Uses the `essentia.js` npm package (WASM), loaded once per worker.
+> - ffmpeg (`ffmpegBin()`) decodes the audio to mono 22,050 Hz f32le PCM over a pipe.
+> - BPM from `RhythmExtractor2013` (with a half-tempo check), key from `KeyExtractor`
+>   (`"<key> <scale>"`). BPM is stored with one decimal.
+> - Window: `scanOptions.analyzeBpmWindowSec` (default 60 s), taken from the **middle**
+>   of the track; `0` = whole file.
+> - Files longer than 20 min are skipped (`bpm_status='error'`). If the decoded PCM is
+>   over 60 MB it retries at 11,025 Hz, then gives up with `'error'`.
+> - Timeout: 0.3 s per second of audio decoded, at least 60 s. 200 ms pause between files.
+> - Batches of 20; when the queue is empty it waits 1 min and checks again.
+> - The sections "New binary", "profile.yaml" and "Output parsing" below are the
+>   original plan and were **not built**.
+
+### New binary: Essentia (not built)
 
 ```
 bin/essentia/essentia_streaming_extractor_music    ← static Linux x86_64 binary (~15 MB)
@@ -414,14 +484,15 @@ const musicalKey = `${key} ${scale}`;              // → "C major"
 
 ### New files
 
-| File | Description |
-|------|-------------|
-| `src/util/essentia-bootstrap.js` | Download + validate binary, write profile.yaml |
-| `src/util/essentia-worker.mjs` | Worker thread — spawn Essentia per file |
+| File | Description | State |
+|------|-------------|-------|
+| `src/util/essentia-bootstrap.js` | Download + validate binary, write profile.yaml | Not built |
+| `src/util/essentia-bpm-worker.mjs` (plan name: `essentia-worker.mjs`) | Worker thread — Essentia analysis per file | Built (WASM) |
 
-### Worker design (`src/util/essentia-worker.mjs`)
+### Worker design (`src/util/essentia-bpm-worker.mjs`)
 
-Mirrors `rg-analysis-worker.mjs`:
+Plan below. Built version: `workerData: { dbPath, folders, ffmpegBin, bpmWindowSec }`,
+ffmpeg decode + WASM instead of steps 3–4 and 7, `LIMIT 20`.
 
 ```
 workerData: { dbPath, folders, essentiaBin }
@@ -464,7 +535,16 @@ POST /api/v1/admin/bpm/essentia/stop           stop after current file
 POST /api/v1/admin/bpm/essentia/reset-failed   reset bpm_status='error' → NULL
 ```
 
+All three built. Also built (not in this plan): genre octave correction routes
+`POST /api/v1/admin/bpm/genre-correct` (`?dryRun=true` for a preview),
+`POST /api/v1/admin/bpm/genre-correct-selected` and `POST /api/v1/admin/bpm/genre-correct-undo`
+— see `docs/bpm-plan.md`. They return 409 while the Essentia worker runs.
+
 ### Failsafes (Tier 2)
+
+The two binary rows are plan only (no binary is downloaded). Built: if `essentia.js`
+fails to load, the worker sends `{ type: 'error' }` and stops. `binaryAvailable` in the
+status reply is always `true`.
 
 | Scenario | Handling |
 |----------|----------|
@@ -472,7 +552,7 @@ POST /api/v1/admin/bpm/essentia/reset-failed   reset bpm_status='error' → NULL
 | Download fails (no internet, upf.edu down) | Error surfaced in POST /start response; admin can retry |
 | Audio file not found on disk | `bpm_status='error'`, log filepath, continue |
 | Essentia exits non-zero | `bpm_status='error'`, delete tmp JSON, continue |
-| Essentia hangs (> 60 s) | `childProcess.kill('SIGKILL')`, `bpm_status='error'` |
+| Essentia hangs (> 60 s) | `childProcess.kill('SIGKILL')`, `bpm_status='error'` (built: the ffmpeg decode has the timeout) |
 | JSON output malformed | Catch parse error → `bpm_status='error'` |
 | BPM out of range | Store NULL for BPM, store key if valid, `bpm_status='done'` |
 | Only key is invalid | Store BPM if valid, `musical_key` stays NULL, `bpm_status='done'` |
@@ -486,14 +566,14 @@ POST /api/v1/admin/bpm/essentia/reset-failed   reset bpm_status='error' → NULL
 
 1. **Happy path** — file with no tags, Essentia runs → `bpm=128`, `musical_key='C major'`, `bpm_source='essentia'`, `bpm_status='done'`.
 2. **File deleted since scan** — file not found on disk → `bpm_status='error'`, worker continues.
-3. **Essentia binary missing** — `ensureEssentia()` downloads it. If download fails → error returned in POST /essentia/start, not spawned.
+3. **Essentia binary missing** — plan only; not applicable to the WASM build.
 4. **Stop mid-analysis** — stop signal after file N → drains that file → `{ type: 'stopped' }` → `_running=false` in parent.
 5. **Reset failed** — 20 files have `bpm_status='error'` → POST reset-failed → all 20 reset to NULL → queued increases by 20 on next poll.
 6. **AB and Essentia running simultaneously** — AB on MBID files, Essentia on non-MBID files. SQLite WAL + busy_timeout handles concurrent writes.
 7. **File has bpm from Tier 0, missing key** — WHERE `(bpm IS NULL OR musical_key IS NULL)` includes this row → Essentia fills key only. After: `bpm` stays from AB, `musical_key` added from Essentia, `bpm_status='done'`.
 8. **Non-audio file** (e.g. `.jpg` accidentally in DB) — Essentia exits non-zero → `bpm_status='error'`, skipped permanently unless reset.
 9. **Non-admin call** → HTTP 403.
-10. **reset-all while running** → HTTP 409 "Stop the worker before resetting".
+10. **reset-all while running** → HTTP 409 "Stop all workers before resetting".
 
 ---
 
@@ -502,6 +582,13 @@ POST /api/v1/admin/bpm/essentia/reset-failed   reset bpm_status='error' → NULL
 # Admin UI — "BPM & Key Analysis" Tool Card
 
 **Location:** Admin → Tools section, same row as Normalisation Workshop and Tag Workshop.
+
+> **Built:** `bpm-workshop-view` in `webapp/admin/index.js`, side-nav item
+> `data-admin-view="bpm-workshop-view"` in `webapp/admin/index.html` (label key
+> `admin.nav.bpmWorkshop`), next to the Tag Workshop and Normalisation Workshop items.
+> It polls `GET /api/v1/admin/bpm/status` every 2 s while a worker runs, 30 s when idle.
+> It also has "reset not found" and the genre octave correction controls. The layout
+> below is the plan sketch; the real panel may differ in detail.
 
 ### Layout
 
@@ -571,9 +658,12 @@ resetConfirm: false
 
 ### Admin nav entry
 
-Added to the Tools section nav array alongside `admin.nav.rgWorkshop` and `admin.nav.tagWorkshop`:
-```js
-{ id: 'bpmWorkshop', label: t('admin.nav.bpmWorkshop'), icon: '♩' }
+Plan was a JS nav array entry. Built as static HTML in `webapp/admin/index.html`:
+```html
+<div class="side-nav-item" data-admin-view="bpm-workshop-view">
+  ...
+  <span data-i18n="admin.nav.bpmWorkshop">BPM &amp; Key Analysis</span>
+</div>
 ```
 
 ---
@@ -583,6 +673,28 @@ Added to the Tools section nav array alongside `admin.nav.rgWorkshop` and `admin
 # Auto-DJ Integration
 
 > **APPROVE / REJECT** — depends on at least Tier 0 or Tier 1 having run (otherwise no data to filter on, but it is safe to enable in advance since the filter is NULL-permissive).
+
+> **Built differently.** What the code does today:
+> - **Web player** (`webapp/app.js`): fetches the whole candidate pool from
+>   `POST /api/v1/db/random-songs` with `returnAll: true` and **no** BPM/key params.
+>   `_djScoreSong()` then scores each song: BPM proximity (60 % current track, 40 %
+>   `S.djBpmBase` or the session anchor, within `S.djBpmTolerance`) and Camelot match
+>   (same key 1.0, neighbour 0.7, two steps 0.3, no key 0.4). Songs are never excluded
+>   for BPM/key. `_djSongBlocked()` only checks the word filter.
+> - **Track change**: `_currentBpm` / `_currentCamelot` / `_currentNeighbours` are set
+>   in `Player.playAt()`, not in `_onMeta()` / `_trackChanged()`.
+> - **Server filter** (`_appendBpmKeyFilters()` in `src/db/sqlite-backend.js`, used by
+>   `getRandomSongs()`, `countFilesForRandom()` and the Auto-DJ pick helpers) is **strict**,
+>   not NULL-permissive: with `bpmMin`/`bpmMax`/`bpmRanges`/`musicalKeys` set, songs with
+>   NULL BPM/key are left out. `musicalKeys` are **Camelot codes** (e.g. `"8A"`),
+>   expanded to key names with `CAMELOT_TO_KEYS`. The random-songs route also accepts
+>   `bpmRanges`, `bpmRangesWide`, `requireBpm` and `requireMusicalKey`, and relaxes the
+>   filters step by step when nothing matches. The AI queue (`src/api/ai-queue.js`) uses it.
+> - **Rooms and other clients**: rooms score on the server with `scoreSong()` in
+>   `src/autodj/scoring.js`. `POST /api/v1/autodj/next` (being added) gives Tizen and the
+>   server remote the same server-side pick.
+>
+> The code blocks below are the original plan.
 
 ### Backend: `getRandomSongs()` filter params
 
@@ -660,18 +772,26 @@ if (S.djHarmonicMixing && _currentNeighbours) {
 
 State stored in `S` / `localStorage`.
 
+**Built:** all three controls exist (`#dj-bpm-tol` slider, 1–20). Also built: a base BPM
+(`S.djBpmBase`, 20–300 or auto) and a Camelot wheel popup (`_camelotWheelHTML()`).
+localStorage keys: `ms2_dj_bpm_cont_<user>`, `ms2_dj_bpm_tol_<user>`,
+`ms2_dj_bpm_base_<user>`, `ms2_dj_harmonic_<user>`.
+
 ### Failsafes (Auto-DJ integration)
 
 | Scenario | Handling |
 |----------|----------|
 | Current song has no BPM, BPM Continuity ON | `_currentBpm = null` → skip BPM check entirely |
 | Candidate has no BPM, current has BPM | NULL-permissive SQL: candidate passes server-side filter |
-| Key in Camelot format `"8A"` | Extend `_CAMELOT` map to include Camelot codes as self-referential entries |
+| Key in Camelot format `"8A"` | Extend `_CAMELOT` map to include Camelot codes as self-referential entries (not built) |
 | Auto-DJ exhausts all candidates | Same fallback as today; Auto-DJ retries or stops per config |
 | `djBpmTolerance` = 0 | Only exact BPM matches accepted — valid edge case |
 | BPM Continuity ON but library has 0 % BPM coverage | No songs blocked (all NULL-permissive), Auto-DJ works normally |
 
 ### Test scenarios (Auto-DJ integration)
+
+Plan scenarios. With the built soft scoring, 1–3 describe the server filter only (and
+it is strict: NULL rows are not returned); the web player does not send these params.
 
 1. **BPM filter** — current song 128 BPM, tolerance ±8 → server receives `bpmMin=120, bpmMax=136` → only songs with `bpm BETWEEN 120 AND 136` OR `bpm IS NULL` returned.
 2. **Harmonic filter** — current song `"A minor"` (8A) → `musicalKeys = ['8A','8B','7A','7B','9A','9B']` sent to server → songs with those keys OR NULL returned.
@@ -688,6 +808,9 @@ State stored in `S` / `localStorage`.
 All new user-visible strings use the existing `t()` / `this.t()` system. Add to **all 12 locale files** — en.json + nl.json with real translations, the other 10 with English placeholders.
 
 After adding keys, run the locale sync script from `copilot-instructions.md` to verify and fill all 12 files.
+
+**Built:** these keys are in `webapp/locales/en.json` (plus more added later, e.g. the
+Camelot wheel `player.autodj.camelot*` keys).
 
 ### Admin keys
 
@@ -786,56 +909,65 @@ Other 10 locales (`de`, `fr`, `es`, `it`, `pt`, `pl`, `ru`, `zh`, `ja`, `ko`) re
 # Data Flow Summary
 
 ```
+(As built.)
+
 TIER 1 (passive — during every library scan)
   src/db/scanner.mjs
     → music-metadata common.bpm + common.key
     → validate (20–300, ≤ 12 chars)
-    → COALESCE update (never overwrites non-NULL)
+    → changed file: keep old analysed value if the tag is empty (_preserveBpm)
     → files.bpm, files.musical_key, files.bpm_source='tag'
 
-TIER 0 (admin worker — run once, overnight)
+TIER 0 (worker — auto-starts or admin Start)
   src/util/ab-bpm-worker.mjs
     → GET acousticbrainz.org/api/v1/<mbid>/low-level
     → parse rhythm.bpm + tonal.key_key + tonal.key_scale
     → validate → UPDATE bpm, musical_key, bpm_source='acousticbrainz', ab_status='done'
     → 404 → ab_status='not_found'  (Tier 2 eligible)
-    → error → ab_status='error'  (reset-able)
+    → error → ab_status='error'  (retried on the next batch; reset-able)
 
-TIER 2 (admin worker — run after Tier 0, CPU-intensive)
-  src/util/essentia-worker.mjs
-    → spawn essentia_streaming_extractor_music (first 30 s)
-    → parse rhythm.bpm + tonal.key_temperley.key/scale
+TIER 2 (worker — auto-starts or admin Start, CPU-intensive)
+  src/util/essentia-bpm-worker.mjs
+    → ffmpeg decode → mono 22,050 Hz PCM (60 s window from the middle by default)
+    → essentia.js RhythmExtractor2013 + KeyExtractor
     → validate → UPDATE bpm, musical_key, bpm_source='essentia', bpm_status='done'
     → error → bpm_status='error'  (reset-able)
 
-AUTO-DJ (player — no server architecture changes)
+AUTO-DJ (web player)
   webapp/app.js
-    → _onMeta(): read nowPlaying.bpm + nowPlaying.musical_key
+    → Player.playAt(): read song.bpm + song.musical_key
     → toCamelot() + camelotNeighbours() → _currentNeighbours
-    → autoDJPrefetch(): bpmMin/bpmMax + musicalKeys[] → /api/v1/db/random-songs
-    → _djSongBlocked(): final NULL-permissive check on candidate
+    → POST /api/v1/db/random-songs { returnAll: true } → candidate pool
+    → _djScoreSong(): soft BPM + harmonic score (no hard filter)
+
+AUTO-DJ (rooms / other clients)
+  src/autodj/scoring.js scoreSong() on the server
 ```
 
 ---
 
 # File Change Summary
 
+As built (names corrected to the real code):
+
 | File | Change | Tiers |
 |------|--------|-------|
-| `src/db/sqlite-backend.js` | Migration: 5 new columns; `getRandomSongs` bpmMin/bpmMax/musicalKeys; `renderMetadataObj`/`mapFileRow` expose bpm+key; `getBpmStatus()`, `resetBpmFailed()`, `resetAbFailed()`, `resetBpmAll()` | 0+1+2 |
-| `src/db/scanner.mjs` | Extract + validate bpm and key from music-metadata; COALESCE update | 1 |
+| `src/db/sqlite-backend.js` | Migration: 6 columns (incl. `bpm_raw`); `_appendBpmKeyFilters()` used by `getRandomSongs()` etc.; `getBpmStats()`, `resetAbErrors()`, `resetAbNotFound()`, `resetEssentiaErrors()`, `resetAllBpmData()`, `genreCorrectBpm*()` | 0+1+2 |
+| `src/api/db.js` | `renderMetadataObj()` exposes `bpm` + `musical-key`; random-songs BPM/key params | 1 |
+| `src/db/scanner.mjs` | Extract + validate bpm and key from music-metadata | 1 |
 | `src/util/ab-bpm-worker.mjs` | NEW — AcousticBrainz API worker thread | 0 |
-| `src/util/essentia-bootstrap.js` | NEW — download binary, write profile.yaml | 2 |
-| `src/util/essentia-worker.mjs` | NEW — Essentia analysis worker thread | 2 |
+| `src/util/essentia-bootstrap.js` | Not built (WASM needs no binary) | 2 |
+| `src/util/essentia-bpm-worker.mjs` | NEW — Essentia (WASM) analysis worker thread | 2 |
+| `src/util/camelot.js` | Server Camelot map + `toCamelot()` + `camelotCompat()` | Auto-DJ |
 | `src/api/bpm-analysis.js` | NEW — REST endpoints for both workers | 0+2 |
-| `src/app.js` | Register `bpm-analysis.js` `setup()` call | 0+2 |
-| `webapp/app.js` | `_CAMELOT` table + helpers; `_djSongBlocked` BPM+key check; `_onMeta` current track state; Auto-DJ panel toggles+slider | Auto-DJ |
-| `webapp/admin/index.js` | `bpm-workshop-view` component + Tools nav entry | 0+2 |
-| `webapp/locales/en.json` | All `admin.bpmAnalysis.*` + `player.autodj.*` keys | all |
-| `webapp/locales/nl.json` | Dutch translations for all new keys | all |
-| `webapp/locales/{de,fr,es,it,pt,pl,ru,zh,ja,ko}.json` | English placeholder for all new keys | all |
-| `bin/essentia/` | NEW directory (created by bootstrap at runtime) | 2 |
-| `docs/harmonic-mixing.md` | NEW — user-facing feature docs | all |
+| `src/server.js` | Calls `bpmAnalysisApi.setup(velvet)` | 0+2 |
+| `webapp/app.js` | `_CAMELOT` table + helpers; `_djScoreSong()` BPM+key scoring; `Player.playAt()` current track state; Auto-DJ panel toggles+slider | Auto-DJ |
+| `src/autodj/scoring.js` | Server-side `scoreSong()` + `camelotNeighbours()` for rooms | Auto-DJ |
+| `webapp/admin/index.js` | `bpm-workshop-view` component | 0+2 |
+| `webapp/admin/index.html` | Side-nav item for `bpm-workshop-view` | 0+2 |
+| `webapp/locales/*.json` | `admin.bpmAnalysis.*` + `player.autodj.*` keys | all |
+| `package.json` | `essentia.js` dependency | 2 |
+| `docs/bpm-harmonic.md` | User-facing feature docs (plan name was `docs/harmonic-mixing.md`) | all |
 
 ---
 
@@ -844,15 +976,20 @@ AUTO-DJ (player — no server architecture changes)
 | Decision | Rationale |
 |----------|-----------|
 | `musical_key` stored as `"C major"` string | Essentia and AB both output standard notation. Camelot conversion at read time — no lossy conversion at write time. Also displayable in UI as-is. |
-| BPM as `INTEGER` | Sub-BPM precision is noise for DJ filtering. `Math.round()` on write. |
-| NULL-permissive SQL filter | Songs without BPM/key data always remain in the Auto-DJ pool. Library never runs dry. |
-| First 30 s for Essentia | 90 % accuracy at 10 % of CPU time. Sufficient for DJ tempo and key detection. |
-| `key_temperley` for Essentia output | Best-validated algorithm for Western pop/electronic/dance music. |
+| BPM as `INTEGER` | Sub-BPM precision is noise for DJ filtering. `Math.round()` on write. (Built: tags and AB round; Essentia keeps one decimal.) |
+| NULL-permissive SQL filter | Songs without BPM/key data always remain in the Auto-DJ pool. Library never runs dry. (Built: the web player gets this by soft scoring; the SQL filter itself is strict.) |
+| First 30 s for Essentia | 90 % accuracy at 10 % of CPU time. Sufficient for DJ tempo and key detection. (Built: 60 s window from the middle, `scanOptions.analyzeBpmWindowSec`.) |
+| `key_temperley` for Essentia output | Best-validated algorithm for Western pop/electronic/dance music. (Built: essentia.js `KeyExtractor` with its defaults.) |
 | Separate `ab_status` and `bpm_status` columns | Independent reset per source. If AB goes offline: reset ab_status='error' rows → Tier 2 picks up without a full library reset. |
 | `bpm_source` column | Diagnostic: "how many files from tags vs AB vs Essentia?". Useful for admin coverage card. |
 | AB overwrites tag values | AcousticBrainz = Essentia-quality data. More reliable than user-entered tags. COALESCE in scanner ensures this priority. |
 | Workers are opt-in (admin clicks Start) | CPU-intensive analysis must not auto-start on a live server with users. AB worker follows the same deferred-autostart pattern as rg-analysis (60 s delay, only if queued > 0). |
 | Essentia Tier 2 is never auto-started | Always explicit. Downloading 15 MB binary should not happen without user intent. |
+
+**Built differently:** both workers auto-start, 90 s after boot and after every file
+scan, via `createWorkerController()` in `src/util/worker-controller.js`. Auto-start only
+runs when 1–499 files are queued (a bigger backlog must be started from Admin) and when
+`workerAutostart["bpm-ab"]` / `workerAutostart["bpm-essentia"]` in the config is not `false`.
 
 ---
 
@@ -863,4 +1000,4 @@ AUTO-DJ (player — no server architecture changes)
 - AcousticBrainz API: https://acousticbrainz.org/api (CC0 data — BPM+key by MBID)
 - AcousticBrainz dump: https://data.metabrainz.org/pub/musicbrainz/acousticbrainz/dumps/ (590 GB compressed — not recommended)
 - Camelot Wheel JS reference: https://github.com/regorxxx/Camelot-Wheel-Notation (MIT)
-- Existing worker pattern references: `src/util/mb-enrich-worker.mjs`, `src/util/rg-analysis-worker.mjs`, `src/api/rg-analysis.js`
+- Existing worker pattern references: `src/util/mb-enrich-worker.mjs`, `src/util/rg-analysis-worker.mjs`, `src/api/rg-analysis.js`, `src/util/worker-controller.js`

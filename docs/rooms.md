@@ -59,7 +59,7 @@ Sonos speakers do not speak Sendspin. They can still **follow** a room (see
 |---|---|---|---|
 | Plays on | Sendspin speakers, any number, in sync | The server's own sound card | One Sonos room |
 | Who owns the queue | **The server** (the room) | The browser | The browser |
-| Browser closed | Keeps playing to the end of the queue | Stops advancing | Stops advancing |
+| Browser closed | Keeps playing to the end of the queue | Stops advancing | Mostly stops advancing (the server has a fallback, see [sonos.md](sonos.md)) |
 | Speaker buttons | Control the room's queue | — | Sonos app/buttons, not the Velvet queue |
 | Gapless | Yes (one continuous stream per speaker) | mpv | No (one track per cast) |
 
@@ -88,7 +88,7 @@ config file, see [json_config.md](json_config.md#velvet-rooms-sendspin)
 (`enabled`, `name`, `port`, `bind`, `path`, `discovery`).
 
 Who may play to rooms: admins, and users with the **Cast** permission
-(*Admin → Users*) — the same permission as Server Speaker and Sonos.
+(*Admin → Users*, `allow-mpv-cast`) — the same permission as Server Speaker.
 
 ---
 
@@ -511,8 +511,8 @@ off for an input with hum on it, which reports a signal all day.
   inputs (the decoder's own buffering), plus each speaker's buffer. Live audio
   gets no extra start-up lead and cannot be seeked.
 - The device's clock never matches Velvet's exactly. Velvet measures the input's
-  real rate from the audio that arrives and resamples it by a few hundred ppm at
-  most, inaudibly, so the delay stays the same for hours. It never cuts the audio
+  real rate from the audio that arrives and resamples it by at most 1000 ppm
+  (0.1 %), inaudibly, so the delay stays the same for hours. It never cuts the audio
   at the device's timestamps; those only anchor the start and show gaps.
 - After a network hiccup the room plays a moment of silence and continues at
   the normal delay; audio that arrives late in a burst is dropped, not played
@@ -597,7 +597,8 @@ What to expect:
   current cover whenever the Sonos (or its app) loads the cover again.
 - A Sonos is in one room at a time; adding it to another room moves it. It
   stays in the room across restarts (by its Sonos id; the address is looked up
-  again). A room still needs at least one Sendspin speaker.
+  again). A room still needs at least one Sendspin speaker, and holds at most
+  8 Sonos speakers.
 - **Sonos switched off** in Velvet (*Admin → Sonos*): the Sonos speakers stay
   in their rooms but are dormant — not driven, no extra delay on the Sendspin
   speakers, and a room with only dormant Sonos speakers cannot play. They come

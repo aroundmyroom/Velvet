@@ -4,7 +4,7 @@ import * as vpath from '../util/vpath.js';
 import { joiValidate } from '../util/validation.js';
 import { ENERGY, flowOrder } from '../util/ai-queue.js';
 
-export const FLOW_MAX_SONGS = 1000;
+const FLOW_MAX_SONGS = 1000;
 
 const flowSchema = Joi.object({
   songs: Joi.array().items(Joi.string().min(1).max(4096)).min(2).max(FLOW_MAX_SONGS).required(),

@@ -1,8 +1,27 @@
 # Plan: MusicBrainz Text Search Fallback voor niet-herkende bestanden
 
-**Status**: Ontwerp / onderzoeksfase  
+**Status**: Built (the plan text below is the original Dutch design).  
 **Datum**: Mei 2026  
 **Scope**: Bestanden met `acoustid_status = 'not_found'` — fingerprint werkte maar audiocontent staat niet in de AcoustID-database
+
+> **Build status (English)**
+>
+> | Part | State | Where |
+> |------|-------|-------|
+> | DB columns `mb_text_search_status`, `_score`, `_ts` + index | Built, plus `mb_text_search_error TEXT` | `src/db/sqlite-backend.js` |
+> | Worker | Built | `src/util/mb-text-search-worker.mjs` |
+> | Worker lifecycle | Built with `createWorkerController()` (name `tagworkshop-text-search`); auto-starts 15 s after boot | `src/api/tagworkshop.js` |
+> | Routes start / stop / retry-notfound | Built | `POST /api/v1/tagworkshop/text-search/{start,stop,retry-notfound}` |
+> | Route `GET /text-search/status` | **Not built** — stats come from `GET /api/v1/tagworkshop/status` → `textSearch` | `src/api/tagworkshop.js` |
+> | Extra routes | Built: `GET /api/v1/tagworkshop/text-search/errors`, `POST /api/v1/tagworkshop/text-search/retry-errors` | `src/api/tagworkshop.js` |
+> | DB helpers | Built: `resetMbTextSearchNotFound()`, `getMbTextSearchErrors()`, `retryMbTextSearchErrors()`; stats are part of `getTagWorkshopStatus()` (no `getMbTextSearchStats()`) | `src/db/sqlite-backend.js` |
+> | Admin card + badges | Built: text-search block in the Tag Workshop, "Text match" badge per album (`has_text_search`) and per track (with score %) | `webapp/admin/index.js` |
+> | Title pre-processing | Built: `cleanTitle()` strips prefixes like `A1. ` / `B2 - ` | worker |
+> | Always `tag_status = 'needs_review'` | **Not built.** The worker does not set `tag_status`. `mb-enrich-worker.mjs` later sets it with `computeTagStatus()`, which can give `'confirmed'` when title, artist, album and year match. | — |
+>
+> Rate limit: shared MusicBrainz limiter `mbAcquire()` from `src/util/mb-client.mjs`
+> (1,100 ms). HTTP timeout 25 s. Scores 70+ are stored; below 70 →
+> `'skipped_low_score'`; no results → `'not_found'`.
 
 ---
 
@@ -168,6 +187,10 @@ LIMIT 50
 
 **Belangrijk**: Zelfs bij score 100 zetten we `tag_status = 'needs_review'` en nooit `'confirmed'`. Text-match is fundamenteel minder betrouwbaar dan een audiocontent-fingerprint. De gebruiker beslist in Tag Workshop.
 
+> **Not built as written:** the worker does not write `tag_status` (see the build status
+> table). Steps 4–5 below: below 70 the status is `'skipped_low_score'`, not `'not_found'`;
+> `'not_found'` means MusicBrainz returned no recordings.
+
 ### Score-toelichting in de Tag Workshop
 
 In de Tag Workshop-UI moet zichtbaar zijn of een match via fingerprint of via text-search verkregen is:
@@ -184,11 +207,16 @@ In de Tag Workshop-UI moet zichtbaar zijn of een match via fingerprint of via te
 |---------|-----|-------------|
 | `POST` | `/api/v1/tagworkshop/text-search/start` | Start de MB text-search worker |
 | `POST` | `/api/v1/tagworkshop/text-search/stop` | Stop de worker |
-| `GET` | `/api/v1/tagworkshop/text-search/status` | Stats: queued / found / not_found / skipped / errors |
+| `GET` | `/api/v1/tagworkshop/text-search/status` | Stats: queued / found / not_found / skipped / errors — **not built** (use `/api/v1/tagworkshop/status`) |
 | `POST` | `/api/v1/tagworkshop/text-search/retry-notfound` | Reset `not_found` → NULL voor herpoging |
+
+Built extra: `GET /api/v1/tagworkshop/text-search/errors` (last 200 errors) and
+`POST /api/v1/tagworkshop/text-search/retry-errors`.
 
 ### Bestaand `/api/v1/tagworkshop/status` uitbreiden
 Voeg `textSearch: { running, queued, found, not_found, skipped, errors }` toe naast de bestaande `mb` en `acoustid` secties.
+
+Built: `textSearch: { queued, found, not_found, skipped, errors, running, stopping }`.
 
 ---
 
@@ -223,6 +251,10 @@ Huidig filter: `tag_status = 'needs_review' AND mb_release_id IS NOT NULL`
 
 Na implementatie: **geen aanpassing nodig** — text-search-matches doorlopen dezelfde mb-enrich-worker en krijgen daarna dezelfde `mb_release_id` + `tag_status = 'needs_review'`. Ze komen automatisch in dezelfde review-wachtrij.
 
+Built: the enrich worker picks up rows with `mb_text_search_status = 'found'`. It sets
+`tag_status` by comparing tags, so a text match can end up `'confirmed'` and then skips
+the review queue.
+
 ---
 
 ## Implementatiestappen (prioriteitsvolgorde)
@@ -244,10 +276,15 @@ Nieuwe file in `src/util/`. Bevat:
 - 3 nieuwe endpoints (start/stop/status)
 - Auto-start als er `not_found` files met geschikte tags zijn
 
+Built as `_textSearch = createWorkerController({...})`; routes start/stop/retry-notfound
+(+ errors, retry-errors); auto-start 15 s after boot.
+
 ### Stap 4 — DB helper functies (30 min)
 `src/db/sqlite-backend.js`:
 - `getMbTextSearchStats()` — counts per status
 - `resetMbTextSearchNotFound()` — herpoging
+
+Built: `resetMbTextSearchNotFound()`; counts live in `getTagWorkshopStatus()`.
 
 ### Stap 5 — Admin UI kaart (1–2 uur)
 `webapp/admin/index.js`: nieuwe sectie naast MB Enrichment. Zelfde patroon (start/stop knoppen, stats-tabel).
@@ -260,7 +297,7 @@ Nieuwe sleutels in alle 12 locale-bestanden voor de UI-labels.
 
 ### Stap 8 — Tests + docs (30 min)
 - Regressietest: controleer dat `not_found` files met goede tags in wachtrij komen
-- `docs/acoustid.md` en `docs/tageditor.md` bijwerken
+- `docs/acoustid.md` en `docs/tag-workshop.md` bijwerken
 
 ---
 
@@ -270,8 +307,8 @@ Nieuwe sleutels in alle 12 locale-bestanden voor de UI-labels.
 |--------|------|-----------|
 | Slechte tags → foute match | Middel | Drempel 70 + altijd `needs_review`, nooit `confirmed` |
 | Homoniemen (bijv. "The Wall" van meerdere artiesten) | Middel | Duration-tiebreaker + `needs_review` review stap |
-| MB rate limit overschrijden | Laag | 1100 ms delay (zelfde als mb-enrich-worker) |
-| DB lock conflict met andere workers | Laag | WAL mode + `busy_timeout = 60s` + retry-loop |
+| MB rate limit overschrijden | Laag | 1100 ms delay via shared `mbAcquire()` (`src/util/mb-client.mjs`) |
+| DB lock conflict met andere workers | Laag | WAL mode + `busy_timeout = 60s` + `dbWriteWithRetry()` |
 | Artist = "Various Artists" levert ruis | Laag | Placeholder-blacklist pakt dit op |
 | Titel bevat tracknummer prefix ("A1. Sing It Back") | Middel | Optioneel: strip prefix-regex vóór query |
 
@@ -282,13 +319,15 @@ const cleanTitle = title.replace(/^[A-Z]\d+[\.\-\s]+/i, '').trim();
 ```
 Dit verhoogt de score significant voor 12-inch-rips.
 
+Built as `cleanTitle()` in the worker (letter prefix optional, so `"01. Title"` is cleaned too).
+
 ---
 
 ## Niet in scope (bewuste keuzes)
 
 - **Automatisch accepteren** op basis van text-match, ook niet bij score 100 — altijd `needs_review`
 - **Discogs text search** — aparte feature, al in `docs/dev/todo.md`
-- **BPM-inferentie via MB** — MB heeft geen BPM-data; BPM blijft via Essentia/rsgain
+- **BPM-inferentie via MB** — MB heeft geen BPM-data; BPM blijft via tags / AcousticBrainz / Essentia (rsgain doet alleen ReplayGain)
 - **Cover art via MB** — al gedekt via Discogs; niet dupliceren
 
 ---

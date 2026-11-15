@@ -66,10 +66,12 @@ const S = {
   position: 0,            // seconds
   duration: 0,            // seconds
   quality: 'original',
+  transcodeOk: false,     // the server has transcoding enabled (/api/v1/ping)
   searchQ: '',
   searchRes: null,        // { artists:[], folders:[], albums:[], tracks:[] }
   searchVpath: 'All',     // current search vpath filter
   vpathMeta: {},          // vpathMetaData from /api/v1/ping
+  languages: [],          // UI languages the admin enabled (/api/v1/languages/enabled)
   pairPollTimer: null,    // device-pairing poll interval id (connect screen), while active
   // Browse
   browseDir: '',          // current file-explorer directory path ('' = root)
@@ -88,18 +90,20 @@ const S = {
   // Scrobbling
   lastfmEnabled:       false,
   listenbrainzEnabled: false,
+  listenbrainzLinked:  false,
 };
 
 /* ── SCROBBLE STATUS ─────────────────────────────────────────────────────── */
 async function _loadScrobbleStatus() {
   try {
     const ls = await API.get('/api/v1/lastfm/status');
-    S.lastfmEnabled = ls?.serverEnabled === true;
+    S.lastfmEnabled = ls?.serverEnabled !== false;
   } catch { S.lastfmEnabled = false; }
   try {
     const lb = await API.get('/api/v1/listenbrainz/status');
-    S.listenbrainzEnabled = lb?.serverEnabled === true && lb?.linked === true;
-  } catch { S.listenbrainzEnabled = false; }
+    S.listenbrainzEnabled = lb?.serverEnabled === true;
+    S.listenbrainzLinked  = lb?.linked === true;
+  } catch { S.listenbrainzEnabled = false; S.listenbrainzLinked = false; }
 }
 
 /* ── WAVEFORM ─────────────────────────────────────────────────────────────── */
@@ -156,8 +160,8 @@ function _drawWaveform() {
   if (canvas.height !== H) canvas.height = H;
   const ctx = canvas.getContext('2d');
   if (!_wfData?.length) { ctx.clearRect(0, 0, W, H); return; }
-  const el = PLAYER.el;
-  const pct = el.duration > 0 ? el.currentTime / el.duration : 0;
+  const d = PLAYER.dur();
+  const pct = d > 0 ? PLAYER.time() / d : 0;
   _drawWaveformBars(ctx, W, H, _wfData, Math.max(0, Math.min(1, pct)));
 }
 
@@ -218,8 +222,8 @@ function fmtTime(sec) {
 
 function artUrl(obj) {
   if (!obj) return '';
-  if (obj.aaFile)  return `${S.serverUrl}/album-art/${obj.aaFile}`;
-  if (obj.artFile) return `${S.serverUrl}/api/v1/albums/art-file?p=${encodeURIComponent(obj.artFile)}`;
+  if (obj.aaFile)  return `${S.serverUrl}/album-art/${encodeURIComponent(obj.aaFile)}?${tokenParam()}`;
+  if (obj.artFile) return `${S.serverUrl}/api/v1/albums/art-file?p=${encodeURIComponent(obj.artFile)}&${tokenParam()}`;
   return '';
 }
 
@@ -227,28 +231,53 @@ function artImg(obj) {
   const url = artUrl(obj);
   if (!url) return `<div class="art-ph">${I.note}</div>`;
   // ph sits below; art-over img floats on top; if img errors it removes itself to reveal ph
-  return `<div class="art-ph">${I.note}</div><img src="${url}" alt="" class="art-over" loading="lazy" onerror="this.remove()">`;
+  return `<div class="art-ph">${I.note}</div><img src="${url}" alt="" class="art-over" loading="lazy">`;
 }
 
-function streamUrl(filepath) {
-  return `${S.serverUrl}/media/${filepath.split('/').map(encodeURIComponent).join('/')}`;
+// The CSP blocks inline onerror attributes; error events do not bubble, so listen in the capture phase.
+document.addEventListener('error', e => {
+  if (e.target.classList?.contains('art-over')) e.target.remove();
+}, true);
+
+function useTranscode() {
+  return S.transcodeOk && S.quality !== 'original';
+}
+
+// Media and art URLs carry the token: a paired device gets no auth cookie, and a restored session outlives it.
+function tokenParam() {
+  return `token=${encodeURIComponent(S.token)}`;
+}
+
+// Same /transcode query names as the web player's mediaUrl(); a transcoded stream has no byte ranges, so it starts at offset.
+function streamUrl(filepath, offset = 0) {
+  const enc = filepath.split('/').map(encodeURIComponent).join('/');
+  if (!useTranscode()) return `${S.serverUrl}/media/${enc}?${tokenParam()}`;
+  const [codec, kbps] = S.quality.split('-');
+  const params = new URLSearchParams({ codec, bitrate: `${kbps}k`, token: S.token });
+  if (offset > 0) params.set('offset', String(offset));
+  return `${S.serverUrl}/transcode/${enc}?${params}`;
 }
 
 function radioStreamUrl(station) {
   const url = station?.link_a;
   if (!url) return '';
-  return `${S.serverUrl}/api/v1/radio/stream?url=${encodeURIComponent(url)}&token=${encodeURIComponent(S.token)}`;
+  return `${S.serverUrl}/api/v1/radio/stream?url=${encodeURIComponent(url)}&${tokenParam()}`;
 }
 
 function stationArtUrl(station) {
   if (!station?.img) return '';
   if (/^https?:\/\//i.test(station.img))
-    return `${S.serverUrl}/api/v1/radio/art?url=${encodeURIComponent(station.img)}&token=${encodeURIComponent(S.token)}`;
-  return `${S.serverUrl}/album-art/${encodeURIComponent(station.img)}`;
+    return `${S.serverUrl}/api/v1/radio/art?url=${encodeURIComponent(station.img)}&${tokenParam()}`;
+  return `${S.serverUrl}/album-art/${encodeURIComponent(station.img)}?${tokenParam()}`;
 }
 
 function esc(s) {
   return String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+// A named helper, because many render callbacks call their track `t` and so shadow t().
+function _unknown() {
+  return t('player.misc.unknown');
 }
 
 /* ── API ───────────────────────────────────────────────────────────────────── */
@@ -271,18 +300,67 @@ const API = {
   },
 };
 
+/* ── PLAY STATS (Wrapped) ─────────────────────────────────────────────────── */
+// Same play-start / pause / end / skip events the web player sends, so phone listening reaches Wrapped
+const PLAYSTATS = {
+  sessionId: Date.now().toString(36) + Math.random().toString(36).slice(2, 10),
+  eventId: null,
+  startOffset: 0,
+  start(t) {
+    this.close();
+    this.startOffset = t.cueOffset ?? 0;
+    const fp = t.filepath;
+    API.post('/api/v1/wrapped/play-start', { filePath: fp, sessionId: this.sessionId })
+      .then(r => { if (S.queue[S.queueIdx]?.filepath === fp) this.eventId = r?.eventId ?? null; })
+      .catch(() => {});
+  },
+  close(ended = false) {
+    if (!this.eventId) return;
+    const eventId = this.eventId;
+    this.eventId = null;
+    const until = ended ? PLAYER.dur() : PLAYER.time();
+    const playedMs = Math.max(0, Math.round((until - this.startOffset) * 1000));
+    API.post(ended ? '/api/v1/wrapped/play-end' : '/api/v1/wrapped/play-skip', { eventId, playedMs }).catch(() => {});
+  },
+  pause() {
+    if (this.eventId && !PLAYER.el.ended) API.post('/api/v1/wrapped/pause', { eventId: this.eventId }).catch(() => {});
+  },
+};
+
 /* ── PLAYER ────────────────────────────────────────────────────────────────── */
 const PLAYER = {
   el: null,
+  _tc: false,
+  _base: 0,
+
+  time() {
+    return this._base + (this.el.currentTime || 0);
+  },
+
+  dur() {
+    if (!this._tc) return this.el.duration || 0;
+    const t = S.queue[S.queueIdx];
+    if (t?.duration) return (t.cueOffset ?? 0) + t.duration;
+    return Number.isFinite(this.el.duration) ? this._base + this.el.duration : 0;
+  },
+
+  setTime(sec) {
+    if (!this._tc) { this.el.currentTime = sec; return; }
+    const wasPlaying = !this.el.paused;
+    this._base = Math.max(0, sec);
+    this.el.src = streamUrl(S.queue[S.queueIdx].filepath, this._base);
+    this.el.load();
+    if (wasPlaying) this.el.play().catch(() => { /* no-op */ });
+  },
 
   init() {
     this.el = document.getElementById('v-audio');
     this.el.addEventListener('timeupdate',  () => this._onTime());
     this.el.addEventListener('ended',       () => this._onEnded());
     this.el.addEventListener('play',        () => { S.playing = true;  this._refreshUI(); _startWaveformRaf(); });
-    this.el.addEventListener('pause',       () => { S.playing = false; this._refreshUI(); _stopWaveformRaf();  _drawWaveform(); });
+    this.el.addEventListener('pause',       () => { S.playing = false; this._refreshUI(); _stopWaveformRaf();  _drawWaveform(); PLAYSTATS.pause(); });
     this.el.addEventListener('error',       () => this._onError());
-    this.el.addEventListener('loadedmetadata', () => { S.duration = this.el.duration; this._refreshUI(); });
+    this.el.addEventListener('loadedmetadata', () => { S.duration = this.dur(); this._refreshUI(); });
   },
 
   loadTrack(idx, autoPlay = true) {
@@ -295,12 +373,15 @@ const PLAYER = {
       S.radioNowPlaying = null;
       S.radioBitrate = null;
     }
+    PLAYSTATS.close();
     S.queueIdx = idx;
     const t = S.queue[idx];
-    this.el.src = streamUrl(t.filepath);
+    this._tc = useTranscode();
+    this._base = this._tc ? (t.cueOffset ?? 0) : 0;
+    this.el.src = streamUrl(t.filepath, this._base);
     this.el.load();
     S.position = t.cueOffset ?? 0;
-    if (t.cueOffset > 0) {
+    if (t.cueOffset > 0 && !this._tc) {
       const seekOnce = () => {
         this.el.currentTime = t.cueOffset;
         this.el.removeEventListener('loadedmetadata', seekOnce);
@@ -315,12 +396,15 @@ const PLAYER = {
     _fetchWaveform(t.filepath);
     // Log play + scrobble (same as desktop)
     API.post('/api/v1/db/stats/log-play', { filePath: t.filepath }).catch(() => {});
+    PLAYSTATS.start(t);
     clearTimeout(this._scrobbleTimer);
-    if (S.lastfmEnabled || S.listenbrainzEnabled) {
+    const lb = S.listenbrainzEnabled && S.listenbrainzLinked;
+    if (S.lastfmEnabled || lb) {
       const fp = t.filepath;
+      if (lb) API.post('/api/v1/listenbrainz/playing-now', { filePath: fp }).catch(() => {});
       this._scrobbleTimer = setTimeout(() => {
-        if (S.lastfmEnabled)       API.post('/api/v1/lastfm/scrobble-by-filepath',      { filePath: fp }).catch(() => {});
-        if (S.listenbrainzEnabled) API.post('/api/v1/listenbrainz/scrobble-by-filepath', { filePath: fp }).catch(() => {});
+        if (S.lastfmEnabled) API.post('/api/v1/lastfm/scrobble-by-filepath',      { filePath: fp }).catch(() => {});
+        if (lb)              API.post('/api/v1/listenbrainz/scrobble-by-filepath', { filePath: fp }).catch(() => {});
       }, 30000);
     }
   },
@@ -342,14 +426,14 @@ const PLAYER = {
   skipPrev() {
     const cur = S.queue[S.queueIdx];
     const trackStart = cur?.cueOffset ?? 0;
-    if (S.position > trackStart + 3) { this.el.currentTime = trackStart; return; }
+    if (S.position > trackStart + 3) { this.setTime(trackStart); return; }
     const next = S.shuffle ? this._randIdx() : S.queueIdx - 1;
     if (next >= 0) this.loadTrack(next);
     else if (S.repeat === 'all') this.loadTrack(S.queue.length - 1);
   },
 
   skipNext() {
-    if (S.repeat === 'one') { this.el.currentTime = 0; this.el.play().catch(() => { /* no-op */ }); return; }
+    if (S.repeat === 'one') { this.setTime(S.queue[S.queueIdx]?.cueOffset ?? 0); this.el.play().catch(() => { /* no-op */ }); return; }
     const next = S.shuffle ? this._randIdx() : S.queueIdx + 1;
     if (next < S.queue.length) this.loadTrack(next);
     else if (S.repeat === 'all') this.loadTrack(0);
@@ -357,11 +441,12 @@ const PLAYER = {
   },
 
   seek(frac) {
-    if (!this.el.duration) return;
+    const d = this.dur();
+    if (!d) return;
     const cur = S.queue[S.queueIdx];
     const start = cur?.cueOffset ?? 0;
-    const end   = cur?.cueEndOffset ?? this.el.duration;
-    this.el.currentTime = start + frac * (end - start);
+    const end   = cur?.cueEndOffset ?? d;
+    this.setTime(start + frac * (end - start));
   },
 
   _randIdx() {
@@ -370,8 +455,8 @@ const PLAYER = {
   },
 
   _onTime() {
-    S.position = this.el.currentTime;
-    S.duration = this.el.duration || 0;
+    S.position = this.time();
+    S.duration = this.dur();
     // CUE sub-track: advance when end boundary reached
     const cur = S.queue[S.queueIdx];
     if (cur?.cueEndOffset != null && S.position >= cur.cueEndOffset - 0.1) {
@@ -381,7 +466,7 @@ const PLAYER = {
     this._refreshProgress();
   },
 
-  _onEnded() { this.skipNext(); },
+  _onEnded() { PLAYSTATS.close(true); this.skipNext(); },
   _onError() {
     if (S.queue.length > 0 && S.queueIdx < S.queue.length - 1) {
       setTimeout(() => this.skipNext(), 1000);
@@ -428,7 +513,7 @@ const PLAYER = {
     const mt = document.querySelector('.mini-title');
     const ma = document.querySelector('.mini-artist');
     const mArt = document.querySelector('.mini-art');
-    if (mt) mt.textContent = t.title || 'Unknown';
+    if (mt) mt.textContent = t.title || _unknown();
     if (ma) ma.textContent = t.artist || '';
     if (mArt) mArt.innerHTML = artImg(t);
     // Now Playing
@@ -436,14 +521,14 @@ const PLAYER = {
     const na = document.getElementById('np-artist');
     const nArt = document.querySelector('.np-art');
     const nbg = document.querySelector('.np-bg');
-    if (nt) nt.textContent = t.title || 'Unknown';
+    if (nt) nt.textContent = t.title || _unknown();
     if (na) na.textContent = t.artist || '';
     if (nArt) nArt.innerHTML = artImg(t);
     if (nbg) nbg.innerHTML = artImg(t);
     // MediaSession
     if ('mediaSession' in navigator) {
       navigator.mediaSession.metadata = new MediaMetadata({
-        title: t.title || 'Unknown',
+        title: t.title || _unknown(),
         artist: t.artist || '',
         album: t.album || '',
         artwork: artUrl(t) ? [{ src: artUrl(t), sizes: '512x512', type: 'image/jpeg' }] : [],
@@ -472,7 +557,7 @@ const PLAYER = {
     if (!st) return;
     const imgUrl = stationArtUrl(st);
     const artHtml = imgUrl
-      ? `<div class="art-ph">${I.radio}</div><img src="${imgUrl}" alt="" class="art-over" loading="lazy" onerror="this.remove()">`
+      ? `<div class="art-ph">${I.radio}</div><img src="${imgUrl}" alt="" class="art-over" loading="lazy">`
       : `<div class="art-ph">${I.radio}</div>`;
     // Subtitle: ICY now-playing title takes priority over genre/country
     const subtitle = S.radioNowPlaying || [st.genre, st.country].filter(Boolean).join(' · ') || '';
@@ -480,7 +565,8 @@ const PLAYER = {
     const mt = document.querySelector('.mini-title');
     const ma = document.querySelector('.mini-artist');
     const mArt = document.querySelector('.mini-art');
-    if (mt) mt.textContent = st.name || 'Radio';
+    const name = st.name || t('mobile.nav.radio');
+    if (mt) mt.textContent = name;
     if (ma) ma.textContent = subtitle;
     if (mArt) mArt.innerHTML = artHtml;
     // Now Playing
@@ -488,19 +574,19 @@ const PLAYER = {
     const na = document.getElementById('np-artist');
     const nArt = document.querySelector('.np-art');
     const nbg = document.querySelector('.np-bg');
-    if (nt) nt.textContent = st.name || 'Radio';
+    if (nt) nt.textContent = name;
     if (na) na.textContent = subtitle;
     if (nArt) nArt.innerHTML = artHtml;
     if (nbg) nbg.innerHTML = artHtml;
     // NP times — show "LIVE" + bitrate instead of position/duration
     const te = document.getElementById('np-elapsed');
     const tr = document.getElementById('np-remain');
-    if (te) te.textContent = 'LIVE';
-    if (tr) tr.textContent = S.radioBitrate ? `${S.radioBitrate} kbps` : '';
+    if (te) te.textContent = t('mobile.player.live');
+    if (tr) tr.textContent = S.radioBitrate ? t('mobile.player.kbps', { n: S.radioBitrate }) : '';
     // MediaSession
     if ('mediaSession' in navigator) {
       navigator.mediaSession.metadata = new MediaMetadata({
-        title: st.name || 'Radio',
+        title: name,
         artist: subtitle,
         album: '',
         artwork: imgUrl ? [{ src: imgUrl, sizes: '256x256', type: 'image/jpeg' }] : [],
@@ -510,6 +596,17 @@ const PLAYER = {
 };
 
 /* ── SHELL INIT (one-time, stable elements) ────────────────────────────────── */
+const NAV_LABELS = {
+  home: 'player.nav.home', search: 'player.nav.search', library: 'mobile.nav.library',
+  radio: 'mobile.nav.radio', you: 'mobile.nav.you',
+};
+
+// The shell is built once (the audio element must survive), so its labels carry data-i18n and
+// I18N.translatePage() relabels them on a language change.
+function i18nAria(key) {
+  return `aria-label="${esc(t(key))}" data-i18n="${key}" data-i18n-attr="aria-label"`;
+}
+
 function initShell() {
   document.getElementById('app').innerHTML = `
     <div id="screen" class="screen connect-mode no-player"></div>
@@ -521,16 +618,16 @@ function initShell() {
         <div class="mini-artist"></div>
       </div>
       <div class="mini-btns">
-        <button id="mini-prev-btn" data-action="prev" aria-label="Previous">${I.prev}</button>
-        <button id="mini-play-btn" data-action="play-pause" aria-label="Play/Pause">${I.play}</button>
-        <button id="mini-next-btn" data-action="next" aria-label="Next">${I.next}</button>
+        <button id="mini-prev-btn" data-action="prev" ${i18nAria('player.ctrl.previous')}>${I.prev}</button>
+        <button id="mini-play-btn" data-action="play-pause" ${i18nAria('player.ctrl.play')}>${I.play}</button>
+        <button id="mini-next-btn" data-action="next" ${i18nAria('player.ctrl.next')}>${I.next}</button>
       </div>
     </div>
     <nav id="nav-bar" class="hidden">
-      ${['home','search','library','radio','you'].map(id => `
-        <button class="nav-item" data-nav="${id}" aria-label="${id}">
-          ${I[id] ?? ''}
-          <span>${id.charAt(0).toUpperCase() + id.slice(1)}</span>
+      ${Object.entries(NAV_LABELS).map(([id, key]) => `
+        <button class="nav-item" data-nav="${id}" ${i18nAria(key)}>
+          ${I[id]}
+          <span data-i18n="${key}">${esc(t(key))}</span>
         </button>`).join('')}
     </nav>
     <div id="now-playing">
@@ -538,10 +635,10 @@ function initShell() {
       <div class="np-body">
         <div class="np-drag-wrap"><div class="np-drag-handle"></div></div>
         <div class="np-top">
-          <span class="np-top-label" id="np-top-label">Now Playing</span>
+          <span class="np-top-label" id="np-top-label"></span>
           <div class="np-top-btns">
-            <button class="np-mode" id="np-queue-btn" data-action="np-tab" aria-label="Queue">${I.queue}</button>
-            <button class="np-close-btn" data-action="np-close" aria-label="Close">${I.down}</button>
+            <button class="np-mode" id="np-queue-btn" data-action="np-tab" ${i18nAria('player.ctrl.queue')}>${I.queue}</button>
+            <button class="np-close-btn" data-action="np-close" ${i18nAria('player.modal.close')}>${I.down}</button>
           </div>
         </div>
         <div id="np-player-view">
@@ -562,13 +659,13 @@ function initShell() {
             </div>
           </div>
           <div class="np-controls">
-            <button class="np-btn np-btn-sm" data-action="prev" aria-label="Previous">${I.prev}</button>
-            <button class="np-btn np-btn-main" id="np-play-btn" data-action="play-pause" aria-label="Play/Pause">${I.play}</button>
-            <button class="np-btn np-btn-sm" data-action="next" aria-label="Next">${I.next}</button>
+            <button class="np-btn np-btn-sm" data-action="prev" ${i18nAria('player.ctrl.previous')}>${I.prev}</button>
+            <button class="np-btn np-btn-main" id="np-play-btn" data-action="play-pause" ${i18nAria('player.ctrl.play')}>${I.play}</button>
+            <button class="np-btn np-btn-sm" data-action="next" ${i18nAria('player.ctrl.next')}>${I.next}</button>
           </div>
           <div class="np-modes">
-            <button class="np-mode" id="np-shuffle" data-action="shuffle" aria-label="Shuffle">${I.shuffle}</button>
-            <button class="np-mode" id="np-repeat"  data-action="repeat"  aria-label="Repeat">${I.repeat}</button>
+            <button class="np-mode" id="np-shuffle" data-action="shuffle" ${i18nAria('player.ctrl.shuffle')}>${I.shuffle}</button>
+            <button class="np-mode" id="np-repeat"  data-action="repeat"  ${i18nAria('player.ctrl.repeat')}>${I.repeat}</button>
           </div>
         </div>
         <div id="np-queue-view" class="np-queue-view"></div>
@@ -610,8 +707,6 @@ function navigate(screen, opts = {}) {
   const scr = document.getElementById('screen');
   const nav = document.getElementById('nav-bar');
   const mini = document.getElementById('mini-player');
-  const mainScreens = ['home', 'search', 'library', 'radio', 'you'];
-  const isMain = mainScreens.includes(screen);
 
   scr.classList.toggle('connect-mode', screen === 'connect');
   scr.classList.toggle('no-player', screen === 'connect' || S.queue.length === 0);
@@ -636,28 +731,44 @@ function navigate(screen, opts = {}) {
     case 'search':  scr.innerHTML = _screenSearch(); break;
     case 'radio':   scr.innerHTML = _screenRadio(); _loadStations(); break;
     case 'you':     scr.innerHTML = _screenYou(); break;
-    default:        scr.innerHTML = '<div class="state-empty">Not found</div>';
+    default:        scr.innerHTML = `<div class="state-empty">${esc(t('mobile.notFound'))}</div>`;
   }
+}
+
+// Redraws the current screen in place, without the data loads navigate() starts.
+function _rerender() {
+  const screens = {
+    connect: _screenConnect, home: _screenHome, library: _screenLibrary, album: _screenAlbumDetail,
+    search: _screenSearch, radio: _screenRadio, you: _screenYou,
+  };
+  if (screens[S.screen]) _patchScreen(screens[S.screen]());
+  _applyNpTab();
+  _refreshRepeatBtn();
+  PLAYER._refreshUI();
+}
+
+function _refreshRepeatBtn() {
+  if (!S.repeat) return;
+  const btn = document.getElementById('np-repeat');
+  btn.classList.toggle('on', S.repeat !== 'off');
+  btn.title = t({ off: 'mobile.player.repeatOff', all: 'mobile.player.repeatAll', one: 'mobile.player.repeatOne' }[S.repeat]);
+}
+
+function _applyNpTab() {
+  const queue = S.npTab === 'queue';
+  const pv  = document.getElementById('np-player-view');
+  const qv  = document.getElementById('np-queue-view');
+  pv.style.display = queue ? 'none' : '';
+  qv.classList.toggle('active', queue);
+  if (queue) qv.innerHTML = _renderQueueView();
+  document.getElementById('np-queue-btn').classList.toggle('on', queue);
+  document.getElementById('np-top-label').textContent = t(queue ? 'player.ctrl.queue' : 'player.player.nowPlaying');
 }
 
 function openNowPlaying() {
   S.npOpen = true;
   document.getElementById('now-playing').classList.add('open');
-  const pv  = document.getElementById('np-player-view');
-  const qv  = document.getElementById('np-queue-view');
-  const qb  = document.getElementById('np-queue-btn');
-  const lbl = document.getElementById('np-top-label');
-  if (S.npTab === 'queue') {
-    if (pv) pv.style.display = 'none';
-    if (qv) { qv.classList.add('active'); qv.innerHTML = _renderQueueView(); }
-    if (qb) qb.classList.add('on');
-    if (lbl) lbl.textContent = 'Queue';
-  } else {
-    if (pv) pv.style.display = '';
-    if (qv) qv.classList.remove('active');
-    if (qb) qb.classList.remove('on');
-    if (lbl) lbl.textContent = 'Now Playing';
-  }
+  _applyNpTab();
 }
 function closeNowPlaying() {
   S.npOpen = false;
@@ -668,18 +779,18 @@ function _renderQueueView() {
   const q   = S.queue;
   const cur = S.queueIdx;
   if (!q.length) {
-    return `<div class="np-q-empty">Queue is empty</div>`;
+    return `<div class="np-q-empty">${esc(t('player.toast.queueEmpty'))}</div>`;
   }
   let html = '';
   // Now playing
   if (cur >= 0 && cur < q.length) {
-    const t = q[cur];
-    html += `<div class="np-q-sec">Now playing</div>
+    const track = q[cur];
+    html += `<div class="np-q-sec">${esc(t('player.player.nowPlaying'))}</div>
     <div class="np-q-track playing" data-action="queue-jump" data-idx="${cur}">
-      <div class="np-q-art">${artImg(t)}</div>
+      <div class="np-q-art">${artImg(track)}</div>
       <div class="np-q-info">
-        <div class="np-q-title">${esc(t.title || 'Unknown')}</div>
-        <div class="np-q-artist">${esc(t.artist || '')}</div>
+        <div class="np-q-title">${esc(track.title || _unknown())}</div>
+        <div class="np-q-artist">${esc(track.artist || '')}</div>
       </div>
     </div>`;
   }
@@ -687,25 +798,25 @@ function _renderQueueView() {
   const upNext = q.slice(cur + 1);
   if (upNext.length) {
     html += `<div class="np-q-sec np-q-sec-next">
-      <span>Next up (${upNext.length})</span>
-      <button class="np-q-clear" data-action="queue-clear">Clear</button>
+      <span>${esc(t('mobile.queue.nextUp', { count: upNext.length }))}</span>
+      <button class="np-q-clear" data-action="queue-clear">${esc(t('player.ctrl.clear'))}</button>
     </div>`;
-    html += upNext.map((t, i) => {
+    html += upNext.map((track, i) => {
       const idx = cur + 1 + i;
       return `<div class="np-q-track" data-action="queue-jump" data-idx="${idx}">
-        <div class="np-q-art">${artImg(t)}</div>
+        <div class="np-q-art">${artImg(track)}</div>
         <div class="np-q-info">
-          <div class="np-q-title">${esc(t.title || 'Unknown')}</div>
-          <div class="np-q-artist">${esc(t.artist || '')}</div>
+          <div class="np-q-title">${esc(track.title || _unknown())}</div>
+          <div class="np-q-artist">${esc(track.artist || '')}</div>
         </div>
-        <button class="np-q-remove" data-action="queue-remove" data-idx="${idx}" aria-label="Remove">${I.close}</button>
+        <button class="np-q-remove" data-action="queue-remove" data-idx="${idx}" aria-label="${esc(t('mobile.queue.remove'))}">${I.close}</button>
       </div>`;
     }).join('');
   }
   // Previously played count
   const played = cur > 0 ? cur : 0;
   if (played) {
-    html += `<div class="np-q-sec" style="opacity:.4;margin-top:16px">${played} track${played !== 1 ? 's' : ''} played</div>`;
+    html += `<div class="np-q-sec" style="opacity:.4;margin-top:16px">${esc(t('mobile.queue.played', { count: played }))}</div>`;
   }
   return html;
 }
@@ -821,7 +932,7 @@ async function _loadAlbumDetail(albumId) {
     S.currentAlbum = data;
     if (S.screen === 'album') _patchScreen(_screenAlbumDetail());
   } catch {
-    if (S.screen === 'album') _patchScreen('<div class="state-empty">Could not load album</div>');
+    if (S.screen === 'album') _patchScreen(`<div class="state-empty">${esc(t('mobile.album.loadFailed'))}</div>`);
   }
 }
 
@@ -879,7 +990,7 @@ function doSearch(q) {
         seenPaths.add(t.filepath);
         tracks.push({
           filepath: t.filepath,
-          title:    t.name.includes(' - ') ? t.name.split(' - ').slice(1).join(' - ') : (t.filepath?.split('/').at(-1) ?? 'Unknown'),
+          title:    t.name.includes(' - ') ? t.name.split(' - ').slice(1).join(' - ') : (t.filepath?.split('/').at(-1) ?? _unknown()),
           artist:   t.name.includes(' - ') ? t.name.split(' - ')[0] : '',
           aaFile:   t.album_art_file || null,
         });
@@ -914,6 +1025,10 @@ function _patchSearchResults() {
 }
 
 /* ── QUEUE HELPERS ─────────────────────────────────────────────────────────── */
+function _cueTitle(cp, i) {
+  return cp.title || t('mobile.album.track', { n: cp.no || i + 1 });
+}
+
 /** Flatten album discs into a track list, expanding CUE-sheet files into virtual sub-tracks. */
 function _expandTracks(albumData) {
   const out = [];
@@ -927,7 +1042,7 @@ function _expandTracks(albumData) {
         const next = cps[i + 1] ?? null;
         out.push({
           filepath    : base.filepath,
-          title       : cp.title || `Track ${cp.no || i + 1}`,
+          title       : _cueTitle(cp, i),
           artist      : base.artist || albumData.artist || '',
           album       : albumData.displayName || '',
           aaFile      : base.aaFile || albumData.aaFile || null,
@@ -939,7 +1054,7 @@ function _expandTracks(albumData) {
       }
     } else {
       for (const t of dt) {
-        out.push({ filepath: t.filepath, title: t.title || 'Unknown', artist: t.artist || albumData.artist || '', album: albumData.displayName || '', aaFile: t.aaFile || albumData.aaFile || null, duration: t.duration || null, number: t.number || null });
+        out.push({ filepath: t.filepath, title: t.title || _unknown(), artist: t.artist || albumData.artist || '', album: albumData.displayName || '', aaFile: t.aaFile || albumData.aaFile || null, duration: t.duration || null, number: t.number || null });
       }
     }
   }
@@ -952,7 +1067,7 @@ function playAlbum(albumData, startIdx = 0, shuffle = false) {
   if (!allTracks.length) return;
   S.queue = allTracks.map(t => ({
     filepath    : t.filepath,
-    title       : t.title || 'Unknown',
+    title       : t.title || _unknown(),
     artist      : t.artist || albumData.artist || '',
     album       : albumData.displayName || '',
     aaFile      : t.aaFile || albumData.aaFile || null,
@@ -1014,7 +1129,10 @@ function playRadio(station) {
   _wfData = null; _wfFp = null;
   _stopWaveformRaf();
   _drawWaveform();
+  PLAYSTATS.close();
   const url = radioStreamUrl(station);
+  PLAYER._tc = false;
+  PLAYER._base = 0;
   PLAYER.el.src = url;
   PLAYER.el.load();
   PLAYER.el.play().catch(() => { /* autoplay policy */ });
@@ -1051,25 +1169,25 @@ function _screenConnect() {
         <img src="/assets/img/velvet-logo.svg" alt="Velvet" width="76" height="76" style="">
       </div>
       <h1>Velvet</h1>
-      <p>Your music, your way</p>
+      <p>${esc(t('mobile.connect.tagline'))}</p>
     </div>
     <div class="connect-card" id="connect-form-panel">
-      <label class="form-label" for="inp-url">Server URL</label>
+      <label class="form-label" for="inp-url">${esc(t('player.subsonic.serverUrl'))}</label>
       <input class="form-input" id="inp-url" type="url" placeholder="https://your-server:3000" value="${esc(savedUrl)}" autocapitalize="off" autocorrect="off" spellcheck="false">
-      <label class="form-label" for="inp-user">Username</label>
+      <label class="form-label" for="inp-user">${esc(t('player.login.username'))}</label>
       <input class="form-input" id="inp-user" type="text" placeholder="admin" value="${esc(savedUser)}" autocapitalize="off">
-      <label class="form-label" for="inp-pass">Password</label>
+      <label class="form-label" for="inp-pass">${esc(t('player.login.password'))}</label>
       <input class="form-input" id="inp-pass" type="password" placeholder="••••••••">
-      <button class="btn-cta" id="connect-btn">Connect</button>
+      <button class="btn-cta" id="connect-btn">${esc(t('player.misc.connect'))}</button>
       <div class="connect-err" id="connect-err" style="display:none"></div>
-      <button class="connect-pair-toggle" id="connect-pair-toggle" type="button">Pair with another device instead</button>
-      <a class="connect-pair-toggle" href="/?ui=desktop">Use desktop site instead</a>
+      <button class="connect-pair-toggle" id="connect-pair-toggle" type="button">${esc(t('mobile.connect.pairInstead'))}</button>
+      <a class="connect-pair-toggle" href="/?ui=desktop">${esc(t('mobile.connect.desktopInstead'))}</a>
     </div>
     <div class="connect-card hidden" id="connect-pair-panel">
-      <p class="connect-pair-hint">On another device that's already signed in, go to <strong>You</strong> and approve this code:</p>
+      <p class="connect-pair-hint">${t('mobile.connect.pairHint', { screen: `<strong>${esc(t('mobile.nav.you'))}</strong>` })}</p>
       <div class="connect-pair-code" id="connect-pair-code">------</div>
       <div class="connect-err" id="connect-pair-err" style="display:none"></div>
-      <button class="btn-cta" id="connect-pair-cancel-btn" type="button">Cancel</button>
+      <button class="btn-cta" id="connect-pair-cancel-btn" type="button">${esc(t('player.modal.cancel'))}</button>
     </div>
   </div>`;
 }
@@ -1079,7 +1197,7 @@ function startDevicePairing() {
   const url = (document.getElementById('inp-url')?.value ?? '').trim().replace(/\/$/, '');
   const urlErrEl = document.getElementById('connect-err');
   if (!url || !url.startsWith('http')) {
-    if (urlErrEl) { urlErrEl.textContent = 'Enter the server URL first, then pair with another device.'; urlErrEl.style.display = 'block'; }
+    if (urlErrEl) { urlErrEl.textContent = t('mobile.connect.pairNeedsUrl'); urlErrEl.style.display = 'block'; }
     return;
   }
   if (urlErrEl) urlErrEl.style.display = 'none';
@@ -1100,7 +1218,7 @@ function startDevicePairing() {
       S.pairPollTimer = setInterval(() => pollDevicePairing(url, data.pairId, deadline), 2000);
     })
     .catch(() => {
-      if (pairErrEl) { pairErrEl.textContent = 'Could not start pairing. Check the server URL.'; pairErrEl.style.display = 'block'; }
+      if (pairErrEl) { pairErrEl.textContent = t('mobile.connect.pairStartFailed'); pairErrEl.style.display = 'block'; }
     });
 
   // Marks pairing as "in progress" immediately so the request-in-flight guard
@@ -1113,7 +1231,7 @@ function pollDevicePairing(url, pairId, deadline) {
   if (Date.now() > deadline) {
     clearInterval(S.pairPollTimer);
     S.pairPollTimer = null;
-    if (pairErrEl) { pairErrEl.textContent = 'This code expired. Try again.'; pairErrEl.style.display = 'block'; }
+    if (pairErrEl) { pairErrEl.textContent = t('mobile.connect.codeExpired'); pairErrEl.style.display = 'block'; }
     return;
   }
   fetch(`${url}/api/v1/auth/pair/status?pairId=${encodeURIComponent(pairId)}`, { signal: AbortSignal.timeout(6000) })
@@ -1126,7 +1244,7 @@ function pollDevicePairing(url, pairId, deadline) {
       } else if (data.status === 'expired') {
         clearInterval(S.pairPollTimer);
         S.pairPollTimer = null;
-        if (pairErrEl) { pairErrEl.textContent = 'This code expired. Try again.'; pairErrEl.style.display = 'block'; }
+        if (pairErrEl) { pairErrEl.textContent = t('mobile.connect.codeExpired'); pairErrEl.style.display = 'block'; }
       }
       // 'pending' — keep polling
     })
@@ -1149,28 +1267,29 @@ function _screenHome() {
   const greetHtml = `
   <div class="home-hero">
     <div class="home-greeting">
-      <h2>Good ${_greeting()}</h2>
-      <p>${esc(S.username)}'s music</p>
+      <h2>${esc(t(_greetingKey()))}</h2>
+      <p>${esc(t('mobile.home.userMusic', { name: S.username }))}</p>
     </div>
-    <button class="home-settings-btn" data-nav="you" aria-label="Settings">${I.settings}</button>
+    <button class="home-settings-btn" data-nav="you" aria-label="${esc(t('player.title.settings'))}">${I.settings}</button>
   </div>`;
+  const seeAll = esc(t('mobile.home.seeAll'));
 
   // Radio Stations shelf
   let radioHtml = '';
   if (stations === null) {
-    radioHtml = `<div class="section-head"><span class="section-label">Radio Stations</span></div>
+    radioHtml = `<div class="section-head"><span class="section-label">${esc(t('mobile.home.radioStations'))}</span></div>
     <div class="state-loading" style="height:50px;padding:8px"><div class="spinner" style="width:24px;height:24px"></div></div>`;
   } else if (stations.length > 0) {
     radioHtml = `
     <div class="section-head">
-      <span class="section-label">Radio Stations</span>
-      <button class="section-see-all" data-nav="radio">See all</button>
+      <span class="section-label">${esc(t('mobile.home.radioStations'))}</span>
+      <button class="section-see-all" data-nav="radio">${seeAll}</button>
     </div>
     <div class="shelf" id="shelf-radio">
       ${stations.slice(0, 10).map(st => {
         const imgUrl = stationArtUrl(st);
         const artHtml = imgUrl
-          ? `<div class="art-ph">${I.radio}</div><img src="${imgUrl}" alt="" class="art-over" loading="lazy" onerror="this.remove()">`
+          ? `<div class="art-ph">${I.radio}</div><img src="${imgUrl}" alt="" class="art-over" loading="lazy">`
           : `<div class="art-ph">${I.radio}</div>`;
         const isPlaying = S.radioStation?.id === st.id;
         return `
@@ -1186,11 +1305,11 @@ function _screenHome() {
   // Recently Played shelf
   let recentPlayedHtml = '';
   if (recentPlayed === null) {
-    recentPlayedHtml = `<div class="section-head"><span class="section-label">Recently Played</span></div>
+    recentPlayedHtml = `<div class="section-head"><span class="section-label">${esc(t('player.nav.recentlyPlayed'))}</span></div>
     <div class="state-loading" style="height:50px;padding:8px"><div class="spinner" style="width:24px;height:24px"></div></div>`;
   } else if (recentPlayed.length > 0) {
     recentPlayedHtml = `
-    <div class="section-head"><span class="section-label">Recently Played</span></div>
+    <div class="section-head"><span class="section-label">${esc(t('player.nav.recentlyPlayed'))}</span></div>
     <div class="shelf" id="shelf-played">
       ${recentPlayed.map(t => {
         const meta = t.metadata ?? {};
@@ -1199,12 +1318,12 @@ function _screenHome() {
         <div class="shelf-item"
              data-action="play-track"
              data-filepath="${esc(t.filepath)}"
-             data-title="${esc(meta.title || t.filepath?.split('/').at(-1) || 'Unknown')}"
+             data-title="${esc(meta.title || t.filepath?.split('/').at(-1) || _unknown())}"
              data-artist="${esc(meta.artist || '')}"
              data-album="${esc(meta.album || '')}"
              data-aa-file="${esc(aaFile || '')}">
           <div class="shelf-art">${artImg({aaFile})}</div>
-          <div class="shelf-name">${esc(meta.title || t.filepath?.split('/').at(-1) || 'Unknown')}</div>
+          <div class="shelf-name">${esc(meta.title || t.filepath?.split('/').at(-1) || _unknown())}</div>
           <div class="shelf-sub">${esc(meta.artist || '')}</div>
         </div>`;
       }).join('')}
@@ -1214,16 +1333,16 @@ function _screenHome() {
   // Recently Added shelf
   let recentAddedHtml = '';
   if (recentFolders === null) {
-    recentAddedHtml = `<div class="section-head"><span class="section-label">Recently Added</span></div>
+    recentAddedHtml = `<div class="section-head"><span class="section-label">${esc(t('player.nav.recentlyAdded'))}</span></div>
     <div class="state-loading" style="height:50px;padding:8px"><div class="spinner" style="width:24px;height:24px"></div></div>`;
   } else if (recentFolders.length > 0) {
     recentAddedHtml = `
-    <div class="section-head"><span class="section-label">Recently Added</span></div>
+    <div class="section-head"><span class="section-label">${esc(t('player.nav.recentlyAdded'))}</span></div>
     <div class="shelf" id="shelf-recent">
       ${recentFolders.slice(0, 12).map((folder, i) => `
         <div class="shelf-item" data-action="play-recent-folder" data-folder-global-idx="${i}">
           <div class="shelf-art">${artImg({aaFile: folder.art})}</div>
-          <div class="shelf-name">${esc(folder.label || 'Unknown')}</div>
+          <div class="shelf-name">${esc(folder.label || _unknown())}</div>
           <div class="shelf-sub">${esc(folder.artist || '')}</div>
         </div>`).join('')}
     </div>`;
@@ -1234,14 +1353,14 @@ function _screenHome() {
   if (albums !== null && albums.length > 0) {
     jumpHtml = `
     <div class="section-head">
-      <span class="section-label">Jump Back In</span>
-      <button class="section-see-all" data-nav="library">See all</button>
+      <span class="section-label">${esc(t('mobile.home.jumpBackIn'))}</span>
+      <button class="section-see-all" data-nav="library">${seeAll}</button>
     </div>
     <div class="shelf" id="shelf-jump">
       ${albums.slice(0, 10).map(a => `
         <div class="shelf-item" data-action="open-album" data-album-id="${esc(a.id)}">
           <div class="shelf-art">${artImg(a)}</div>
-          <div class="shelf-name">${esc(a.displayName || 'Unknown')}</div>
+          <div class="shelf-name">${esc(a.displayName || _unknown())}</div>
           <div class="shelf-sub">${esc(a.artist || '')}</div>
         </div>`).join('')}
     </div>`;
@@ -1250,24 +1369,24 @@ function _screenHome() {
   return greetHtml + recentPlayedHtml + recentAddedHtml + jumpHtml + radioHtml;
 }
 
-function _greeting() {
+function _greetingKey() {
   const h = new Date().getHours();
-  if (h < 12) return 'morning';
-  if (h < 17) return 'afternoon';
-  return 'evening';
+  if (h < 12) return 'mobile.home.goodMorning';
+  if (h < 17) return 'mobile.home.goodAfternoon';
+  return 'mobile.home.goodEvening';
 }
 
 function _screenLibrary() {
   const tab = S.libTab || 'browse';
   const tabsHtml = `
   <div class="lib-tabs">
-    <button class="lib-tab${tab==='browse'?' active':''}" data-action="lib-tab" data-tab="browse">Browse</button>
-    <button class="lib-tab${tab==='albums'?' active':''}" data-action="lib-tab" data-tab="albums">Albums</button>
+    <button class="lib-tab${tab==='browse'?' active':''}" data-action="lib-tab" data-tab="browse">${esc(t('player.nav.browse'))}</button>
+    <button class="lib-tab${tab==='albums'?' active':''}" data-action="lib-tab" data-tab="albums">${esc(t('player.nav.albums'))}</button>
   </div>`;
 
   return `
   <div class="page-top">
-    <h1 class="page-title">Library</h1>
+    <h1 class="page-title">${esc(t('mobile.nav.library'))}</h1>
   </div>
   ${tabsHtml}
   ${tab === 'albums' ? _screenAlbumsGrid() : _screenBrowseContent()}`;
@@ -1276,7 +1395,7 @@ function _screenLibrary() {
 function _screenAlbumsGrid() {
   const albums = S.albums;
   if (!albums) return `<div class="state-loading"><div class="spinner"></div></div>`;
-  if (!albums.length) return `<div class="state-empty">No albums found</div>`;
+  if (!albums.length) return `<div class="state-empty">${esc(t('player.albums.noneFound'))}</div>`;
 
   // Vpath filter pills
   const vpaths = [...new Set(albums.map(a => a.sourceVpath).filter(Boolean))];
@@ -1285,7 +1404,7 @@ function _screenAlbumsGrid() {
 
   const pillsHtml = vpaths.length > 1 ? `
   <div class="vpath-pills">
-    <button class="vpath-pill${filter === 'All' ? ' active' : ''}" data-action="albums-filter" data-vpath="All">All</button>
+    <button class="vpath-pill${filter === 'All' ? ' active' : ''}" data-action="albums-filter" data-vpath="All">${esc(t('player.search.tabAll'))}</button>
     ${vpaths.map(v => `<button class="vpath-pill${filter === v ? ' active' : ''}" data-action="albums-filter" data-vpath="${esc(v)}">${esc(v)}</button>`).join('')}
   </div>` : '';
 
@@ -1293,7 +1412,7 @@ function _screenAlbumsGrid() {
     ${filtered.map(a => `
       <div class="grid-card" data-action="open-album" data-album-id="${esc(a.id)}">
         <div class="grid-art">${artImg(a)}</div>
-        <div class="grid-name">${esc(a.displayName || 'Unknown')}</div>
+        <div class="grid-name">${esc(a.displayName || _unknown())}</div>
         <div class="grid-sub">${esc(a.artist || '')}</div>
       </div>`).join('')}
   </div>`;
@@ -1313,13 +1432,13 @@ function _screenBrowseContent() {
     const label = S.browseDir.replace(/\/$/, '').split('/').filter(p => p).at(-1) ?? '';
     html += `
     <div class="browse-nav">
-      <button class="back-btn" data-action="browse-back">${I.back} Back</button>
+      <button class="back-btn" data-action="browse-back">${I.back} ${esc(t('mobile.library.back'))}</button>
       <span class="browse-path">${esc(label)}</span>
     </div>`;
     if (files.length > 0) {
       html += `
       <div class="browse-actions">
-        <button class="btn-play" data-action="play-browse-folder">${I.play_sm} Play All (${files.length})</button>
+        <button class="btn-play" data-action="play-browse-folder">${I.play_sm} ${esc(t('mobile.library.playAll', { count: files.length }))}</button>
       </div>`;
     }
   }
@@ -1352,7 +1471,7 @@ function _screenBrowseContent() {
            data-aa-file="${esc(meta['album-art'] || '')}">
         <span class="track-n">${idx + 1}</span>
         <div class="track-info">
-          <div class="track-t">${esc(meta.title || file.name || 'Unknown')}</div>
+          <div class="track-t">${esc(meta.title || file.name || _unknown())}</div>
           ${meta.artist ? `<div class="track-a">${esc(meta.artist)}</div>` : ''}
         </div>
         <span class="track-d">${fmtTime(meta.duration || 0)}</span>
@@ -1362,7 +1481,7 @@ function _screenBrowseContent() {
   }
 
   if (!dirs.length && !files.length) {
-    html += `<div class="state-empty">Empty folder</div>`;
+    html += `<div class="state-empty">${esc(t('mobile.library.emptyFolder'))}</div>`;
   }
 
   return html;
@@ -1374,7 +1493,8 @@ function _screenAlbumLoading() {
 
 function _screenAlbumDetail() {
   const data = S.currentAlbum;
-  if (!data) return `<div class="state-empty">Album not found</div>`;
+  if (!data) return `<div class="state-empty">${esc(t('mobile.album.notFound'))}</div>`;
+  const addLabel = esc(t('player.ctrl.addToQueue'));
 
   const discs = data.discs ?? [];
   const multiDisc = discs.length > 1;
@@ -1400,7 +1520,7 @@ function _screenAlbumDetail() {
            data-action="play-track"
            data-track-idx="${idx}"
            data-filepath="${esc(base.filepath)}"
-           data-title="${esc(cp.title || `Track ${cp.no || ci + 1}`)}"
+           data-title="${esc(_cueTitle(cp, ci))}"
            data-artist="${esc(base.artist || data.artist || '')}"
            data-album="${esc(data.displayName || '')}"
            data-aa-file="${esc(base.aaFile || data.aaFile || '')}"
@@ -1408,16 +1528,16 @@ function _screenAlbumDetail() {
            data-cue-end="${nextCp ? nextCp.t : ''}">
         <span class="track-n">${cp.no || ci + 1}</span>
         <div class="track-info">
-          <div class="track-t">${esc(cp.title || `Track ${cp.no || ci + 1}`)}</div>
+          <div class="track-t">${esc(_cueTitle(cp, ci))}</div>
         </div>
         <span class="track-d">${fmtTime(dur)}</span>
         <button class="track-add-btn" data-action="queue-add"
                 data-filepath="${esc(base.filepath)}"
-                data-title="${esc(cp.title || `Track ${cp.no || ci + 1}`)}"
+                data-title="${esc(_cueTitle(cp, ci))}"
                 data-artist="${esc(base.artist || data.artist || '')}"
                 data-album="${esc(data.displayName || '')}"
                 data-aa-file="${esc(base.aaFile || data.aaFile || '')}"
-                aria-label="Add to queue">${I.plus}</button>
+                aria-label="${addLabel}">${I.plus}</button>
       </div>`;
       }).join('');
     } else {
@@ -1435,7 +1555,7 @@ function _screenAlbumDetail() {
            data-aa-file="${esc(data.aaFile || '')}">
         <span class="track-n">${t.number || idx + 1}</span>
         <div class="track-info">
-          <div class="track-t">${esc(t.title || 'Unknown')}</div>
+          <div class="track-t">${esc(t.title || _unknown())}</div>
           ${t.artist && t.artist !== data.artist ? `<div class="track-a">${esc(t.artist)}</div>` : ''}
         </div>
         <span class="track-d">${fmtTime(t.duration || 0)}</span>
@@ -1445,29 +1565,29 @@ function _screenAlbumDetail() {
                 data-artist="${esc(t.artist || data.artist || '')}"
                 data-album="${esc(data.displayName || '')}"
                 data-aa-file="${esc(data.aaFile || '')}"
-                aria-label="Add to queue">${I.plus}</button>
+                aria-label="${addLabel}">${I.plus}</button>
       </div>`;
       }).join('');
     }
 
-    return `${multiDisc ? `<div class="disc-lbl">Disc ${disc.discIndex}</div>` : ''}${rows}`;
+    return `${multiDisc ? `<div class="disc-lbl">${esc(t('mobile.album.disc', { n: disc.discIndex }))}</div>` : ''}${rows}`;
   }).join('');
 
   const trackCount = expanded.length;
   const totalMin   = Math.round(expanded.reduce((s, t) => s + (t.duration || 0), 0) / 60);
 
   return `
-  <button class="back-btn" data-action="back">${I.back} Library</button>
+  <button class="back-btn" data-action="back">${I.back} ${esc(t('mobile.nav.library'))}</button>
   <div class="album-hero">
     <div class="album-hero-art">${artImg(data)}</div>
     <div class="album-hero-meta">
-      <div class="album-title">${esc(data.displayName || 'Unknown')}</div>
+      <div class="album-title">${esc(data.displayName || _unknown())}</div>
       <div class="album-artist">${esc(data.artist || '')}</div>
-      <div class="album-info">${data.year ? esc(data.year) + ' · ' : ''}${trackCount} track${trackCount !== 1 ? 's' : ''} · ${totalMin} min</div>
+      <div class="album-info">${data.year ? esc(data.year) + ' · ' : ''}${esc(t('mobile.album.trackCount', { count: trackCount }))} · ${esc(t('mobile.album.minutes', { count: totalMin }))}</div>
     </div>
     <div class="album-actions">
-      <button class="btn-play" data-action="play-album">${I.play_sm} Play</button>
-      <button class="btn-shuffle" data-action="shuffle-album">${I.shuffle} Shuffle</button>
+      <button class="btn-play" data-action="play-album">${I.play_sm} ${esc(t('player.fe.btnPlay'))}</button>
+      <button class="btn-shuffle" data-action="shuffle-album">${I.shuffle} ${esc(t('player.ctrl.shuffle'))}</button>
     </div>
   </div>
   ${tracksHtml}`;
@@ -1477,33 +1597,37 @@ function _screenSearch() {
   const vpaths = S.vpaths ?? [];
   const pillsHtml = vpaths.length > 1 ? `
   <div class="vpath-pills">
-    <button class="vpath-pill${S.searchVpath === 'All' ? ' active' : ''}" data-action="set-search-vpath" data-vpath="All">All</button>
+    <button class="vpath-pill${S.searchVpath === 'All' ? ' active' : ''}" data-action="set-search-vpath" data-vpath="All">${esc(t('player.search.tabAll'))}</button>
     ${vpaths.map(v => `<button class="vpath-pill${S.searchVpath === v ? ' active' : ''}" data-action="set-search-vpath" data-vpath="${esc(v)}">${esc(v)}</button>`).join('')}
   </div>` : '';
   return `
   <div class="search-bar">
     <div class="search-field">
       <span class="s-icon">${I.search}</span>
-      <input class="search-input" id="search-inp" type="search" placeholder="Albums, artists, tracks…" value="${esc(S.searchQ)}" autocomplete="off">
+      <input class="search-input" id="search-inp" type="search" placeholder="${esc(t('mobile.search.placeholder'))}" value="${esc(S.searchQ)}" autocomplete="off">
     </div>
     ${pillsHtml}
   </div>
   <div class="search-body" id="search-results">
-    ${S.searchRes ? _searchResults() : '<div class="state-empty">Search your library</div>'}
+    ${_searchResults()}
   </div>`;
+}
+
+function _secHead(key, first) {
+  return `<div class="s-sec-head"${first ? '' : ' style="margin-top:14px"'}>${esc(t(key))}</div>`;
 }
 
 function _searchResults() {
   const res = S.searchRes;
-  if (!res) return '<div class="state-empty">Search your library</div>';
+  if (!res) return `<div class="state-empty">${esc(t('mobile.search.prompt'))}</div>`;
   const total = res.artists.length + res.folders.length + res.albums.length + res.tracks.length;
-  if (!total) return '<div class="state-empty">No results found</div>';
+  if (!total) return `<div class="state-empty">${esc(t('mobile.search.noResults'))}</div>`;
 
   let html = '';
 
   // Order matches desktop: Folders → Artists → Albums → Tracks
   if (res.folders.length) {
-    html += `<div class="s-sec-head">Folders</div>`;
+    html += _secHead('player.search.tabFolders', true);
     html += res.folders.slice(0, 8).map(f => `
       <div class="s-simple-row" data-action="open-browse" data-dir="${esc(f.browse_path || '')}">
         <div class="s-art"><div class="art-ph">${I.library}</div></div>
@@ -1515,28 +1639,26 @@ function _searchResults() {
   }
 
   if (res.artists.length) {
-    if (html) html += `<div class="s-sec-head" style="margin-top:14px">Artists</div>`;
-    else html += `<div class="s-sec-head">Artists</div>`;
+    html += _secHead('player.search.tabArtists', !html);
     html += res.artists.slice(0, 6).map(a => `
       <div class="s-simple-row" data-action="search-artist" data-name="${esc(a.name)}">
         <div class="s-art"><div class="art-ph">${I.you}</div></div>
         <div style="flex:1;min-width:0">
           <div class="s-name">${esc(a.name)}</div>
-          <div class="s-sub">${a.variants?.length ? esc(a.variants.slice(0,3).join(', ')) : 'Artist'}</div>
+          <div class="s-sub">${esc(a.variants?.length ? a.variants.slice(0,3).join(', ') : t('player.sortBar.artist'))}</div>
         </div>
       </div>`).join('');
   }
 
   if (res.albums.length) {
-    if (html) html += `<div class="s-sec-head" style="margin-top:14px">Albums</div>`;
-    else html += `<div class="s-sec-head">Albums</div>`;
+    html += _secHead('player.search.tabAlbums', !html);
     html += res.albums.map(a => {
       const action = a.id ? `data-action="open-album" data-album-id="${esc(a.id)}"` : '';
       return `
       <div class="s-album-row" ${action}>
         <div class="s-art">${artImg(a)}</div>
         <div>
-          <div class="s-name">${esc(a.displayName || 'Unknown')}</div>
+          <div class="s-name">${esc(a.displayName || _unknown())}</div>
           <div class="s-sub">${esc(a.artist || '')}</div>
         </div>
       </div>`;
@@ -1544,8 +1666,8 @@ function _searchResults() {
   }
 
   if (res.tracks.length) {
-    if (html) html += `<div class="s-sec-head" style="margin-top:14px">Tracks</div>`;
-    else html += `<div class="s-sec-head">Tracks</div>`;
+    html += _secHead('player.search.tabTracks', !html);
+    const addLabel = esc(t('player.ctrl.addToQueue'));
     html += res.tracks.map(t => `
       <div class="s-track-row"
            data-action="play-track"
@@ -1556,7 +1678,7 @@ function _searchResults() {
            data-aa-file="${esc(t.aaFile || '')}">
         <div class="s-art"><div class="art-ph">${I.music}</div></div>
         <div style="flex:1;min-width:0">
-          <div class="s-name">${esc(t.title || 'Unknown')}</div>
+          <div class="s-name">${esc(t.title || _unknown())}</div>
           <div class="s-sub">${esc(t.artist || '')}</div>
         </div>
         <button class="track-add-btn" data-action="queue-add"
@@ -1565,7 +1687,7 @@ function _searchResults() {
                 data-artist="${esc(t.artist || '')}"
                 data-album=""
                 data-aa-file="${esc(t.aaFile || '')}"
-                aria-label="Add to queue">${I.plus}</button>
+                aria-label="${addLabel}">${I.plus}</button>
       </div>`).join('');
   }
 
@@ -1580,12 +1702,12 @@ function _screenRadio() {
   if (stations === null) {
     listHtml = `<div class="state-loading" style="padding-top:60px"><div class="spinner"></div></div>`;
   } else if (stations.length === 0) {
-    listHtml = `<div class="state-empty">No radio stations configured.<br>Add stations in the Admin panel.</div>`;
+    listHtml = `<div class="state-empty">${esc(t('mobile.radio.none'))}<br>${esc(t('mobile.radio.noneHint'))}</div>`;
   } else {
     listHtml = `<div class="radio-list">` + stations.map(st => {
       const imgUrl = stationArtUrl(st);
       const artHtml = imgUrl
-        ? `<div class="art-ph">${I.radio}</div><img src="${imgUrl}" alt="" class="art-over" loading="lazy" onerror="this.remove()">`
+        ? `<div class="art-ph">${I.radio}</div><img src="${imgUrl}" alt="" class="art-over" loading="lazy">`
         : `<div class="art-ph">${I.radio}</div>`;
       const isPlaying = current?.id === st.id && S.playing;
       const isCurrent = current?.id === st.id;
@@ -1602,49 +1724,55 @@ function _screenRadio() {
   }
 
   return `
-  <div class="page-top"><h1 class="page-title">Radio</h1></div>
+  <div class="page-top"><h1 class="page-title">${esc(t('mobile.nav.radio'))}</h1></div>
   ` + listHtml;
 }
 
 function _screenYou() {
   const qualOpts = ['original','mp3-320','mp3-192','mp3-128','opus-128','opus-64'].map(q =>
-    `<option value="${q}"${S.quality === q ? ' selected' : ''}>${q}</option>`).join('');
+    `<option value="${q}"${S.quality === q ? ' selected' : ''}>${q === 'original' ? esc(t('mobile.you.qualityOriginal')) : q}</option>`).join('');
+  const langOpts = I18N.listLanguages().filter(l => S.languages.includes(l.code)).map(l =>
+    `<option value="${l.code}"${I18N.getLanguage() === l.code ? ' selected' : ''}>${esc(l.label)}</option>`).join('');
 
   return `
-  <div class="page-top"><h1 class="page-title">You</h1></div>
+  <div class="page-top"><h1 class="page-title">${esc(t('mobile.nav.you'))}</h1></div>
   <div class="settings-group">
-    <div class="settings-group-title">Server</div>
+    <div class="settings-group-title">${esc(t('mobile.you.server'))}</div>
     <div class="settings-card">
       <div class="settings-row settings-row-stack">
-        <span class="settings-row-label">Connected to</span>
+        <span class="settings-row-label">${esc(t('mobile.you.connectedTo'))}</span>
         <span class="settings-row-val">${esc(S.serverUrl)}</span>
       </div>
       <div class="settings-row">
-        <span class="settings-row-label">User</span>
+        <span class="settings-row-label">${esc(t('mobile.you.user'))}</span>
         <span class="settings-row-val">${esc(S.username)}</span>
+      </div>
+      <div class="settings-row">
+        <span class="settings-row-label">${esc(t('settings.language'))}</span>
+        <select class="settings-select" data-action="set-language">${langOpts}</select>
       </div>
     </div>
   </div>
-  <div class="settings-group">
-    <div class="settings-group-title">Playback</div>
+  ${S.transcodeOk ? `<div class="settings-group">
+    <div class="settings-group-title">${esc(t('mobile.you.playback'))}</div>
     <div class="settings-card">
       <div class="settings-row">
-        <span class="settings-row-label">Quality</span>
+        <span class="settings-row-label">${esc(t('mobile.you.quality'))}</span>
         <select class="settings-select" data-action="set-quality">${qualOpts}</select>
       </div>
     </div>
-  </div>
+  </div>` : ''}
   <div class="settings-group">
-    <div class="settings-group-title">Pair a Device</div>
+    <div class="settings-group-title">${esc(t('mobile.you.pairTitle'))}</div>
     <div class="settings-card">
       <div class="settings-row settings-row-stack">
-        <span class="settings-pair-hint">Approve a sign-in code shown on another device (like a TV) so it can sign in without a password.</span>
-        <input class="form-input settings-pair-input" id="pair-code-input" type="text" placeholder="Code" maxlength="8" autocapitalize="characters" autocomplete="off">
+        <span class="settings-pair-hint">${esc(t('mobile.you.pairHint'))}</span>
+        <input class="form-input settings-pair-input" id="pair-code-input" type="text" placeholder="${esc(t('mobile.you.codePlaceholder'))}" maxlength="8" autocapitalize="characters" autocomplete="off">
       </div>
     </div>
     <div class="settings-btn-row" style="margin-top:8px">
       <button class="settings-action" data-action="pair-approve">
-        ${I.pair} Approve
+        ${I.pair} ${esc(t('mobile.you.approve'))}
       </button>
     </div>
     <div id="pair-status" class="settings-pair-status"></div>
@@ -1652,33 +1780,35 @@ function _screenYou() {
   <div class="settings-group">
     <div class="settings-btn-row">
       <a class="settings-action" href="/?ui=desktop">
-        ${I.desktop} Use Desktop Site
+        ${I.desktop} ${esc(t('mobile.you.desktopSite'))}
       </a>
     </div>
   </div>
   <div class="settings-group" style="margin-top:8px">
     <div class="settings-btn-row">
       <button class="settings-action danger" data-action="logout">
-        ${I.logout} Sign out
+        ${I.logout} ${esc(t('mobile.you.signOut'))}
       </button>
     </div>
   </div>
   <div class="you-credit">
-    <div class="you-credit-label">Design</div>
+    <div class="you-credit-label">${esc(t('mobile.you.design'))}</div>
     <div class="you-credit-body">
-      UI inspired by
-      <a class="you-credit-link" href="https://www.figma.com/community/file/1227220980074899885" target="_blank" rel="noopener">Music App Design – App UI</a>
-      by <strong>Sarwar Jahan</strong> — CC BY 4.0
+      ${t('mobile.you.credit', {
+        work: '<a class="you-credit-link" href="https://www.figma.com/community/file/1227220980074899885" target="_blank" rel="noopener">Music App Design – App UI</a>',
+        author: '<strong>Sarwar Jahan</strong>',
+      })}
     </div>
   </div>`;
 }
 
 /* ── CONNECT FLOW ──────────────────────────────────────────────────────────── */
 // Shared session-establishment tail for both password login and device pairing.
-function _finishLogin(url, username, token, vpaths) {
+async function _finishLogin(url, username, token, vpaths) {
   S.serverUrl = url;
   S.token     = token;
   S.username  = username;
+  await I18N.setUser(username);
   S.vpaths    = vpaths ?? [];
   S.vpathMeta = {}; // vpathMetaData comes from /api/v1/ping, fetched below
   LS.set('serverUrl', url);
@@ -1689,7 +1819,7 @@ function _finishLogin(url, username, token, vpaths) {
     headers: { 'x-access-token': token },
     signal: AbortSignal.timeout(5000),
   }).then(async r => {
-    if (r.ok) { try { const pd = await r.json(); S.vpathMeta = pd.vpathMetaData ?? {}; } catch { /* non-critical */ } }
+    if (r.ok) { try { const pd = await r.json(); S.vpathMeta = pd.vpathMetaData ?? {}; S.transcodeOk = !!pd.transcode; } catch { /* non-critical */ } }
   }).catch(() => { /* non-critical */ });
 
   _loadScrobbleStatus();
@@ -1708,20 +1838,22 @@ async function handleConnect() {
   const pass = passEl?.value ?? '';
 
   if (!url || !user || !pass) {
-    _showErr('Please fill in all fields'); return;
+    _showErr(t('mobile.connect.fillAll')); return;
   }
   if (!url.startsWith('http')) {
-    _showErr('URL must start with http:// or https://'); return;
+    _showErr(t('mobile.connect.urlScheme')); return;
   }
 
   btn.disabled = true;
-  btn.textContent = 'Connecting…';
+  btn.textContent = t('mobile.connect.connecting');
   errEl.style.display = 'none';
 
+  // Messages meant for the user ride on the error; anything else (network, timeout, bad JSON) is a failed connection.
+  const fail = msg => Object.assign(new Error(msg), { shown: true });
   try {
     // 1 — ping public
     const ping = await fetch(`${url}/api/v1/ping/public`, { signal: AbortSignal.timeout(6000) });
-    if (!ping.ok) throw new Error(`Server error ${ping.status}`);
+    if (!ping.ok) throw fail(t('mobile.connect.serverError', { status: ping.status }));
 
     // 2 — authenticate
     const auth = await fetch(`${url}/api/v1/auth/login`, {
@@ -1731,18 +1863,18 @@ async function handleConnect() {
       signal: AbortSignal.timeout(6000),
     });
     const authData = await auth.json();
-    if (!auth.ok || !authData.token) throw new Error(authData.message || 'Login failed');
+    if (!auth.ok || !authData.token) throw fail(authData.message || t('mobile.connect.loginFailed'));
 
-    _finishLogin(url, user, authData.token, authData.vpaths);
+    await _finishLogin(url, user, authData.token, authData.vpaths);
   } catch (err) {
-    _showErr(err.message || 'Connection failed');
-    btn.disabled = false;
-    btn.textContent = 'Connect';
+    _showErr(err.shown ? err.message : t('mobile.connect.connectionFailed'));
   }
 
   function _showErr(msg) {
-    if (errEl) { errEl.textContent = msg; errEl.style.display = 'block'; }
-    if (btn)   { btn.disabled = false; btn.textContent = 'Connect'; }
+    errEl.textContent = msg;
+    errEl.style.display = 'block';
+    btn.disabled = false;
+    btn.textContent = t('player.misc.connect');
   }
 }
 
@@ -1769,23 +1901,8 @@ document.addEventListener('click', e => {
     case 'next':           PLAYER.skipNext(); break;
     case 'np-close':       closeNowPlaying(); break;
     case 'np-tab': {
-      const pv  = document.getElementById('np-player-view');
-      const qv  = document.getElementById('np-queue-view');
-      const qb  = document.getElementById('np-queue-btn');
-      const lbl = document.getElementById('np-top-label');
-      if (S.npTab === 'player') {
-        S.npTab = 'queue';
-        if (pv) pv.style.display = 'none';
-        if (qv) { qv.classList.add('active'); qv.innerHTML = _renderQueueView(); }
-        if (qb) qb.classList.add('on');
-        if (lbl) lbl.textContent = 'Queue';
-      } else {
-        S.npTab = 'player';
-        if (pv) pv.style.display = '';
-        if (qv) qv.classList.remove('active');
-        if (qb) qb.classList.remove('on');
-        if (lbl) lbl.textContent = 'Now Playing';
-      }
+      S.npTab = S.npTab === 'player' ? 'queue' : 'player';
+      _applyNpTab();
       break;
     }
     case 'queue-jump': {
@@ -1818,7 +1935,7 @@ document.addEventListener('click', e => {
       const { filepath, title, artist, album } = target.dataset;
       const aaFile = target.dataset.aaFile || null;
       if (!filepath) break;
-      const track = { filepath, title: title || 'Unknown', artist: artist || '', album: album || '', aaFile };
+      const track = { filepath, title: title || _unknown(), artist: artist || '', album: album || '', aaFile };
       const insertAt = S.queueIdx >= 0 ? S.queueIdx + 1 : S.queue.length;
       S.queue.splice(insertAt, 0, track);
       document.getElementById('screen').classList.remove('no-player');
@@ -1836,8 +1953,7 @@ document.addEventListener('click', e => {
     }
     case 'repeat': {
       S.repeat = S.repeat === 'off' || !S.repeat ? 'all' : S.repeat === 'all' ? 'one' : 'off';
-      const btn = document.getElementById('np-repeat');
-      if (btn) { btn.classList.toggle('on', S.repeat !== 'off'); btn.title = `Repeat: ${S.repeat}`; }
+      _refreshRepeatBtn();
       break;
     }
     case 'open-album': {
@@ -1876,19 +1992,19 @@ document.addEventListener('click', e => {
       const input  = document.getElementById('pair-code-input');
       const status = document.getElementById('pair-status');
       const code = (input?.value ?? '').trim();
-      if (!code) { if (status) status.textContent = 'Enter the code shown on the other device.'; input?.focus(); break; }
+      if (!code) { if (status) status.textContent = t('mobile.you.enterCode'); input?.focus(); break; }
       target.disabled = true;
-      if (status) status.textContent = 'Approving…';
+      if (status) status.textContent = t('mobile.you.approving');
       fetch(`${S.serverUrl}/api/v1/auth/pair/approve`, {
         method: 'POST',
         headers: { 'x-access-token': S.token, 'Content-Type': 'application/json' },
         body: JSON.stringify({ code }),
       }).then(r => {
         if (!r.ok) throw Object.assign(new Error('Invalid or expired code'), { status: r.status });
-        if (status) status.textContent = 'Approved — the other device should sign in now.';
+        if (status) status.textContent = t('mobile.you.approved');
         if (input) input.value = '';
       }).catch(e => {
-        if (status) status.textContent = e.status === 400 ? 'That code is invalid or has expired.' : 'Failed to approve the code.';
+        if (status) status.textContent = t(e.status === 400 ? 'mobile.you.codeInvalid' : 'mobile.you.approveFailed');
       }).finally(() => { target.disabled = false; });
       break;
     }
@@ -1901,6 +2017,7 @@ document.addEventListener('click', e => {
       S.stations = null; S.radioStation = null; S.radioNowPlaying = null; S.radioBitrate = null; S.recentPlayed = null; S.albumsFilter = 'All'; S.searchVpath = 'All'; S.searchRes = null; S.searchQ = '';
       PLAYER.el.pause(); PLAYER.el.src = '';
       LS.del('serverUrl'); LS.del('username'); LS.del('token');
+      I18N.setUser('');
       document.getElementById('mini-player').classList.add('hidden');
       closeNowPlaying();
       navigate('connect');
@@ -1974,7 +2091,7 @@ document.addEventListener('click', e => {
       if (files.length > 1) {
         S.queue = files.map(f => ({
           filepath: (f.metadata?.filepath ?? '').replace(/^\//, ''),
-          title:    f.metadata?.metadata?.title || f.name || 'Unknown',
+          title:    f.metadata?.metadata?.title || f.name || _unknown(),
           artist:   f.metadata?.metadata?.artist || '',
           album:    f.metadata?.metadata?.album || '',
           aaFile:   f.metadata?.metadata?.['album-art'] || null,
@@ -1995,7 +2112,7 @@ document.addEventListener('click', e => {
       if (!files.length) break;
       S.queue = files.map(f => ({
         filepath: (f.metadata?.filepath ?? '').replace(/^\//, ''),
-        title:    f.metadata?.metadata?.title || f.name || 'Unknown',
+        title:    f.metadata?.metadata?.title || f.name || _unknown(),
         artist:   f.metadata?.metadata?.artist || '',
         album:    f.metadata?.metadata?.album || '',
         aaFile:   f.metadata?.metadata?.['album-art'] || null,
@@ -2012,7 +2129,7 @@ document.addEventListener('click', e => {
       if (!folder?.songs?.length) break;
       S.queue = folder.songs.map(s => ({
         filepath: s.filepath,
-        title:    s.metadata?.title || s.filepath?.split('/').at(-1) || 'Unknown',
+        title:    s.metadata?.title || s.filepath?.split('/').at(-1) || _unknown(),
         artist:   s.metadata?.artist || '',
         album:    s.metadata?.album || folder.label,
         aaFile:   s.metadata?.['album-art'] || null,
@@ -2023,11 +2140,14 @@ document.addEventListener('click', e => {
       openNowPlaying();
       break;
     }
-    case 'set-quality': {
-      S.quality = target.value; LS.set('quality', S.quality);
-      break;
-    }
   }
+});
+
+// A select's new value exists only once it changes; a click handler still reads the old one.
+document.addEventListener('change', e => {
+  const { action } = e.target.dataset;
+  if (action === 'set-quality') { S.quality = e.target.value; LS.set('quality', S.quality); }
+  if (action === 'set-language') I18N.loadLanguage(e.target.value);
 });
 
 // Connect button via event delegation on form
@@ -2042,25 +2162,24 @@ document.addEventListener('input', e => {
   if (e.target.id === 'search-inp') doSearch(e.target.value);
 });
 
-// Swipe down on Now Playing to close
-(function setupSwipe() {
-  let startY = 0;
-  const np = document.getElementById('now-playing');
-  if (!np) return; // will be created in initShell
-  document.addEventListener('DOMContentLoaded', () => {
-    const np2 = document.getElementById('now-playing');
-    if (!np2) return;
-    np2.addEventListener('touchstart', e => { startY = e.touches[0].clientY; }, { passive: true });
-    np2.addEventListener('touchend', e => {
-      const dy = e.changedTouches[0].clientY - startY;
-      if (dy > 70) closeNowPlaying();
-    }, { passive: true });
-  });
-})();
+/* ── LANGUAGE ──────────────────────────────────────────────────────────────── */
+// Same rule as the player's picker: only the languages the admin enabled, English when the current one is not.
+async function _loadEnabledLanguages() {
+  try {
+    const d = await (await fetch('/api/v1/languages/enabled')).json();
+    if (d.enabled?.length) S.languages = d.enabled;
+  } catch { /* keep every supported language */ }
+  if (!S.languages.includes(I18N.getLanguage())) await I18N.loadLanguage('en');
+  if (S.screen === 'you') _rerender();
+}
 
 /* ── BOOT ──────────────────────────────────────────────────────────────────── */
-(function boot() {
+(async function boot() {
+  S.languages = I18N.supported;
+  await I18N.loadLanguage();
   initShell();
+  I18N.onChange(_rerender);
+  _loadEnabledLanguages();
 
   // Swipe-to-close on now playing (after shell init)
   let swipeStartY = 0;
@@ -2109,13 +2228,14 @@ document.addEventListener('input', e => {
     S.token     = savedToken;
     S.serverUrl = savedUrl;
     S.username  = savedUser ?? '';
+    await I18N.setUser(S.username);
     // Validate token with a quick ping
     fetch(`${savedUrl}/api/v1/ping`, {
       headers: { 'x-access-token': savedToken },
       signal: AbortSignal.timeout(5000),
     }).then(async r => {
       if (r.ok) {
-        try { const pd = await r.json(); S.vpaths = pd.vpaths ?? []; S.vpathMeta = pd.vpathMetaData ?? {}; } catch { S.vpaths = []; S.vpathMeta = {}; }
+        try { const pd = await r.json(); S.vpaths = pd.vpaths ?? []; S.vpathMeta = pd.vpathMetaData ?? {}; S.transcodeOk = !!pd.transcode; } catch { S.vpaths = []; S.vpathMeta = {}; }
         _loadScrobbleStatus(); navigate('home');
       } else { navigate('connect'); }
     }).catch(() => navigate('connect'));

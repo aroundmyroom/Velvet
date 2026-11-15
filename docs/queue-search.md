@@ -10,7 +10,8 @@ Lives under **Up Next** in the queue panel, above the queue list itself.
 ## How it works
 
 Type an artist name or song title. Every match is highlighted in place with a
-gold left-edge marker and the matched text underlined in the title/artist —
+gold left-edge marker and a gold tint, and the matched text is shown in bold
+gold in the title/artist —
 the rest of the queue stays visible and in its original order, since order is
 what a queue is for. The list automatically scrolls to the first match so you
 don't have to hunt for it.

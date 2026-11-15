@@ -194,15 +194,15 @@ scan runs in the background and Auto-DJ works from the first song. Full guides:
 
 ### Player
 
-- Gapless playback and crossfade (0–5 s)
+- Gapless playback and crossfade (0–12 s)
 - ReplayGain / EBU R128 loudness normalisation, per track or per album, with true-peak protection
 - Waveform scrubber with chapter markers and buffered range
 - 8-band EQ in the browser, and one per Velvet Room on the server
 - Choose the audio output device (Chrome/Edge)
-- Playback speed for audiobooks (0.75× to 2×)
+- Playback speed for audiobooks
 - Queue with drag to reorder, multi-select and bulk actions
 - The queue is kept across page loads and devices
-- Keyboard shortcuts for all controls ([list](docs/keyboard-shortcuts.md))
+- Keyboard shortcuts for all controls ([list](docs/accessibility.md#keyboard-shortcuts))
 - Command palette (Ctrl+K) to jump to any view or action
 - Full-screen visualizer: Milkdrop, Spectrum, AudioMotion, Lyrics, and VoltViz with more than 40 modern styles ([guide](docs/visualizer.md), [credits](#credits))
 
@@ -332,7 +332,7 @@ library. Velvet does the DJ work from the database.
 
 - Artist names are cleaned up: variants merged, remix credits and "feat." handled
 - An album grid per artist, with series
-- Artist photos from Discogs, filled in as you browse
+- Artist photos from TheAudioDB, Discogs or Last.fm, filled in as you browse
 - An admin check for missing or wrong photos, with Discogs suggestions or your own URL
 
 ### Smart playlists
@@ -351,7 +351,7 @@ Playlists built from filters, updated every time you open them:
 
 **Album-Art Workshop** finds missing covers and replaces wrong ones, from the Cover Art Archive, Discogs, Deezer and iTunes. Large preview before you apply, apply in batches, and undo everything. [Docs](docs/album-art-workshop.md)
 
-**AcoustID** recognises songs by their sound (Chromaprint) and links them to MusicBrainz, which also helps find BPM. Runs in the background at one request per second.
+**AcoustID** recognises songs by their sound (Chromaprint) and links them to MusicBrainz, which also helps find BPM. Runs in the background at two requests per second. [Docs](docs/acoustid.md)
 
 **Tag Workshop** uses those AcoustID matches to fill in title, artist, album, year and track number from MusicBrainz. Review per album: accept, edit or skip, or accept changes that only fix capitals automatically.
 
@@ -363,10 +363,10 @@ Playlists built from filters, updated every time you open them:
 
 | Integration | What it does |
 |---|---|
-| **Last.fm** | Scrobbling, now playing, and similar artists for Auto-DJ. A session per user, and you can see in Playing Now whether a scrobble went through. [Docs](docs/listenbrainz.md) |
+| **Last.fm** | Scrobbling, now playing, and similar artists for Auto-DJ. A session per user, and you can see in Playing Now whether a scrobble went through. |
 | **ListenBrainz** | Now playing and scrobbles. A token per user, works next to Last.fm. [Docs](docs/listenbrainz.md) |
 | **Discogs** | Artist photos, genre suggestions and album art. Needs API credentials. |
-| **Sonos** | Finds your speakers, plays the current song, follows the queue, pause and resume from either side, hi-res transcoding, and plays your Sonos favourites (Spotify, Apple Music, TuneIn). [Docs](docs/audio-output.md) |
+| **Sonos** | Finds your speakers, plays the current song, follows the queue, pause and resume from either side, hi-res transcoding, and plays your Sonos favourites (Spotify, Apple Music, TuneIn). [Docs](docs/sonos.md) |
 | **DLNA / UPnP** | Browse and stream on your network to smart TVs, Kodi, BubbleUPnP and AV receivers. [Docs](docs/dlna.md) |
 | **Subsonic API** | Subsonic 1.16.1 and OpenSubsonic. Works with Symfonium, DSub, Ultrasonic, KSub (Astiga) and more. [Docs](docs/subsonic.md) |
 | **Home Assistant** | Velvet's own integration, in this repository. Every Velvet Room becomes a media player: play/pause, next, seek, volume, shuffle and repeat, artwork, your library (artists, albums, playlists, smart playlists) in the media browser, and voice with Assist ("play ... in the kitchen"). In **HACS**, open *Custom repositories* and add `https://github.com/aroundmyroom/Velvet` as an *Integration*. Connect by approving a code under *User Settings, Pair a Device*. Needs Home Assistant 2026.2 or newer. [Docs](docs/home-assistant.md) |
@@ -378,11 +378,11 @@ Playlists built from filters, updated every time you open them:
 
 ### Radio, audiobooks and downloads
 
-**Internet radio:** add stations and record them to their own folder. You decide who may record and for how long. [Docs](docs/scanning.md)
+**Internet radio:** add stations and record them to their own folder. You decide who may record and for how long.
 
 **Podcasts and audiobooks:** their own folder type, with chapters, progress per book, resume where you left off, and playback speed. [Docs](docs/audiobooks.md)
 
-**YouTube downloads:** paste a link, check the details, edit the tags and choose Opus or MP3. The file shows up in your library right away. yt-dlp is included and kept up to date. [Docs](docs/youtube-download.md)
+**YouTube downloads:** paste a link, check the details, edit the tags and choose Opus or MP3. The file shows up in your library right away. yt-dlp is downloaded for you and updated at every start. [Docs](docs/youtube-download.md)
 
 **ZIP downloads:** download any album or playlist as a ZIP, up to a size you set. [Docs](docs/zip-download.md)
 
@@ -395,7 +395,7 @@ Your full play history, kept on your own server:
 - Top songs and artists with album art
 - When you listen, by hour and by weekday
 - Skip rate, number of different songs, and how much of your library you've played
-- A listener type (Night Owl, Album Completionist, Restless Skipper, Early Bird, Explorer)
+- A listener type (Night Owl, Album Completionist, Restless Skipper, Early Bird, Explorer, Consistent Listener)
 - Fun facts: hours spent on one song, your most loyal track, the artist you skip most, songs played back to back
 
 [Docs](docs/your-stats.md)
@@ -407,6 +407,7 @@ Your full play history, kept on your own server:
 - **Multiple users:** each with their own history, playlists, stars, settings and queue
 - **Subsonic password:** a separate password for Subsonic apps
 - **Passkeys:** sign in with Face ID, a fingerprint, Windows Hello or a security key
+- **Sign out:** signing out in the player or the admin panel also signs out every other open player tab. An admin can log a user out on every device (Admin → Users → Password → Log out everywhere); a password change does the same.
 - **Pair a Device:** sign in a TV, kiosk or Home Assistant by approving a short code from your phone or browser, no typing a password on the device. [Docs](docs/login-pairing.md)
 - **Sign-in through your reverse proxy:** Nginx Proxy Manager, Traefik, Caddy, or Authelia/Authentik behind them can sign users in with a trusted header, limited by IP range and an optional shared secret. [Docs](docs/auth-reverse-proxy.md)
 
@@ -414,7 +415,7 @@ Your full play history, kept on your own server:
 
 - Scan settings, the scan error log, BPM and AcoustID controls, rebuilding the artist index
 - A health check that tests reading and writing in every folder
-- Backups every week, plus download and restore
+- Backups every week, plus backup on demand and download ([restore by hand](docs/backup.md))
 - Updates from inside the app: Admin, Updates shows the newest release and its notes, checks whether your install can update itself, then downloads, installs and restarts while you watch. Docker installs get the pull commands. [Docs](docs/updates.md)
 - Mount an NFS or SMB share from the admin page, without a shell (Velvet must run as root). [Docs](docs/network-shares.md)
 - Log files, kept as long as you choose, with the last 7 days to download
@@ -435,13 +436,12 @@ Your full play history, kept on your own server:
 
 ### Running it yourself
 
-- **ffmpeg**, **yt-dlp**, **rsgain** and **fpcalc** are downloaded and kept up to date for you
+- **ffmpeg**, **yt-dlp**, **rsgain** and **fpcalc** are downloaded for you when missing; yt-dlp updates itself at every start
 - SQLite in WAL mode, no separate database server
 - Scanning, analysis and lookups run in the background, the server stays responsive
 - HTTPS built in: give it a certificate and key, no reverse proxy needed (though [nginx is documented](docs/deploy.md))
 - Docker with PUID/PGID ([install](docs/docker.md))
 - Bare-metal with systemd ([install](docs/install.md))
-- Federation (experimental): several Velvet servers share their libraries
 
 ---
 
@@ -468,7 +468,8 @@ publish 8927 and add speakers by IP address. [Details](docs/rooms.md#network-req
 | Configuration | [docs/json_config.md](docs/json_config.md) |
 | Subsonic API | [docs/subsonic.md](docs/subsonic.md) |
 | REST API | [docs/API.md](docs/API.md) |
-| Audio output and Sonos | [docs/audio-output.md](docs/audio-output.md) |
+| Audio output | [docs/audio-output.md](docs/audio-output.md) |
+| Sonos | [docs/sonos.md](docs/sonos.md) |
 | Velvet Rooms (multi-room) | [docs/rooms.md](docs/rooms.md) |
 | Home Assistant | [docs/home-assistant.md](docs/home-assistant.md) |
 | DLNA / UPnP | [docs/dlna.md](docs/dlna.md) |
@@ -477,15 +478,15 @@ publish 8927 and add speakers by IP address. [Details](docs/rooms.md#network-req
 | AI-assist (admin) | [docs/ai-assist.md](docs/ai-assist.md) |
 | BPM and harmonic mixing | [docs/bpm-harmonic.md](docs/bpm-harmonic.md) |
 | ReplayGain | [docs/replaygain-info.md](docs/replaygain-info.md) |
-| Tag editor | [docs/tageditor.md](docs/tageditor.md) |
+| Tag Workshop | [docs/tag-workshop.md](docs/tag-workshop.md) |
 | Genre Enricher | [docs/genre-enricher.md](docs/genre-enricher.md) |
 | Album-Art Workshop | [docs/album-art-workshop.md](docs/album-art-workshop.md) |
-| Internet radio | [docs/scanning.md](docs/scanning.md) |
+| Scanning | [docs/scanning.md](docs/scanning.md) |
 | Podcasts and audiobooks | [docs/audiobooks.md](docs/audiobooks.md) |
 | YouTube downloads | [docs/youtube-download.md](docs/youtube-download.md) |
 | Samsung TV app | [docs/tizen-tv.md](docs/tizen-tv.md) |
 | ListenBrainz | [docs/listenbrainz.md](docs/listenbrainz.md) |
-| Keyboard shortcuts | [docs/keyboard-shortcuts.md](docs/keyboard-shortcuts.md) |
+| Keyboard shortcuts and accessibility | [docs/accessibility.md](docs/accessibility.md) |
 | Security | [docs/frontend-security.md](docs/frontend-security.md) |
 | Pair a Device | [docs/login-pairing.md](docs/login-pairing.md) |
 | Updates | [docs/updates.md](docs/updates.md) |
@@ -493,6 +494,7 @@ publish 8927 and add speakers by IP address. [Details](docs/rooms.md#network-req
 | Proxmox LXC / Incus | [docs/lxc-incus.md](docs/lxc-incus.md) |
 | Sign-in through a reverse proxy | [docs/auth-reverse-proxy.md](docs/auth-reverse-proxy.md) |
 | Technology choices | [docs/technology-choices.md](docs/technology-choices.md) |
+| Architecture | [docs/architecture.md](docs/architecture.md) |
 
 Questions, ideas, or a library that does something odd? Come by on
 [Discord](https://discord.gg/KfsTCYrTkS) or open an issue. Libraries like

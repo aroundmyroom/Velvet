@@ -10,11 +10,11 @@ The mode button cycles through five modes:
 
 | Mode | What it shows | Changing the look |
 |---|---|---|
-| **Milkdrop** | Butterchurn port of Winamp's MilkDrop, thousands of presets, auto-cycles every 15 s | Previous / next preset buttons |
+| **Milkdrop** | Butterchurn port of Winamp's MilkDrop, about 250 bundled presets, auto-cycles every 15 s | Previous / next preset buttons |
 | **Spectrum** | Seven built-in canvas displays (bars, mirror, radial, oscilloscope, waterfall, VU needles, Lissajous) | Click the picture |
 | **AudioMotion** | audioMotion-analyzer with six curated presets | Click the picture |
 | **Lyrics** | Album art with synced lyrics | — |
-| **VoltViz** | 40+ modern WebGL/WebGPU styles by Sander de Wildt | Previous / next buttons or the style list |
+| **VoltViz** | 46 WebGL/WebGPU styles by Sander de Wildt | Previous / next buttons or the style list |
 
 ## VoltViz
 

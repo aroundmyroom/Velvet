@@ -16,8 +16,15 @@ standard TV remote.
   colour" feature)
 - Ships **without any server URL or credentials baked in** — every user signs in
   to their own server on the TV
-- The **app version** is shown on the sign-in screen (e.g. `v0.4.1`) so you can
-  confirm a newly side-loaded `.wgt` actually replaced the previous install
+- Plays count like web-player plays: play statistics, Wrapped events, and
+  Last.fm / ListenBrainz scrobbles (after 30 s) when those are set up for your
+  user
+- Translated into the same 12 languages as the web player: the app loads the language
+  files from the Velvet server it connects to (`tizen.*` keys, see
+  [i18n.md](i18n.md))
+- The **app version** (the Velvet version it was built from, e.g. `v0.9.3`) is
+  shown on the sign-in screen so you can confirm a newly side-loaded `.wgt`
+  actually replaced the previous install
 
 ---
 
@@ -88,8 +95,9 @@ On first launch you’ll see the **sign-in screen**:
 3. Select **Sign In**.
 
 Navigate the fields with **Up/Down**, press **OK/Enter** to move to the next
-field, and select **Sign In** when done. Your session token is kept for the
-app session so you don’t have to sign in every time you open a view.
+field, and select **Sign In** when done. The server URL, username and session
+token are saved on the TV, so the next launch signs you in directly; **Sign
+out** (bottom of the side menu) clears them.
 
 **Don't want to type a password with the remote?** Enter the **Server URL**
 field only, then select **Pair with phone instead**. The TV shows a short
@@ -129,16 +137,14 @@ playable file in that folder and starts playback from the one you picked. The
 breadcrumb trail at the top of the view is also focusable — jump back to any
 parent folder directly instead of pressing **Back** repeatedly.
 
-#### Auto-DJ engine (v0.3.22+)
+#### Auto-DJ
 
-The TV's Auto-DJ runs the same scoring/continuity engine as the web player
-(see `docs/architecture.md` § 4): similar-artist matching, BPM continuity,
-harmonic (Camelot) mixing, year/era continuity, artist diversity, and the
-same 3-tier fallback (similar-artist + BPM + key → library-wide BPM + key →
-free pick). There's no settings screen on the TV, so these all run with fixed
-defaults instead of the web app's configurable sliders/toggles. The keyword
-and genre whitelist/blacklist filters remain web/desktop-only, since they need
-a list-editing UI the remote doesn't have.
+**Auto-DJ → Start** lets the server pick every song: the TV calls
+`POST /api/v1/autodj/next` with the last track it played as the seed and the
+list of tracks it played recently (up to 200), and queues the answer. The
+server uses the same Auto-DJ engine as Velvet Rooms and Subsonic radio
+([autodj-scoring.md](autodj-scoring.md)). The TV has no Auto-DJ settings
+screen. If a request fails, the TV retries after 5 seconds.
 
 ### Media keys
 

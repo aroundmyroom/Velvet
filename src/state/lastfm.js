@@ -33,19 +33,13 @@ Scribble.prototype.setKeys = function (api_key, api_secret) {
   this.apiSecret = api_secret
 }
 
-Scribble.prototype.Love = function (song, username, callback) {
-  if (this.users[username].sessionKey == null) {
-    this.MakeSession(username, (sk) => {
-      postLove(this, song, sk, username, callback)
-    })
-  } else {
-    postLove(this, song, this.users[username].sessionKey, username, callback)
-  }
-}
-
 Scribble.prototype.Scrobble = function (song, username, callback) {
   if (this.users[username].sessionKey == null) {
     this.MakeSession(username, (sk) => {
+      if (!sk) {
+        if (typeof (callback) === 'function') { callback(null) }
+        return
+      }
       postScrobble(this, song, sk, username, callback)
     })
   } else {
@@ -53,48 +47,22 @@ Scribble.prototype.Scrobble = function (song, username, callback) {
   }
 }
 
-Scribble.prototype.NowPlaying = function (song, username, callback) {
-  if (this.users[username].sessionKey == null) {
-    this.MakeSession(username, (sk) => {
-      postNowPlaying(this, song, sk, username, callback)
-    })
-  } else {
-    postNowPlaying(this, song, this.users[username].sessionKey, username, callback)
-  }
-}
-
+// Calls back with the session key, or null when Last.fm refuses (bad password, error object).
 Scribble.prototype.MakeSession = function (username, callback) {
   const password = this.users[username].password;
 
   const token = makeHash(username + makeHash(password))
     , apiSig = makeHash('api_key' + this.apiKey + 'authToken' + token + 'methodauth.getMobileSessionusername' + username + this.apiSecret)
     , path = '/2.0/?method=auth.getMobileSession&' +
-      'username=' + username +
+      'username=' + encodeURIComponent(username) +
       '&authToken=' + token +
       '&api_key=' + this.apiKey +
       '&api_sig=' + apiSig + '&format=json'
   sendGet(path, (ret) => {
-    this.users[username].sessionKey = ret.session.key
-    if (typeof (callback) === 'function') {
-      callback(ret.session.key)
-    }
-  })
-}
-
-Scribble.prototype.GetArtistInfo = function (artist, callback) {
-  const path = '/2.0/?method=artist.getInfo&artist=' + encodeURIComponent(artist) + '&api_key=' + this.apiKey + '&format=json'
-  sendGet(path, function (ret) {
-    if (typeof (callback) === 'function')
-      {callback(ret)}
-  })
-}
-
-Scribble.prototype.GetSimilarArtists = function (artist, callback, limit = 50) {
-  const amt = limit;
-  const path = '/2.0/?method=artist.getSimilar&artist=' + encodeURIComponent(artist) + '&api_key=' + this.apiKey + '&format=json&limit=' + amt
-  sendGet(path, function (ret) {
-    if (typeof (callback) === 'function')
-      {callback(ret)}
+    const key = ret?.session?.key ?? null
+    if (key) { this.users[username].sessionKey = key }
+    else { console.warn(`[lastfm] could not open a session for ${username}: ${ret?.message ?? 'no response'}`) }
+    if (typeof (callback) === 'function') { callback(key) }
   })
 }
 
@@ -106,17 +74,9 @@ Scribble.prototype.GetArtistInfo = function (artist, callback) {
   });
 }
 
-Scribble.prototype.GetArtistEvents = function (artist, callback, limit = 50) {
+Scribble.prototype.GetSimilarArtists = function (artist, callback, limit = 50) {
   const amt = limit;
-  const path = '/2.0/?method=artist.getevents&artist=' + encodeURIComponent(artist) + '&api_key=' + this.apiKey + '&format=json&limit=' + amt
-  sendGet(path, function (ret) {
-    if (typeof (callback) === 'function')
-      {callback(ret)}
-  })
-}
-
-Scribble.prototype.GetArtistTopAlbums = function (artist, callback, limit = 50) {
-  const path = '/2.0/?method=artist.gettopalbums&artist=' + encodeURIComponent(artist) + '&api_key=' + this.apiKey + '&format=json&limit=' + limit
+  const path = '/2.0/?method=artist.getSimilar&artist=' + encodeURIComponent(artist) + '&api_key=' + this.apiKey + '&format=json&limit=' + amt
   sendGet(path, function (ret) {
     if (typeof (callback) === 'function')
       {callback(ret)}
@@ -137,59 +97,6 @@ Scribble.prototype.GetSimilarSongs = function (song, callback, limit = 50) {
     if (typeof (callback) === 'function')
       {callback(ret)}
   })
-}
-
-Scribble.prototype.GetTrackInfo = function (song, callback) {
-  const path = '/2.0/?method=track.getInfo&api_key=' + this.apiKey + '&artist=' + encodeURIComponent(song.artist) + '&track=' + encodeURIComponent(song.track) + '&format=json'
-  sendGet(path, function (ret) {
-    if (typeof (callback) === 'function')
-      {callback(ret)}
-  })
-}
-
-Scribble.prototype.GetAlbumInfo = function (song, callback) {
-  song.album = song.album.replaceAll(/\s/g, '%20')
-  const path = '2.0/?method=album.getinfo&api_key=' + this.apiKey + '&artist=' + song.artist + '&album=' + song.album + '&format=json'
-  sendGet(path, function (ret) {
-    if (typeof (callback) === 'function')
-      {callback(ret)}
-  })
-}
-
-function postLove(self, song, sk, username, callback) {
-  if (sk && self.users[username].sessionKey == null) {
-    self.users[username].sessionKey = sk
-  }
-  const apiSig = makeHash('album' + (song.album || '_') + 'api_key' + self.apiKey + 'artist' + song.artist + 'methodtrack.lovesk' + self.users[username].sessionKey + 'track' + song.track + self.apiSecret)
-    , post_data = querystring.stringify({
-      method: 'track.love',
-      api_key: self.apiKey,
-      sk: self.users[username].sessionKey,
-      api_sig: apiSig,
-      artist: song.artist,
-      track: song.track,
-      album: song.album || '_'
-    })
-  sendPost(post_data, callback)
-}
-
-function postNowPlaying(self, song, sk, username, callback) {
-  if (sk && self.users[username].sessionKey == null) {
-    self.users[username].sessionKey = sk
-  }
-  const dur = (song.duration) ? 'duration' + song.duration : ''
-    , apiSig = makeHash('album' + (song.album || '_') + 'api_key' + self.apiKey + 'artist' + song.artist + dur + 'methodtrack.updateNowPlayingsk' + self.users[username].sessionKey + 'track' + song.track + self.apiSecret)
-    , post_data = querystring.stringify({
-      method: 'track.updateNowPlaying',
-      artist: song.artist,
-      track: song.track,
-      album: song.album || '_',
-      duration: song.duration,
-      api_key: self.apiKey,
-      api_sig: apiSig,
-      sk: self.users[username].sessionKey
-    })
-  sendPost(post_data, callback)
 }
 
 function postScrobble(self, song, sk, username, callback) {
@@ -238,6 +145,7 @@ function sendPost(data, callback) {
   doPOST.end()
 }
 
+// The callback runs once, outside the parse try: an exception it throws must not re-enter it.
 function sendGet(path, callback) {
   let response = '';
   const apiCall = {
@@ -249,13 +157,13 @@ function sendGet(path, callback) {
       response += chunk;
     })
     res.on('end', function () {
+      let ret = null
       try {
-        const ret = JSON.parse(response)
-        if (typeof (callback) === 'function') { callback(ret); }
+        ret = JSON.parse(response)
       } catch {
         console.warn('[lastfm] non-JSON response from Last.fm API');
-        if (typeof (callback) === 'function') { callback(null); }
       }
+      if (typeof (callback) === 'function') { callback(ret); }
     })
   }).on('error', function (err) {
     console.warn('[lastfm] network error:', err.message);

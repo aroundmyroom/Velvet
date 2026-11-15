@@ -2,9 +2,7 @@ import { ZipArchive } from 'archiver';
 import path from 'node:path';
 import fs from 'node:fs/promises';
 import fsSync from 'node:fs';
-import crypto from 'node:crypto';
 import { parseFile } from 'music-metadata';
-import sharp from 'sharp';
 import Joi from 'joi';
 import winston from 'winston';
 import * as config from '../state/config.js';
@@ -14,12 +12,13 @@ import * as shared from '../api/shared.js';
 import * as m3u from '../util/m3u.js';
 import WebError from '../util/web-error.js';
 import { resolvePathWithinRoot } from '../util/path-security.js';
+import { artFileName, writeArtWithThumbs } from '../util/art-cache.js';
 
 async function downloadM3U(req, res) {
   if (!req.body.path) { throw new WebError('Validation Error', 403); }
   const pathInfo = vpath.getVPathInfo(req.body.path, req.user);
   const playlistParentDir = path.dirname(pathInfo.fullPath);
-  const songs = await m3u.readPlaylistSongs(pathInfo.fullPath);
+  const songs = await m3u.readPlaylistSongs(pathInfo.fullPath, pathInfo.basePath);
 
   const archive = new ZipArchive();
   archive.on('error', function (err) {
@@ -49,6 +48,12 @@ async function downloadDir(req, res) {
   const pathInfo = vpath.getVPathInfo(req.body.directory, req.user);
   if (!(await fs.stat(pathInfo.fullPath)).isDirectory()) { throw new WebError('Not A Directory', 400); }
 
+  const maxMb = config.program.scanOptions.maxZipMb || 500;
+  const totalBytes = await _dirSizeWithin(pathInfo.fullPath, maxMb * 1024 * 1024);
+  if (totalBytes > maxMb * 1024 * 1024) {
+    return res.status(413).json({ error: `ZIP would exceed the ${maxMb} MB server limit`, maxMb, sizeMb: Math.ceil(totalBytes / (1024 * 1024)) });
+  }
+
   const archive = new ZipArchive();
   archive.on('error', (err) => {
     winston.error('Download Error', { stack: err })
@@ -59,8 +64,24 @@ async function downloadDir(req, res) {
 
   archive.pipe(res);
 
-  archive.directory(pathInfo.basePath, false);
+  archive.directory(pathInfo.fullPath, false);
   archive.finalize();
+}
+
+// Stops counting once over the budget so a huge tree is not walked to the end.
+async function _dirSizeWithin(dir, budget) {
+  let total = 0;
+  const stack = [dir];
+  while (stack.length && total <= budget) {
+    const current = stack.pop();
+    for (const entry of await fs.readdir(current, { withFileTypes: true })) {
+      const full = path.join(current, entry.name);
+      if (entry.isDirectory()) stack.push(full);
+      else if (entry.isFile()) total += (await fs.stat(full)).size;
+      if (total > budget) break;
+    }
+  }
+  return total;
 }
 
 async function download(req, res, fileArray, filename = 'velvet-download') {
@@ -144,8 +165,7 @@ export function setup(velvet) {
   // Extracts cover art from an audio file (embedded) or a folder image
   // (cover.jpg / folder.jpg / front.jpg etc.) in the same directory.
   // Returns { aaFile: "md5hash.jpg" } which the client can pass to /album-art/.
-  // The result is written to the album-art cache directory so subsequent requests
-  // (and the scanner) reuse the same cached file — no duplicate writes.
+  // Named like the scanner names it (artFileName), so both write the same cached file.
   velvet.get('/api/v1/files/art', async (req, res) => {
     if (!req.query.fp) return res.status(400).json({ error: 'fp required' });
 
@@ -157,30 +177,6 @@ export function setup(velvet) {
     }
 
     const artDir  = config.program.storage.albumArtDirectory;
-
-    // Helper: cache raw image buffer and return its filename
-    async function cacheImage(buf, format) {
-      const ext    = format === 'image/png' ? 'png' : 'jpg';
-      const hash   = crypto.createHash('sha256').update(buf).digest('hex');
-      const aaFile = `${hash}.${ext}`;
-      const artPath = path.join(artDir, aaFile);
-      if (!fsSync.existsSync(artPath)) {
-        await fs.mkdir(artDir, { recursive: true });
-        await fs.writeFile(artPath, buf);
-      }
-      // Generate size thumbnails if not already present
-      if (config.program.scanOptions?.compressImage !== false && buf.length >= 100) {
-        const zlPath = path.join(artDir, 'zl-' + aaFile);
-        const zsPath = path.join(artDir, 'zs-' + aaFile);
-        const zmPath = path.join(artDir, 'zm-' + aaFile);
-        try {
-          if (!fsSync.existsSync(zlPath)) await sharp(buf).resize(256, 256, { fit: 'inside', withoutEnlargement: true }).toFile(zlPath);
-          if (!fsSync.existsSync(zsPath)) await sharp(buf).resize(92,  92,  { fit: 'inside', withoutEnlargement: true }).toFile(zsPath);
-          if (!fsSync.existsSync(zmPath)) await sharp(buf).resize(512, 512, { fit: 'inside', withoutEnlargement: true }).toFile(zmPath);
-        } catch (e) { console.debug('[velvet]', e?.message ?? e); }
-      }
-      return aaFile;
-    }
 
     try {
       // Guard: if the file doesn't exist on disk, return no-art rather than 500
@@ -200,7 +196,7 @@ export function setup(velvet) {
         pic = meta.common?.picture?.[0];
       }
       if (pic) {
-        return res.json({ aaFile: await cacheImage(pic.data, pic.format) });
+        return res.json({ aaFile: await _cacheArt(artDir, pic.data, pic.format) });
       }
 
       // 2. Fall back to a folder image in the same directory
@@ -209,9 +205,7 @@ export function setup(velvet) {
       for (const name of candidates) {
         const imgPath = resolvePathWithinRoot(folderDir, name);
         if (fsSync.existsSync(imgPath)) {
-          const buf    = await fs.readFile(imgPath);
-          const format = name.endsWith('.png') ? 'image/png' : 'image/jpeg';
-          return res.json({ aaFile: await cacheImage(buf, format) });
+          return res.json({ aaFile: await _cacheArt(artDir, await fs.readFile(imgPath), path.extname(name).slice(1)) });
         }
       }
 
@@ -222,9 +216,7 @@ export function setup(velvet) {
         for (const name of candidates) {
           const imgPath = resolvePathWithinRoot(parentDir, name);
           if (fsSync.existsSync(imgPath)) {
-            const buf    = await fs.readFile(imgPath);
-            const format = name.endsWith('.png') ? 'image/png' : 'image/jpeg';
-            return res.json({ aaFile: await cacheImage(buf, format) });
+            return res.json({ aaFile: await _cacheArt(artDir, await fs.readFile(imgPath), path.extname(name).slice(1)) });
           }
         }
       }
@@ -237,6 +229,12 @@ export function setup(velvet) {
       res.json({ aaFile: null });
     }
   });
+}
+
+async function _cacheArt(artDir, buf, format) {
+  const aaFile = artFileName(buf, format);
+  await writeArtWithThumbs(artDir, buf, aaFile, { compress: config.program.scanOptions?.compressImage !== false });
+  return aaFile;
 }
 
 async function _preflightZip(fileArray, user, maxMb) {

@@ -13,7 +13,9 @@ var S = {
   queueIdx:    -1,
   playing:     false,
   autoDj:      false,
-  autoDjIgnoreList: [],
+  lastfmEnabled:       false,
+  listenbrainzEnabled: false,
+  listenbrainzLinked:  false,
   currentView: 'home',
   albumCache:  null,
   artistCache: null,
@@ -86,6 +88,81 @@ function albumArtUrl(aaFile, artFile) {
 function el(id) { return document.getElementById(id); }
 function show(id) { el(id).classList.remove('hidden'); }
 function hide(id) { el(id).classList.add('hidden'); }
+
+/* ── i18n ─────────────────────────────────────────────────────────────────────
+   The player's locale files (webapp/locales), fetched from the configured server: the packaged app has
+   no same-origin server, so the player's I18N engine (which loads from location.origin) cannot run here.
+   Keys, {{param}} interpolation, plural objects and the language choice follow that engine; the
+   markup keeps its English text until a locale has loaded, and every missing key falls back to English.
+   ────────────────────────────────────────────────────────────────────────── */
+var L10N = { strings: {}, fallback: {} };
+
+function _pluralize(val, count) {
+  if (count === 0 && val.zero  !== undefined) return val.zero;
+  if (count === 1 && val.one   !== undefined) return val.one;
+  if (count === 2 && val.two   !== undefined) return val.two;
+  if (val.few !== undefined && count >= 3 && count <= 10) return val.few;
+  return val.other !== undefined ? val.other : (val.one || '');
+}
+
+function t(key, params) {
+  var val = L10N.strings[key];
+  if (val === undefined) val = L10N.fallback[key];
+  if (val && typeof val === 'object' && params && typeof params.count === 'number') val = _pluralize(val, params.count);
+  var str = typeof val === 'string' ? val : key;
+  if (!params) return str;
+  return str.replace(/\{\{(\w+)\}\}/g, function(m, p) {
+    return Object.prototype.hasOwnProperty.call(params, p) ? String(params[p]) : m;
+  });
+}
+
+// The same choice as the player on this device: the user's saved language, then the device language.
+function _tvLanguage() {
+  var stored = '';
+  try { stored = localStorage.getItem('velvet-lang_' + S.username) || localStorage.getItem('velvet-lang') || ''; } catch (e) {}
+  return (stored || navigator.language || 'en').split('-')[0].toLowerCase();
+}
+
+function _fetchLocale(code) {
+  return fetch(S.baseUrl + '/locales/' + encodeURIComponent(code) + '.json').then(function(r) {
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    return r.json();
+  });
+}
+
+function translatePage() {
+  var nodes = document.querySelectorAll('[data-i18n]');
+  for (var i = 0; i < nodes.length; i++) {
+    var key = nodes[i].getAttribute('data-i18n');
+    var text = t(key);
+    if (text === key) continue;
+    var attr = nodes[i].getAttribute('data-i18n-attr');
+    if (attr) nodes[i].setAttribute(attr, text);
+    else nodes[i].textContent = text;
+  }
+}
+
+// Resolves in every case, so callers can wait for it before they render.
+function loadLocales() {
+  var lang = _tvLanguage();
+  return _fetchLocale('en').then(function(en) {
+    L10N.fallback = en;
+    if (lang === 'en') return en;
+    return _fetchLocale(lang).catch(function() { lang = 'en'; return en; });
+  }).then(function(strings) {
+    L10N.strings = strings;
+    document.documentElement.lang = lang;
+    translatePage();
+  }).catch(function() { /* server unreachable: the markup keeps its English */ });
+}
+
+// Shows the one message of a login message box whose data-i18n key matches.
+function showMessage(boxId, key) {
+  var box = el(boxId);
+  var spans = box.querySelectorAll('[data-i18n]');
+  for (var i = 0; i < spans.length; i++) spans[i].hidden = spans[i].getAttribute('data-i18n') !== key;
+  box.classList.remove('hidden');
+}
 
 /* ── Loading overlay ─────────────────────────────────────────────────────────── */
 function showLoading() { show('loading-overlay'); }
@@ -364,7 +441,6 @@ function _activateFocused(e) {
   _currentFocusEl.click();
 }
 
-var _viewHistory = ['home'];
 function _handleBack() {
   // If viewing an album or artist detail, pop back
   if (S.currentView === 'album-detail') { showView('albums'); return; }
@@ -473,6 +549,7 @@ function initLogin() {
   });
   el('login-pair-toggle').addEventListener('click', startPairing);
   el('pair-cancel-btn').addEventListener('click', cancelPairing);
+  if (S.baseUrl) loadLocales();
 
   // If we have a stored token, try it silently
   if (S.token && S.baseUrl) {
@@ -488,8 +565,7 @@ function initLogin() {
 
 function _tryAutoLogin() {
   showLoading();
-  api('GET', '/api/v1/ping/public').then(function() {
-    // token valid
+  api('GET', '/api/v1/ping').then(function() {
     hideLoading();
     enterMain();
   }).catch(function() {
@@ -507,8 +583,7 @@ function doLogin() {
   var errEl = el('login-error');
 
   if (!url || !user || !pass) {
-    errEl.textContent = 'Please fill in all fields.';
-    errEl.classList.remove('hidden');
+    showMessage('login-error', 'tizen.login.fillAll');
     return;
   }
 
@@ -529,10 +604,9 @@ function doLogin() {
     _saveSettings();
     hideLoading();
     enterMain();
-  }).catch(function(err) {
+  }).catch(function() {
     hideLoading();
-    errEl.textContent = 'Connection failed. Check URL and credentials.';
-    errEl.classList.remove('hidden');
+    showMessage('login-error', 'tizen.login.connectFailed');
     focusFirst(el('screen-login'));
   });
 }
@@ -545,18 +619,15 @@ function doLogin() {
    ────────────────────────────────────────────────────────────────────────── */
 function startPairing() {
   var url = el('login-url').value.trim().replace(/\/$/, '');
-  var urlErrEl = el('login-error');
   if (!url) {
-    urlErrEl.textContent = 'Enter the server URL first, then pair with phone.';
-    urlErrEl.classList.remove('hidden');
+    showMessage('login-error', 'tizen.login.pairNeedsUrl');
     focusFirst(el('screen-login'));
     return;
   }
-  urlErrEl.classList.add('hidden');
+  el('login-error').classList.add('hidden');
   S.baseUrl = url;
 
-  var pairErrEl = el('pair-error');
-  pairErrEl.classList.add('hidden');
+  el('pair-error').classList.add('hidden');
   el('pair-code-display').textContent = '......';
   el('login-fields').classList.add('hidden');
   el('pair-panel').classList.remove('hidden');
@@ -571,8 +642,7 @@ function startPairing() {
     var deadline = Date.now() + (data.expiresInSec * 1000);
     S.pairPollTimer = setInterval(function() { pollPairing(url, data.pairId, deadline); }, 2000);
   }).catch(function() {
-    pairErrEl.textContent = 'Could not start pairing. Check the server URL.';
-    pairErrEl.classList.remove('hidden');
+    showMessage('pair-error', 'mobile.connect.pairStartFailed');
   });
 }
 
@@ -580,9 +650,7 @@ function pollPairing(url, pairId, deadline) {
   if (Date.now() > deadline) {
     clearInterval(S.pairPollTimer);
     S.pairPollTimer = null;
-    var pairErrEl = el('pair-error');
-    pairErrEl.textContent = 'This code expired. Try again.';
-    pairErrEl.classList.remove('hidden');
+    showMessage('pair-error', 'mobile.connect.codeExpired');
     return;
   }
   fetch(url + '/api/v1/auth/pair/status?pairId=' + encodeURIComponent(pairId)).then(function(r) {
@@ -599,9 +667,7 @@ function pollPairing(url, pairId, deadline) {
     } else if (data.status === 'expired') {
       clearInterval(S.pairPollTimer);
       S.pairPollTimer = null;
-      var pairErrEl = el('pair-error');
-      pairErrEl.textContent = 'This code expired. Try again.';
-      pairErrEl.classList.remove('hidden');
+      showMessage('pair-error', 'mobile.connect.codeExpired');
     }
     // 'pending' — keep polling
   }).catch(function() { /* transient network hiccup — next poll will retry */ });
@@ -618,10 +684,13 @@ function cancelPairing() {
    MAIN
    ────────────────────────────────────────────────────────────────────────── */
 function enterMain() {
-  showScreen('main');
-  initPlayerBar();
-  initNav();
-  showView('home');
+  _loadScrobbleStatus();
+  loadLocales().then(function() {
+    showScreen('main');
+    initPlayerBar();
+    initNav();
+    showView('home');
+  });
 }
 
 function initNav() {
@@ -652,6 +721,7 @@ function doLogout() {
   pauseAudio();
   S.queue = []; S.queueIdx = -1; S.autoDj = false;
   _djResetSession();
+  clearTimeout(_scrobbleTimer);
   hidePlayerBar();
   showScreen('login');
   el('login-pass').value = '';
@@ -671,14 +741,19 @@ function loadAlbums() {
     renderAlbumGrid(S.albumCache);
   }).catch(function(err) {
     hideLoading();
-    el('albums-grid').innerHTML = '<div style="color:#f05050;padding:30px">Failed to load albums.</div>';
+    el('albums-grid').innerHTML = _stateHtml('tizen.albums.loadFailed', true);
   });
 }
+
+// error does not bubble, so one capturing listener hides every broken card cover
+document.addEventListener('error', function(e) {
+  if (e.target.classList && e.target.classList.contains('album-card-art')) e.target.style.display = 'none';
+}, true);
 
 function renderAlbumGrid(albums) {
   var grid = el('albums-grid');
   if (!albums || !albums.length) {
-    grid.innerHTML = '<div style="color:var(--text2);padding:30px">No albums found. Make sure an albumsOnly vpath is configured.</div>';
+    grid.innerHTML = _stateHtml('tizen.albums.none');
     el('albums-az').innerHTML = '';
     return;
   }
@@ -690,9 +765,9 @@ function renderAlbumGrid(albums) {
     var artSrc = albumArtUrl(a.aaFile, a.artFile);
     var letter = _albumLetter(a);
     present[letter] = true;
-    html += '<div class="album-card focusable" tabindex="0" data-id="' + _escAttr(a.id) + '" data-letter="' + _escAttr(letter) + '">' +
+    html += '<div class="album-card focusable" tabindex="0" data-id="' + _esc(a.id) + '" data-letter="' + _esc(letter) + '">' +
       (artSrc
-        ? '<img class="album-card-art" src="' + _escAttr(artSrc) + '" alt="" loading="lazy" onerror="this.style.display=\'none\';">'
+        ? '<img class="album-card-art" src="' + _esc(artSrc) + '" alt="" loading="lazy">'
         : '<div class="album-card-art-placeholder">&#127925;</div>') +
       '<div class="album-card-info">' +
         '<div class="album-card-title">' + _esc(a.displayName || a.name || '') + '</div>' +
@@ -736,7 +811,7 @@ function _renderAzStrip(present) {
   for (var i = 0; i < letters.length; i++) {
     var l = letters[i];
     if (!present[l]) continue;
-    html += '<button class="az-btn focusable" tabindex="0" data-letter="' + _escAttr(l) + '">' + _esc(l) + '</button>';
+    html += '<button class="az-btn focusable" tabindex="0" data-letter="' + _esc(l) + '">' + _esc(l) + '</button>';
   }
   strip.innerHTML = html;
   var btns = strip.querySelectorAll('.az-btn');
@@ -841,7 +916,7 @@ function _renderAlbumDetail(album) {
   for (var d = 0; d < discs.length; d++) {
     var disc = discs[d];
     if (_discIsCue(disc)) anyCue = true;
-    var label = multiDisc ? (disc.label || ('Disc ' + (disc.discIndex || (d + 1)))) : null;
+    var label = multiDisc ? (disc.label || t('mobile.album.disc', { n: disc.discIndex || (d + 1) })) : null;
     var expanded = _expandDisc(disc, album, label);
     discBlocks.push({ label: label, startIdx: playables.length, count: expanded.length });
     for (var e = 0; e < expanded.length; e++) playables.push(expanded[e]);
@@ -857,7 +932,7 @@ function _renderAlbumDetail(album) {
   var yearTxt = album.year ? String(album.year) : '';
   var metaBits = [];
   if (yearTxt) metaBits.push(yearTxt);
-  metaBits.push(playables.length + (playables.length === 1 ? ' track' : ' tracks'));
+  metaBits.push(t('mobile.album.trackCount', { count: playables.length }));
   if (totalDur > 0) metaBits.push(fmtTime(totalDur));
   el('album-detail-year').textContent = metaBits.join('  •  ');
 
@@ -878,7 +953,7 @@ function _renderAlbumDetail(album) {
       var tr2 = playables[gi];
       var cueAttr = tr2.cueOffset != null ? String(tr2.cueOffset) : '';
       html += '<div class="track-row focusable" tabindex="0" data-idx="' + gi + '"' +
-        ' data-fp="' + _escAttr(tr2.filepath) + '" data-cue="' + _escAttr(cueAttr) + '">' +
+        ' data-fp="' + _esc(tr2.filepath) + '" data-cue="' + _esc(cueAttr) + '">' +
         '<div class="track-num">' + _esc(String(tr2.track || (gi + 1))) + '</div>' +
         '<div class="track-title">' + _esc(tr2.title) +
           (tr2.artist && tr2.artist !== (album.artist || '')
@@ -931,14 +1006,14 @@ function loadArtists() {
     _renderArtistList(S.artistCache);
   }).catch(function() {
     hideLoading();
-    el('artists-list').innerHTML = '<div style="color:#f05050;padding:30px">Failed to load artists.</div>';
+    el('artists-list').innerHTML = _stateHtml('tizen.artists.loadFailed', true);
   });
 }
 
 function _renderArtistList(artists) {
   var list = el('artists-list');
   if (!artists || !artists.length) {
-    list.innerHTML = '<div style="color:var(--text2);padding:30px">No artists found.</div>';
+    list.innerHTML = _stateHtml('tizen.artists.none');
     return;
   }
 
@@ -950,8 +1025,8 @@ function _renderArtistList(artists) {
       : '';
     var displayName = a.canonicalName || a.name || a.artistKey || '';
     var key = a.artistKey || a.key || displayName;
-    html += '<div class="artist-row focusable" tabindex="0" data-key="' + _escAttr(key) + '" data-name="' + _escAttr(displayName) + '">' +
-      (imgSrc ? '<img class="artist-img" src="' + _escAttr(imgSrc) + '" alt="" loading="lazy">' : '<div class="artist-img" style="background:var(--bg3)"></div>') +
+    html += '<div class="artist-row focusable" tabindex="0" data-key="' + _esc(key) + '" data-name="' + _esc(displayName) + '">' +
+      (imgSrc ? '<img class="artist-img" src="' + _esc(imgSrc) + '" alt="" loading="lazy">' : '<div class="artist-img" style="background:var(--bg3)"></div>') +
       '<div class="artist-name">' + _esc(displayName) + '</div>' +
     '</div>';
   }
@@ -1001,9 +1076,9 @@ function openArtistProfile(key, name) {
         var catName = cat.category || '';
         // Use folder as display name, category as subtitle
         html += '<div class="album-card focusable" tabindex="0"' +
-          ' data-cat="' + _escAttr(catName) + '"' +
-          ' data-folder="' + _escAttr(folderName) + '">' +
-          (artSrc ? '<img class="album-card-art" src="' + _escAttr(artSrc) + '" alt="" loading="lazy" onerror="this.style.display=\'none\'">' : '<div class="album-card-art-placeholder">&#127925;</div>') +
+          ' data-cat="' + _esc(catName) + '"' +
+          ' data-folder="' + _esc(folderName) + '">' +
+          (artSrc ? '<img class="album-card-art" src="' + _esc(artSrc) + '" alt="" loading="lazy">' :'<div class="album-card-art-placeholder">&#127925;</div>') +
           '<div class="album-card-info">' +
             '<div class="album-card-title">' + _esc(folderName) + '</div>' +
             '<div class="album-card-artist">' + _esc(rel.year ? String(rel.year) : '') + '</div>' +
@@ -1011,7 +1086,7 @@ function openArtistProfile(key, name) {
         '</div>';
       }
     }
-    grid.innerHTML = html || '<div style="color:var(--text2);padding:20px">No releases found.</div>';
+    grid.innerHTML = html || _stateHtml('tizen.artists.noReleases');
 
     // Clicking an artist release plays its tracks directly (no album detail API needed)
     var cards = grid.querySelectorAll('.album-card');
@@ -1056,21 +1131,21 @@ function loadPlaylists() {
     _renderPlaylists(data || []);
   }).catch(function() {
     hideLoading();
-    el('playlists-list').innerHTML = '<div style="color:#f05050;padding:30px">Failed to load playlists.</div>';
+    el('playlists-list').innerHTML = _stateHtml('tizen.playlists.loadFailed', true);
   });
 }
 
 function _renderPlaylists(playlists) {
   var list = el('playlists-list');
   if (!playlists.length) {
-    list.innerHTML = '<div style="color:var(--text2);padding:30px">No playlists yet.</div>';
+    list.innerHTML = _stateHtml('tizen.playlists.none');
     return;
   }
 
   var html = '';
   for (var i = 0; i < playlists.length; i++) {
     var p = playlists[i];
-    html += '<div class="playlist-row focusable" tabindex="0" data-name="' + _escAttr(p.name) + '">' +
+    html += '<div class="playlist-row focusable" tabindex="0" data-name="' + _esc(p.name) + '">' +
       '<div class="playlist-name">' + _esc(p.name) + '</div>' +
     '</div>';
   }
@@ -1115,7 +1190,7 @@ function openPlaylistDetail(name) {
           '<div class="track-title">' + _esc(title) + (artist ? '<br><span style="font-size:22px;color:var(--text2)">' + _esc(artist) + '</span>' : '') + '</div>' +
         '</div>';
       }
-      el('playlist-track-list').innerHTML = html || '<div style="color:var(--text2);padding:20px">Empty playlist.</div>';
+      el('playlist-track-list').innerHTML = html || _stateHtml('tizen.playlists.empty');
 
       var rows = el('playlist-track-list').querySelectorAll('.track-row');
       for (var j = 0; j < rows.length; j++) {
@@ -1160,7 +1235,7 @@ function loadFiles(dir, pushStack) {
   }).catch(function() {
     hideLoading();
     el('files-breadcrumb').innerHTML = '';
-    el('files-list').innerHTML = '<div style="color:#f05050;padding:30px">Failed to load directory.</div>';
+    el('files-list').innerHTML = _stateHtml('tizen.files.loadFailed', true);
   });
 }
 
@@ -1169,12 +1244,12 @@ function _renderFiles(d) {
   var parts = curPath.replace(/^\/|\/$/g, '').split('/').filter(function(p) { return p; });
 
   // Breadcrumb
-  var crumbHtml = '<span class="fe-crumb focusable" tabindex="0" data-dir="">Home</span>';
+  var crumbHtml = '<span class="fe-crumb focusable" tabindex="0" data-dir="">' + _esc(t('player.nav.home')) + '</span>';
   var cum = '';
   for (var i = 0; i < parts.length; i++) {
     cum += (cum ? '/' : '') + parts[i];
     crumbHtml += '<span class="fe-crumb-sep">/</span>';
-    crumbHtml += '<span class="fe-crumb focusable" tabindex="0" data-dir="/' + _escAttr(cum) + '">' + _esc(parts[i]) + '</span>';
+    crumbHtml += '<span class="fe-crumb focusable" tabindex="0" data-dir="/' + _esc(cum) + '">' + _esc(parts[i]) + '</span>';
   }
   el('files-breadcrumb').innerHTML = crumbHtml;
 
@@ -1193,7 +1268,7 @@ function _renderFiles(d) {
   var html = '';
   for (var j = 0; j < dirs.length; j++) {
     var dname = dirs[j].name;
-    html += '<div class="fe-dir-row focusable" tabindex="0" data-name="' + _escAttr(dname) + '">' +
+    html += '<div class="fe-dir-row focusable" tabindex="0" data-name="' + _esc(dname) + '">' +
       '<span class="fe-icon">&#128193;</span>' +
       '<span class="fe-name">' + _esc(dname) + '</span>' +
       '<span class="fe-arrow">&#10095;</span>' +
@@ -1222,7 +1297,7 @@ function _renderFiles(d) {
     '</div>';
   }
 
-  el('files-list').innerHTML = html || '<div style="color:var(--text2);padding:30px">Empty folder.</div>';
+  el('files-list').innerHTML = html || _stateHtml('tizen.files.empty');
 
   var dirRows = el('files-list').querySelectorAll('.fe-dir-row');
   for (var m = 0; m < dirRows.length; m++) {
@@ -1250,358 +1325,31 @@ function _renderFiles(d) {
 }
 
 /* ─────────────────────────────────────────────────────────────────────────────
-   AUTO-DJ
-   Lightweight port of the web player's Auto-DJ scoring engine (webapp/app.js:
-   _djScoreSong / _djSongBlocked / autoDJPrefetch). The TV has no settings UI,
-   so there is nothing to configure — similar-artist matching, BPM continuity,
-   harmonic (Camelot) mixing and year/era continuity are always on with fixed
-   sensible defaults. The optional keyword/genre filters from the web app are
-   user-configured lists with no TV equivalent UI, so they are intentionally
-   left out here.
-   Same 3-tier fallback as the web app: (1) similar-artist + BPM + key,
-   (2) library-wide BPM + key (drop similar-artist constraint), (3) free pick
-   (drop BPM/key too) — so the DJ can never get permanently stuck.
+   AUTO-DJ — the server picks every song (POST /api/v1/autodj/next), with the
+   same engine as Rooms and Subsonic radio. The TV only remembers what it played.
    ────────────────────────────────────────────────────────────────────────── */
-var DJ_ARTIST_COOLDOWN = 15;
-var DJ_BPM_TOLERANCE   = 8;
-var DJ_YEAR_TOLERANCE  = 12;
-var _djArtistHistory   = [];  // last N artists played this Auto-DJ session
-var _bpmHistory        = [];
-var _bpmAnchor         = null;
-var _yearHistory       = [];
-var _yearAnchor        = null;
-var _camelotAnchor           = null;
-var _camelotAnchorNeighbours = null;
-var _djSimilarFor     = '';   // artist we last looked up on Last.fm
-var _djSimilarArtists = [];   // raw DB artist variants (SQL IN filter)
-var _djVariantRankMap = {};   // DB artist variant -> 1-indexed Last.fm rank
-var _djCurArtist  = null;     // last accepted DJ pick — scoring/continuity reference
-var _djCurGenre   = null;
-var _djCurYear    = null;
-var _djCurBpm     = null;
-var _djCurCamelot = null;
-var _djCurNeighbours = null;
+var DJ_RECENT_MAX = 200;
+var _djRecent = [];
 
 function _djResetSession() {
-  _djArtistHistory = []; _bpmHistory = []; _bpmAnchor = null;
-  _yearHistory = []; _yearAnchor = null;
-  _camelotAnchor = null; _camelotAnchorNeighbours = null;
-  _djSimilarFor = ''; _djSimilarArtists = []; _djVariantRankMap = {};
-  _djCurArtist = null; _djCurGenre = null; _djCurYear = null;
-  _djCurBpm = null; _djCurCamelot = null; _djCurNeighbours = null;
+  _djRecent = [];
 }
 
-function _bpmAvg(arr) {
-  if (!arr.length) return null;
-  var sum = 0;
-  for (var i = 0; i < arr.length; i++) sum += arr[i];
-  return Math.round(sum / arr.length);
-}
-function _bpmHistoryPush(bpm) {
-  if (bpm == null) return;
-  _bpmHistory.push(bpm);
-  if (_bpmHistory.length > 8) _bpmHistory.shift();
-  _bpmAnchor = _bpmAvg(_bpmHistory);
-}
-function _yearHistoryPush(year) {
-  if (year == null) return;
-  _yearHistory.push(year);
-  if (_yearHistory.length > 8) _yearHistory.shift();
-  _yearAnchor = _bpmAvg(_yearHistory);
-}
-function _djCooldownList() {
-  return _djArtistHistory.length > 0 ? _djArtistHistory.slice(-DJ_ARTIST_COOLDOWN) : undefined;
-}
-function _djPushArtistHistory(artist) {
-  if (!artist) return;
-  _djArtistHistory.push(artist);
-  if (_djArtistHistory.length > 500) _djArtistHistory.shift();
-}
-
-// -- Camelot Wheel for harmonic mixing (canonical copy: webapp/app.js) --
-var _CAMELOT = {
-  'Ab minor':'1A','G# minor':'1A','B major':'1B',
-  'Eb minor':'2A','D# minor':'2A','F# major':'2B','Gb major':'2B',
-  'Bb minor':'3A','A# minor':'3A','Db major':'3B','C# major':'3B',
-  'F minor':'4A','Ab major':'4B','G# major':'4B',
-  'C minor':'5A','Eb major':'5B','D# major':'5B',
-  'G minor':'6A','Bb major':'6B','A# major':'6B',
-  'D minor':'7A','F major':'7B',
-  'A minor':'8A','C major':'8B',
-  'E minor':'9A','G major':'9B',
-  'B minor':'10A','D major':'10B',
-  'F# minor':'11A','A major':'11B',
-  'C# minor':'12A','E major':'12B'
-};
-function toCamelot(key) {
-  if (!key) return null;
-  return _CAMELOT[key] || null;
-}
-function camelotNeighbours(code) {
-  if (!code) return null;
-  var num = parseInt(code, 10);
-  var letter = code.slice(-1);
-  var other = letter === 'A' ? 'B' : 'A';
-  var prev = ((num - 2 + 12) % 12) + 1;
-  var next = (num % 12) + 1;
-  var set = {};
-  set[num + letter] = true; set[num + other] = true;
-  set[prev + letter] = true; set[prev + other] = true;
-  set[next + letter] = true; set[next + other] = true;
-  return set; // plain object used as a Set — check membership with `code in set`
-}
-function _camelotKeyNamesFor(neighbourSet) {
-  var names = [];
-  for (var name in _CAMELOT) {
-    if (neighbourSet[_CAMELOT[name]]) names.push(name);
-  }
-  return names;
-}
-
-// -- Genre grouping / compatibility (ported from webapp/app.js) --
-var _DJ_HARD_GENRE_KW = ['hardcore','hardstyle','gabber','speedcore','frenchcore','terrorcore','jumpstyle','rawstyle','hard trance','makina'];
-var _DJ_SOFT_GENRE_KW = ['pop','rock','soul','r&b','rnb','folk','country','jazz','classical','indie','alternative','easy listening','ballad','synth-pop','synthpop','new wave','blues','funk','disco'];
-function _djGenreGroup(g) {
-  if (!g) return null;
-  var lc = g.toLowerCase();
-  for (var i = 0; i < _DJ_HARD_GENRE_KW.length; i++) if (lc.indexOf(_DJ_HARD_GENRE_KW[i]) !== -1) return 'hard';
-  for (var j = 0; j < _DJ_SOFT_GENRE_KW.length; j++) if (lc.indexOf(_DJ_SOFT_GENRE_KW[j]) !== -1) return 'soft';
-  return null;
-}
-function _djGenreCat(lc) {
-  if (lc.indexOf('ambient') !== -1 || lc.indexOf('chillout') !== -1 || lc.indexOf('downtempo') !== -1 || lc.indexOf('new age') !== -1) return 'ambient';
-  if (lc.indexOf('disco') !== -1 || lc.indexOf('funk') !== -1 || lc.indexOf('soul') !== -1 || lc.indexOf('motown') !== -1) return 'disco';
-  if (lc.indexOf('electronic') !== -1 || lc.indexOf('techno') !== -1 || lc.indexOf('house') !== -1 ||
-      lc.indexOf('trance') !== -1 || lc.indexOf('dance') !== -1 || lc.indexOf('edm') !== -1 ||
-      lc.indexOf('synth') !== -1 || lc.indexOf('electro') !== -1) return 'electronic';
-  if (lc.indexOf('hardcore') !== -1 || lc.indexOf('hardstyle') !== -1 || lc.indexOf('gabber') !== -1) return 'hard';
-  if (lc.indexOf('pop') !== -1 || lc.indexOf('rock') !== -1 || lc.indexOf('indie') !== -1 ||
-      lc.indexOf('alternative') !== -1 || lc.indexOf('country') !== -1 || lc.indexOf('folk') !== -1 ||
-      lc.indexOf('r&b') !== -1 || lc.indexOf('rnb') !== -1 || lc.indexOf('jazz') !== -1) return 'soft';
-  return 'other';
-}
-function _djGenreCompatScore(curGenre, candGenre) {
-  if (!curGenre || !candGenre) return 0.6;
-  var lc1 = curGenre.toLowerCase(), lc2 = candGenre.toLowerCase();
-  if (lc1 === lc2) return 1.0;
-  var c1 = _djGenreCat(lc1), c2 = _djGenreCat(lc2);
-  if (c1 === c2) return 0.9;
-  var MATRIX = {
-    'electronic->disco':0.7,   'disco->electronic':0.7,
-    'electronic->ambient':0.35,'ambient->electronic':0.35,
-    'disco->ambient':0.15,     'ambient->disco':0.15,
-    'electronic->soft':0.25,   'soft->electronic':0.25,
-    'disco->soft':0.45,        'soft->disco':0.45,
-    'ambient->soft':0.25,      'soft->ambient':0.25,
-    'electronic->hard':0.05,   'hard->electronic':0.05,
-    'disco->hard':0.05,        'hard->disco':0.05,
-    'ambient->hard':0.0,       'hard->ambient':0.0,
-    'soft->hard':0.15,         'hard->soft':0.15
-  };
-  var key = c1 + '->' + c2;
-  return (key in MATRIX) ? MATRIX[key] : 0.5;
-}
-
-// Score a DJ candidate (0..1, higher = better fit). Same weights as the web
-// app: harmonic 25%, genre 15%, Last.fm rank 20%, BPM 20%, year 10%, diversity 10%.
-function _djScoreSong(song) {
-  var score = 0;
-
-  if (song.musicalKey) {
-    var cand = toCamelot(song.musicalKey);
-    if (!cand) {
-      score += 0.25 * 0.4;
-    } else if (cand === _djCurCamelot) {
-      score += 0.25 * 1.0;
-    } else if (_djCurNeighbours && _djCurNeighbours[cand]) {
-      score += 0.25 * 0.7;
-    } else {
-      var cn = camelotNeighbours(cand);
-      score += 0.25 * ((cn && _djCurCamelot && cn[_djCurCamelot]) ? 0.3 : 0.0);
-    }
-  } else {
-    score += 0.25 * 0.4;
-  }
-
-  score += 0.15 * _djGenreCompatScore(_djCurGenre, song.genre);
-
-  var hasRankData = false;
-  for (var _k in _djVariantRankMap) { hasRankData = true; break; }
-  if (song.artist && hasRankData) {
-    var rank = _djVariantRankMap[song.artist];
-    score += 0.20 * (rank != null ? Math.max(0.18, 1.0 - (rank - 1) / 60) : 0);
-  } else {
-    score += 0.20 * 0.3;
-  }
-
-  var blendRef = (_djCurBpm != null && _bpmAnchor != null) ? Math.round(0.6 * _djCurBpm + 0.4 * _bpmAnchor) : (_djCurBpm != null ? _djCurBpm : _bpmAnchor);
-  if (song.bpm && blendRef != null) {
-    var diff = Math.abs(song.bpm - blendRef);
-    var bpmScore = diff <= DJ_BPM_TOLERANCE ? 1.0 - (diff / DJ_BPM_TOLERANCE) * 0.3
-                 : diff <= DJ_BPM_TOLERANCE * 2 ? 0.3 - ((diff - DJ_BPM_TOLERANCE) / DJ_BPM_TOLERANCE) * 0.3
-                 : 0;
-    score += 0.20 * bpmScore;
-  } else {
-    score += 0.20 * 0.5;
-  }
-
-  var yearBlend = (_djCurYear != null && _yearAnchor != null) ? Math.round(0.6 * _djCurYear + 0.4 * _yearAnchor) : (_djCurYear != null ? _djCurYear : _yearAnchor);
-  if (song.year && yearBlend != null) {
-    var ydiff = Math.abs(song.year - yearBlend);
-    var yearScore = ydiff <= DJ_YEAR_TOLERANCE ? 1.0 - (ydiff / DJ_YEAR_TOLERANCE) * 0.3
-                  : ydiff <= DJ_YEAR_TOLERANCE * 2 ? 0.3 - ((ydiff - DJ_YEAR_TOLERANCE) / DJ_YEAR_TOLERANCE) * 0.3
-                  : 0;
-    score += 0.10 * yearScore;
-  } else {
-    score += 0.10 * 0.5;
-  }
-
-  var recent = _djCooldownList() || [];
-  var aNorm = function(a) { return (a || '').trim().toLowerCase(); };
-  var aidx = -1;
-  for (var i = 0; i < recent.length; i++) { if (aNorm(recent[i]) === aNorm(song.artist)) aidx = i; }
-  score += 0.10 * (aidx === -1 ? 1.0 : aidx >= recent.length - 5 ? 0.0 : aidx >= recent.length - 10 ? 0.4 : 0.7);
-
-  if (_djSimilarArtists.length > 0 && _djSimilarArtists.indexOf(song.artist) === -1) {
-    return Math.min(score, 0.25);
-  }
-  return score;
-}
-
-// Binary blocking gates. opts.skipBpm/skipHarmonic relax the two constraints
-// the tier-3 free-pick fallback intentionally has no server-side data for.
-function _djSongBlocked(song, opts) {
-  opts = opts || {};
-  if (!opts.skipBpm && _bpmAnchor != null) {
-    if (!song.bpm) return 'no-bpm';
-    var matchNormal = Math.abs(song.bpm - _bpmAnchor) <= DJ_BPM_TOLERANCE;
-    var matchHalf   = Math.abs(song.bpm - _bpmAnchor / 2) <= DJ_BPM_TOLERANCE / 2;
-    var matchDouble = Math.abs(song.bpm - _bpmAnchor * 2) <= DJ_BPM_TOLERANCE * 2;
-    if (!matchNormal && !matchHalf && !matchDouble) return 'bpm';
-  }
-  if (!opts.skipHarmonic && _camelotAnchorNeighbours && song.musicalKey) {
-    var cand = toCamelot(song.musicalKey);
-    if (cand && !_camelotAnchorNeighbours[cand]) return 'harmonic';
-  }
-  var curG = _djGenreGroup(_djCurGenre), candG = _djGenreGroup(song.genre);
-  if (curG && candG && curG !== candG) return 'genre-jump';
-  return null;
-}
-
-function _djSongFromApi(s) {
+function _djTrackFromSong(s) {
   var m = s.metadata || {};
   return {
-    filepath:   s.filepath,
-    title:      m.title  || s.filepath.split('/').pop(),
-    artist:     m.artist || '',
-    album:      m.album  || '',
-    artFile:    m['album-art'] || null,
-    genre:      m.genre || null,
-    bpm:        m.bpm || null,
-    musicalKey: m['musical-key'] || null,
-    year:       m.year || null
+    filepath: s.filepath,
+    title:    m.title  || s.filepath.split('/').pop(),
+    artist:   m.artist || '',
+    album:    m.album  || '',
+    artFile:  m['album-art'] || null
   };
-}
-
-function _djFetchSimilarArtists(artist) {
-  if (!artist || _djSimilarFor === artist) return Promise.resolve();
-  return api('GET', '/api/v1/lastfm/similar-artists?artist=' + encodeURIComponent(artist)).then(function(d) {
-    _djSimilarFor = artist;
-    _djSimilarArtists = d.artists || [];
-    _djVariantRankMap = d.variantRankMap || {};
-  }).catch(function() {
-    _djSimilarFor = artist;
-    _djSimilarArtists = [];
-    _djVariantRankMap = {};
-  });
-}
-
-function _djBuildRequestBody(withConstraints) {
-  var body = {
-    ignoreList: S.autoDjIgnoreList,
-    ignoreArtists: _djCooldownList()
-  };
-  if (withConstraints) {
-    if (_djSimilarArtists.length > 0) body.artists = _djSimilarArtists;
-    if (_bpmAnchor != null) {
-      body.bpmRanges = [
-        { min: _bpmAnchor - DJ_BPM_TOLERANCE, max: _bpmAnchor + DJ_BPM_TOLERANCE },
-        { min: _bpmAnchor / 2 - DJ_BPM_TOLERANCE / 2, max: _bpmAnchor / 2 + DJ_BPM_TOLERANCE / 2 },
-        { min: _bpmAnchor * 2 - DJ_BPM_TOLERANCE * 2, max: _bpmAnchor * 2 + DJ_BPM_TOLERANCE * 2 }
-      ];
-    }
-    if (_camelotAnchorNeighbours) {
-      var keyNames = _camelotKeyNamesFor(_camelotAnchorNeighbours);
-      if (keyNames.length) { body.requireMusicalKey = true; body.musicalKeys = keyNames; }
-    }
-  }
-  return body;
-}
-
-// Tier 1: similar-artist + BPM + key (up to 5 attempts, keep the best-scoring
-// unblocked candidate; stop early once a clearly good match (>=0.75) is found).
-function _djAttemptTier1(remaining, bestSoFar) {
-  if (remaining <= 0) return Promise.resolve(bestSoFar);
-  return api('POST', '/api/v1/db/random-songs', _djBuildRequestBody(true)).then(function(data) {
-    S.autoDjIgnoreList = data.ignoreList || S.autoDjIgnoreList;
-    var s = (data.songs || [])[0];
-    if (!s) return bestSoFar;
-    var cand = _djSongFromApi(s);
-    if (!_djSongBlocked(cand)) {
-      var sc = _djScoreSong(cand);
-      if (!bestSoFar || sc > bestSoFar.score) bestSoFar = { song: cand, score: sc };
-      if (bestSoFar.score >= 0.75) return bestSoFar;
-    }
-    return _djAttemptTier1(remaining - 1, bestSoFar);
-  }).catch(function() { return bestSoFar; });
-}
-
-// Tier 2: library-wide BPM + key — drop the similar-artist constraint.
-function _djAttemptTier2() {
-  var body = _djBuildRequestBody(true);
-  delete body.artists;
-  return api('POST', '/api/v1/db/random-songs', body).then(function(data) {
-    S.autoDjIgnoreList = data.ignoreList || S.autoDjIgnoreList;
-    var s = (data.songs || [])[0];
-    if (!s) return null;
-    var cand = _djSongFromApi(s);
-    if (_djSongBlocked(cand)) return null;
-    return { song: cand, score: _djScoreSong(cand) };
-  }).catch(function() { return null; });
-}
-
-// Tier 3: free pick — drop BPM/key entirely. Still enforce the hard
-// genre-group jump guard (up to 3 attempts) so the DJ never gets stuck.
-function _djAttemptTier3(remaining, bestSoFar) {
-  if (remaining <= 0) return Promise.resolve(bestSoFar);
-  return api('POST', '/api/v1/db/random-songs', _djBuildRequestBody(false)).then(function(data) {
-    S.autoDjIgnoreList = data.ignoreList || S.autoDjIgnoreList;
-    var s = (data.songs || [])[0];
-    if (!s) return bestSoFar;
-    var cand = _djSongFromApi(s);
-    if (!_djSongBlocked(cand, { skipBpm: true, skipHarmonic: true })) {
-      return { song: cand, score: _djScoreSong(cand) };
-    }
-    return _djAttemptTier3(remaining - 1, bestSoFar);
-  }).catch(function() { return bestSoFar; });
 }
 
 function _djAcceptPick(song) {
-  _djPushArtistHistory(song.artist);
-  if (song.bpm != null) _bpmHistoryPush(song.bpm);
-  if (song.year != null) _yearHistoryPush(song.year);
-  var cc = toCamelot(song.musicalKey);
-  if (cc) { _camelotAnchor = cc; _camelotAnchorNeighbours = camelotNeighbours(cc); }
-  _djCurArtist = song.artist; _djCurGenre = song.genre; _djCurYear = song.year;
-  _djCurBpm = song.bpm; _djCurCamelot = cc; _djCurNeighbours = cc ? camelotNeighbours(cc) : null;
-
-  var track = {
-    filepath: song.filepath,
-    title:    song.title,
-    artist:   song.artist,
-    album:    song.album,
-    artFile:  song.artFile
-  };
+  var track = _djTrackFromSong(song);
+  _djRecent.push(track.filepath);
+  if (_djRecent.length > DJ_RECENT_MAX) _djRecent.shift();
   if (S.queueIdx < 0) {
     // First track: start playing immediately
     S.queue = [track];
@@ -1611,39 +1359,34 @@ function _djAcceptPick(song) {
     // Queue it up so _onTrackEnd will pick it
     S.queue.push(track);
   }
-  el('autodj-status').textContent = 'Playing: ' + track.title;
+  el('autodj-status').textContent = t('tizen.autodj.playing', { title: track.title });
 }
 
 el('autodj-start-btn').addEventListener('click', function() {
   S.autoDj = true;
-  S.autoDjIgnoreList = [];
   S.queue = [];
   S.queueIdx = -1;
   _djResetSession();
-  el('autodj-status').textContent = 'Picking a track…';
+  el('autodj-status').textContent = t('tizen.autodj.picking');
   show('autodj-status');
   _autoDjPick();
 });
 
 function _autoDjPick() {
   if (!S.autoDj) return;
-  el('autodj-status').textContent = 'Picking a track…';
-  _djFetchSimilarArtists(_djCurArtist).then(function() {
-    return _djAttemptTier1(5, null);
-  }).then(function(best) {
-    if (best) return best;
-    return _djAttemptTier2();
-  }).then(function(best) {
-    if (best) return best;
-    return _djAttemptTier3(3, null);
-  }).then(function(best) {
-    if (!best || !best.song || !best.song.filepath) {
-      el('autodj-status').textContent = 'No songs found.';
+  el('autodj-status').textContent = t('tizen.autodj.picking');
+  var body = { recent: _djRecent };
+  var seed = S.queue[S.queue.length - 1];
+  if (seed) body.seedFilepath = seed.filepath;
+  api('POST', '/api/v1/autodj/next', body).then(function(data) {
+    if (!S.autoDj) return;
+    if (!data.song) {
+      el('autodj-status').textContent = t('tizen.autodj.noSongs');
       return;
     }
-    _djAcceptPick(best.song);
+    _djAcceptPick(data.song);
   }).catch(function() {
-    el('autodj-status').textContent = 'Error fetching track. Retrying…';
+    el('autodj-status').textContent = t('tizen.autodj.retrying');
     setTimeout(_autoDjPick, 5000);
   });
 }
@@ -1667,6 +1410,66 @@ _audio.addEventListener('loadedmetadata', function() {
   }
 });
 
+/* Play statistics: same log-play + Wrapped events as the web player, so TV listening is counted */
+var _stats = {
+  sessionId: Date.now().toString(36) + Math.random().toString(36).slice(2, 10),
+  eventId: null,
+  fp: null,
+  startOffset: 0,
+  endOffset: null
+};
+
+function _statsStart(track) {
+  _statsClose(false);
+  var fp = track.filepath;
+  _stats.fp = fp;
+  _stats.startOffset = track.cueOffset != null ? track.cueOffset : 0;
+  _stats.endOffset = track.cueEndOffset != null ? track.cueEndOffset : null;
+  api('POST', '/api/v1/db/stats/log-play', { filePath: fp }).catch(function() {});
+  api('POST', '/api/v1/wrapped/play-start', { filePath: fp, sessionId: _stats.sessionId }).then(function(r) {
+    if (_stats.fp === fp && r && r.eventId) _stats.eventId = r.eventId;
+  }).catch(function() {});
+  _scheduleScrobble(fp);
+}
+
+/* Scrobbling: same switches, routes and 30 s rule as the web player */
+var _scrobbleTimer = null;
+
+function _loadScrobbleStatus() {
+  api('GET', '/api/v1/lastfm/status').then(function(d) {
+    S.lastfmEnabled = d.serverEnabled !== false;
+  }).catch(function() { S.lastfmEnabled = false; });
+  api('GET', '/api/v1/listenbrainz/status').then(function(d) {
+    S.listenbrainzEnabled = d.serverEnabled === true;
+    S.listenbrainzLinked  = d.linked === true;
+  }).catch(function() { S.listenbrainzEnabled = false; S.listenbrainzLinked = false; });
+}
+
+function _scheduleScrobble(fp) {
+  clearTimeout(_scrobbleTimer);
+  var lb = S.listenbrainzEnabled && S.listenbrainzLinked;
+  if (!S.lastfmEnabled && !lb) return;
+  if (lb) api('POST', '/api/v1/listenbrainz/playing-now', { filePath: fp }).catch(function() {});
+  _scrobbleTimer = setTimeout(function() {
+    if (S.lastfmEnabled) api('POST', '/api/v1/lastfm/scrobble-by-filepath', { filePath: fp }).catch(function() {});
+    if (lb) api('POST', '/api/v1/listenbrainz/scrobble-by-filepath', { filePath: fp }).catch(function() {});
+  }, 30000);
+}
+
+function _statsClose(ended) {
+  var eventId = _stats.eventId;
+  _stats.eventId = null;
+  _stats.fp = null;
+  if (!eventId) return;
+  var until = ended ? (_stats.endOffset != null ? _stats.endOffset : (_audio.duration || 0)) : (_audio.currentTime || 0);
+  var playedMs = Math.max(0, Math.round((until - _stats.startOffset) * 1000));
+  api('POST', ended ? '/api/v1/wrapped/play-end' : '/api/v1/wrapped/play-skip', { eventId: eventId, playedMs: playedMs }).catch(function() {});
+}
+
+_audio.addEventListener('pause', function() {
+  if (_stats.eventId && !_audio.ended) api('POST', '/api/v1/wrapped/pause', { eventId: _stats.eventId }).catch(function() {});
+});
+
 function playQueue(queue, startIdx) {
   S.autoDj = false;
   S.queue = queue;
@@ -1684,6 +1487,7 @@ function _trackUrl(filepath) {
 }
 
 function _loadAndPlay(track) {
+  _statsStart(track);
   // Update UI immediately — don't wait for play() promise
   _updatePlayerBar(track);
   showPlayerBar();
@@ -1721,6 +1525,7 @@ function _loadAndPlay(track) {
 }
 
 function _onTrackEnd() {
+  _statsClose(true);
   if (S.queueIdx < S.queue.length - 1) {
     S.queueIdx++;
     _loadAndPlay(S.queue[S.queueIdx]);
@@ -2307,8 +2112,9 @@ function _esc(str) {
     .replace(/"/g, '&quot;');
 }
 
-function _escAttr(str) {
-  return _esc(str);
+// The empty / failed state that fills a list area
+function _stateHtml(key, isError) {
+  return '<div style="color:' + (isError ? '#f05050' : 'var(--text2)') + ';padding:30px">' + _esc(t(key)) + '</div>';
 }
 
 /* ─────────────────────────────────────────────────────────────────────────────

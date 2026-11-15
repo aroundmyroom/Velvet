@@ -10,15 +10,12 @@
  *   GET  /api/v1/artists/letter?l=A      → { artists[] }  (0 = all digits)
  *   GET  /api/v1/artists/search?q=       → { artists[] }
  *   GET  /api/v1/artists/profile?key=    → { canonicalName, bio, imageFile, releaseCategories[] }
- *   POST /api/v1/artists/fetch-info      → trigger Last.fm/MusicBrainz fetch (admin)
  *   POST /api/v1/artists/set-image       → set custom artist image (admin)
  *   POST /api/v1/artists/set-name        → override canonical name (admin)
  */
 
 import fs from 'node:fs';
 import fsp from 'node:fs/promises';
-import http from 'node:http';
-import https from 'node:https';
 import path from 'node:path';
 import sharp from 'sharp';
 import busboy from 'busboy';
@@ -27,6 +24,10 @@ import * as config from '../state/config.js';
 import * as db from '../db/manager.js';
 import { joiValidate } from '../util/validation.js';
 import { getDirname } from '../util/esm-helpers.js';
+import { fetchPublicJson, fetchPublicUrlBuffer } from '../util/ssrf-check.js';
+import { MB_USER_AGENT } from '../util/mb-client.mjs';
+import { discogsHeaders } from '../util/discogs-headers.js';
+import { userDbVpaths } from './db.js';
 
 const __dirname = getDirname(import.meta.url);
 
@@ -34,7 +35,6 @@ const __dirname = getDirname(import.meta.url);
 
 const CACHE_TTL              = 5 * 60 * 1000; // 5 minutes
 const ARTIST_IMG_DIR         = path.join(__dirname, '../../image-cache', 'artists');
-const ARTIST_PLACEHOLDER_FILE = path.join(__dirname, '../../image-cache', 'artist-placeholder.jpg');
 const ARTIST_IMG_SIZE        = 400; // square JPEG size for stored artist images
 const HYDRATE_COOLDOWN_MS = 12 * 60 * 60 * 1000; // 12 hours
 const HYDRATE_QUEUE_LIMIT = 50000;
@@ -85,7 +85,6 @@ try { fs.mkdirSync(ARTIST_IMG_DIR, { recursive: true }); } catch (e) { console.d
 // On first boot after the fix, we detect and migrate those files automatically.
 await (async () => {
   const legacyDir         = path.join(process.cwd(), 'image-cache', 'artists');
-  const legacyPlaceholder = path.join(process.cwd(), 'image-cache', 'artist-placeholder.jpg');
   if (legacyDir === ARTIST_IMG_DIR) return; // paths identical — nothing to do
 
   let files;
@@ -107,16 +106,8 @@ await (async () => {
           await fsp.copyFile(src, dst);
           await fsp.unlink(src);
           moved++;
-        } catch { console.warn(`[artists-browse] Could not migrate ${f}:`, _e3.message); }
+        } catch (_e3) { console.warn(`[artists-browse] Could not migrate ${f}:`, _e3.message); }
       }
-    }
-  }
-  // Migrate placeholder too
-  try {
-    await fsp.access(ARTIST_PLACEHOLDER_FILE);
-  } catch {
-    try { await fsp.rename(legacyPlaceholder, ARTIST_PLACEHOLDER_FILE); } catch {
-      try { await fsp.copyFile(legacyPlaceholder, ARTIST_PLACEHOLDER_FILE); await fsp.unlink(legacyPlaceholder); } catch (e) { console.debug('[velvet]', e?.message ?? e); }
     }
   }
   console.log(`[artists-browse] Migration done: ${moved} moved, ${skipped} already present`);
@@ -240,54 +231,17 @@ function stripHtml(str) {
   return (str || '').replaceAll(/<[^>]+>/g, '').replaceAll(/\s+/g, ' ').trim();
 }
 
-function downloadBuffer(url, _redirects = 0) {
-  return new Promise((resolve, reject) => {
-    if (_redirects > 5) return reject(new Error('Too many redirects'));
-    const mod = url.startsWith('https') ? https : http;
-    mod.get(url, res => {
-      // Follow 301/302/307/308 redirects
-      if ([301, 302, 307, 308].includes(res.statusCode)) {
-        const location = res.headers.location;
-        res.resume();
-        if (!location) return reject(new Error(`Redirect with no Location from ${url}`));
-        const next = location.startsWith('http') ? location : new URL(location, url).href;
-        return resolve(downloadBuffer(next, _redirects + 1));
-      }
-      if (res.statusCode !== 200) return reject(new Error(`HTTP ${res.statusCode}`));
-      const chunks = [];
-      res.on('data', c => chunks.push(c));
-      res.on('end', () => resolve(Buffer.concat(chunks)));
-      res.on('error', reject);
-    }).on('error', reject);
+// Image URLs come from admins and third-party APIs: SSRF-guarded on every
+// redirect hop, size-capped and time-limited.
+function downloadBuffer(url, headers = {}) {
+  return fetchPublicUrlBuffer(url, {
+    timeout: 15_000,
+    maxContentLength: 15 * 1024 * 1024,
+    headers: { 'User-Agent': MB_USER_AGENT, ...headers },
   });
 }
 
-function downloadJson(url, headers = null, timeoutMs = 10000) {
-  return new Promise((resolve, reject) => {
-    const mod = url.startsWith('https') ? https : http;
-    const opts = { headers: { connection: 'close', ...headers } };
-    const req = mod.get(url, opts, res => {
-      if (res.statusCode !== 200) {
-        res.resume(); // drain to free socket
-        return reject(new Error(`HTTP ${res.statusCode}`));
-      }
-      const chunks = [];
-      res.on('data', c => chunks.push(c));
-      res.on('end', () => {
-        try {
-          resolve(JSON.parse(Buffer.concat(chunks).toString()));
-        } catch (e) {
-          reject(e);
-        }
-      });
-      res.on('error', reject);
-    });
-    req.setTimeout(timeoutMs, () => {
-      req.destroy(new Error(`Request timeout after ${timeoutMs}ms: ${url}`));
-    });
-    req.on('error', reject);
-  });
-}
+const JSON_TIMEOUT_MS = 10000;
 
 function isLastfmPlaceholder(url) {
   if (!url) return true;
@@ -300,16 +254,9 @@ function isLastfmPlaceholder(url) {
   );
 }
 
-function discogsHeaders() {
-  const d = config.program?.discogs || {};
-  if (!d.enabled || !d.apiKey || !d.apiSecret) return null;
-  const ua = d.userAgentTag
-    ? `Velvet/dev/${d.userAgentTag} +https://github.com/aroundmyroom/Velvet`
-    : 'Velvet/dev +https://github.com/aroundmyroom/Velvet';
-  return {
-    'User-Agent': ua,
-    'Authorization': `Discogs key=${d.apiKey}, secret=${d.apiSecret}`,
-  };
+function enabledDiscogsHeaders() {
+  const d = config.program?.discogs;
+  return d?.enabled ? discogsHeaders(d) : null;
 }
 
 function discogsStatus() {
@@ -321,12 +268,12 @@ function discogsStatus() {
 }
 
 async function fetchArtistImageFromDiscogs(artistName) {
-  const headers = discogsHeaders();
+  const headers = enabledDiscogsHeaders();
   if (!headers || !artistName) return null;
 
   try {
     const q = encodeURIComponent(artistName);
-    const search = await downloadJson(`https://api.discogs.com/database/search?type=artist&per_page=5&q=${q}`, headers);
+    const search = await fetchPublicJson(`https://api.discogs.com/database/search?type=artist&per_page=5&q=${q}`, { headers, timeout: JSON_TIMEOUT_MS });
     const results = Array.isArray(search?.results) ? search.results : [];
     if (!results.length) return null;
 
@@ -346,7 +293,7 @@ async function fetchArtistImageFromDiscogs(artistName) {
     // First choice: resource images[] (usually best quality)
     if (best?.resource_url) {
       try {
-        const detail = await downloadJson(best.resource_url, headers);
+        const detail = await fetchPublicJson(best.resource_url, { headers, timeout: JSON_TIMEOUT_MS });
         const imgs = Array.isArray(detail?.images) ? detail.images : [];
         const primary = imgs.find(i => i?.uri) || imgs[0];
         if (primary?.uri) return primary.uri;
@@ -363,19 +310,19 @@ async function fetchArtistImageFromDiscogs(artistName) {
 }
 
 async function searchDiscogsArtistCandidates(artistName, max = 8) {
-  const headers = discogsHeaders();
+  const headers = enabledDiscogsHeaders();
   if (!headers || !artistName) return [];
 
   try {
     const q = encodeURIComponent(artistName);
-    const search = await downloadJson(`https://api.discogs.com/database/search?type=artist&per_page=${Math.max(1, Math.min(20, max))}&q=${q}`, headers);
+    const search = await fetchPublicJson(`https://api.discogs.com/database/search?type=artist&per_page=${Math.max(1, Math.min(20, max))}&q=${q}`, { headers, timeout: JSON_TIMEOUT_MS });
     const results = Array.isArray(search?.results) ? search.results : [];
     const out = [];
     for (const r of results) {
       let imageUrl = r?.cover_image || r?.thumb || null;
       if (r?.resource_url) {
         try {
-          const detail = await downloadJson(r.resource_url, headers);
+          const detail = await fetchPublicJson(r.resource_url, { headers, timeout: JSON_TIMEOUT_MS });
           const imgs = Array.isArray(detail?.images) ? detail.images : [];
           const primary = imgs.find(i => i?.uri) || imgs[0];
           if (primary?.uri) imageUrl = primary.uri;
@@ -458,14 +405,14 @@ async function fetchFromTheAudioDB(artistName, mbid = null) {
     // 1. MBID-first: precise lookup
     if (mbid) {
       const url = `https://www.theaudiodb.com/api/v1/json/${TADB_API_KEY}/artist-mb.php?i=${encodeURIComponent(mbid)}`;
-      const data = await downloadJson(url);
+      const data = await fetchPublicJson(url, { timeout: JSON_TIMEOUT_MS });
       const a = data?.artists?.[0];
       if (a) return _parseTadbArtist(a);
       // MBID not found in TADB — fall through to name search
     }
     // 2. Name-based fallback
     const url = `https://www.theaudiodb.com/api/v1/json/${TADB_API_KEY}/search.php?s=${encodeURIComponent(artistName)}`;
-    const data = await downloadJson(url);
+    const data = await fetchPublicJson(url, { timeout: JSON_TIMEOUT_MS });
     return _parseTadbArtist(data?.artists?.[0]);
   } catch {
     return null;
@@ -489,28 +436,6 @@ async function saveFanartImage(artistKey, fanartUrl) {
   }
 }
 
-async function fetchFromMusicBrainz(artistName) {
-  const url = `https://musicbrainz.org/ws/2/artist?query=${encodeURIComponent(artistName)}&fmt=json&limit=1`;
-  try {
-    // MusicBrainz requires a User-Agent but node's https does fine for one-offs
-    const buf = await downloadBuffer(url);
-    const data = JSON.parse(buf.toString());
-    const artist = data.artists?.[0];
-    if (!artist) return null;
-
-    const lifeSpanEnd = artist['life-span']?.end ? ` to ${artist['life-span'].end}` : '';
-    const parts = [
-      artist.disambiguation ? `Also known as: ${artist.disambiguation}.` : null,
-      artist['life-span']?.begin ? `Active from ${artist['life-span'].begin}${lifeSpanEnd}.` : null,
-      artist.area?.name ? `From ${artist.area.name}.` : null,
-    ].filter(Boolean);
-
-    return { bio: parts.join(' ') || null, imageUrl: null };
-  } catch {
-    return null;
-  }
-}
-
 // Discogs returns a 1203-byte black 400×400 JPEG as a placeholder when an artist
 // has no real image. Reject any download below this threshold.
 const MIN_ARTIST_IMG_BYTES = 5000;
@@ -523,7 +448,7 @@ async function saveArtistImage(artistKey, imageUrl) {
     const outPath = path.join(ARTIST_IMG_DIR, outName);
     await sharp(buf).resize(ARTIST_IMG_SIZE, ARTIST_IMG_SIZE, { fit: 'cover', position: 'top' }).jpeg({ quality: 85 }).toFile(outPath);
     return outName;
-  } catch {
+  } catch (_e) {
     _imgHydrateStats.lastError = `saveArtistImage(${artistKey}): ${_e.message}`;
     _imgHydrateStats.lastErrorAt = Date.now();
     return null;
@@ -568,7 +493,7 @@ async function _hydrateArtistImage(artistKey, canonicalName) {
     return 'no-image';
   }
 
-  // Image priority: Discogs > TADB > Last.fm — try each in order until one saves successfully.
+  // Image priority: TADB > Discogs > Last.fm — try each in order until one saves successfully.
   // If a source returns a URL but the download is rejected (e.g. Discogs black placeholder),
   // fall through to the next source rather than giving up.
   let imageFile = null;
@@ -751,7 +676,7 @@ async function _drainHydrationQueue() {
         else if (result === 'no-image' || result === 'skip') waitMs = HYDRATE_DELAY_IDLE_MS;
         else waitMs = HYDRATE_DELAY_ERR_MS;
         await new Promise(r => setTimeout(r, waitMs));
-      } catch {
+      } catch (_e) {
         // non-fatal; continue queue
         _imgHydrateStats.processed += 1;
         _imgHydrateStats.failed += 1;
@@ -826,6 +751,30 @@ function getAllowedVpaths(req) {
   return all.filter(v => allowed.includes(v));
 }
 
+// ── Custom placeholder (lives next to the config file, so it is part of the save/ volume) ──
+
+const ARTIST_PLACEHOLDER_FILENAME = 'artist-placeholder.jpg';
+const _placeholderDir = () => path.dirname(config.configFile);
+const _placeholderFile = () => path.join(_placeholderDir(), ARTIST_PLACEHOLDER_FILENAME);
+
+function _migrateLegacyPlaceholder() {
+  const legacy = path.join(config.program.storage.albumArtDirectory, ARTIST_PLACEHOLDER_FILENAME);
+  if (fs.existsSync(_placeholderFile()) || !fs.existsSync(legacy)) return;
+  try {
+    fs.copyFileSync(legacy, _placeholderFile());
+    fs.unlinkSync(legacy);
+  } catch (e) { console.warn('[artists-browse] Could not move the artist placeholder:', e.message); }
+}
+
+// Public: used in <img src> throughout the player, so it is registered before the auth middleware
+export function setupPublic(velvet) {
+  _migrateLegacyPlaceholder();
+  velvet.get('/api/v1/artists/placeholder', (_req, res) => {
+    if (fs.existsSync(_placeholderFile())) return res.sendFile(ARTIST_PLACEHOLDER_FILENAME, { root: _placeholderDir() });
+    res.sendFile(path.join(config.program.webAppDirectory, 'assets', 'img', 'unknownartist.webp'));
+  });
+}
+
 // ── Route setup ───────────────────────────────────────────────────────────────
 
 export function setup(velvet) {
@@ -837,12 +786,7 @@ export function setup(velvet) {
     if (!name || !/^[a-z0-9_.-]+\.(jpg|jpeg|png|webp)$/i.test(name)) {
       return res.status(400).json({ error: 'Invalid filename' });
     }
-    const filePath = path.join(ARTIST_IMG_DIR, name);
-    const resolved = path.resolve(filePath);
-    if (!resolved.startsWith(path.resolve(ARTIST_IMG_DIR) + path.sep)) {
-      return res.status(400).json({ error: 'Invalid path' });
-    }
-    res.sendFile(resolved);
+    res.sendFile(name, { root: ARTIST_IMG_DIR });
   });
 
   // ── POST /api/v1/admin/artists/placeholder ────────────────────────────────
@@ -869,8 +813,7 @@ export function setup(velvet) {
             .resize(ARTIST_IMG_SIZE, ARTIST_IMG_SIZE, { fit: 'cover', position: 'top' })
             .jpeg({ quality: 85 })
             .toBuffer();
-          await fsp.mkdir(path.dirname(ARTIST_PLACEHOLDER_FILE), { recursive: true });
-          await fsp.writeFile(ARTIST_PLACEHOLDER_FILE, processed);
+          await fsp.writeFile(_placeholderFile(), processed);
           res.json({ ok: true });
         } catch (err) {
           res.status(500).json({ error: err.message });
@@ -894,9 +837,7 @@ export function setup(velvet) {
   velvet.delete('/api/v1/admin/artists/placeholder', async (req, res) => {
     if (req.user.admin !== true) return res.status(403).json({ error: 'Admin only' });
     try {
-      if (fs.existsSync(ARTIST_PLACEHOLDER_FILE)) {
-        await fsp.unlink(ARTIST_PLACEHOLDER_FILE);
-      }
+      await fsp.rm(_placeholderFile(), { force: true });
       res.json({ ok: true });
     } catch (err) {
       res.status(500).json({ error: err.message });
@@ -907,7 +848,7 @@ export function setup(velvet) {
   // Admin only. Returns whether a custom placeholder is active.
   velvet.get('/api/v1/admin/artists/placeholder-info', (req, res) => {
     if (req.user.admin !== true) return res.status(403).json({ error: 'Admin only' });
-    res.json({ hasCustom: fs.existsSync(ARTIST_PLACEHOLDER_FILE) });
+    res.json({ hasCustom: fs.existsSync(_placeholderFile()) });
   });
 
   // ── GET /api/v1/artists/home ──────────────────────────────────────────────
@@ -963,7 +904,7 @@ export function setup(velvet) {
         return res.status(400).json({ error: 'Query must be at least 2 characters' });
       }
       // searchArtistsNormalized returns { name, variants[] } objects
-      const rawResults = db.searchArtistsNormalized(q.trim(), null, null);
+      const rawResults = db.searchArtistsNormalized(q.trim(), userDbVpaths(req.user));
       const artists = rawResults.map(r => {
         // Fetch full row so we have imageFile, songCount etc.
         const row = db.getArtistRow(r.name);
@@ -1050,76 +991,6 @@ export function setup(velvet) {
         lastFetched   : artistRow.lastFetched || null,
         releaseCategories,
       });
-    } catch (err) {
-      res.status(500).json({ error: err.message });
-    }
-  });
-
-  // ── POST /api/v1/artists/fetch-info ─────────────────────────────────────────
-  // Admin only. Fetches bio + image from Last.fm, TheAudioDB, and MusicBrainz.
-  velvet.post('/api/v1/artists/fetch-info', async (req, res) => {
-    if (req.user.admin !== true) return res.status(403).json({ error: 'Admin only' });
-
-    const schema = Joi.object({ artistKey: Joi.string().required() });
-    try { joiValidate(schema, req.body); } catch (e) { return res.status(400).json({ error: e.message }); }
-
-    const { artistKey } = req.body;
-    const artistRow = db.getArtistRow(artistKey);
-    if (!artistRow) return res.status(404).json({ error: 'Artist not found' });
-
-    try {
-      // Fetch all sources in parallel; TADB uses MBID-first when available
-      const fetchMbid = artistRow.mbid || db.deriveArtistMbidFromFiles(artistRow.canonicalName);
-      if (fetchMbid && !artistRow.mbid) db.saveArtistInfo(artistRow.canonicalName, { mbid: fetchMbid });
-      const [lfm, tadb, discogsUrl] = await Promise.all([
-        fetchFromLastfm(artistRow.canonicalName),
-        fetchFromTheAudioDB(artistRow.canonicalName, fetchMbid),
-        fetchArtistImageFromDiscogs(artistRow.canonicalName),
-      ]);
-      const mb = (!lfm?.bio && !tadb?.bio)
-        ? await fetchFromMusicBrainz(artistRow.canonicalName)
-        : null;
-
-      // Bio: Last.fm > TheAudioDB > MusicBrainz minimal
-      const bio = lfm?.bio || tadb?.bio || mb?.bio || null;
-
-      // Image: Discogs > TADB > Last.fm
-      const imageUrl = discogsUrl || tadb?.imageUrl || lfm?.imageUrl || null;
-      let source;
-      if (discogsUrl) source = 'discogs';
-      else if (tadb?.imageUrl) source = 'theaudiodb';
-      else if (lfm?.imageUrl) source = 'lastfm';
-      else source = null;
-
-      if (!bio && !imageUrl && !tadb?.fanartUrl && !tadb?.genre) {
-        return res.status(502).json({ error: 'No data from Discogs, Last.fm, TheAudioDB, or MusicBrainz' });
-      }
-
-      let imageFile = null;
-      if (imageUrl) {
-        imageFile = await saveArtistImage(artistRow.artistKey, imageUrl);
-        if (!imageFile) source = null;
-      }
-
-      // Fanart from TADB
-      let fanartFile = artistRow.fanartFile || null;
-      if (!fanartFile && tadb?.fanartUrl) {
-        fanartFile = await saveFanartImage(artistRow.artistKey, tadb.fanartUrl);
-      }
-
-      db.saveArtistInfo(artistRow.canonicalName, {
-        bio,
-        imageFile   : imageFile || null,
-        imageSource : source || (mb ? 'musicbrainz' : null),
-        fanartFile,
-        mbid:         tadb?.mbid    || null,
-        genre:        tadb?.genre   || null,
-        country:      tadb?.country || null,
-        formedYear:   tadb?.formedYear || null,
-      });
-
-      invalidateArtistCache();
-      res.json({ ok: true, bio, imageFile, imageSource: source, fanartFile, genre: tadb?.genre || null, country: tadb?.country || null, formedYear: tadb?.formedYear || null, mbid: tadb?.mbid || null });
     } catch (err) {
       res.status(500).json({ error: err.message });
     }
@@ -1284,7 +1155,7 @@ export function setup(velvet) {
 
     try {
       const url = `https://www.theaudiodb.com/api/v1/json/${TADB_API_KEY}/search.php?s=${encodeURIComponent(artistRow.canonicalName)}`;
-      const data = await downloadJson(url);
+      const data = await fetchPublicJson(url, { timeout: JSON_TIMEOUT_MS });
       const artists = Array.isArray(data?.artists) ? data.artists : [];
       const candidates = artists.slice(0, 6).map(a => ({
         id:        a.idArtist || null,
@@ -1337,11 +1208,8 @@ export function setup(velvet) {
   velvet.post('/api/v1/admin/artists/enrich-tadb', (req, res) => {
     if (req.user.admin !== true) return res.status(403).json({ error: 'Admin only' });
     try {
-      // 1. Reset fetch flag for artists with no image and no enrichment
-      const reset = db.resetUnenrichedArtistFetch();
-
-      // 2. Seed tadb-only queue for artists WITH images but no enrichment data
-      const toEnrich = db.getArtistsForTadbEnrichment(2000);
+      const reset = db.resetFetchForUnenrichedArtists();
+      const toEnrich = db.getArtistsWithImageMissingEnrichment(2000);
       let enqueued = 0;
       for (const name of toEnrich) {
         const before = _imgHydrateQueue.length;

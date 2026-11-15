@@ -12,10 +12,10 @@
 // an initial (George F. Zimmer).
 // ";" only ever separates credits; "," is split at the duo level, after the
 // whole credit has been tried, so "Earth, Wind & Fire" still resolves as itself.
-const COLLAB_SEP = /\s*;\s*|\s+(?:feat\.?|ft\.?|fe\.?|featuring|vs\.?|pres\.?|presents?\b|\bx\b)\s+/i;
-const DUO_SEP = /\s*,\s*|\s+(?:&|and)\s+/i;
+export const COLLAB_SEP = /\s*;\s*|\s+(?:feat\.?|ft\.?|fe\.?|featuring|vs\.?|pres\.?|presents?\b|\bx\b)\s+/i;
+export const DUO_SEP = /\s*,\s*|\s+(?:&|and)\s+/i;
 // "05. Jax Jones Feat. Ina Wroldsen" — a track number leaked into the artist tag.
-const TRACK_NO_PREFIX = /^\d{1,3}\.\s+/;
+export const TRACK_NO_PREFIX = /^\d{1,3}\.\s+/;
 
 export function artistLookupCandidates(name) {
   const seen = new Set();
@@ -36,4 +36,8 @@ export function artistLookupCandidates(name) {
     if (duoParts.length > 1) for (const d of duoParts) add(d);
   }
   return out;
+}
+
+export function primaryArtist(credit) {
+  return String(credit || '').trim().replace(TRACK_NO_PREFIX, '').split(COLLAB_SEP)[0].trim();
 }

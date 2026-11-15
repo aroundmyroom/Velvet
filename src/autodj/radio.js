@@ -66,7 +66,7 @@ export function songFromRow(row, familyResolver) {
   };
 }
 
-function keywordBlocked(song, words) {
+export function keywordBlocked(song, words) {
   if (!words?.length) return false;
   const norm = s => s.toLowerCase().replaceAll(/(.)\1+/g, '$1');
   const haystack = norm([song.title || '', song.artist || '', song.album || '', song.filepath || ''].join(' '));

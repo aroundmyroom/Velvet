@@ -4,25 +4,24 @@ import {
   NoiseInitiator, NoiseError, SUITES, encodeMsg1Payload, parseMsg2Payload, packHandshake, unpackHandshake,
 } from './noise.js';
 import { SENTINEL_PSK, SENTINEL_PSK_ID, PSK_CATEGORY, pskId, decodeKeyId, isKeyId } from './keys.js';
-import { MSG, WireError, Reassembler, fragment, frame, decodeJson, encodeAudioChunk, decodeSourceAudio, SEND_AHEAD_MAX } from './wire.js';
+import { MSG, WireError, Reassembler, fragment, frame, decodeJson, encodeAudioChunk, decodeSourceAudio, SEND_AHEAD_MAX, sameFormat } from './wire.js';
 
-export const PROTOCOL_VERSION = 1;
+const PROTOCOL_VERSION = 1;
 export const MAX_WS_PAYLOAD = 65535;
-export const MAX_CLIENT_HELLO_BYTES = 16384;
-export const MAX_CLIENT_HELLO_DEPTH = 10;
-export const MAX_INBOUND_MESSAGE = 1024 * 1024;
-export const MAX_NAME_BYTES = 64;
+const MAX_CLIENT_HELLO_BYTES = 16384;
+const MAX_CLIENT_HELLO_DEPTH = 10;
+const MAX_INBOUND_MESSAGE = 1024 * 1024;
+const MAX_NAME_BYTES = 64;
 export const IMPLEMENTED_ROLES = Object.freeze(['player@v1', 'controller@v1', 'metadata@v1', 'artwork@v1', 'color@v1', 'visualizer@v1', 'source@v1']);
-export const GOODBYE_REASONS = Object.freeze([
+const GOODBYE_REASONS = Object.freeze([
   'another_server', 'shutdown', 'restart', 'user_request', 'unauthorized', 'pairing_required', 'concurrent_attempt', 'unpaired',
 ]);
-export const ACTIVITIES = Object.freeze(['playback', 'pairing']);
-export const PAIR_METHODS = Object.freeze(['dynamic_pairing_code', 'pairing_psk', 'static_pairing_code']);
-export const PAIR_FORMATS = Object.freeze(['digits', 'qr_code']);
-export const PLAYER_COMMANDS = Object.freeze(['volume', 'mute', 'set_output_delay']);
-export const CODECS = Object.freeze(['opus', 'flac', 'pcm']);
-export const STREAM_ROLES = Object.freeze(['player', 'artwork', 'visualizer']);
-export const SOURCE_CODECS = Object.freeze(['flac', 'pcm']);
+const ACTIVITIES = Object.freeze(['playback', 'pairing']);
+const PAIR_METHODS = Object.freeze(['dynamic_pairing_code', 'pairing_psk', 'static_pairing_code']);
+const PAIR_FORMATS = Object.freeze(['digits', 'qr_code']);
+const PLAYER_COMMANDS = Object.freeze(['volume', 'mute', 'set_output_delay']);
+const CODECS = Object.freeze(['opus', 'flac', 'pcm']);
+const SOURCE_CODECS = Object.freeze(['flac', 'pcm']);
 
 const DEFAULT_TIMEOUTS = Object.freeze({ handshakeMs: 30_000, helloMs: 30_000, activateFallbackMs: 20_000, pingMs: 30_000, pongMs: 15_000 });
 const SUPPORT_REQUIRED = new Set(['player@v1', 'visualizer@v1']);
@@ -48,7 +47,7 @@ export function cleanText(value, max = MAX_LOGGED) {
   return s.length > max ? `${s.slice(0, max)}…` : s;
 }
 
-export function roleFamily(roleId) {
+function roleFamily(roleId) {
   const at = roleId.indexOf('@');
   return at < 0 ? roleId : roleId.slice(0, at);
 }
@@ -122,11 +121,6 @@ function parseFormat(f) {
   const out = { codec: f.codec, sample_rate: f.sample_rate, channels: f.channels };
   if (isInt(f.bit_depth, 1, 64)) out.bit_depth = f.bit_depth;
   return out;
-}
-
-export function sameFormat(a, b) {
-  return a.codec === b.codec && a.sample_rate === b.sample_rate && a.channels === b.channels
-    && (a.codec === 'opus' || a.bit_depth === b.bit_depth);
 }
 
 class ProtocolError extends Error {}
@@ -268,7 +262,7 @@ export function parseSourceState(obj) {
 const ROLE_STATE_PARSERS = Object.freeze({ artwork: parseArtworkState, visualizer: parseVisualizerState, source: parseSourceState });
 
 // Shape only; whether the server accepts the format is the source manager's call.
-export function parseSourceStreamStart(obj) {
+function parseSourceStreamStart(obj) {
   if (!isObject(obj) || !CODECS.includes(obj.codec) || !isInt(obj.channels, 1, 32) || !isInt(obj.sample_rate, 1, 768000)) return null;
   if (obj.codec !== 'opus' && !isInt(obj.bit_depth, 1, 64)) return null;
   if (obj.codec_header !== undefined && (typeof obj.codec_header !== 'string' || obj.codec_header.length > 4096)) return null;

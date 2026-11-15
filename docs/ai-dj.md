@@ -4,8 +4,11 @@ The AI DJ is a page in the player where you tell the DJ what you want to
 hear, in your own words, and get a set back: to play, to add to the queue, or
 to save as a playlist. It is off by default; the admin switches it on under
 **Admin → External Services → AI-assist → AI DJ for listeners** (see
-[ai-assist.md](ai-assist.md)). Once on, it is on for every listener, and the
-admin can switch it off per user on the *Users* page.
+[ai-assist.md](ai-assist.md)). In the config that is `aiAssist.queueBuilder:
+true`, and it only works together with `aiAssist.enabled: true`. Once on, it
+is on for every listener, and the admin can switch it off per user on the
+*Users* page (`allow-ai-dj: false`). While it is off for you, the menu item is
+hidden and the `/api/v1/ai/*` endpoints answer `404`.
 
 The model never picks a song. It reads your request and writes a *brief* —
 genres, artists, era, tempo, flow, length, what to leave out — spelled the

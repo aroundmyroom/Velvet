@@ -65,7 +65,7 @@ export function defaultCifsOptions(hasCredentials) {
 
 const FSTAB_TAG_PREFIX = '# velvet-network-mount:';
 
-export function fstabTag(name) {
+function fstabTag(name) {
   return `${FSTAB_TAG_PREFIX}${name}`;
 }
 

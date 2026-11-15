@@ -12,46 +12,16 @@
  */
 
 import { workerData, parentPort } from 'node:worker_threads';
-import { DatabaseSync } from 'node:sqlite';
+import { openWorkerDb } from '../db/worker-connection.js';
 import { buildArtistGroups, toKey } from './artist-normalize.js';
+import { inClause, includePrefixClauses, excludePrefixClauses } from '../db/sql-clauses.js';
 
 const { dbPath, vpaths, includeFilepathPrefixes, excludeFilepathPrefixes } = workerData;
-
-// ── SQL helpers (mirrored from sqlite-backend.js) ─────────────────────────
-
-function inClause(column, values) {
-  if (values.length === 0) return { sql: '1=0', params: [] };
-  return { sql: `${column} IN (${values.map(() => '?').join(',')})`, params: values };
-}
-
-function includePrefixClauses(prefixes) {
-  if (!prefixes || prefixes.length === 0) return { sql: '', params: [] };
-  const parts = prefixes.map(({ vpath, prefix }) => ({
-    vpath,
-    like: prefix.replaceAll(/[%_\\]/g, String.raw`\$&`) + '%',
-  }));
-  const sql = ' AND (' + parts.map(() => String.raw`(vpath = ? AND filepath LIKE ? ESCAPE '\')`)  .join(' OR ') + ')';
-  return { sql, params: parts.flatMap(p => [p.vpath, p.like]) };
-}
-
-function excludePrefixClauses(prefixes) {
-  if (!prefixes || prefixes.length === 0) return { sql: '', params: [] };
-  const parts = prefixes.map(({ vpath, prefix }) => ({
-    vpath,
-    like: prefix.replaceAll(/[%_\\]/g, String.raw`\$&`) + '%',
-  }));
-  const sql = parts.map(() => String.raw` AND NOT (vpath = ? AND filepath LIKE ? ESCAPE '\')`).join('');
-  return { sql, params: parts.flatMap(p => [p.vpath, p.like]) };
-}
 
 // ── Rebuild ───────────────────────────────────────────────────────────────
 
 try {
-  const db = new DatabaseSync(dbPath);
-  db.exec('PRAGMA journal_mode=WAL');
-  db.exec('PRAGMA busy_timeout = 30000');
-  db.exec('PRAGMA synchronous = NORMAL');
-  db.exec('PRAGMA cache_size = -8000');
+  const db = openWorkerDb(dbPath, { cacheKb: 8000 });
 
   if (vpaths.length === 0) {
     db.exec('BEGIN');

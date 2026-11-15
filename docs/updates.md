@@ -32,10 +32,11 @@ The same steps `docs/install.md` tells you to run by hand, with every step's
 output streamed to the page as a progress log:
 
 1. **Preflight** — re-checks everything below; refuses if anything is off.
-   Boot-stamped cache-buster files (`webapp/*/index.html` version stamps) are
-   discarded since the server rewrites them on every start; any *other* local
+   Boot-stamped cache-buster files (`webapp/index.html`, `webapp/admin/`,
+   `webapp/mobile/`, `webapp/shared/` `index.html`, `webapp/app.js`,
+   `webapp/package.json`) are discarded since the server rewrites them on every start; any *other* local
    change blocks the update rather than being overwritten.
-2. **`git fetch --tags origin`** — then verifies the tag exists.
+2. **`git fetch --tags --prune origin`** — then verifies the tag exists.
 3. **Fast-forward** — on a branch (`main`): `git merge --ff-only vX.Y.Z`, so
    the branch moves to the release and a later manual `git pull` still works.
    On a detached HEAD it simply checks the tag out. A checkout with local
@@ -69,8 +70,8 @@ must exit and come back. The updater detects what will bring it back:
 
 | Supervisor | Detected by | Restart |
 |---|---|---|
-| **systemd** | `INVOCATION_ID` in the environment | exits with code 1 — restarts under both `Restart=on-failure` (what `docs/install.md` ships) and `Restart=always` |
-| **pm2** | `PM2_HOME` / `pm_id` | exits with code 1 — pm2 restarts on any exit |
+| **systemd** | `INVOCATION_ID` or `JOURNAL_STREAM` in the environment | exits with code 1 — restarts under both `Restart=on-failure` (what `docs/install.md` ships) and `Restart=always` |
+| **pm2** | `PM2_HOME` / `pm_id` / `PM2_JSON_PROCESSING` | exits with code 1 — pm2 restarts on any exit |
 | **none** | neither | starts a detached copy of itself, then exits. Works, but that copy's stdout/stderr go nowhere — run under systemd or pm2 |
 
 Playback stops for the restart (roughly 10 seconds). Sonos casts resume from
@@ -102,7 +103,7 @@ be undone by the next recreate.
 |---|---|---|
 | `GET` | `/api/v1/admin/update/check?force=1` | Installed vs. latest release, release notes, the environment checklist with blockers, Docker hints, and the current job state. |
 | `POST` | `/api/v1/admin/update/start` | `{ version }` — must equal the latest release shown. Refused when blocked, already on it, or a job is running. |
-| `GET` | `/api/v1/admin/update/status` | Job state: `state` (`idle`/`running`/`restarting`/`failed`/`done`), `phase`, `percent`, `log[]`, `error`. |
+| `GET` | `/api/v1/admin/update/status` | Job state: `state` (`idle`/`running`/`restarting`/`failed`), `phase`, `percent`, `log[]`, `error`. |
 
 All three are admin-only. Every log line also goes to the server log as
 `[update] …`.

@@ -73,6 +73,19 @@ async function main() {
   check('2600::',              '2600::',              false);
   // IPv4-mapped public
   check('::ffff:8.8.8.8',     '::ffff:8.8.8.8',      false);
+  // Public names that only look like private prefixes (DNS decides for names)
+  check('fdroid.org',          'fdroid.org',          false);
+  check('fcbarcelona.com',     'fcbarcelona.com',     false);
+  check('feb.example.com',     'feb.example.com',     false);
+  check('10.example.com',      '10.example.com',      false);
+  check('127.example.com',     '127.example.com',     false);
+  check('fc::1 (00fc::, not ULA)', 'fc::1',           false);
+
+  console.log('\n── isPrivateHost() — other spellings that must still BLOCK ─────────');
+  check('[fe80::1]',           '[fe80::1]',           true);
+  check('0:0:0:0:0:0:0:1',     '0:0:0:0:0:0:0:1',     true);
+  check('::ffff:7f00:1 (URL form of ::ffff:127.0.0.1)', '::ffff:7f00:1', true);
+  check('FD00::1 upper case',  'FD00::1',             true);
 
   console.log(`\n${'─'.repeat(64)}`);
   console.log(`RESULT: ${pass} passed, ${fail} failed\n`);

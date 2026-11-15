@@ -1,21 +1,15 @@
 /**
  * scan-lock.js — global scan semaphore
  *
- * All background workers that write to the database MUST check
- * isScanRunning() before starting a write cycle. If it returns true,
- * they must skip that cycle and retry later.
- *
- * Rule: while a scan is in progress, the DB is exclusively the scan's.
- *       No other process may start a write transaction.
- *
- * Usage:
- *   import { isScanRunning, setScanRunning, onScanEnd } from '../state/scan-lock.js';
- *
- *   // In a worker tick:
- *   if (isScanRunning()) return;  // skip this cycle
- *
- *   // To defer until scan ends:
- *   if (isScanRunning()) { onScanEnd(() => doWork()); return; }
+ * What is guaranteed while a scan runs:
+ *   - Worker threads hosted by util/worker-controller.js (AcoustID, Tag
+ *     Workshop, ReplayGain, BPM, genre enricher) receive {type:'pause'} when
+ *     the first scan starts and {type:'resume'} when the last one ends; their
+ *     DB writes go through worker-helpers dbWriteWithRetry(), which waits
+ *     while paused. Their starts are deferred until the scan ends; a worker
+ *     restarted after a crash during a scan starts paused.
+ *   - Tasks submitted to state/bg-task-broker.js do not start during a scan.
+ * Anything else that writes to the DB must check isScanRunning() itself.
  */
 
 let _running = 0;  // count of active scans (multiple vpaths may scan concurrently)

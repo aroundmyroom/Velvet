@@ -41,7 +41,7 @@ function channelLinear(c) {
   return s <= 0.03928 ? s / 12.92 : ((s + 0.055) / 1.055) ** 2.4;
 }
 
-export function luminance([r, g, b]) {
+function luminance([r, g, b]) {
   return 0.2126 * channelLinear(r) + 0.7152 * channelLinear(g) + 0.0722 * channelLinear(b);
 }
 

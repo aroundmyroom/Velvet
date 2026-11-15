@@ -19,33 +19,41 @@
         <img src="icon.png" alt="Velvet" class="login-logo-img">
         <div class="login-logo">VELVET</div>
       </div>
-      <div class="login-subtitle">Music Server</div>
+      <div class="login-subtitle" data-i18n="tizen.login.subtitle">Music Server</div>
       <div id="login-version" class="login-version">v__VELVET_TV_VERSION__</div>
       <div id="login-fields" class="login-fields">
         <div class="field-group">
-          <label class="field-label">Server URL</label>
+          <label class="field-label" data-i18n="player.subsonic.serverUrl">Server URL</label>
           <input id="login-url" class="field-input focusable" type="url"
                  placeholder="https://music.example.com:3000" autocomplete="off">
         </div>
         <div class="field-group">
-          <label class="field-label">Username</label>
+          <label class="field-label" data-i18n="player.login.username">Username</label>
           <input id="login-user" class="field-input focusable" type="text"
                  autocomplete="username">
         </div>
         <div class="field-group">
-          <label class="field-label">Password</label>
+          <label class="field-label" data-i18n="player.login.password">Password</label>
           <input id="login-pass" class="field-input focusable" type="password"
                  autocomplete="current-password">
         </div>
-        <button id="login-btn" class="login-btn focusable">Connect</button>
-        <div id="login-error" class="login-error hidden"></div>
-        <div id="login-pair-toggle" class="login-pair-toggle focusable">Pair with phone instead</div>
+        <button id="login-btn" class="login-btn focusable" data-i18n="player.misc.connect">Connect</button>
+        <!-- The login messages live in the markup: they must read in English before any locale file could be fetched. -->
+        <div id="login-error" class="login-error hidden">
+          <span data-i18n="tizen.login.fillAll" hidden>Please fill in all fields.</span>
+          <span data-i18n="tizen.login.connectFailed" hidden>Connection failed. Check URL and credentials.</span>
+          <span data-i18n="tizen.login.pairNeedsUrl" hidden>Enter the server URL first, then pair with phone.</span>
+        </div>
+        <div id="login-pair-toggle" class="login-pair-toggle focusable" data-i18n="tizen.login.pairInstead">Pair with phone instead</div>
       </div>
       <div id="pair-panel" class="hidden">
-        <p class="pair-hint">On your phone or computer, go to Settings and choose &ldquo;Pair a device&rdquo;, then enter this code:</p>
+        <p class="pair-hint" data-i18n="tizen.login.pairHint">On your phone or computer, go to Settings and choose &ldquo;Pair a device&rdquo;, then enter this code:</p>
         <div id="pair-code-display" class="pair-code-display">------</div>
-        <div id="pair-error" class="login-error hidden"></div>
-        <button id="pair-cancel-btn" class="login-btn focusable">Cancel</button>
+        <div id="pair-error" class="login-error hidden">
+          <span data-i18n="mobile.connect.pairStartFailed" hidden>Could not start pairing. Check the server URL.</span>
+          <span data-i18n="mobile.connect.codeExpired" hidden>This code expired. Try again.</span>
+        </div>
+        <button id="pair-cancel-btn" class="login-btn focusable" data-i18n="player.modal.cancel">Cancel</button>
       </div>
     </div>
   </div>
@@ -57,14 +65,14 @@
     <nav id="nav-bar">
       <div class="nav-brand">VELVET</div>
       <div id="nav-items" class="nav-items">
-        <button class="nav-item focusable" data-screen="home">Home</button>
-        <button class="nav-item focusable" data-screen="albums">Albums</button>
-        <button class="nav-item focusable" data-screen="artists">Artists</button>
-        <button class="nav-item focusable" data-screen="playlists">Playlists</button>
-        <button class="nav-item focusable" data-screen="files">Files</button>
-        <button class="nav-item focusable" data-screen="autodj">Auto-DJ</button>
+        <button class="nav-item focusable" data-screen="home" data-i18n="player.nav.home">Home</button>
+        <button class="nav-item focusable" data-screen="albums" data-i18n="player.nav.albums">Albums</button>
+        <button class="nav-item focusable" data-screen="artists" data-i18n="player.nav.artists">Artists</button>
+        <button class="nav-item focusable" data-screen="playlists" data-i18n="player.nav.playlists">Playlists</button>
+        <button class="nav-item focusable" data-screen="files" data-i18n="tizen.nav.files">Files</button>
+        <button class="nav-item focusable" data-screen="autodj" data-i18n="player.nav.autoDj">Auto-DJ</button>
       </div>
-      <button id="nav-logout" class="nav-logout focusable">Sign out</button>
+      <button id="nav-logout" class="nav-logout focusable" data-i18n="mobile.you.signOut">Sign out</button>
     </nav>
 
     <!-- Content area — screens swap here -->
@@ -74,26 +82,26 @@
       <div id="view-home" class="view active">
         <div class="home-grid">
           <div class="home-tile focusable" data-screen="albums">
-            <div class="home-tile-icon">&#9654; Albums</div>
+            <div class="home-tile-icon">&#9654; <span data-i18n="player.nav.albums">Albums</span></div>
           </div>
           <div class="home-tile focusable" data-screen="artists">
-            <div class="home-tile-icon">&#9835; Artists</div>
+            <div class="home-tile-icon">&#9835; <span data-i18n="player.nav.artists">Artists</span></div>
           </div>
           <div class="home-tile focusable" data-screen="playlists">
-            <div class="home-tile-icon">&#9776; Playlists</div>
+            <div class="home-tile-icon">&#9776; <span data-i18n="player.nav.playlists">Playlists</span></div>
           </div>
           <div class="home-tile focusable" data-screen="files">
-            <div class="home-tile-icon">&#128193; Files</div>
+            <div class="home-tile-icon">&#128193; <span data-i18n="tizen.nav.files">Files</span></div>
           </div>
           <div class="home-tile focusable" data-screen="autodj">
-            <div class="home-tile-icon">&#8734; Auto-DJ</div>
+            <div class="home-tile-icon">&#8734; <span data-i18n="player.nav.autoDj">Auto-DJ</span></div>
           </div>
         </div>
       </div>
 
       <!-- Albums grid -->
       <div id="view-albums" class="view hidden">
-        <div id="albums-header" class="view-header">Albums</div>
+        <div id="albums-header" class="view-header" data-i18n="player.nav.albums">Albums</div>
         <div class="albums-body">
           <div id="albums-grid" class="card-grid"></div>
         </div>
@@ -109,7 +117,7 @@
             <div id="album-detail-artist" class="album-detail-artist"></div>
             <div id="album-detail-year" class="album-detail-year"></div>
             <div id="album-detail-badges" class="album-detail-badges"></div>
-            <button id="album-play-all" class="play-all-btn focusable">&#9654; Play All</button>
+            <button id="album-play-all" class="play-all-btn focusable">&#9654; <span data-i18n="player.header.playAll">Play All</span></button>
           </div>
         </div>
         <div id="album-track-list" class="track-list"></div>
@@ -117,7 +125,7 @@
 
       <!-- Artists list -->
       <div id="view-artists" class="view hidden">
-        <div class="view-header">Artists</div>
+        <div class="view-header" data-i18n="player.nav.artists">Artists</div>
         <div id="artists-list" class="artist-list"></div>
       </div>
 
@@ -134,7 +142,7 @@
 
       <!-- Playlists list -->
       <div id="view-playlists" class="view hidden">
-        <div class="view-header">Playlists</div>
+        <div class="view-header" data-i18n="player.nav.playlists">Playlists</div>
         <div id="playlists-list" class="playlist-list"></div>
       </div>
 
@@ -146,7 +154,7 @@
 
       <!-- File Explorer -->
       <div id="view-files" class="view hidden">
-        <div class="view-header">Files</div>
+        <div class="view-header" data-i18n="tizen.nav.files">Files</div>
         <div id="files-breadcrumb" class="fe-breadcrumb"></div>
         <div id="files-list" class="fe-list"></div>
       </div>
@@ -154,9 +162,9 @@
       <!-- Auto-DJ -->
       <div id="view-autodj" class="view hidden">
         <div class="autodj-center">
-          <div class="autodj-title">Auto-DJ</div>
-          <div class="autodj-desc">Continuously picks music for you.</div>
-          <button id="autodj-start-btn" class="autodj-start-btn focusable">&#9654; Start Auto-DJ</button>
+          <div class="autodj-title" data-i18n="player.nav.autoDj">Auto-DJ</div>
+          <div class="autodj-desc" data-i18n="tizen.autodj.desc">Continuously picks music for you.</div>
+          <button id="autodj-start-btn" class="autodj-start-btn focusable">&#9654; <span data-i18n="tizen.autodj.start">Start Auto-DJ</span></button>
           <div id="autodj-status" class="autodj-status hidden"></div>
         </div>
       </div>
@@ -168,14 +176,14 @@
       <div id="pb-art-wrap" class="pb-art-wrap">
         <img id="pb-art" class="pb-art" src="" alt="">
       </div>
-      <div id="pb-info" class="pb-info focusable" tabindex="0" title="Now Playing">
+      <div id="pb-info" class="pb-info focusable" tabindex="0" title="Now Playing" data-i18n="player.player.nowPlaying" data-i18n-attr="title">
         <div id="pb-title" class="pb-title"></div>
         <div id="pb-artist" class="pb-artist"></div>
       </div>
       <div class="pb-controls">
-        <button id="pb-prev" class="pb-btn focusable" title="Previous">&#10094;&#10094;</button>
-        <button id="pb-play" class="pb-btn pb-play focusable" title="Play/Pause">&#9654;</button>
-        <button id="pb-next" class="pb-btn focusable" title="Next">&#10095;&#10095;</button>
+        <button id="pb-prev" class="pb-btn focusable" title="Previous" data-i18n="player.ctrl.previous" data-i18n-attr="title">&#10094;&#10094;</button>
+        <button id="pb-play" class="pb-btn pb-play focusable" title="Play/Pause" data-i18n="player.ctrl.play" data-i18n-attr="title">&#9654;</button>
+        <button id="pb-next" class="pb-btn focusable" title="Next" data-i18n="player.ctrl.next" data-i18n-attr="title">&#10095;&#10095;</button>
       </div>
       <div class="pb-progress-wrap">
         <span id="pb-pos" class="pb-time">0:00</span>
@@ -202,14 +210,14 @@
       <button id="ov-prev" class="ov-btn focusable">&#10094;&#10094;</button>
       <button id="ov-play" class="ov-btn ov-play focusable">&#9654;</button>
       <button id="ov-next" class="ov-btn focusable">&#10095;&#10095;</button>
-      <button id="ov-viz" class="ov-btn ov-viz focusable" title="Visualizer">&#9673;</button>
+      <button id="ov-viz" class="ov-btn ov-viz focusable" title="Visualizer" data-i18n="player.ctrl.visualizer" data-i18n-attr="title">&#9673;</button>
     </div>
     <div class="overlay-progress-wrap">
       <span id="ov-pos" class="ov-time">0:00</span>
       <canvas id="ov-wave" class="ov-wave focusable" tabindex="0"></canvas>
       <span id="ov-dur" class="ov-time">0:00</span>
     </div>
-    <div id="ov-autodj-badge" class="ov-autodj-badge hidden">AUTO-DJ</div>
+    <div id="ov-autodj-badge" class="ov-autodj-badge hidden" data-i18n="player.nav.autoDj">Auto-DJ</div>
   </div>
 
   <!-- Full-screen MilkDrop-style visualizer (screensaver after 30s of playback) -->
@@ -219,7 +227,7 @@
       <div id="viz-title" class="viz-title"></div>
       <div id="viz-artist" class="viz-artist"></div>
     </div>
-    <div class="viz-hint">Press any key to exit</div>
+    <div class="viz-hint" data-i18n="tizen.viz.exitHint">Press any key to exit</div>
   </div>
 
   <!-- Hidden audio element -->

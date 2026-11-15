@@ -5,38 +5,18 @@
  * index it immediately so play stats can be recorded normally.
  */
 
-import crypto from 'node:crypto';
 import fs from 'node:fs';
 import { parseFile } from 'music-metadata';
 import * as db from '../db/manager.js';
 import * as config from '../state/config.js';
 import { resolveExistingFileWithinRoots } from './path-security.js';
-
-const HASH_READ_LIMIT = 524288; // 512 KB — matches scanner.mjs
+import { computeFileHash } from './file-hash.js';
+import { rootVpathOf } from './vpath.js';
 
 // Track in-flight indexing operations to prevent duplicate rows when the same
 // unindexed file is played concurrently (async gap between findFileByPath and
 // insertFile is large enough for a second request to race through).
 const _inFlight = new Map(); // "vpath:relpath" → Promise<row|null>
-
-function computeHash(fullPath) {
-  return new Promise((resolve, reject) => {
-    const hash = crypto.createHash('sha256').setEncoding('hex');
-    const stream = fs.createReadStream(fullPath, { start: 0, end: HASH_READ_LIMIT - 1 });
-    let bytesRead = 0;
-    stream.on('error', reject);
-    stream.on('data', (chunk) => { bytesRead += chunk.length; });
-    stream.on('end', () => {
-      hash.end();
-      stream.close();
-      // Never emit the empty-input hash for a 0-byte read — that sentinel would
-      // collide across unrelated files (see scanner.mjs calculateHash).
-      if (bytesRead === 0) { reject(new Error(`computeHash: 0 bytes read from ${fullPath}`)); return; }
-      resolve(hash.read());
-    });
-    stream.pipe(hash);
-  });
-}
 
 /**
  * Index a single file on-the-fly for play tracking purposes.
@@ -45,30 +25,11 @@ function computeHash(fullPath) {
  */
 export async function indexFileOnDemand(pathInfo) {
   try {
-    const resolvedPath = resolveExistingFileWithinRoots(pathInfo.fullPath, [path.dirname(pathInfo.fullPath)]);
+    const resolvedPath = resolveExistingFileWithinRoots(pathInfo.fullPath, [pathInfo.basePath]);
 
-    // Resolve child vpath → parent vpath before inserting.
-    // If pathInfo.vpath is a sub-directory of another configured vpath (e.g.
-    // "12-inches" lives inside the "Music" root), we must store the row under
-    // the parent so it is consistent with what the regular scanner would produce,
-    // and so that the scanner's finish-scan pruning can clean it up correctly.
-    const folders = config.program?.folders || {};
-    let effectiveVpath   = pathInfo.vpath;
-    let effectiveRelPath = pathInfo.relativePath;
-    const myRoot = folders[pathInfo.vpath]?.root?.replace(/\/?$/, '/');
-    if (myRoot) {
-      for (const [parentKey, parentFolder] of Object.entries(folders)) {
-        if (parentKey === pathInfo.vpath) continue;
-        const parentRoot = parentFolder.root?.replace(/\/?$/, '/');
-        if (parentRoot && myRoot.startsWith(parentRoot) && myRoot !== parentRoot) {
-          // This vpath is a child — rewrite to the parent's vpath + prefix
-          const prefix = myRoot.slice(parentRoot.length);
-          effectiveVpath   = parentKey;
-          effectiveRelPath = prefix + pathInfo.relativePath;
-          break;
-        }
-      }
-    }
+    // Store the row under the ROOT vpath, exactly as the scanner would, so its finish-scan pruning matches it.
+    const { vpath: effectiveVpath, prefix } = rootVpathOf(pathInfo.vpath, config.program?.folders || {});
+    const effectiveRelPath = prefix + pathInfo.relativePath;
 
     // Deduplicate concurrent calls for the same file — the async gap between
     // findFileByPath() and insertFile() is large enough for a second request to
@@ -82,7 +43,7 @@ export async function indexFileOnDemand(pathInfo) {
       const existing = db.findFileByPath(effectiveRelPath, effectiveVpath);
       if (existing) return existing;
 
-      const hash = await computeHash(resolvedPath);
+      const hash = await computeFileHash(resolvedPath);
       const meta = await parseFile(resolvedPath, { skipCovers: true, duration: true });
       const t = meta.common;
       const stat = fs.statSync(resolvedPath);
@@ -109,7 +70,8 @@ export async function indexFileOnDemand(pathInfo) {
     } finally {
       _inFlight.delete(flightKey);
     }
-  } catch {
+  } catch (e) {
+    console.debug('[velvet] on-demand index', e?.message ?? e);
     return null;
   }
 }

@@ -6,9 +6,20 @@ Auto-DJ** (the model proposes, you approve) and the **AI DJ** for listeners
 description of your library, never from your files, and nothing it does
 changes playback until you say so.
 
-Everything is hidden until `aiAssist.enabled` is set in
-`save/conf/default.json`. Without that flag the admin nav item stays hidden,
-every endpoint answers `404`, and Auto-DJ behaves exactly as before.
+Everything is hidden until `aiAssist.enabled` is `true` in
+`save/conf/default.json` (default `false`). Without that flag the admin nav
+item stays hidden, the analysis, rules, notes and profile endpoints answer
+`404`, and Auto-DJ behaves exactly as before. The settings endpoints
+(`GET`/`POST /api/v1/admin/ai/config`, version words) stay reachable for
+admins; *Test connection* answers `409` while AI-assist is off.
+
+The listener's **AI DJ** needs a second flag: `aiAssist.queueBuilder: true`
+(the **AI DJ for listeners** switch, default `false`) on top of `enabled`.
+Until both are on, every `/api/v1/ai/*` endpoint answers `404`, except
+`GET /api/v1/ai/status`, which answers `{ enabled: false }`.
+
+Approved genre-family rules (see below) keep shaping Auto-DJ even if
+`enabled` is switched off later; with no approved rule, nothing changes.
 
 ```json
 "aiAssist": {

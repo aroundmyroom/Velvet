@@ -3,6 +3,9 @@ import * as config from '../state/config.js';
 import * as db from '../db/manager.js';
 import { joiValidate } from '../util/validation.js';
 import WebError from '../util/web-error.js';
+import { rootVpathOf } from '../util/vpath.js';
+import { canCastToServer } from '../util/permissions.js';
+import { isEnabled as transcodeEnabled } from './transcode.js';
 import { createRequire } from 'node:module';
 import { access as fsAccess } from 'node:fs/promises';
 import { constants as FS } from 'node:fs';
@@ -12,50 +15,29 @@ const _pkg = _require('../../package.json');
 export function setup(velvet) {
   // NOTE(pending): This is a legacy endpoint that should be improved
   velvet.get('/api/v1/ping', async (req, res) => {
-    let transcode = false;
-    if (config.program.transcode?.enabled) {
-      transcode = {
-        defaultCodec: config.program.transcode.defaultCodec,
-        defaultBitrate: config.program.transcode.defaultBitrate,
-        defaultAlgorithm: config.program.transcode.algorithm
-      }
-    }
-
     const returnThis = {
       vpaths: req.user.vpaths,
       noUpload: config.program.noUpload === true,
       supportedAudioFiles: config.program.supportedAudioFiles,
+      transcode: transcodeEnabled() ? {
+        defaultCodec: config.program.transcode.defaultCodec,
+        defaultBitrate: config.program.transcode.defaultBitrate,
+        defaultAlgorithm: config.program.transcode.algorithm
+      } : false,
       vpathMetaData: {}
     };
 
     const allFolders = config.program.folders;
-    // Use the expanded vpath set (includes implicit parent roots) when looking up
-    // parentVpath, so child-only users get the correct parent relationship.
-    const _lookupVpaths = req.user.dbVpaths ?? req.user.vpaths;
     req.user.vpaths.forEach(p => {
       if (!allFolders[p]) { return; }
-      const myRoot = allFolders[p].root.replace(/\/?$/, '/');
-      // Find if this vpath's root sits inside another vpath the user has access to.
-      // Search the expanded set so child-only users (e.g. user with only "12-inches"
-      // but not "Music") still get their parentVpath populated correctly.
-      const parentVpath = _lookupVpaths.find(other =>
-        other !== p &&
-        allFolders[other] &&
-        myRoot.startsWith(allFolders[other].root.replace(/\/?$/, '/')) &&
-        allFolders[other].root.replace(/\/?$/, '/') !== myRoot
-      );
+      // parentVpath is the ROOT vpath that holds this folder's DB rows; filepathPrefix ends with '/'
+      // so a LIKE 'Disco/%' filter never matches a sibling such as "Disco Mix Club Series/".
+      const { vpath: rootName, prefix } = rootVpathOf(p, allFolders);
+      const parentVpath = rootName === p ? null : rootName;
       returnThis.vpathMetaData[p] = {
         type: allFolders[p].type,
-        // parentVpath: the vpath that physically covers this folder's files in the DB
-        // filepathPrefix: the relative path prefix to filter by inside the parent vpath
-        parentVpath: parentVpath || null,
-        // Normalize child root with a trailing slash before slicing so the
-        // prefix always ends with '/' (e.g. "Disco/" not "Disco").
-        // Without the slash, SQLite LIKE 'Disco%' would incorrectly match
-        // sibling folders like "Disco Mix Club Series/".
-        filepathPrefix: parentVpath
-          ? allFolders[p].root.replace(/\/?$/, '/').slice(allFolders[parentVpath].root.replace(/\/?$/, '/').length)
-          : null,
+        parentVpath,
+        filepathPrefix: parentVpath ? prefix : null,
         allowRecordDelete: allFolders[p].allowRecordDelete === true,
         albumsOnly: allFolders[p].albumsOnly === true
       };
@@ -82,8 +64,8 @@ export function setup(velvet) {
     const mpvEnabled = !!config.program.serverAudio?.enabled;
     // allow-server-remote: default true when MPV enabled (existing behaviour), default false when not
     returnThis.allowServerRemote = mpvEnabled && req.user['allow-server-remote'] !== false;
-    // allow-mpv-cast: default false (opt-in per user)
-    returnThis.allowMpvCast = mpvEnabled && req.user['allow-mpv-cast'] === true;
+    // allow-mpv-cast: opt-in per user; admins always may cast
+    returnThis.allowMpvCast = mpvEnabled && canCastToServer(req.user);
     returnThis.version = _pkg.version;
     returnThis.defaultTheme = (config.program.ui || 'velvet').replace(/^velvet-/, '') || 'velvet';
 
@@ -95,7 +77,6 @@ export function setup(velvet) {
     joiValidate(schema, req.body);
 
     db.deletePlaylist(req.user.username, req.body.playlistname);
-    db.saveUserDB();
     res.json({});
   });
 
@@ -111,7 +92,6 @@ export function setup(velvet) {
     }
 
     db.renamePlaylist(req.user.username, req.body.oldName, req.body.newName);
-    db.saveUserDB();
     res.json({});
   });
 
@@ -128,7 +108,6 @@ export function setup(velvet) {
       user: req.user.username
     });
 
-    db.saveUserDB();
     res.json({});
   });
 
@@ -142,7 +121,6 @@ export function setup(velvet) {
     }
 
     db.removePlaylistEntryById(req.body.id);
-    db.saveUserDB();
     res.json({});
   });
 
@@ -163,14 +141,13 @@ export function setup(velvet) {
       live: false
     });
 
-    db.saveUserDB();
     res.json({});
   });
 
   velvet.post('/api/v1/playlist/save', (req, res) => {
     const schema = Joi.object({
       title: Joi.string().required(),
-      songs: Joi.array().items(Joi.string()),
+      songs: Joi.array().items(Joi.string()).required(),
       live: Joi.boolean().optional()
     });
     joiValidate(schema, req.body);
@@ -201,7 +178,6 @@ export function setup(velvet) {
       throw err;
     }
 
-    db.saveUserDB();
     res.json({});
   });
 
@@ -212,7 +188,6 @@ export function setup(velvet) {
     });
     joiValidate(schema, req.body);
     db.reorderPlaylistEntries(req.user.username, req.body.playlistname, req.body.ids);
-    db.saveUserDB();
     res.json({ ok: true });
   });
 

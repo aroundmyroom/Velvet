@@ -16,218 +16,91 @@
  */
 
 import path from 'node:path';
-import { Worker } from 'node:worker_threads';
 import winston from 'winston';
 import * as config from '../state/config.js';
 import * as db from '../db/manager.js';
 import { getDirname } from '../util/esm-helpers.js';
 import { ffmpegBin } from '../util/ffmpeg-bootstrap.js';
-import { isScanRunning, onScanEnd, onEveryScanEnd } from '../state/scan-lock.js';
+import { createWorkerController } from '../util/worker-controller.js';
 
 const __dirname = getDirname(import.meta.url);
-const _abWorkerPath       = path.join(__dirname, '../util/ab-bpm-worker.mjs');
-const _essentiaWorkerPath = path.join(__dirname, '../util/essentia-bpm-worker.mjs');
 
-// ── AB Worker state ───────────────────────────────────────────────────────────
+// ── AB Worker (Tier 0) ────────────────────────────────────────────────────────
 
-let _abWorker   = null;
-let _abRunning  = false;
-let _abStopping = false;
-let _abLastStats = null;
 let _abCurrentFile = null;
 let _abProcessedCount = 0;
-let _abPendingStart = false;
 
-function _abWorkerData() {
-  return {
-    dbPath: path.join(config.program.storage.dbDirectory, 'velvet.sqlite'),
-  };
-}
-
-function _spawnAbWorker() {
-  if (_abWorker) return;
-
-  _abWorker        = new Worker(_abWorkerPath, { workerData: _abWorkerData() });
-  _abRunning       = true;
-  _abStopping      = false;
-  _abProcessedCount = 0;
-
-  _abWorker.on('message', msg => {
-    if (!msg) return;
-    if (msg.type === 'status' || msg.type === 'ready') {
-      if (msg.stats) _abLastStats = msg.stats;
-    }
+const _ab = createWorkerController({
+  name: 'bpm-ab',
+  path: path.join(__dirname, '../util/ab-bpm-worker.mjs'),
+  workerData: () => ({ dbPath: db.dbFilePath() }),
+  queued: () => db.getBpmStats()?.ab_queued ?? 0,
+  autoStartAfterEveryScan: true,
+  stopTimeoutMs: 60_000,
+  onSpawn() { _abProcessedCount = 0; },
+  onReset() { _abCurrentFile = null; },
+  onMessage(msg) {
     if (msg.type === 'progress') {
       _abCurrentFile    = msg.currentFile || null;
       _abProcessedCount = msg.processedCount || _abProcessedCount;
     }
-    if (msg.type === 'stopped') {
-      _abRunning    = false;
-      _abStopping   = false;
-      _abCurrentFile = null;
-      _abWorker     = null;
-      winston.info('[bpm-ab] Worker stopped cleanly');
-    }
-    if (msg.type === 'error') {
-      winston.error(`[bpm-ab] Worker error: ${msg.message}`);
-      _abRunning    = false;
-      _abStopping   = false;
-      _abCurrentFile = null;
-      _abWorker     = null;
-    }
-    if (msg.type === 'log') {
-      winston.info(msg.message);
-    }
-  });
+  },
+});
 
-  _abWorker.on('error', err => {
-    winston.error(`[bpm-ab] Worker thread error: ${err.message}`);
-    _abRunning    = false;
-    _abStopping   = false;
-    _abCurrentFile = null;
-    _abWorker     = null;
-  });
+// ── Essentia Worker (Tier 2) ──────────────────────────────────────────────────
 
-  _abWorker.on('exit', code => {
-    if (code !== 0) winston.warn(`[bpm-ab] Worker exited with code ${code}`);
-    _abRunning    = false;
-    _abStopping   = false;
-    _abCurrentFile = null;
-    _abWorker     = null;
-  });
-
-  winston.info('[bpm-ab] Worker started');
-}
-
-// ── Essentia Worker state (Tier 2) ────────────────────────────────────────────
-
-let _esWorker          = null;
-let _esRunning         = false;
-let _esStopping        = false;
 let _esCurrentFile     = null;
 let _esProcessedCount  = 0;
-let _esLastStats       = null;
-let _esPendingStart    = false;
 
 function _esWorkerData() {
   const windowSec = Number(config.program.scanOptions?.analyzeBpmWindowSec ?? 60);
   return {
-    dbPath:          path.join(config.program.storage.dbDirectory, 'velvet.sqlite'),
+    dbPath:          db.dbFilePath(),
     folders:         config.program.folders || {},
     ffmpegBin:       ffmpegBin(),
     bpmWindowSec:    Number.isFinite(windowSec) && windowSec > 0 ? windowSec : 0,
   };
 }
 
-function _spawnEssentiaWorker() {
-  if (_esWorker) return;
-
-  _esWorker         = new Worker(_essentiaWorkerPath, { workerData: _esWorkerData() });
-  _esRunning        = true;
-  _esStopping       = false;
-  _esProcessedCount = 0;
-
-  _esWorker.on('message', msg => {
-    if (!msg) return;
-    if (msg.stats) _esLastStats = msg.stats;
+const _es = createWorkerController({
+  name: 'bpm-essentia',
+  path: path.join(__dirname, '../util/essentia-bpm-worker.mjs'),
+  workerData: _esWorkerData,
+  queued: () => db.getBpmStats()?.essentia_queued ?? 0,
+  autoStartAfterEveryScan: true,
+  // Essentia can be slow on large files
+  stopTimeoutMs: 120_000,
+  onSpawn() { _esProcessedCount = 0; },
+  onReset() { _esCurrentFile = null; },
+  onMessage(msg) {
     if (msg.type === 'progress') {
       _esCurrentFile    = msg.currentFile || null;
       _esProcessedCount = msg.processedCount ?? _esProcessedCount;
     }
-    if (msg.type === 'idle') {
-      _esCurrentFile = null;
-    }
-    if (msg.type === 'error') {
-      winston.warn(`[bpm-essentia] Analysis error: ${msg.message} — file: ${msg.file}`);
-    }
-    if (msg.type === 'stopped') {
-      _esRunning     = false;
-      _esStopping    = false;
-      _esCurrentFile = null;
-      _esWorker      = null;
-      if (msg.error) winston.error(`[bpm-essentia] Worker stopped with error: ${msg.error}`);
-      else winston.info(`[bpm-essentia] Worker stopped cleanly (processed: ${msg.processedCount ?? _esProcessedCount})`);
-    }
-  });
+    if (msg.type === 'idle') _esCurrentFile = null;
+    if (msg.type === 'fileError') winston.warn(`[bpm-essentia] Analysis error: ${msg.message} — file: ${msg.file}`);
+  },
+});
 
-  _esWorker.on('error', err => {
-    winston.error(`[bpm-essentia] Worker thread error: ${err.message}`);
-    _esRunning     = false;
-    _esStopping    = false;
-    _esCurrentFile = null;
-    _esWorker      = null;
-  });
+const STOP_REPLY = {
+  pending_cancelled: { message: 'Pending start cancelled' },
+  not_running:       { message: 'Not running' },
+  already_stopping:  { message: 'Already stopping' },
+  stopping:          {},
+};
 
-  _esWorker.on('exit', code => {
-    if (code !== 0) winston.warn(`[bpm-essentia] Worker exited with code ${code}`);
-    _esRunning     = false;
-    _esStopping    = false;
-    _esCurrentFile = null;
-    _esWorker      = null;
-  });
-
-  winston.info('[bpm-essentia] Worker started');
+function _startReply(status) {
+  if (status === 'already_running') return { ok: true, status };
+  if (status === 'pending') return { ok: true, status, message: 'Start queued: file scan in progress' };
+  return { ok: true };
 }
 
 // ── Setup ─────────────────────────────────────────────────────────────────────
 
 export function setup(velvet) {
-  // ── Boot-time + post-scan auto-start ─────────────────────────────────────
-  // Named function so it can be called both at boot and after each scan.
-  function _tryBpmAutoStart() {
-    try {
-      if (_abRunning) return;
-      if (isScanRunning()) {
-        // Scan is still running — defer until it ends rather than silently dropping.
-        winston.info('[bpm-ab] Auto-start deferred — scan in progress');
-        onScanEnd(_tryBpmAutoStart);
-        return;
-      }
-      const stats = db.getBpmStats();
-      if (stats && stats.ab_queued > 0) {
-        if (stats.ab_queued >= 500) {
-          winston.info(`[bpm-ab] Auto-start skipped: ${stats.ab_queued} files queued — backlog too large, start from Admin`);
-          return;
-        }
-        _spawnAbWorker();
-        winston.info(`[bpm-ab] Auto-started: ${stats.ab_queued} files queued`);
-      }
-    } catch (e) {
-      winston.warn('[bpm-ab] Auto-start check failed: ' + e.message);
-    }
-  }
   // 90 s delay at boot: wait for AcoustID (15 s) and RG (60 s) to settle first.
-  setTimeout(_tryBpmAutoStart, 90_000);
-  // Re-check after every scan so newly added files are processed immediately.
-  onEveryScanEnd(_tryBpmAutoStart);
-
-  function _tryEssentiaAutoStart() {
-    try {
-      if (_esRunning) return;
-      if (isScanRunning()) {
-        winston.info('[bpm-essentia] Auto-start deferred — scan in progress');
-        onScanEnd(_tryEssentiaAutoStart);
-        return;
-      }
-      const stats = db.getBpmStats();
-      if (stats && stats.essentia_queued > 0) {
-        if (stats.essentia_queued >= 500) {
-          winston.info(`[bpm-essentia] Auto-start skipped: ${stats.essentia_queued} files queued — backlog too large, start from Admin`);
-          return;
-        }
-        _spawnEssentiaWorker();
-        winston.info(`[bpm-essentia] Auto-started: ${stats.essentia_queued} files queued`);
-      }
-    } catch (e) {
-      winston.warn('[bpm-essentia] Auto-start check failed: ' + e.message);
-    }
-  }
-  // Same 90 s boot delay as the AB worker so it doesn't contend with AcoustID + RG.
-  setTimeout(_tryEssentiaAutoStart, 90_000);
-  // Re-check after every scan so newly added files are processed immediately.
-  // 5 s delay lets the scan's own DB commit + AcoustID/RG settle before
-  // Essentia opens a writer thread that would otherwise contend with them.
-  onEveryScanEnd(() => setTimeout(_tryEssentiaAutoStart, 5_000));
+  setTimeout(() => _ab.autoStart(), 90_000).unref();
+  setTimeout(() => _es.autoStart(), 90_000).unref();
 
   // Guard — all endpoints are admin-only
   velvet.all('/api/v1/admin/bpm/{*path}', (req, res, next) => {
@@ -245,8 +118,8 @@ export function setup(velvet) {
     }
     res.json({
       ab: {
-        running:        _abRunning,
-        stopping:       _abStopping,
+        running:        _ab.running,
+        stopping:       _ab.stopping,
         currentFile:    _abCurrentFile,
         processedCount: _abProcessedCount,
         stats: {
@@ -258,8 +131,8 @@ export function setup(velvet) {
         },
       },
       essentia: {
-        running:        _esRunning,
-        stopping:       _esStopping,
+        running:        _es.running,
+        stopping:       _es.stopping,
         currentFile:    _esCurrentFile,
         processedCount: _esProcessedCount,
         binaryAvailable: true,
@@ -284,50 +157,13 @@ export function setup(velvet) {
   });
 
   // POST /api/v1/admin/bpm/ab/start
-  velvet.post('/api/v1/admin/bpm/ab/start', (req, res) => {
-    if (_abRunning) {
-      return res.json({ ok: true, status: 'already_running' });
-    }
-    if (isScanRunning()) {
-      _abPendingStart = true;
-      onScanEnd(() => {
-        if (!_abPendingStart || _abRunning) return;
-        _abPendingStart = false;
-        _spawnAbWorker();
-        winston.info('[bpm-ab] Deferred start executed after scan completion');
-      });
-      return res.json({ ok: true, status: 'pending', message: 'Start queued: file scan in progress' });
-    }
-    _spawnAbWorker();
-    res.json({ ok: true });
+  velvet.post('/api/v1/admin/bpm/ab/start', async (req, res) => {
+    res.json(_startReply(await _ab.start()));
   });
 
   // POST /api/v1/admin/bpm/ab/stop
   velvet.post('/api/v1/admin/bpm/ab/stop', (req, res) => {
-    if (_abPendingStart && !_abRunning) {
-      _abPendingStart = false;
-      return res.json({ ok: true, message: 'Pending start cancelled' });
-    }
-    if (!_abRunning || !_abWorker) {
-      return res.json({ ok: true, message: 'Not running' });
-    }
-    if (_abStopping) {
-      return res.json({ ok: true, message: 'Already stopping' });
-    }
-    _abStopping = true;
-    _abWorker.postMessage('stop');
-    // Force-terminate if not stopped within 60 s
-    setTimeout(() => {
-      if (_abWorker && _abStopping) {
-        winston.warn('[bpm-ab] Worker did not stop in 60 s — force-terminating');
-        _abWorker.terminate();
-        _abRunning    = false;
-        _abStopping   = false;
-        _abWorker     = null;
-        _abCurrentFile = null;
-      }
-    }, 60_000);
-    res.json({ ok: true });
+    res.json({ ok: true, ...STOP_REPLY[_ab.stop()] });
   });
 
   // POST /api/v1/admin/bpm/ab/reset-failed
@@ -346,7 +182,7 @@ export function setup(velvet) {
   // will be retried on the next AB worker run. Useful after AB data has been
   // added upstream or when the initial run had network issues.
   velvet.post('/api/v1/admin/bpm/ab/reset-not-found', (req, res) => {
-    if (_abRunning) {
+    if (_ab.running) {
       return res.status(409).json({ error: 'Stop the AB worker before resetting' });
     }
     try {
@@ -359,50 +195,13 @@ export function setup(velvet) {
   });
 
   // POST /api/v1/admin/bpm/essentia/start
-  velvet.post('/api/v1/admin/bpm/essentia/start', (req, res) => {
-    if (_esRunning) {
-      return res.json({ ok: true, status: 'already_running' });
-    }
-    if (isScanRunning()) {
-      _esPendingStart = true;
-      onScanEnd(() => {
-        if (!_esPendingStart || _esRunning) return;
-        _esPendingStart = false;
-        _spawnEssentiaWorker();
-        winston.info('[bpm-essentia] Deferred start executed after scan completion');
-      });
-      return res.json({ ok: true, status: 'pending', message: 'Start queued: file scan in progress' });
-    }
-    _spawnEssentiaWorker();
-    res.json({ ok: true });
+  velvet.post('/api/v1/admin/bpm/essentia/start', async (req, res) => {
+    res.json(_startReply(await _es.start()));
   });
 
   // POST /api/v1/admin/bpm/essentia/stop
   velvet.post('/api/v1/admin/bpm/essentia/stop', (req, res) => {
-    if (_esPendingStart && !_esRunning) {
-      _esPendingStart = false;
-      return res.json({ ok: true, message: 'Pending start cancelled' });
-    }
-    if (!_esRunning || !_esWorker) {
-      return res.json({ ok: true, message: 'Not running' });
-    }
-    if (_esStopping) {
-      return res.json({ ok: true, message: 'Already stopping' });
-    }
-    _esStopping = true;
-    _esWorker.postMessage('stop');
-    // Force-terminate if not stopped within 120 s (Essentia can be slow on large files)
-    setTimeout(() => {
-      if (_esWorker && _esStopping) {
-        winston.warn('[bpm-essentia] Worker did not stop in 120 s — force-terminating');
-        _esWorker.terminate();
-        _esRunning     = false;
-        _esStopping    = false;
-        _esWorker      = null;
-        _esCurrentFile = null;
-      }
-    }, 120_000);
-    res.json({ ok: true });
+    res.json({ ok: true, ...STOP_REPLY[_es.stop()] });
   });
 
   // POST /api/v1/admin/bpm/essentia/reset-failed
@@ -418,12 +217,11 @@ export function setup(velvet) {
   // POST /api/v1/admin/bpm/reset-all
   // Requires both workers to be stopped (safety check).
   velvet.post('/api/v1/admin/bpm/reset-all', (req, res) => {
-    if (_abRunning || _esRunning) {
+    if (_ab.running || _es.running) {
       return res.status(409).json({ error: 'Stop all workers before resetting' });
     }
     try {
       const count = db.resetAllBpmData();
-      _abLastStats      = null;
       _abProcessedCount = 0;
       _abCurrentFile    = null;
       winston.info(`[bpm] reset-all: cleared BPM data for ${count} files`);
@@ -437,7 +235,7 @@ export function setup(velvet) {
   // Query param: ?dryRun=true for a preview without writing.
   // Only corrects bpm_source='essentia' rows using the genre-window matrix.
   velvet.post('/api/v1/admin/bpm/genre-correct', (req, res) => {
-    if (_esRunning) {
+    if (_es.running) {
       return res.status(409).json({ error: 'Stop the Essentia worker before running genre correction' });
     }
     const dryRun = req.query.dryRun === 'true' || req.query.dryRun === '1';
@@ -455,7 +253,7 @@ export function setup(velvet) {
   // POST /api/v1/admin/bpm/genre-correct-undo
   // Restores bpm_raw → bpm for all rows with bpm_status='genre-corrected'.
   velvet.post('/api/v1/admin/bpm/genre-correct-undo', (req, res) => {
-    if (_esRunning) {
+    if (_es.running) {
       return res.status(409).json({ error: 'Stop the Essentia worker before undoing' });
     }
     try {
@@ -471,7 +269,7 @@ export function setup(velvet) {
   // Apply a user-chosen subset of dry-run corrections.
   // Body: { corrections: [{filepath, vpath, bpm, corrected}] }
   velvet.post('/api/v1/admin/bpm/genre-correct-selected', (req, res) => {
-    if (_esRunning) {
+    if (_es.running) {
       return res.status(409).json({ error: 'Stop the Essentia worker before applying corrections' });
     }
     const { corrections } = req.body ?? {};

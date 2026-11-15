@@ -1,73 +1,89 @@
-# Home View *(GitHub Copilot, 2026-03-27)*
+# Home and Shortcuts views
 
-The Home view (`🏠` nav icon) provides a personalised landing page with up to five shelves of content. It is the first screen after login.
+The player has two landing views in the left nav:
 
----
+- **Home** (house icon) — a personal summary of what you play. It opens after
+  login unless you pinned another start view.
+- **Shortcuts** (four-squares icon) — shelves of radio stations, podcasts,
+  folders, playlists and songs that you can re-order and hide.
 
-## Shelves
+Both views fetch fresh data from the server on every visit. Audiobook
+libraries are left out of the song shelves.
 
-Each shelf shows a single horizontal row of cards. The number of cards is calculated at load time to exactly fill one row at the current screen width (based on `content-body.clientWidth`, card width 120 px, gap 10 px, minimum 4 cards).
-
-| Shelf ID | Title | Content | Card type |
-|---|---|---|---|
-| `radio` | Radio Stations | All configured radio streams | Art card (logo / no-art fallback) |
-| `podcasts` | Podcasts | All subscribed podcast feeds | Art card (feed art / no-art fallback) |
-| `playlists` | Playlists & Folders | All library root folders + saved playlists | Icon card |
-| `recent` | Recently Played | Songs most recently played (dynamic, never pinnable) | Art card (album art) |
-| `most` | Most Played | Songs with highest play count (dynamic) | Art card (album art) |
-
-A shelf is only rendered if it has at least one item. Empty shelves (all items deselected in Customize mode) are hidden outside edit mode.
+The number of cards per shelf is worked out at load time from the width of
+`content-body` (130 px per card): at least 6 on Home, at least 4 on Shortcuts.
 
 ---
 
-## Drag to Reorder
+## Home
 
-Every shelf header contains a **grip handle** (⠿ six-dot icon). Drag from the grip to move a shelf up or down. The new order is saved to `localStorage` (key `ms2_home_order_<username>`) and restored on every subsequent visit.
+From top to bottom:
 
-Default order (used when no saved order exists): `radio → podcasts → playlists → recent → most`.
+| Section | Content |
+|---|---|
+| Greeting | "Good morning / afternoon / evening, *name*", plus a stats strip: songs played today, this week, and the listening streak in days (shown from 2 days). A one-time tip strip can appear below it until dismissed. |
+| Recently Added | Recently added songs grouped by album folder (a `CD1`/`Disc 2` sub-folder counts as its album), with a **NEW** badge. Click opens the album with the new songs marked. |
+| Continue Listening | Recently played songs, one per album. |
+| Yesterday / Last Week, Same Day / Last Month, Same Day / Last Year, Same Day | Up to 10 songs you played on that day (`GET /api/v1/db/home-summary`). A section only appears once your play history is at least that old (1, 7, 30, 365 days). |
+| Nostalgia / Current Favourites | Your most played songs, split by year: songs from more than 10 years ago are Nostalgia, the rest Current Favourites. Each needs at least 3 songs; if neither has 3, a plain **Most Played** shelf is shown instead. |
 
----
-
-## Customize Mode
-
-A **Customize** button appears in the header of the first shelf. Clicking it toggles edit mode on the whole home view.
-
-### In edit mode
-
-- All cards are shown, including previously hidden ones.
-- **Selected** (visible) cards get a coloured border ring.
-- **Deselected** (hidden) cards are dimmed to 30 % opacity.
-- Click any card to toggle it between selected and deselected.
-- Shelves with zero selected cards remain visible so you can re-add items.
-- Click **Done** to exit edit mode.
-
-### In normal mode
-
-- Deselected cards are completely hidden.
-- Shelves where every card has been deselected are hidden entirely (they reappear when Customize is opened).
-- Song shelves (Recently Played, Most Played) are never affected by Customize — they are always shown and have no per-item toggle.
-
-Hidden card IDs are stored in `localStorage` (key `ms2_home_hidden_<username>`).
+Empty sections are not shown. Clicking a song card plays it.
 
 ---
 
-## Recently Played — how plays are recorded
+## Shortcuts
 
-A play is logged by calling `POST /api/v1/db/stats/log-play` as soon as a track starts playing (see [API docs](API/db_stats-queries.md#log-a-play)).
+| Shelf ID | Title | Content |
+|---|---|---|
+| `radio` | Radio Stations | All configured radio streams |
+| `podcasts` | Podcasts | All subscribed podcast feeds |
+| `playlists` | Playlists & Folders | Your library folders + saved playlists |
+| `recent` | Recently Played | Songs most recently played |
+| `most` | Most Played | Songs with the highest play count (play count shown) |
 
-**This is completely independent of scrobbling.** Last.fm and ListenBrainz are purely optional; Recently Played works even when neither is configured.
+When a Last.fm API key is set, up to two **Because you listened to *artist***
+shelves are added at the end: two random artists from your most played songs,
+filled with library songs by similar artists.
 
-The home view re-fetches data fresh from the server on every visit, so it always reflects the current state of the play history.
+A shelf is only shown if it has at least one item.
 
-Radio streams and podcast episodes are never logged and never appear in these shelves.
+### Drag to reorder
 
----
+Every shelf header has a **grip handle** (six-dot icon). Drag from the grip to
+move a shelf up or down. Default order: `radio → podcasts → playlists → recent → most`.
 
-## localStorage keys
+### Customise
+
+The **Customise** button above the shelves toggles edit mode:
+
+- All cards are shown; hidden cards are dimmed.
+- Click a radio, podcast, folder or playlist card to hide or show it.
+- Shelves where every card is hidden stay visible so you can bring cards back.
+- Click **Done** to leave edit mode.
+
+Outside edit mode hidden cards are not shown, and a shelf where every card is
+hidden is not shown either. Song shelves have no per-card toggle.
+
+### Where this is stored
 
 | Key | Description |
 |---|---|
 | `ms2_home_order_<username>` | JSON array of shelf IDs in display order |
 | `ms2_home_hidden_<username>` | JSON array of hidden card IDs (`rs:<id>`, `pf:<id>`, `ic:vp:<name>`, `ic:pl:<name>`) |
 
-See [localstorage.md](localstorage.md) for full key reference.
+Both are kept in `localStorage` and also saved to your user settings
+(`home_order`, `home_hidden` prefs) so they follow you to other browsers. See
+[localstorage.md](localstorage.md) for the full key reference.
+
+---
+
+## How plays are recorded
+
+A play is logged with `POST /api/v1/db/stats/log-play` as soon as a track
+starts (see [API docs](API/db_stats-queries.md#log-a-play)).
+
+**This is independent of scrobbling.** Last.fm and ListenBrainz are optional;
+Recently Played and the Home sections work without them.
+
+Radio streams and podcast episodes are never logged and never appear in these
+shelves.

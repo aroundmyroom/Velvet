@@ -4,19 +4,19 @@
  * stores album/year/track/release-id, and classifies tag_status.
  */
 import { workerData, parentPort } from 'node:worker_threads';
-import { DatabaseSync } from 'node:sqlite';
+import { openWorkerDb } from '../db/worker-connection.js';
 import https from 'node:https';
+import { MB_USER_AGENT, mbAcquire } from './mb-client.mjs';
+import { sleep, stopRequested, dbWriteWithRetry, runBatchQueue } from './worker-helpers.mjs';
+import { albumFolderPath } from './album-dir.js';
 
 const { dbPath } = workerData;
 
-const RATE_DELAY_MS  = 1100;   // stay safely under MB's 1 req/s limit
 const BATCH_SIZE     = 50;
 const IDLE_WAIT_MS   = 60_000;
 const HTTP_TIMEOUT_MS = 25_000;
-const USER_AGENT     = 'Velvet/1.0 (https://github.com/aroundmyroom/Velvet; admin-contact@music.aroundtheworld.net)';
 
-const db = new DatabaseSync(dbPath, { timeout: 60_000 });
-db.exec('PRAGMA journal_mode=WAL; PRAGMA busy_timeout=60000');
+const db = openWorkerDb(dbPath, { busyTimeoutMs: 60_000 });
 
 const _getQueue = db.prepare(`
   SELECT filepath, vpath, mbid, title, artist, album, year, track
@@ -57,41 +57,7 @@ const _getStats = db.prepare(`
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
-function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
-
-// ── DB write retry ─────────────────────────────────────────────────────────────
-// AcoustID worker may hold the write lock for extended periods.
-// Retry for up to ~3 minutes instead of crashing.
-const DB_RETRY_ATTEMPTS = 60;
-const DB_RETRY_DELAY_MS = 3_000;
-
-async function dbWriteWithRetry(fn) {
-  for (let i = 0; i < DB_RETRY_ATTEMPTS; i++) {
-    try {
-      return fn();
-    } catch (err) {
-      const locked = err && typeof err.message === 'string' &&
-        (err.message.includes('database is locked') || err.message.includes('SQLITE_BUSY'));
-      if (!locked || i === DB_RETRY_ATTEMPTS - 1) throw err;
-      if (_stopping) throw err;
-      await sleep(DB_RETRY_DELAY_MS);
-    }
-  }
-}
-
 function norm(s) { return (s || '').toLowerCase().replaceAll(/[^a-z0-9]/g, ''); }
-
-/**
- * Compute the "physical album directory" key for grouping.
- * Strips the filename and collapses trailing /CD N / Disc N indicators so
- * that multi-disc albums share one group key.
- */
-function normalizeAlbumDir(filepath) {
-  const lastSlash = filepath.lastIndexOf('/');
-  let dir = lastSlash > 0 ? filepath.slice(0, lastSlash) : '';
-  dir = dir.replace(/\/(CD|Disc|Disk|Side)\s*\d+\s*$/i, '');
-  return dir;
-}
 
 /** Classify tag_status by comparing stored file tags against MB data. */
 function computeTagStatus(row, mbData) {
@@ -124,11 +90,12 @@ function selectRelease(releases) {
 }
 
 /** Fetch recording data from MusicBrainz. Returns parsed JSON or throws. */
-function mbLookup(mbid, _redirects = 0) {
+async function mbLookup(mbid, _redirects = 0) {
+  await mbAcquire();
   return new Promise((resolve, reject) => {
     const url = `https://musicbrainz.org/ws/2/recording/${encodeURIComponent(mbid)}?inc=artists%2Breleases%2Brelease-groups%2Bmedia&fmt=json`;
     const timer = setTimeout(() => { req.destroy(new Error('MB timeout')); }, HTTP_TIMEOUT_MS);
-    const req = https.get(url, { headers: { 'User-Agent': USER_AGENT } }, res => {
+    const req = https.get(url, { headers: { 'User-Agent': MB_USER_AGENT } }, res => {
       clearTimeout(timer);
       if (res.statusCode === 404) { res.resume(); return resolve(null); }
       // MusicBrainz returns 301 when a recording MBID has been merged into another.
@@ -180,7 +147,7 @@ async function mbLookupWithRetry(mbid) {
     catch (err) {
       const msg = err?.message ?? '';
       const transient = msg.includes('HTTP 503') || msg.includes('HTTP 429') || msg.includes('timeout');
-      if (!transient || i === delays.length || _stopping) throw err;
+      if (!transient || i === delays.length || stopRequested()) throw err;
       await sleep(delays[i]);
     }
   }
@@ -256,7 +223,7 @@ async function processFile(row) {
 
   await dbWriteWithRetry(() => _setResult.run(
     mbData.mb_album, mbData.mb_year, mbData.mb_track, mbData.mb_release_id,
-    normalizeAlbumDir(row.filepath),
+    albumFolderPath(row.filepath) ?? '',
     mbData.mb_album_artist,
     'done', ts, tagStatus, null,
     row.filepath, row.vpath
@@ -265,42 +232,9 @@ async function processFile(row) {
 
 // ── Main loop ─────────────────────────────────────────────────────────────────
 
-let _stopping = false;
-
-async function run() {
-  // Reset pending rows left over from an interrupted previous run
-  await dbWriteWithRetry(() => _resetPending.run());
-
-  parentPort.postMessage({ type: 'ready' });
-
-  while (!_stopping) {
-    const batch = _getQueue.all(BATCH_SIZE);
-
-    if (batch.length === 0) {
-      // Nothing to do — report status and wait
-      parentPort.postMessage({ type: 'status', stats: _getStats.get(), idle: true });
-      for (let i = 0; i < IDLE_WAIT_MS / 1000 && !_stopping; i++) {
-        await sleep(1000);
-      }
-      continue;
-    }
-
-    for (const row of batch) {
-      if (_stopping) break;
-      await processFile(row);
-      await sleep(RATE_DELAY_MS);
-    }
-
-    parentPort.postMessage({ type: 'status', stats: _getStats.get(), idle: false });
-  }
-
-  parentPort.postMessage({ type: 'stopped', stats: _getStats.get() });
-}
-
-parentPort.on('message', msg => {
-  if (msg === 'stop') _stopping = true;
-});
-
-await run().catch(err => {
+await runBatchQueue({
+  resetPending: _resetPending, getQueue: _getQueue, getStats: _getStats,
+  batchSize: BATCH_SIZE, idleWaitMs: IDLE_WAIT_MS, processFile,
+}).catch(err => {
   parentPort.postMessage({ type: 'error', message: err.message });
 });

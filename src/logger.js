@@ -29,7 +29,6 @@ winston.configure({
   exitOnError: false
 });
 
-// Valid retention values (must stay in sync with config.js validation + admin UI)
 export const VALID_RETENTIONS = ['1d', '3d', '7d', '14d', '30d'];
 export const DEFAULT_RETENTION = '14d';
 

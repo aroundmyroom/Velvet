@@ -13,20 +13,26 @@ Velvet includes a beta ML-based Smart Playlist system that learns your listening
 
 ## How it works
 
-1. Every time you play a track, a row is inserted in `play_events` (by the Wrapped stats engine).
-2. Once an hour, the Smart Playlist background worker reads new events and updates a per-user, per-slot [Exponential Moving Average](https://en.wikipedia.org/wiki/Moving_average#Exponential_moving_average) profile vector.
-3. The profile is a 7-dimensional unit vector capturing: genre, release year, BPM, musical key (Camelot position), track duration, danceability (if Essentia analysis has run), and loudness/energy.
-4. The worker scores your entire library against each profile using cosine similarity and caches the top-50 tracks per slot in the database.
+1. Every time you play a track, a row is inserted in `play_events` (by the Your Stats engine, see [your-stats.md](your-stats.md)).
+2. The Smart Playlist background worker reads new events and updates a per-user, per-slot [Exponential Moving Average](https://en.wikipedia.org/wiki/Moving_average#Exponential_moving_average) profile vector. It runs 2 minutes after server start, then every hour, and also 2 minutes after a completed play (at most one extra run per 2 minutes). It goes through the background task broker, so it waits while a scan runs.
+3. The profile is a 7-element vector: genre, release year, BPM, musical key (Camelot position), track duration, plus two fixed placeholder values (0.5).
+4. The worker scores your entire library against each profile using cosine similarity and caches the top-50 tracks per slot in the database (one song per artist, songs missing genre/BPM/key score lower).
+
+In the player the result is shown as **Listening Habits** in the sidebar, with
+a tab per time slot. The nav button only appears when the feature is enabled.
+In the admin panel it is under **Smart Playlist**.
 
 ## Enabling the beta
 
-The feature is **disabled by default**. To enable the user-facing API endpoints:
+The feature is controlled by `BETA_SMART_PLAYLIST` in `src/beta-flags.js`.
+It is currently **`true` (enabled)**. To turn it off:
 
 1. Open `src/beta-flags.js`
-2. Set `BETA_SMART_PLAYLIST = true`
+2. Set `BETA_SMART_PLAYLIST = false`
 3. Restart the server: `systemctl restart music.service`
 
-The admin panel section and admin API endpoints are always available regardless of this flag.
+When off, the user endpoints answer `501` and the background worker does not
+run. The admin panel section and admin API endpoints are always available.
 
 ## API endpoints
 
@@ -97,10 +103,15 @@ All under `/api/v1/admin/smartplaylist/` — require admin user.
     ],
     "generated": [
       { "user_id": "admin", "slot": "evening", "generated_at": 1748700000000, "track_count": 50 }
+    ],
+    "slotCounts": [
+      { "user_id": "admin", "morning": 10, "afternoon": 25, "evening": 42, "night": 3 }
     ]
   }
 }
 ```
+
+`slotCounts` is the number of `play_events` per user per slot (local time).
 
 #### POST `/api/v1/admin/smartplaylist/reset-profiles`
 
@@ -126,7 +137,7 @@ Stores the EMA profile vector for each (user, slot) pair.
 
 ### `sp_generated_playlists`
 
-Cached top-50 track list per (user, slot), updated every hour.
+Cached top-50 track list per (user, slot), updated on every worker run.
 
 | Column | Type | Description |
 |--------|------|-------------|
@@ -144,23 +155,25 @@ Cached top-50 track list per (user, slot), updated every hour.
 | 2 | bpm_norm | 0–1 | `files.bpm` normalised 40–220 BPM |
 | 3 | key_norm | 0–1 | Camelot wheel position 1–12 |
 | 4 | dur_norm | 0–1 | `files.duration` normalised 30–600 s |
-| 5 | danceability | 0–1 | `audio_features.danceability` (Essentia), defaults to 0.5 |
-| 6 | energy | 0–1 | `audio_features.loudness` normalised –20 to 0 dB, defaults to 0.5 |
+| 5 | danceability | 0.5 | Fixed value, not computed |
+| 6 | energy | 0.5 | Fixed value, not computed |
 
-Dimensions 5 and 6 are more informative after running the BPM & Key Analysis (Essentia) in the admin panel, which also populates `audio_features`.
+Dimensions 5 and 6 are constant; they stay in the vector so stored 7-element
+profiles keep working. Missing genre, year, BPM, key or duration fall back to a
+midpoint value.
 
 ## EMA learning rates
 
 | Event type | Alpha |
 |-----------|-------|
-| Completed play (≥ completion threshold) | 0.15 |
+| Completed play (≥ 90 % heard) | 0.15 |
 | Partial play (> 30 s, not completed) | 0.05 |
-| Skip (< 30 s) | not used |
+| Play of 30 s or less, not completed | not used |
 
-A minimum of **3 completed plays per slot** is required before a playlist is generated for that slot.
+A minimum of **3 counted plays (completed or partial) per slot** is required before a playlist is generated for that slot.
 
 ## Improving results
 
-- **BPM & Key data**: Run the BPM analysis in the admin panel to populate `bpm`, `musical_key`, and Essentia features. This improves the `bpm_norm`, `key_norm`, `danceability`, and `energy` dimensions.
-- **Play through tracks fully**: Completed plays carry 3× the learning weight of partial plays. Skip-heavy sessions produce no profile updates.
+- **BPM & Key data**: Run the BPM & Key analysis in the admin panel to fill `bpm` and `musical_key`. This improves the `bpm_norm` and `key_norm` dimensions.
+- **Play through tracks fully**: Completed plays carry 3× the learning weight of partial plays. Short plays (30 s or less) produce no profile updates.
 - **Time diversity**: Listening at different times of day builds richer slot profiles. A user who only listens in the evening will only have a useful `evening` profile.

@@ -7,10 +7,11 @@ import * as vpath from '../util/vpath.js';
 import * as config from '../state/config.js';
 import { ensureFfmpeg, ffmpegBin, ffprobeBin } from '../util/ffmpeg-bootstrap.js';
 
+// format = the ffmpeg muxer; ffmpeg has no 'aac' muxer, raw AAC streams are ADTS
 const codecMap = {
-  'mp3': { codec: 'libmp3lame', contentType: 'audio/mpeg' },
-  'opus': { codec: 'libopus', contentType: 'audio/opus' },
-  'aac': { codec: 'aac', contentType: 'audio/aac' }
+  'mp3': { codec: 'libmp3lame', format: 'mp3', contentType: 'audio/mpeg' },
+  'opus': { codec: 'libopus', format: 'opus', contentType: 'audio/opus' },
+  'aac': { codec: 'aac', format: 'adts', contentType: 'audio/aac' }
 };
 
 const algoSet = new Set(['buffer', 'stream']);
@@ -58,15 +59,21 @@ export function reset() {
   lockInit = false;
 }
 
-export function pipeTranscodeToRes(res, fullPath, codec, bitrate, gainDb = null, offset = 0) {
-  const proc = spawnTranscode(fullPath, codec, bitrate, gainDb, offset);
+// A client that goes away (seek, skip) unpipes stdout; ffmpeg would then block on
+// a full pipe forever, so it is killed when the response closes unfinished.
+export function pipeTranscodeToRes(res, fullPath, codec, bitrate, offset = 0) {
+  const proc = spawnTranscode(fullPath, codec, bitrate, offset);
   res.set('Content-Type', codecMap[codec].contentType);
   proc.once('error', err => {
     winston.error('[transcode] spawn error', { stack: err, path: fullPath });
-    if (!res.headersSent) res.status(500).end();
+    if (!res.headersSent) res.status(500).json({ error: 'transcode failed' });
     else try { res.end(); } catch { /* already closed */ }
   });
+  res.once('close', () => {
+    if (!res.writableFinished && proc.exitCode === null && proc.signalCode === null) proc.kill('SIGKILL');
+  });
   proc.stdout.pipe(res);
+  return proc;
 }
 
 export function codecContentType(codec) {
@@ -98,20 +105,10 @@ export async function downloadedFFmpeg() {
 const CACHE_MAX_ENTRY_BYTES = 32 * 1024 * 1024; // 32 MB
 const transCache = {};
 
-function spawnTranscode(inputPath, codec, bitrate, gainDb = null, offsetSec = 0) {
-  // Optional ReplayGain volume adjustment via a simple volume= filter.
-  // A limiter (alimiter) prevents clipping after gain is applied.
-  // Only applied when gainDb is a finite non-zero number.
-  const afParts = [];
-  if (gainDb != null && Number.isFinite(gainDb) && gainDb !== 0) {
-    const linearGain = Math.pow(10, gainDb / 20).toFixed(6);
-    afParts.push(`volume=${linearGain}`, 'alimiter=level_in=1:level_out=1:limit=0.9998:attack=5:release=50');
-  }
+function spawnTranscode(inputPath, codec, bitrate, offsetSec = 0) {
   const args = [];
   if (offsetSec > 0) args.push('-ss', String(offsetSec));
-  args.push('-i', inputPath, '-vn', '-f', codec, '-acodec', codecMap[codec].codec, '-ab', bitrate);
-  if (afParts.length) args.push('-af', afParts.join(','));
-  args.push('-');
+  args.push('-i', inputPath, '-vn', '-f', codecMap[codec].format, '-acodec', codecMap[codec].codec, '-ab', bitrate, '-');
   return spawn(ffmpegBin(), args, { stdio: ['ignore', 'pipe', 'ignore'] });
 }
 
@@ -192,31 +189,13 @@ export function setup(velvet) {
         }
       }
 
-      if (algo === 'stream') {
-        const proc = spawnTranscode(pathInfo.fullPath, codec, bitrate, null, offset);
-        proc.once('error', err => {
-          winston.error('[transcode] spawn error', { stack: err, path: pathInfo.fullPath });
-          if (!res.headersSent) res.status(500).json({ error: 'transcode failed' });
-          else try { res.end(); } catch { /* already closed */ }
-        });
-        return proc.stdout.pipe(res);
-      }
+      const proc = pipeTranscodeToRes(res, pathInfo.fullPath, codec, bitrate, offset);
+      if (algo === 'stream') return;
 
-      // Buffer mode
+      // Buffer mode: also keep the output for the cache
       let cacheable = offset === 0;
       let bufs = [];
       let contentLength = 0;
-      let aborted = false;
-
-      const proc = spawnTranscode(pathInfo.fullPath, codec, bitrate, null, offset);
-
-      proc.once('error', err => {
-        winston.error('[transcode] spawn error', { stack: err, path: pathInfo.fullPath });
-        if (!res.headersSent) res.status(500).json({ error: 'transcode failed' });
-        else try { res.end(); } catch { /* already closed */ }
-      });
-
-      req.on('close', () => { aborted = true; });
 
       proc.stdout.on('data', chunk => {
         if (!cacheable) { return; }
@@ -229,13 +208,12 @@ export function setup(velvet) {
         bufs.push(chunk);
       });
 
-      proc.stdout.on('end', () => {
-        if (cacheable && !aborted && bufs.length > 0) {
+      // A killed (aborted) or failed ffmpeg leaves a partial output: cache only a clean exit
+      proc.once('close', code => {
+        if (code === 0 && cacheable && bufs.length > 0) {
           transCache[cacheKey] = new WeakRef({ contentLength, bufs });
         }
       });
-
-      proc.stdout.pipe(res);
 
     } else {
       res.sendStatus(405);

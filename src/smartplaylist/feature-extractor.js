@@ -1,8 +1,8 @@
 /**
  * Smart Playlist — Feature Extractor
  *
- * Converts a DB row (files + audio_features join) into a 7-dimensional
- * normalised feature vector used for cosine-similarity scoring.
+ * Converts a `files` row into a 7-dimensional normalised feature vector
+ * used for cosine-similarity scoring.
  *
  * Dimensions:
  *   [0] genre_bucket   — hash-based genre bucket (0.0–0.95)
@@ -10,25 +10,21 @@
  *   [2] bpm_norm       — normalised BPM 40–220
  *   [3] key_norm       — camelot wheel position 1–12, normalised
  *   [4] dur_norm       — normalised duration 30–600 s
- *   [5] danceability   — from audio_features (0–1), default 0.5
- *   [6] energy         — loudness normalised –20 to 0 dB → 0–1, default 0.5
+ *   [5] danceability   — constant 0.5 (not computed)
+ *   [6] energy         — constant 0.5 (not computed)
+ *
+ * [5] and [6] stay in the vector so the stored 7-element slot profiles keep working.
  */
 
-// Camelot wheel position for each musical key (1–12)
-const CAMELOT_POS = {
-  'C major': 8,  'A minor': 8,
-  'G major': 9,  'E minor': 9,
-  'D major': 10, 'B minor': 10,
-  'A major': 11, 'F# minor': 11,
-  'E major': 12, 'C# minor': 12,
-  'B major': 1,  'G# minor': 1,
-  'F# major': 2, 'D# minor': 2,
-  'C# major': 3, 'A# minor': 3,
-  'F major': 7,  'D minor': 7,
-  'Bb major': 6, 'G minor': 6,
-  'Eb major': 5, 'C minor': 5,
-  'Ab major': 4, 'F minor': 4,
-};
+import { toCamelot } from '../util/camelot.js';
+
+const DANCEABILITY = 0.5;
+const ENERGY = 0.5;
+
+function camelotPosition(musicalKey) {
+  const code = toCamelot(musicalKey);
+  return code ? Number.parseInt(code, 10) : 6;
+}
 
 /** Deterministic 0–1 bucket from a genre string. */
 function hashGenre(genre) {
@@ -41,11 +37,11 @@ function hashGenre(genre) {
 }
 
 /**
- * Build a 7-element float array from a files+audio_features row.
+ * Build a 7-element float array from a files row.
  * Missing values fall back to sensible midpoints so every track
- * gets a valid vector even without Essentia analysis.
+ * gets a valid vector even without BPM/key analysis.
  *
- * @param {object} row — merged row from files LEFT JOIN audio_features
+ * @param {object} row — files row (genre, year, bpm, musical_key, duration)
  * @returns {number[]} 7-element vector, all values in [0, 1]
  */
 export function extractVector(row) {
@@ -53,15 +49,10 @@ export function extractVector(row) {
   const year  = Math.min(1, Math.max(0, ((row.year || 1985) - 1950) / 80));
   const bpm   = Math.min(1, Math.max(0, ((row.bpm  || 120)  - 40)  / 180));
   const key   = row.musical_key
-    ? (CAMELOT_POS[row.musical_key] ?? 6) / 12
+    ? camelotPosition(row.musical_key) / 12
     : 0.5;
   const dur   = Math.min(1, Math.max(0, ((row.duration || 210) - 30) / 570));
-  const dance = (typeof row.danceability === 'number') ? row.danceability : 0.5;
-  // audio_features.loudness is typically in the range –20 dB (quiet) to 0 dB (loud)
-  const energy = (row.loudness == null)
-    ? 0.5
-    : Math.min(1, Math.max(0, (row.loudness + 20) / 20));
-  return [genre, year, bpm, key, dur, dance, energy];
+  return [genre, year, bpm, key, dur, DANCEABILITY, ENERGY];
 }
 
 /**

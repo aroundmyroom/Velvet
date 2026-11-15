@@ -20,12 +20,13 @@
  */
 
 import { workerData, parentPort } from 'node:worker_threads';
-import { DatabaseSync } from 'node:sqlite';
+import { openWorkerDb } from '../db/worker-connection.js';
 import { spawn } from 'node:child_process';
 import { createRequire } from 'node:module';
 import path from 'node:path';
 import fs from 'node:fs';
 import { resolvePathWithinRoot } from './path-security.js';
+import { sleep, idle, stopRequested, dbWriteWithRetry } from './worker-helpers.mjs';
 
 const require = createRequire(import.meta.url);
 
@@ -39,7 +40,7 @@ const IDLE_WAIT_MS    = 60_000; // re-check queue after 1 min idle
 const INTER_FILE_MS   = 200;    // brief pause between files — keeps CPU from pegging at 100%
 
 // Processing timeout: 0.3 s budget per second of audio, minimum 60 s.
-// A 60-min DJ mix: 60*60*0.3 = 1080 s → ~18 min is the worst case (uncommon).
+// Files over MAX_DURATION_SEC are skipped, so the worst case is 20 min of audio → 360 s.
 const TIMEOUT_PER_AUDIO_SEC = 300;
 const MIN_TIMEOUT_MS        = 60_000;
 
@@ -56,8 +57,7 @@ const MAX_PCM_BYTES = 60 * 1024 * 1024; // 60 MB
 
 // ── DB setup ──────────────────────────────────────────────────────────────────
 
-const db = new DatabaseSync(dbPath, { timeout: 300_000 });
-db.exec('PRAGMA journal_mode=WAL; PRAGMA busy_timeout=300000');
+const db = openWorkerDb(dbPath, { busyTimeoutMs: 300_000 });
 
 const _resetPending = db.prepare(
   `UPDATE files SET bpm_status = NULL WHERE bpm_status = 'pending'`
@@ -104,7 +104,6 @@ const _getStats = db.prepare(`
 
 // ── State ─────────────────────────────────────────────────────────────────────
 
-let _stopping = false;
 let _processedCount = 0;
 
 // ── Essentia init (lazy, once) ────────────────────────────────────────────────
@@ -136,24 +135,6 @@ function resetEssentia() {
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
-
-function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
-
-function DB_RETRY_ATTEMPTS() { return 60; }
-const DB_RETRY_DELAY_MS = 3_000;
-
-async function dbWriteWithRetry(fn) {
-  for (let i = 0; i < DB_RETRY_ATTEMPTS(); i++) {
-    try { return fn(); }
-    catch (err) {
-      const locked = err?.message?.includes('database is locked') ||
-                     err?.message?.includes('SQLITE_BUSY');
-      if (!locked || i === DB_RETRY_ATTEMPTS() - 1) throw err;
-      if (_stopping) throw err;
-      await sleep(DB_RETRY_DELAY_MS);
-    }
-  }
-}
 
 /**
  * Resolve the absolute filesystem path for a (vpath, filepath) pair.
@@ -347,7 +328,7 @@ async function processFile(row) {
       ? ' (cue sheet found — multi-track disc image, single BPM meaningless)'
       : '';
     parentPort.postMessage({
-      type: 'error',
+      type: 'fileError',
       file: row.filepath,
       message: `Skipped: duration ${Math.round(durationSec / 60)} min exceeds ${MAX_DURATION_SEC / 60} min WASM limit${hint}`,
     });
@@ -381,7 +362,7 @@ async function processFile(row) {
     if (pcm.byteLength > MAX_PCM_BYTES) {
       await dbWriteWithRetry(() => _setError.run(row.filepath, row.vpath));
       parentPort.postMessage({
-        type: 'error',
+        type: 'fileError',
         file: row.filepath,
         message: `Skipped: decoded PCM ${Math.round(pcm.byteLength / 1024 / 1024)} MB exceeds ${MAX_PCM_BYTES / 1024 / 1024} MB WASM limit even at half sample rate`,
       });
@@ -398,7 +379,7 @@ async function processFile(row) {
     const msg = err?.message || String(err) || 'unknown error';
     if (msg.includes('abort')) resetEssentia();
     await dbWriteWithRetry(() => _setError.run(row.filepath, row.vpath));
-    parentPort.postMessage({ type: 'error', file: row.filepath, message: msg });
+    parentPort.postMessage({ type: 'fileError', file: row.filepath, message: msg });
   }
 }
 
@@ -407,28 +388,28 @@ async function runLoop() {
   try {
     getEssentia();
   } catch (err) {
-    parentPort.postMessage({ type: 'stopped', error: `Failed to load Essentia WASM: ${err.message}` });
-    process.exit(1);
+    parentPort.postMessage({ type: 'error', message: `Failed to load Essentia WASM: ${err.message}` });
+    return;
   }
 
   // Reset any rows left in 'pending' state from a previous interrupted run
-  try { _resetPending.run(); } catch (e) { console.debug('[velvet]', e?.message ?? e); }
+  await dbWriteWithRetry(() => _resetPending.run());
 
   parentPort.postMessage({ type: 'ready', stats: _getStats.get() });
 
-  while (!_stopping) {
+  while (!stopRequested()) {
     const batch = _getQueue.all(BATCH_SIZE);
 
     if (batch.length === 0) {
       parentPort.postMessage({ type: 'idle', stats: _getStats.get() });
-      await sleep(IDLE_WAIT_MS);
+      await idle(IDLE_WAIT_MS);
       continue;
     }
 
     for (const row of batch) {
-      if (_stopping) break;
+      if (stopRequested()) break;
 
-      try { _setPending.run(row.filepath, row.vpath); } catch (e) { console.debug('[velvet]', e?.message ?? e); }
+      await dbWriteWithRetry(() => _setPending.run(row.filepath, row.vpath));
 
       await processFile(row);
 
@@ -439,24 +420,13 @@ async function runLoop() {
         stats:          _getStats.get(),
       });
 
-      if (!_stopping) await sleep(INTER_FILE_MS);
+      if (!stopRequested()) await sleep(INTER_FILE_MS);
     }
   }
 
   parentPort.postMessage({ type: 'stopped', processedCount: _processedCount, stats: _getStats.get() });
 }
 
-// ── Message handling ──────────────────────────────────────────────────────────
-
-parentPort.on('message', msg => {
-  if (msg === 'stop' || msg?.type === 'stop') {
-    _stopping = true;
-  }
-});
-
-// ── Boot ─────────────────────────────────────────────────────────────────────
-
 await runLoop().catch(err => {
-  parentPort.postMessage({ type: 'stopped', error: err.message });
-  process.exit(1);
+  parentPort.postMessage({ type: 'error', message: err.message });
 });

@@ -1,4 +1,4 @@
-**Reset Play Statistics** *(added by GitHub Copilot, 2026-02-27)*
+**Reset Play Statistics**
 ----
   Two endpoints to reset per-user play statistics. Both operate only on the
   authenticated user's data — other users are not affected. Ratings are not
@@ -66,6 +66,6 @@
 
 * **Effect**
 
-  Clears the `lp` (last-played timestamp) column in `user_metadata` for every
-  song belonging to the authenticated user. The Recently Played view will show
+  Sets the `lp` (last-played timestamp) column in `user_metadata` to `NULL` for every
+  song belonging to the authenticated user. The play history used by Wrapped (`play_events`) is not touched. The Recently Played view will show
   an empty state until songs are played again.

@@ -1,9 +1,9 @@
 import https from 'node:https';
 import fs from 'node:fs';
 import path from 'node:path';
-import crypto from 'node:crypto';
 import * as config from '../state/config.js';
 import * as db from '../db/manager.js';
+import { parseLrc, lyricsCacheKey, lyricsCacheDir } from '../util/song-lyrics.js';
 
 function lrclibFetch(artist, title, duration) {
   return new Promise((resolve, reject) => {
@@ -25,23 +25,6 @@ function lrclibFetch(artist, title, duration) {
     req.on('error', reject);
     req.setTimeout(8000, () => { req.destroy(); reject(new Error('lrclib timeout')); });
   });
-}
-
-function parseLrc(lrc) {
-  const lines = [];
-  const re = /\[(\d+):(\d+(?:\.\d+)?)\](.*)/;
-  for (const raw of lrc.split('\n')) {
-    const m = raw.match(re);
-    if (m) {
-      const time = Number.parseInt(m[1], 10) * 60 + Number.parseFloat(m[2]);
-      lines.push({ time, text: m[3].trim() });
-    }
-  }
-  return lines;
-}
-
-function cacheDir() {
-  return path.join(config.program.storage.dbDirectory, '..', 'lyrics');
 }
 
 export function setup(velvet) {
@@ -81,10 +64,8 @@ export function setup(velvet) {
 
     if (!title) return res.json({ notFound: true });
 
-    const hash    = crypto.createHash('sha256')
-      .update(`${artist}||${title}||${Math.round(Number(duration))}`)
-      .digest('hex');
-    const dir     = cacheDir();
+    const hash    = lyricsCacheKey(artist, title, duration);
+    const dir     = lyricsCacheDir(config.program.storage.dbDirectory);
     const hitPath = path.join(dir, `${hash}.json`);
 
     try { fs.mkdirSync(dir, { recursive: true }); } catch (e) { console.debug('[velvet]', e?.message ?? e); }
@@ -113,7 +94,8 @@ export function setup(velvet) {
 
       let result;
       if (data.syncedLyrics) {
-        const lines = parseLrc(data.syncedLyrics);
+        const parsed = parseLrc(data.syncedLyrics);
+        const lines = parsed?.synced ? parsed.line.map(l => ({ time: l.start / 1000, text: l.value })) : [];
         result = { synced: true, lines };
       } else {
         const lines = data.plainLyrics

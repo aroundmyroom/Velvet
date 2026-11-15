@@ -11,9 +11,8 @@ with an adjustable delay): see [Velvet Rooms — Sonos speakers in a room](rooms
 
 ## Requirements
 
-- Sonos device reachable on the same LAN as Velvet
-- One known Sonos IP configured in **Admin → Sonos** (seed IP for device discovery)
-- User must have the `allow-mpv-cast` permission (same permission gate as Server Speaker)
+- Sonos device reachable on the same LAN as Velvet (private IP addresses only)
+- Sonos enabled in **Admin → Sonos** (it is on unless switched off). Discovery uses SSDP first; a seed IP (entered at **Scan Now**, or the saved default room) is only needed when multicast does not reach the speakers, e.g. across VLANs
 - DLNA does **not** need to be enabled — Sonos pulls audio from Velvet's main HTTP port, not port 10293
 
 ---
@@ -34,19 +33,22 @@ Sonos device port 1400
 Velvet HTTP server → audio stream → 🔊 Sonos speaker
 ```
 
+The `token` in the URLs Velvet hands to the speaker is a stream token minted for that one file (valid 8 hours): it opens only `/media/<that file>` and `/api/v1/sonos/transcode-stream?fp=<that file>`, nothing else, and it stops working when the user's tokens are revoked (password change, "Log out everywhere").
+
 All communication with Sonos uses the public UPnP/SOAP protocol over plain HTTP on port 1400. No third-party library is used — Velvet speaks SOAP directly.
 
 ---
 
 ## Output picker
 
-When at least one additional audio output is available (Server Speaker or Sonos), the **cast button** (screen + arc icon) appears in the player bar. Clicking it opens a picker:
+When at least one additional audio output is available (Server Speaker, Sonos or a Velvet Room), the **cast button** (screen + arc icon) appears in the player bar. Clicking it opens a picker:
 
 | Option | Description |
 |--------|-------------|
 | **Browser** | Default — audio plays in the browser tab |
-| **Server Speaker** | mpv on the server (requires Server Audio enabled + permission) |
-| **Living Room** / **Kitchen** / … | Each discovered Sonos room (requires Sonos enabled + permission) |
+| **Server Speaker** | mpv on the server (requires Server Audio running + the `allow-mpv-cast` permission) |
+| **Living Room** / **Kitchen** / … | Each discovered Sonos room, or the saved default room (requires Sonos enabled) |
+| Velvet Rooms | See [rooms.md](rooms.md) |
 
 Selecting a Sonos room immediately casts the current track at the current position. Crossfade is automatically disabled while casting to Sonos and restored when you switch back to Browser.
 
@@ -66,13 +68,13 @@ One track is cast at a time (no lookahead window), so there is nothing left for 
 
 **So the room must not depend on it working.** When the speaker finishes a track and the saved queue has nothing after it — the browser never got around to picking a next song — the server picks one itself: a plain track from the user's own library (their vpath scope only, no rating/BPM/genre/similar-artist scoring — the same tier a third-party client's shuffle gets), appends it to that user's saved queue, and casts it, logged as `cast-queue ▶ … (server fallback pick: …)` to make clear it wasn't an Auto-DJ decision. The next time the browser is actually alive, its own Auto-DJ prefetch takes back over exactly as normal — this only ever fills a gap the browser could not fill itself, never picks in place of a browser that is working.
 
-**When the player cannot act at all: server-side auto-advance.** All of the above needs the browser to be running JavaScript. Chrome *freezes* a hidden tab after about five minutes unless it is audibly playing — and a cast-muted tab never is, keep-alive or not (the keep-alive is below Chrome's audibility threshold by design). A frozen tab runs nothing: no heartbeat, no `ended`, no cast. Seen live (2026-09-30): the speaker finished El Coco at 14:20:04, the player's state was last saved at 14:20:08 at 3:51, and the room stayed silent. So the server keeps the one piece of state it needs to carry on by itself: for every cast it records what it put on the speaker, when, and from which offset (`_lastCastByIp`). When the speaker then reports STOPPED for that same track and the wall clock says it finished (`_speakerFinishedVerdict`: elapsed since the cast, plus the seek offset, ≥ duration − 3 s), the server waits 12 s for the player to cast something — the normal path when it is awake — and if nothing comes, and the device is still stopped, it casts the **next track from the player's own saved queue** (`user_settings.queue`, the same snapshot a reload restores from), updates that snapshot to point at it, and records the auto-advance for that user. It logs it as `cast-queue ▶ … (server auto-advance: …)`. If the saved queue has nothing after the finished track it says so and stays silent — the server never picks music; Auto-DJ picks are the player's, so a frozen tab gets exactly the tracks it had already queued (Auto-DJ keeps one prefetched).
+**When the player cannot act at all: server-side auto-advance.** All of the above needs the browser to be running JavaScript. Chrome *freezes* a hidden tab after about five minutes unless it is audibly playing — and a cast-muted tab never is, keep-alive or not (the keep-alive is below Chrome's audibility threshold by design). A frozen tab runs nothing: no heartbeat, no `ended`, no cast. Seen live (2026-09-30): the speaker finished El Coco at 14:20:04, the player's state was last saved at 14:20:08 at 3:51, and the room stayed silent. So the server keeps the one piece of state it needs to carry on by itself: for every cast it records what it put on the speaker, when, and from which offset (`_lastCastByIp`). When the speaker then reports STOPPED for that same track and the wall clock says it finished (`_speakerFinishedVerdict`: elapsed since the cast, plus the seek offset, ≥ duration − 3 s), the server waits 12 s for the player to cast something — the normal path when it is awake — and if nothing comes, and the device is still stopped, it casts the **next track from the player's own saved queue** (`user_settings.queue`, the same snapshot a reload restores from), updates that snapshot to point at it, and records the auto-advance for that user. It logs it as `cast-queue ▶ … (server auto-advance: …)`. If the saved queue has nothing after the finished track, the server uses the plain fallback pick described above; only if that finds nothing does it log that and stay silent. This path is driven by the speaker's own UPnP event notifications (`/api/v1/sonos/event`), so it only works when the speaker can reach Velvet's callback URL.
 
 When the player wakes up it reconciles from that record and nothing else: `transport-status` carries `serverAdvanced: { fp, position }` for the caller until it has caught up, and the heartbeat jumps to that queue entry; and a `cast-queue` for the very track the server started answers `alreadyPlaying` with the position, so the player positions its mirror instead of restarting the speaker — whether the jump came from the heartbeat or from the mirror's own late `ended`. The record is one-shot, so a later deliberate replay is a real cast. What the device itself reports is still never used to decide what plays.
 
 Play, pause and seek on the web player mirror to the speaker immediately (`POST /api/v1/sonos/set-pause`, `POST /api/v1/sonos/seek`) — these are commands, not something the player waits to see reflected back. Controlling playback from the Sonos app itself, or another controller, is not something the web player watches for or reacts to; the next time the web UI has something to tell the speaker (a track change, a seek, a pause), that command simply takes effect.
 
-A lightweight background poll (`GET /api/v1/sonos/transport-status`, every 10s while casting) exists for two purposes only: falling back to Browser output automatically if the speaker goes unreachable for ~30s, and re-casting the current track if the speaker is reachable but has stopped playing something the local player still believes should be playing (a dropped stream, a device that idled) — a single, unconditional re-cast, not a graduated series of recovery strategies.
+A lightweight background poll (`GET /api/v1/sonos/transport-status`, every 10s while casting) exists for these purposes only: falling back to Browser output automatically after 3 unreachable polls in a row (~30s), catching up with a server auto-advance, and re-casting the current track if the speaker is reachable but has stopped playing something the local player still believes should be playing (a dropped stream, a device that idled) — a single, unconditional re-cast, not a graduated series of recovery strategies.
 
 Sonos playback uses the same wrapped history event as the controlling browser
 session. Track changes, pauses, skips, and natural completion therefore remain
@@ -87,14 +89,13 @@ Each Sonos room row shows a **coloured dot** at the left that reflects whether t
 
 | Dot | Colour | Meaning |
 |-----|--------|---------|
-| ⚫ Pulsing grey | Checking | Transport-status fetch in progress |
-| 🟡 Yellow | Warming up | Device found via SSDP but UPnP renderer not yet ready (typically 5–15 s after power-on). Casting now may fail or be retried automatically. |
-| 🟢 Green | Ready | Device reachable and renderer responsive — safe to cast |
-| 🔴 Red | Offline | Device unreachable (powered off, wrong IP, different network) |
+| Checking | Checking | Transport-status fetch in progress |
+| 🟢 Green | Ready | Device answered — safe to cast |
+| 🔴 Red | Offline | Device unreachable (powered off, wrong IP, different network). The row cannot be selected. |
 
-The check runs **async** after the picker opens — the picker appears immediately and the dot updates in place, so you never wait before you can click.
+The check runs **async** after the picker opens — the picker appears immediately and the dot updates in place.
 
-> **Tip:** If the dot is yellow and you click anyway, Velvet will still attempt the cast and retry automatically once the renderer wakes up (built-in 2-second retry on timeout). The dot is purely informational.
+> **Tip:** A device that is still waking up can time out on the first cast. On `POST /api/v1/sonos/cast` (used by the Server Remote) the server then waits 2 seconds, re-runs discovery and retries once. The web player's `cast-queue` does not retry; its 10-second heartbeat re-casts if the speaker stays stopped.
 
 ---
 
@@ -102,43 +103,30 @@ The check runs **async** after the picker opens — the picker appears immediate
 
 Velvet can start **Sonos favourites** — from any service (Sonos Radio, Spotify, Apple Music, …) — directly on a detected Sonos device from the player sidebar view.
 
-- Sidebar entry: **Sonos Favourites** (nav label; formerly "Sonos Radio")
-- View title: **Sonos Favourites**
-- Sources: all "My Favorites" (FV:2) returned by the local Sonos ContentDirectory / MusicServices bridge
-
-### Playback behavior
-
-- Pressing **Play on Sonos** for a favourite channel pauses active Velvet playback first.
-- Starting a Sonos favourite channel interrupts any currently playing queue audio until playback is resumed manually.
-- Channel start strategy prioritizes direct Sonos radio transport (`x-sonosapi-radio`) with retry variants, then falls back to MusicServices/legacy paths when needed.
+- Sidebar entry and view title: **Sonos Favourites**
+- Sources: all "My Favorites" (FV:2) on the speaker, from any service
 
 ### Menu visibility (auto, no reload required)
 
-The Sonos Radio menu entry is now tied to live reachability:
+The Sonos Favourites menu entry is tied to live reachability:
 
 - Hidden when Sonos is disabled or no reachable Sonos device is detected
 - Shown automatically when a reachable Sonos device appears
 - Updated in the running UI without a page refresh
 
-### All favourites (not just radio)
-
-The Sonos Radio view only lists **Sonos Radio** stations. "My Favorites" on a
-Sonos system can also hold favourites from other services — Spotify, Apple
-Music, TuneIn, etc. — which are not Sonos Radio stations and were therefore
-filtered out (e.g. a Spotify "New Music Friday NL" favourite would never show
-in the radio list).
+### API
 
 - `GET /api/v1/sonos/favorites?ip=` returns **every** favourite (FV:2), each
   tagged with its originating `service`/`serviceKey` and carrying the playable
   `res`/`resMD` plus an `isContainer` flag.
-- `GET /api/v1/sonos/radio-favorites?ip=` still returns the Sonos Radio subset
-  (unchanged behaviour for the radio picker).
+- `GET /api/v1/sonos/radio-favorites?ip=` returns only the Sonos Radio subset.
 - `POST /api/v1/sonos/play-favorite` with `{ ip, favoriteId }` plays any
   favourite regardless of service. It replays the favourite's own stored
   `res`/`resMD`, which already carries the device's service auth token, so
   Spotify/Apple Music playlists play without Velvet needing those credentials.
   Container favourites (playlists) are enqueued and started from track 1; single
-  streams are set directly on the transport.
+  streams are set directly on the transport. An unknown id answers 404, a
+  favourite without a playable resource 422.
 
 #### Favourite playback mode (web player behaviour)
 
@@ -180,10 +168,6 @@ stable content id and persisted in `sonos.hiddenFavorites` in the config, so the
 apply to all users and survive restarts (favourite reordering on the device does
 not lose the setting).
 
-> The view was previously called **Sonos Radio**; it now lists favourites from
-> every service (Sonos Radio, Spotify, Apple Music, …) and is labelled **Sonos
-> Favourites**.
-
 ---
 
 ## Admin panel
@@ -194,29 +178,27 @@ not lose the setting).
 |---------|-------------|
 | **Enable / Disable toggle** | When disabled, Sonos output is hidden from all output pickers |
 | **Auto-transcode for Sonos** | Automatically convert incompatible audio to MP3 before sending to Sonos. Covers Opus files (YouTube downloads, recordings), WAV files, and hi-res audio (88/96/176/192 kHz FLAC/WAV — most Sonos hardware caps at 48 kHz). Uses the built-in ffmpeg — no separate Transcode setup required. |
-| **Sleep mode** | Toggle direct sleep control. When on and casting to Sonos, **pause** drops the speaker's status LED (direct sleep — a paused / zero-volume state, device stays reachable) and **play** turns it back on. A **Test sleep timer** panel exposes **Sleep now** / **Wake** with a live countdown + LED/transport readout to verify the device responds. Note: with the device's Battery Saver enabled it powers off (unreachable) after 30 min idle — disable Battery Saver in the Sonos app for a reachable low-power sleep. |
-| **Probe by IP** | Enter any Sonos IP to test reachability and retrieve room name + UUID |
-| **Scan** | Trigger discovery using the seed IP; populates the room list |
-| **Default room** | The room pre-selected in the output picker; set by clicking a room in the list |
-| **Test playback** | Plays a random song on a selected device — for verifying setup |
+| **Sleep mode** | Toggle direct sleep control. When on and casting to Sonos, **pause** turns the speaker's status LED off (the device stays paused and reachable) and **play** turns it back on. A **Test sleep timer** panel exposes **Sleep now** / **Wake** with a live countdown + LED/transport readout to verify the device responds. |
+| **Probe a Device** | Enter any Sonos IP to test reachability and retrieve room name, model + UUID |
+| **Discover Rooms → Scan Now** | Runs discovery (SSDP, then the optional seed IP); populates the room list |
+| **Set as Default** | Saves a room as the default room, used when no room is given and pre-selected in the output picker |
+| **Test Playback** | Plays a random song on a selected device — for verifying setup |
 
 ### Setting up from scratch
 
 1. Enable Sonos in the toggle at the top of the panel
-2. Enter your Sonos device's IP in the **Probe** field and click **Probe**
-3. Confirm the room name shown, then click **Set as default**
-4. Click **Scan** to discover any additional devices
-5. The output picker will now show Sonos rooms for users with `allow-mpv-cast` permission
+2. Click **Scan Now** (enter a seed IP first if your speakers are on another subnet), or enter one device's IP under **Probe a Device** and click **Probe**
+3. Click **Set as Default** on the room you want as the default
+4. The output picker now shows the Sonos rooms
 
 ---
 
 ## User permissions
 
-Sonos casting (and Server Speaker) is gated by the **`allow-mpv-cast`** permission.
-
-- Users with `allow-mpv-cast: true` see Sonos rooms in the output picker
-- Users without this permission only see **Browser** — the output button may not appear at all
-- Set in **Admin → Users → Edit user → Allow cast**
+- Casting to Sonos needs an admin account or the `allow-mpv-cast` permission (**Admin → Users → Cast**). Every `/api/v1/sonos/*` route except the speaker's own `/event` callback checks this and answers `403 { error: 'Not allowed' }` otherwise.
+- The web player and the **Server Remote** only show Sonos rooms to those users.
+- The Server Speaker output in the web player needs the same permission.
+- Saving the default room, changing Sonos settings, test playback and hiding favourites are admin-only.
 
 ---
 
@@ -224,10 +206,10 @@ Sonos casting (and Server Speaker) is gated by the **`allow-mpv-cast`** permissi
 
 - **Track changes**: when Auto-DJ or the queue advances in Velvet, the next track is automatically cast to Sonos
 - **Seek (Velvet → Sonos)**: seeking in the player bar is forwarded to the Sonos device
-- **Seek (Sonos → Velvet)**: seeking in the Sonos S2 app, CLIC, or any other Sonos controller is detected within 3 seconds and reflected back in the Velvet progress bar (bi-directional sync)
-- **Volume**: the volume slider controls Sonos volume (capped at 50 by default — `SONOS_MAX_VOL`)
+- **Seek / skip in a Sonos app**: not read back; the web player keeps its own position
+- **Volume**: the player's volume slider is scaled so that 100% sets Sonos volume 50 (`SONOS_MAX_VOL` in `webapp/app.js`); the server itself accepts 0–100
 - **Pause / Play**: transport controls in the player bar command Sonos directly
-- **Page reload**: the cast session is saved in `localStorage` and restored on reload; Sonos resumes at the saved position
+- **Page reload**: the cast session is saved per user in `localStorage` (`ms2_casting_sonos_<username>`) and restored on reload; the stored room's IP is re-checked against a fresh scan, and pressing Play re-casts the current track at the saved position
 
 ---
 
@@ -239,19 +221,17 @@ Sonos devices may change IP address between sessions (DHCP lease renewal) or aft
 |-------|---------|-------------|
 | **Boot restore** | Page load while a cast session is saved in `localStorage` | UUID-based lookup in fresh device list → if same device found at a different IP, `localStorage` is updated before the reachability check runs. Falls back to admin default room if UUID not found. |
 | **Output picker scan** | Every time the output picker is opened | `_snapSonosRoom()` compares saved room UUID/IP against fresh scan results; updates `S.sonosRoom.ip` and localStorage if changed |
-| **Cast response** | Any `/cast` API call (track change, song start) | Server returns `actualIp` — the IP the SOAP call actually succeeded on after any SSDP re-discovery redirect. Client calls `_handleCastResponse()` to update `S.sonosRoom.ip`, localStorage, and restart position-sync on the new IP |
-| **Server-side alias** | Any `/set-volume`, `/set-pause`, `/seek` call | `_resolveIp()` checks `_ipAliases` (set on redirect) and the discovered-rooms cache; uses the resolved IP even if the client sent a stale one |
-| **Persisted default-room heal** | A `/cast` redirect where the device matches the saved default room (by UUID) | `_healDefaultRoomIp()` writes the rediscovered IP back to `sonos.defaultRoom.ip` in the config file, so server-side callers that read the default room (favourites, default-room casts) stop hitting the dead address after a restart |
+| **Cast response** | Any `/cast` or `/cast-queue` call (track change, song start) | Server returns `actualIp`. `/cast` re-runs SSDP discovery when the device is unreachable and returns the IP it succeeded on; `/cast-queue` returns the IP resolved from the alias table and room cache. Client calls `_handleCastResponse()` to update `S.sonosRoom.ip` and localStorage |
+| **Server-side alias** | `/cast-queue`, `/set-volume`, `/set-pause`, `/seek` and the queue routes | `_resolveIp()` checks the discovered-rooms cache and `_ipAliases` (set on a `/cast` redirect); with exactly one known room it uses that room's IP |
+| **Persisted default-room heal** | A `/cast` redirect where the device matches the saved default room (by UUID or old IP) | `_healDefaultRoomIp()` writes the rediscovered IP back to `sonos.defaultRoom.ip` in the config file, so server-side callers that read the default room (favourites, default-room casts) stop hitting the dead address after a restart |
 
-This means a DHCP IP change is corrected **no later than the next track change** — and often before that if the output picker is opened.---
+---
 
-## Queue mirroring
+## Casting through the Sonos queue
 
-While Sonos is the active output, Velvet mirrors a **window of the player queue** (the current track + up to ~30 upcoming) onto the Sonos queue, so the Sonos app shows what's playing and what's next. The web player remains the source of truth; the Sonos queue is re-synced on track changes and wiped (only if it's ours) when you switch away or close the tab.
+The web player casts **one track at a time** with `POST /api/v1/sonos/cast-queue`: the speaker's queue is replaced by the current track, which then plays. When you switch away from Sonos or close the tab, the queue is wiped with `POST /api/v1/sonos/queue/clear` — only if every track in it points at Velvet. A queue built by another app is left alone.
 
-**Bidirectional pause + cede control:**
-- Pause/resume from the Sonos app or CLIC is reflected back to the web player (and the sleep LED follows).
-- If you navigate on the Sonos app (next / previous / shuffle), the web player detects it's no longer on our current track and **cedes control** — it pauses and stops syncing until you press Play in the web again (which re-casts and takes control back).
+The routes `cast-queue` (with several tracks), `queue/append`, `queue/trim`, `queue/jump` and `events/stream` can still keep a longer window of tracks on the speaker, but the web player does not use them.
 
 ### Metadata in controller apps
 
@@ -270,38 +250,47 @@ The **S2 app resolves queue-row metadata by *source*** (a registered music servi
 Direct `SetAVTransportURI` with a plain HTTP stream URL causes S2 to switch into "radio stream" display mode (album art only, no text). Casting through the Sonos queue tells S2 this is a proper track — the full Now Playing view with all metadata fields is rendered.
 
 ### Album art URL
-Art is served via the main **HTTPS** endpoint (`https://host:port/album-art/...`) regardless of whether `localHttpPort` is configured. iOS apps enforce App Transport Security (ATS) which silently blocks plain `http://` image loads.
+For transcoded streams, art is served from Velvet's main port (`/album-art/...`), over `https://` when Velvet has an SSL certificate configured, otherwise `http://`. iOS apps enforce App Transport Security (ATS), which silently blocks plain `http://` image loads. Other tracks use the speaker's own `/getaa` proxy.
 
 ---
 
 ## API endpoints
 
-All endpoints require a valid JWT (`x-access-token` header or `token` query param).
+All endpoints except `/api/v1/sonos/event` require a valid JWT (`x-access-token` header or `token` query param). "User" means an admin or a user with the `allow-mpv-cast` permission; anyone else gets `403`. Where a route takes `ip`, it falls back to the saved default room, and only private IP addresses are accepted.
 
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
-| `GET` | `/api/v1/sonos/devices` | User | Return cached room list + enabled flag; triggers discovery if cache is empty |
-| `POST` | `/api/v1/sonos/scan` | User | Force re-discovery using the configured seed IP |
-| `GET` | `/api/v1/sonos/probe?ip=X.X.X.X` | User | Probe a single IP — returns room name, UUID, reachability |
-| `POST` | `/api/v1/sonos/save-default` | User | Save a room as the default cast target |
-| `POST` | `/api/v1/sonos/cast` | User + `allow-mpv-cast` | Cast a track to a Sonos device |
-| `POST` | `/api/v1/sonos/set-pause` | User + `allow-mpv-cast` | Pause or resume Sonos playback |
-| `POST` | `/api/v1/sonos/seek` | User + `allow-mpv-cast` | Seek to a position (seconds) |
-| `POST` | `/api/v1/sonos/set-volume` | User + `allow-mpv-cast` | Set volume (0–100; server caps at 50) |
-| `GET` | `/api/v1/sonos/transport-status?ip=X` | User + `allow-mpv-cast` | Poll playback state (playing/paused/stopped, position, duration, current **track** number, plus `trackUri`/`trackTitle`/`trackArtist`/`trackAlbum`/`trackArt` for now-playing) |
-| `POST` | `/api/v1/sonos/cast-queue` | User + `allow-mpv-cast` | Mirror a window of the player queue (current + upcoming) onto the Sonos queue; plays current immediately, appends the rest in the background |
-| `POST` | `/api/v1/sonos/queue/clear` | User + `allow-mpv-cast` | Wipe the Sonos queue — only if every track belongs to Velvet (foreign queues untouched) |
+| `NOTIFY` | `/api/v1/sonos/event` | None (private-LAN peers with a known subscription ID) | UPnP event callback from the speaker; body capped at 256 KB |
+| `GET` | `/api/v1/sonos/devices` | User | Return cached room list, default room and settings (`enabled`, `transcodeOpus`, `sleepEnabled`); re-scans when the cache is older than 5 minutes |
+| `POST` | `/api/v1/sonos/scan` | User | Force re-discovery. Body `{ seedIp? }`; falls back to `knownIps[0]`, then the default room's IP |
+| `GET` | `/api/v1/sonos/probe?ip=X.X.X.X` | User | Probe a single IP — `{ ok, name, model, uuid, ip }` |
+| `POST` | `/api/v1/sonos/save-default` | Admin | Save a room as the default cast target. `{ ip, name, uuid? }` |
+| `POST` | `/api/v1/sonos/cast` | User | Cast one track. `{ ip?, filepath, title?, artist?, album?, aaFile?, seekTo?, paused? }`; returns `actualIp`, `streamUrl`, `streamStartOffset`, `isTranscodeStream` |
+| `POST` | `/api/v1/sonos/set-pause` | User | Pause or resume Sonos playback. `{ ip, paused }` |
+| `POST` | `/api/v1/sonos/seek` | User | Seek to a position. `{ ip, position }` (seconds) |
+| `POST` | `/api/v1/sonos/set-volume` | User | Set volume. `{ ip, volume: 0–100, muted? }` |
+| `GET` | `/api/v1/sonos/transport-status?ip=X` | User | Poll playback state (playing/paused/stopped, position, duration, `track`, `nrTracks`, `trackFp`, plus `trackUri`/`trackTitle`/`trackArtist`/`trackAlbum`/`trackArt` for now-playing, and `serverAdvanced`). An unreachable device answers a stopped state with `unreachable: true` |
+| `POST` | `/api/v1/sonos/cast-queue` | User | Replace the Sonos queue with `tracks` and play `index`; extra tracks are appended in the background. `{ ip, tracks, index?, seekTo?, paused?, reason? }` |
+| `POST` | `/api/v1/sonos/queue/append` | User | Append tracks without touching the current one. `{ ip, tracks }` |
+| `POST` | `/api/v1/sonos/queue/trim` | User | Remove already-played tracks from the front of the queue. `{ ip, currentTrack, keep? = 2 }` |
+| `POST` | `/api/v1/sonos/queue/jump` | User | Play a track already in the queue. `{ ip, track }` (1-based; 409 if beyond the queue) |
+| `GET` | `/api/v1/sonos/events/stream` | User | Server-sent events with the speaker's transport changes |
+| `POST` | `/api/v1/sonos/queue/clear` | User | Wipe the Sonos queue — only if every track belongs to Velvet (foreign queues untouched) |
+| `GET` | `/api/v1/sonos/battery?ip=X` | User | Battery info for portable speakers; `{ supported: false }` otherwise |
+| `GET` | `/api/v1/sonos/device-info?ip=X` | User | Device details for the output picker's info panel |
 | `POST` | `/api/v1/sonos/test-play` | Admin | Play a random song on a device (admin test) |
 | `GET` | `/api/v1/sonos/favorites?ip=X` | User | List **all** "My Favorites" (FV:2) — Sonos Radio, Spotify, Apple Music, TuneIn, etc. Each entry tagged with `service`/`serviceKey`, plus `res`/`resMD`/`isContainer` |
-| `GET` | `/api/v1/sonos/radio-favorites?ip=X` | User | The Sonos Radio subset of favourites (radio picker) |
+| `GET` | `/api/v1/sonos/radio-favorites?ip=X` | User | The Sonos Radio subset of favourites. Integration API: the web player does not call it (its pickers use `/sonos/favorites`) |
 | `POST` | `/api/v1/sonos/play-favorite` | User | Play any favourite by FV:2 id via its own `res`/`resMD` (works for Spotify/Apple Music). `{ ip, favoriteId }` |
 | `POST` | `/api/v1/sonos/favorite-visibility` | Admin | Hide/show a favourite in Velvet's view. `{ key, hidden }` — persisted in `sonos.hiddenFavorites` (all users) |
 | `GET` | `/api/v1/sonos/sleep?ip=X` | User | Read the native sleep timer — `{ active, remaining, generation }` |
 | `POST` | `/api/v1/sonos/sleep` | User | Set/clear the native sleep timer via `ConfigureSleepTimer`. `{ ip, seconds?, minutes?, play? }` — ≤ 0 clears it; `play: true` resumes on wake |
 | `GET` | `/api/v1/sonos/led?ip=X` | User | Read the status-LED state (`GetLEDState`) — `{ state: 'On'｜'Off' }` |
 | `POST` | `/api/v1/sonos/led` | User | Set the status-LED state (`SetLEDState`). `{ ip, state: 'On'｜'Off' }` — sleep-mode visual cue |
-| `GET` | `/api/v1/sonos/transcode-stream?fp=&token=` | User | Stream a file as MP3 (192 k @ 48 kHz) via the built-in ffmpeg. Used automatically when Auto-transcode is enabled. |
-| `POST` | `/api/v1/admin/sonos` | Admin | Save Sonos config (`enabled`, `transcodeOpus`, `sleepEnabled`) |
+| `GET` | `/api/v1/sonos/browse-content?ip=X&objectId=Y` | User | Browse a Sonos ContentDirectory object (`browseFlag`, `startingIndex`, `requestedCount` optional) |
+| `POST` | `/api/v1/sonos/play-cloud-object` | User | Play a Sonos Radio cloud object. `{ ip, cloudObjectId, title?, authToken? }` |
+| `GET` | `/api/v1/sonos/transcode-stream?fp=&token=&start=` | User | Stream a file as MP3 (192 k @ 48 kHz) via the built-in ffmpeg; `start` seeks in seconds. Used automatically for Opus, WAV and >48 kHz files when Auto-transcode is enabled. |
+| `POST` | `/api/v1/admin/sonos` | Admin | Save Sonos config (`enabled`, `transcodeOpus`, `sleepEnabled`, all booleans); at least one is required |
 
 ---
 
@@ -315,6 +304,8 @@ All endpoints require a valid JWT (`x-access-token` header or `token` query para
     "enabled": true,
     "transcodeOpus": true,
     "sleepEnabled": false,
+    "knownIps": [],
+    "hiddenFavorites": [],
     "defaultRoom": {
       "ip": "192.168.1.100",
       "name": "Living Room",
@@ -324,7 +315,7 @@ All endpoints require a valid JWT (`x-access-token` header or `token` query para
 }
 ```
 
-`enabled` defaults to `true` if the key is absent.
+`enabled` defaults to `true` if the key is absent; `transcodeOpus` and `sleepEnabled` default to `false`. An old `pauseSleepMinutes` key is ignored. `knownIps[0]` is used as a seed IP for discovery.
 
 ---
 
@@ -332,14 +323,14 @@ All endpoints require a valid JWT (`x-access-token` header or `token` query para
 
 | Symptom | Likely cause |
 |---------|-------------|
-| No Sonos rooms in output picker | Sonos disabled in admin, or user lacks `allow-mpv-cast` |
+| No Sonos rooms in output picker | Sonos disabled in admin, or no room discovered and no default room saved |
 | Probe times out | Device IP wrong, or Sonos on a different VLAN/subnet |
 | Cast succeeds but no audio | Velvet server IP not reachable from Sonos (check firewall); audio port (3000 by default) must be open |
 | Volume/pause after cast does nothing (EHOSTUNREACH in log) | Sonos IP changed (DHCP lease renewed). Velvet auto-corrects this: the next `/cast` triggers SSDP re-discovery, resolves the new IP, and stores it. If the session was restored from a previous browser session, the IP is snapped on boot. No manual action needed. |
 | Opus or hi-res FLAC file is silent on Sonos | Enable **Auto-transcode for Sonos** in Admin → Sonos. Opus is not supported by Sonos hardware. Most Sonos devices also cap FLAC/PCM at 48 kHz — 88/96/176/192 kHz files will be silent without transcoding. |
-| WAV file is silent on Sonos | Enable **Auto-transcode for Sonos** in Admin → Sonos. Sonos DIDL metadata hardcodes `audio/mpeg`; WAV streams mismatch and are rejected. |
-| One specific track can never be cast — log shows `AddURIToQueue failed: … code=402` on every attempt, other tracks fine | UPnP 402 = "invalid args": the speaker rejected the metadata itself. The usual cause is a tag (title/artist/album) containing bytes that are illegal in XML — control characters left behind by a mangled tag encoding. Velvet strips those before building the DIDL since v0.5.29; if you still see it, fix the offending tag in the Tag Workshop. |
-| Next random/Auto-DJ track starts late or first cast times out right after a hi-res/transcoded track | Velvet now applies an adaptive pre-cast settle delay for rapid back-to-back transcode-sensitive transitions and uses a longer Sonos SOAP timeout (9 s). If you still see this, keep `journalctl -fu music.service` open and look for `[sonos] rapid cast after ... waiting ... before SOAP` and timeout/retry lines. |
-| Volume slider has no effect | Volume cap (`SONOS_MAX_VOL = 50`) is working as intended |
-| Cast session lost after page reload | Clear localStorage key `ms2_sonos_room` and re-select room |
+| WAV file is silent on Sonos | Enable **Auto-transcode for Sonos** in Admin → Sonos; WAV files are then sent as MP3. |
+| One specific track can never be cast — log shows `AddURIToQueue failed: … code=402` on every attempt, other tracks fine | UPnP 402 = "invalid args": the speaker rejected the metadata itself. The usual cause is a tag (title/artist/album) containing bytes that are illegal in XML — control characters left behind by a mangled tag encoding. Velvet strips those (and lone surrogate halves) before building the DIDL; emoji and other valid characters are kept, and `'` is sent as `&apos;`. If you still see it, fix the offending tag in the Tag Workshop. |
+| Next random/Auto-DJ track starts late or first cast times out right after a hi-res/transcoded track | On `/cast`, Velvet waits up to 3.5 s before a cast that comes within 12 s of the previous one when either involves a transcoded stream, and Sonos SOAP calls time out after 9 s. If you still see this, keep `journalctl -fu music.service` open and look for `[sonos] rapid cast after ... waiting ... before SOAP` and timeout/retry lines. |
+| Sonos never gets louder than about half volume | The player maps 100% on its slider to Sonos volume 50 (`SONOS_MAX_VOL = 50` in `webapp/app.js`) |
+| Cast session lost after page reload | Clear localStorage key `ms2_casting_sonos_<username>` and re-select room |
 

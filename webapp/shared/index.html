@@ -7,7 +7,7 @@
   <link rel="apple-touch-icon" sizes="180x180" href="../assets/fav/apple-touch-icon.png">
   <link rel="icon" type="image/png" sizes="32x32"  href="../assets/fav/favicon-32x32.png">
   <link rel="icon" type="image/png" sizes="16x16"  href="../assets/fav/favicon-16x16.png">
-  <link rel="stylesheet" href="/style.css?v=0.9.3-3ba3ba9e">
+  <link rel="stylesheet" href="/style.css?v=0.10.0-df773abc">
   <style>
     /* ── Shared-page layout overrides ──────────────────────── */
     body {
@@ -190,9 +190,9 @@
     <div class="sh-brand">
       <img src="/assets/img/velvet-logo.svg" alt="Velvet" width="32" height="32">
       Velvet
-      <span class="sh-brand-sub">/ Shared Playlist</span>
+      <span class="sh-brand-sub">/ <span data-i18n="shared-page.title">Shared Playlist</span></span>
     </div>
-    <button id="sh-theme-btn" title="Toggle theme">
+    <button id="sh-theme-btn" title="Toggle theme" data-i18n="shared-page.toggleTheme" data-i18n-attr="title">
       <!-- Moon (dark mode) -->
       <svg class="sh-theme-moon" width="15" height="15" viewBox="0 0 24 24" fill="none"
            stroke="currentColor" stroke-width="2">
@@ -227,7 +227,7 @@
         </div>
       </div>
       <div class="sh-meta">
-        <div class="sh-meta-count" id="sh-count">Loading…</div>
+        <div class="sh-meta-count" id="sh-count" data-i18n="shared-page.loading">Loading…</div>
         <div class="sh-meta-title"  id="sh-title">—</div>
         <div class="sh-meta-artist" id="sh-artist"></div>
         <div class="sh-meta-album"  id="sh-album"></div>
@@ -240,7 +240,7 @@
 
       <!-- Transport row -->
       <div class="sh-ctrl-row">
-        <button id="sh-shuffle" class="ctrl-btn ctrl-sm" title="Shuffle">
+        <button id="sh-shuffle" class="ctrl-btn ctrl-sm" title="Shuffle" data-i18n="shared-page.shuffle" data-i18n-attr="title">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
                stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <polyline points="16,3 21,3 21,8"/>
@@ -249,13 +249,13 @@
             <line x1="4" y1="4" x2="9" y2="9"/>
           </svg>
         </button>
-        <button id="sh-prev" class="ctrl-btn ctrl-nav" title="Previous">
+        <button id="sh-prev" class="ctrl-btn ctrl-nav" title="Previous" data-i18n="shared-page.previous" data-i18n-attr="title">
           <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
             <path d="M19 20L9 12l10-8v16z"/>
             <rect x="4" y="5" width="2.5" height="14" rx="1.25"/>
           </svg>
         </button>
-        <button id="sh-play" class="ctrl-btn play-main" title="Play / Pause">
+        <button id="sh-play" class="ctrl-btn play-main" title="Play / Pause" data-i18n="shared-page.playPause" data-i18n-attr="title">
           <svg id="sh-icon-play" width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
             <path d="M6 4l14 8-14 8V4z"/>
           </svg>
@@ -265,13 +265,13 @@
             <rect x="15" y="4" width="4" height="16" rx="1.5"/>
           </svg>
         </button>
-        <button id="sh-next" class="ctrl-btn ctrl-nav" title="Next">
+        <button id="sh-next" class="ctrl-btn ctrl-nav" title="Next" data-i18n="shared-page.next" data-i18n-attr="title">
           <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
             <path d="M5 4l10 8-10 8V4z"/>
             <rect x="17.5" y="5" width="2.5" height="14" rx="1.25"/>
           </svg>
         </button>
-        <button id="sh-repeat" class="ctrl-btn ctrl-sm" title="Repeat">
+        <button id="sh-repeat" class="ctrl-btn ctrl-sm" title="Repeat" data-i18n="shared-page.repeat" data-i18n-attr="title">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
                stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <polyline points="17,1 21,5 17,9"/>
@@ -296,7 +296,7 @@
       <!-- Volume + download row -->
       <div class="sh-aux-row">
         <div class="sh-vol-wrap">
-          <button id="sh-mute-btn" title="Toggle mute">
+          <button id="sh-mute-btn" title="Toggle mute" data-i18n="shared-page.toggleMute" data-i18n-attr="title">
             <svg id="sh-vol-high" width="16" height="16" viewBox="0 0 24 24" fill="none"
                  stroke="currentColor" stroke-width="2">
               <polygon points="11,5 6,9 2,9 2,15 6,15 11,19"/>
@@ -317,14 +317,14 @@
           </button>
           <input type="range" id="sh-vol" class="vol-slider" min="0" max="100" value="80">
         </div>
-        <button id="sh-dl-all" class="sh-dl-all" title="Download all files">
+        <button id="sh-dl-all" class="sh-dl-all" title="Download all files" data-i18n="shared-page.downloadAllTitle" data-i18n-attr="title">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
                stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
             <polyline points="7,10 12,15 17,10"/>
             <line x1="12" y1="15" x2="12" y2="3"/>
           </svg>
-          Download All
+          <span data-i18n="shared-page.downloadAll">Download All</span>
         </button>
       </div>
 
@@ -333,7 +333,7 @@
     <!-- Playlist card -->
     <div class="sh-playlist-wrap">
       <div class="sh-pl-header">
-        <span class="sh-pl-title">Playlist</span>
+        <span class="sh-pl-title" data-i18n="shared-page.playlist">Playlist</span>
         <span class="sh-pl-count" id="sh-pl-count"></span>
       </div>
       <div class="sh-pl-list" id="sh-pl-list"></div>
@@ -348,6 +348,7 @@
 <!-- Server injects sharedPlaylist here -->
 <script type="application/json" id="sh-data"></script>
 
-<script src="app.js?v=0.9.3-571b72bc"></script>
+<script src="/assets/js/i18n.js"></script>
+<script src="app.js?v=0.10.0-afeadfac"></script>
 </body>
 </html>

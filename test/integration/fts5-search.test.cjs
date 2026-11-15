@@ -1,224 +1,127 @@
-/**
- * FTS5 Full-Text Search — Integration Tests
- * Tests core search functionality without external dependencies
- */
+'use strict';
 
 const { describe, it, before, after } = require('node:test');
-const assert = require('node:assert');
-const { DatabaseSync } = require('node:sqlite');
-const path = require('path');
-const fs = require('fs');
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
 
-describe('FTS5 Search Engine', () => {
-  let db;
-  const testDbPath = path.join('/tmp', 'velvet-test-fts5.sqlite');
+const COLS = ['title', 'artist', 'album', 'filepath'];
 
-  before(() => {
-    // Clean up any previous test DB
-    if (fs.existsSync(testDbPath)) fs.unlinkSync(testDbPath);
+describe('FTS5 search (src/db/sqlite-backend.js searchFiles / searchFilesAllWords)', () => {
+  let backend, workDir;
+  const titles = rows => rows.map(r => r.title).sort();
 
-    // Create in-memory test DB with FTS5
-    db = new DatabaseSync(testDbPath);
-
-    // Enable FTS5
-    db.exec('PRAGMA journal_mode = WAL');
-    
-    // Create minimal schema
-    db.exec(`
-      CREATE TABLE files (
-        id INTEGER PRIMARY KEY,
-        filepath TEXT NOT NULL,
-        title TEXT,
-        artist TEXT,
-        album TEXT,
-        vpath TEXT,
-        modified INTEGER,
-        ts INTEGER,
-        duration INTEGER,
-        bitrate INTEGER,
-        frequency INTEGER,
-        type TEXT
-      )
-    `);
-
-    // Create FTS5 virtual table
-    db.exec(`
-      CREATE VIRTUAL TABLE files_fts USING fts5(
-        title, artist, album, filepath,
-        content=files, content_rowid=id
-      )
-    `);
-
-    // Insert test data
+  before(async () => {
+    workDir = fs.mkdtempSync(path.join(os.tmpdir(), 'fts5-search-'));
+    backend = await import('../../src/db/sqlite-backend.js');
+    backend.init(workDir);
     const songs = [
-      { title: 'Bohemian Rhapsody', artist: 'Queen', album: 'A Night at the Opera', filepath: 'Music/queen/bohemian.mp3' },
-      { title: 'Stairway to Heaven', artist: 'Led Zeppelin', album: 'Led Zeppelin IV', filepath: 'Music/zeppelin/stairway.mp3' },
-      { title: 'Dream On', artist: 'Aerosmith', album: 'Aerosmith', filepath: 'Music/aerosmith/dream-on.mp3' },
-      { title: 'Paranoid Android', artist: 'Radiohead', album: 'OK Computer', filepath: 'Music/radiohead/paranoid.mp3' },
-      { title: 'Norwegian Wood', artist: 'The Beatles', album: 'Rubber Soul', filepath: 'Music/beatles/norwegian-wood.mp3' },
+      { title: 'Bohemian Rhapsody', artist: 'Queen', album: 'A Night at the Opera', filepath: 'queen/bohemian.mp3' },
+      { title: 'Another One Bites the Dust', artist: 'Queen', album: 'The Game', filepath: 'queen/another.mp3' },
+      { title: 'Stairway to Heaven', artist: 'Led Zeppelin', album: 'Led Zeppelin IV', filepath: 'zeppelin/stairway.mp3' },
+      { title: 'Dream On', artist: 'Aerosmith', album: 'Aerosmith', filepath: 'aerosmith/dream-on.mp3' },
+      { title: 'Paranoid Android', artist: 'Radiohead', album: 'OK Computer', filepath: 'radiohead/paranoid.mp3' },
+      { title: 'Norwegian Wood', artist: 'The Beatles', album: 'Rubber Soul', filepath: 'beatles/norwegian-wood.mp3' },
+      { title: 'Hey Jude', artist: 'The Beatles', album: 'Hey Jude', filepath: 'Albums/beatles/hey-jude.mp3' },
+      { title: 'Café del Mar', artist: 'Energy 52', album: 'Café del Mar', filepath: 'energy/cafe.mp3' },
+      { title: 'Bohemian Like You', artist: 'The Dandy Warhols', album: 'Thirteen Tales', filepath: 'dandy/bohemian.mp3', vpath: 'Other' },
     ];
-
-    const insertFile = db.prepare(`
-      INSERT INTO files (title, artist, album, filepath, vpath, modified, ts, duration, bitrate, frequency, type)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `);
-
-    const insertFts = db.prepare(`
-      INSERT INTO files_fts (rowid, title, artist, album, filepath)
-      VALUES (?, ?, ?, ?, ?)
-    `);
-
-    for (const song of songs) {
-      const res = insertFile.run(
-        song.title, song.artist, song.album, song.filepath,
-        'Music', Date.now(), Math.floor(Date.now() / 1000), 240000, 320, 44100, 'music'
-      );
-      insertFts.run(res.lastInsertRowid, song.title, song.artist, song.album, song.filepath);
-    }
+    for (const s of songs) backend.insertFile({ vpath: 'Music', duration: 240, ...s });
   });
 
   after(() => {
-    db.close();
-    if (fs.existsSync(testDbPath)) fs.unlinkSync(testDbPath);
+    fs.rmSync(workDir, { recursive: true, force: true });
   });
 
-  describe('Basic search', () => {
-    it('should find song by exact title', () => {
-      const search = db.prepare(`
-        SELECT f.* FROM files f
-        JOIN files_fts fts ON f.id = fts.rowid
-        WHERE files_fts MATCH ?
-        LIMIT 10
-      `);
-      const result = search.all('Bohemian Rhapsody');
-      assert.strictEqual(result.length, 1);
-      assert.strictEqual(result[0].title, 'Bohemian Rhapsody');
+  describe('basic search', () => {
+    it('finds a song by its exact title', () => {
+      const rows = backend.searchFiles('title', 'Bohemian Rhapsody', ['Music'], []);
+      assert.deepEqual(titles(rows), ['Bohemian Rhapsody']);
     });
 
-    it('should find multiple songs by artist name', () => {
-      const search = db.prepare(`
-        SELECT f.* FROM files f
-        JOIN files_fts fts ON f.id = fts.rowid
-        WHERE files_fts MATCH ?
-        LIMIT 10
-      `);
-      const result = search.all('Queen');
-      assert.strictEqual(result.length, 1);
-      assert.strictEqual(result[0].artist, 'Queen');
+    it('finds every song by an artist', () => {
+      assert.deepEqual(titles(backend.searchFiles('artist', 'Queen', ['Music'], [])), ['Another One Bites the Dust', 'Bohemian Rhapsody']);
     });
 
-    it('should find song by album name', () => {
-      const search = db.prepare(`
-        SELECT f.* FROM files f
-        JOIN files_fts fts ON f.id = fts.rowid
-        WHERE files_fts MATCH ?
-        LIMIT 10
-      `);
-      const result = search.all('OK Computer');
-      assert.strictEqual(result.length, 1);
-      assert.strictEqual(result[0].album, 'OK Computer');
+    it('finds a song by album name', () => {
+      const rows = backend.searchFiles('album', 'OK Computer', ['Music'], []);
+      assert.equal(rows.length, 1);
+      assert.equal(rows[0].album, 'OK Computer');
+    });
+
+    it('matches across several columns when given a column set', () => {
+      assert.deepEqual(titles(backend.searchFiles(COLS, 'Aerosmith', ['Music'], [])), ['Dream On']);
+    });
+
+    it('is a prefix search', () => {
+      assert.deepEqual(titles(backend.searchFiles('title', 'Para', ['Music'], [])), ['Paranoid Android']);
+    });
+
+    it('is case-insensitive', () => {
+      const upper = backend.searchFiles('artist', 'QUEEN', ['Music'], []);
+      const lower = backend.searchFiles('artist', 'queen', ['Music'], []);
+      assert.equal(upper.length, 2);
+      assert.equal(lower.length, upper.length);
+    });
+
+    it('ignores diacritics', () => {
+      assert.deepEqual(titles(backend.searchFiles('title', 'cafe', ['Music'], [])), ['Café del Mar']);
     });
   });
 
-  describe('FTS5 operators', () => {
-    it('should support AND operator (both terms required)', () => {
-      const search = db.prepare(`
-        SELECT f.* FROM files f
-        JOIN files_fts fts ON f.id = fts.rowid
-        WHERE files_fts MATCH ?
-        LIMIT 10
-      `);
-      const result = search.all('Beatles Norwegian');
-      assert.strictEqual(result.length, 1);
-      assert.strictEqual(result[0].artist, 'The Beatles');
+  describe('operators', () => {
+    it('requires every word to match somewhere across the columns (AND)', () => {
+      assert.deepEqual(titles(backend.searchFilesAllWords(['Beatles', 'Norwegian'], ['Music'], [])), ['Norwegian Wood']);
     });
 
-    it('should support OR operator (either term)', () => {
-      const search = db.prepare(`
-        SELECT f.* FROM files f
-        JOIN files_fts fts ON f.id = fts.rowid
-        WHERE files_fts MATCH ?
-        LIMIT 10
-      `);
-      const result = search.all('Queen OR Aerosmith');
-      assert.strictEqual(result.length, 2);
+    it('excludes negative terms (NOT)', () => {
+      assert.deepEqual(backend.searchFiles(COLS, 'Heaven', ['Music'], [], null, null, ['Led']), []);
+      assert.deepEqual(titles(backend.searchFiles('artist', 'Queen', ['Music'], [], null, null, ['Dust'])), ['Bohemian Rhapsody']);
     });
 
-    it('should support NOT operator (exclude term)', () => {
-      const search = db.prepare(`
-        SELECT f.* FROM files f
-        JOIN files_fts fts ON f.id = fts.rowid
-        WHERE files_fts MATCH ?
-        LIMIT 10
-      `);
-      const result = search.all('Heaven NOT Led');
-      assert.strictEqual(result.length, 0); // Stairway to Heaven is by Led Zeppelin
-    });
-
-    it('should support prefix search (wildcard *)', () => {
-      const search = db.prepare(`
-        SELECT f.* FROM files f
-        JOIN files_fts fts ON f.id = fts.rowid
-        WHERE files_fts MATCH ?
-        LIMIT 10
-      `);
-      const result = search.all('Para*');
-      assert.strictEqual(result.length, 1);
-      assert.strictEqual(result[0].title, 'Paranoid Android');
+    it('treats FTS5 syntax in the term as literal text', () => {
+      assert.deepEqual(backend.searchFiles(COLS, 'Queen OR Aerosmith', ['Music'], []), []);
+      assert.doesNotThrow(() => backend.searchFiles(COLS, 'he said "hi" (*)', ['Music'], []));
     });
   });
 
-  describe('Search edge cases', () => {
-    it('should handle empty search gracefully', () => {
-      const search = db.prepare(`
-        SELECT COUNT(*) as cnt FROM files_fts
-        WHERE files_fts MATCH ?
-      `);
-      try {
-        const result = search.get('');
-        // Empty search may error or return 0; both acceptable
-        assert(result !== undefined);
-      } catch {
-        // Expected for invalid FTS5 syntax
-      }
+  describe('scoping', () => {
+    it('only returns rows from the given vpaths', () => {
+      assert.deepEqual(titles(backend.searchFiles('title', 'Bohemian', ['Music'], [])), ['Bohemian Rhapsody']);
+      assert.deepEqual(titles(backend.searchFiles('title', 'Bohemian', ['Music', 'Other'], [])), ['Bohemian Like You', 'Bohemian Rhapsody']);
+      assert.deepEqual(titles(backend.searchFiles('title', 'Bohemian', ['Music', 'Other'], ['Other'])), ['Bohemian Rhapsody']);
     });
 
-    it('should be case-insensitive', () => {
-      const search = db.prepare(`
-        SELECT f.* FROM files f
-        JOIN files_fts fts ON f.id = fts.rowid
-        WHERE files_fts MATCH ?
-        LIMIT 10
-      `);
-      const result1 = search.all('queen');
-      const result2 = search.all('QUEEN');
-      assert.strictEqual(result1.length, result2.length);
+    it('limits to a filepath prefix (child vpath pattern)', () => {
+      assert.deepEqual(titles(backend.searchFiles('artist', 'Beatles', ['Music'], [], 'Albums/')), ['Hey Jude']);
     });
 
-    it('should limit results correctly', () => {
-      const search = db.prepare(`
-        SELECT f.* FROM files f
-        JOIN files_fts fts ON f.id = fts.rowid
-        WHERE files_fts MATCH ?
-        LIMIT 2
-      `);
-      const result = search.all('Queen OR Zeppelin');
-      assert(result.length <= 2);
+    it('drops excluded filepath prefixes (child vpath exclusion pattern)', () => {
+      const rows = backend.searchFiles('artist', 'Beatles', ['Music'], [], null, [{ vpath: 'Music', prefix: 'Albums/' }]);
+      assert.deepEqual(titles(rows), ['Norwegian Wood']);
+    });
+
+    it('returns nothing for an empty vpath list', () => {
+      assert.deepEqual(backend.searchFiles('title', 'Bohemian', [], []), []);
+    });
+
+    it('rejects unknown columns instead of building SQL from them', () => {
+      assert.deepEqual(backend.searchFiles('title) OR 1=1 --', 'x', ['Music'], []), []);
+      assert.deepEqual(backend.searchFiles(['title', 'hash'], 'x', ['Music'], []), []);
+    });
+
+    it('honours the row limit', () => {
+      assert.equal(backend.searchFiles(COLS, 'the', ['Music'], [], null, null, [], 2).length, 2);
     });
   });
 
-  describe('Performance baseline', () => {
-    it('should search 1000-row index in <10ms', () => {
-      const start = performance.now();
-      const search = db.prepare(`
-        SELECT f.* FROM files f
-        JOIN files_fts fts ON f.id = fts.rowid
-        WHERE files_fts MATCH ?
-        LIMIT 100
-      `);
-      search.all('Queen OR Zeppelin');
-      const elapsed = performance.now() - start;
-      assert(elapsed < 10, `Search took ${elapsed}ms, expected <10ms`);
+  describe('index maintenance', () => {
+    it('drops a removed file from the index', () => {
+      backend.insertFile({ vpath: 'Music', filepath: 'tmp/zyzzyva.mp3', title: 'Zyzzyva' });
+      assert.equal(backend.searchFiles('title', 'Zyzzyva', ['Music'], []).length, 1);
+      backend.removeFileByPath('tmp/zyzzyva.mp3', 'Music');
+      assert.equal(backend.searchFiles('title', 'Zyzzyva', ['Music'], []).length, 0);
     });
   });
 });

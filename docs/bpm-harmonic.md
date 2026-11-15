@@ -1,20 +1,20 @@
 # BPM & Harmonic Mixing
 
-Velvet collects BPM and musical key data for your library and uses it to enable tempo-continuous and harmonically-compatible song selection in Auto-DJ.
+Velvet collects BPM and musical key data for your library and uses it in Auto-DJ to keep the tempo steady and to prefer harmonically compatible songs.
 
 ---
 
 ## How BPM and key data is collected
 
-Three tiers run independently. Each fills in data the previous tier did not cover.
+Three sources fill the same `bpm` / `musical_key` columns of the `files` table. Each one only adds what the others did not cover.
 
-| Tier | Source | CPU cost | Expected coverage |
-|------|--------|----------|-------------------|
-| **Tier 1** | Embedded file tags (passive — no action needed, runs during normal library scan) | Zero | ~3 % BPM / ~1 % key |
-| **Tier 0** | AcousticBrainz online API (requires MBID-matched files from AcoustID) | Zero | ~68 % of MBID files |
-| **Tier 2** | Essentia local audio analysis | High (background) | 100 % fallback — not yet implemented |
+| Tier | Source | CPU cost | Notes |
+|------|--------|----------|-------|
+| **Tier 1** | Embedded file tags (passive — read during the normal library scan) | Zero | Stored with `bpm_source = 'tag'` |
+| **Tier 0** | AcousticBrainz online API (needs a MusicBrainz recording ID from the AcoustID worker) | Zero | Stored with `bpm_source = 'acousticbrainz'` |
+| **Tier 2** | Essentia local audio analysis (Essentia.js WASM in a worker thread) | High (background) | Fallback for every file still missing BPM or key; `bpm_source = 'essentia'` |
 
-**Recommended order:** Tier 1 is passive. Run Tier 0 overnight — it contacts AcousticBrainz at 1 req/s and requires no CPU. Tier 2 will fill the rest when implemented.
+**Recommended order:** Tier 1 is passive. Run Tier 0 first — it only makes network requests (about 3 per second) and uses no CPU. Tier 2 then fills the rest.
 
 ---
 
@@ -24,162 +24,123 @@ Go to **Admin → BPM & Key Analysis**.
 
 ### Library Coverage
 
-Two progress bars show what percentage of your library currently has BPM and musical key data, with a breakdown by source (Tags / AcousticBrainz / Essentia).
+Two progress bars show what share of your library has BPM and musical key data, with a breakdown by source (Tags / AcousticBrainz / Essentia).
 
 ### Step 1 — AcousticBrainz API
 
-AcousticBrainz holds pre-computed BPM and key for millions of MusicBrainz-identified recordings. Velvet queries it for all files that have been fingerprinted by the AcoustID worker.
+AcousticBrainz holds pre-computed BPM and key for many MusicBrainz recordings. Velvet queries `https://acousticbrainz.org/api/v1/<mbid>/low-level` for every file that AcoustID matched (`acoustid_status = 'found'` and an MBID). If there are no such files the panel tells you to run [AcoustID](acoustid.md) first.
 
-- **Start**: launches a background worker thread. Rate-limited to 1 request/second to respect the AcousticBrainz API.
-- **Stop**: gracefully stops after the current file. Progress is preserved — resume any time.
-- **Reset errors**: re-queues any files that returned a network/parse error on a previous run.
-- **Auto-start**: 90 seconds after server boot, the worker starts automatically if there are files queued — no manual action needed after a server restart.
+- **Start**: launches the `bpm-ab` worker thread. It waits 350 ms between requests (about 2.8 per second) and backs off 5 s once on HTTP 429.
+- **Stop**: stops after the current file (force-terminated after 60 s). Progress is kept — resume any time.
+- **Reset errors**: clears `ab_status = 'error'` so those files are tried again.
+- **Recheck not-found**: re-queues files where AcousticBrainz returned `404` (`ab_status = 'not_found'`). Only while the worker is stopped (409 otherwise).
 
-If a file's MBID is not found in AcousticBrainz (`404`), it is marked `not_found` and skipped. These will be handled by Tier 2 (Essentia) when available.
+A file whose MBID is not in AcousticBrainz is marked `not_found`. If it still has no BPM or key, Tier 2 (Essentia) picks it up.
 
 ### Step 2 — Essentia Audio Analysis
 
-Not yet implemented. Will analyse remaining files locally using the Essentia `streaming_extractor_music` binary (first 30 s per file). Coming in a future update.
+The `bpm-essentia` worker analyses files that still have no BPM or no key (`bpm_status IS NULL`) locally:
+
+- FFmpeg decodes a window from the middle of the track to mono 22050 Hz PCM. The window length is `scanOptions.analyzeBpmWindowSec` (default 60 s; `0` = whole file).
+- Essentia `RhythmExtractor2013` gives the BPM, `KeyExtractor` the key. Doubled tempos are halved at analysis time (see [bpm-plan.md](bpm-plan.md), Phase 3).
+- Files longer than 20 minutes are skipped (marked as error) — they are usually DJ mixes. If the decoded audio is over 60 MB the file is decoded again at 11025 Hz; if it is still too large it is marked as error.
+- Error/skipped files are not retried until you press **Re-queue skipped** (clears `bpm_status = 'error'`).
+- **Stop** stops after the current file (force-terminated after 120 s).
+
+### Step 3 — Genre-Based Octave Correction
+
+Corrects doubled or halved Essentia BPM values using the genre tag (only `bpm_source = 'essentia'` rows). Run **Dry Run (preview)** first, pick the rows to change, then apply them; **Undo genre correction** restores the original values. See [bpm-plan.md](bpm-plan.md), Phase 2 for the genre windows. Not available while the Essentia worker runs (409).
 
 ### Reset all BPM data
 
-Clears all collected BPM and key data from your library and resets all worker progress. A confirmation step is required. Cannot be used while either worker is running.
+Clears all BPM and key data (from every source, including tags) and resets AcousticBrainz/Essentia progress. A confirmation step is required. Not possible while either worker is running (409).
+
+### Background worker behaviour
+
+Both workers (`bpm-ab`, `bpm-essentia`) run through the shared worker controller (`src/util/worker-controller.js`):
+
+- 90 seconds after server boot, each worker starts on its own if it has queued files.
+- They pause while a library file scan runs and resume when it ends. After every scan they auto-start (staggered 5 s apart with the other background workers) if they have queued work.
+- Auto-start is skipped when 500 or more files are queued — start the worker from Admin then.
+- **Stop** saves `workerAutostart.bpm-ab` / `workerAutostart.bpm-essentia = false` to the config file, so the worker no longer starts on its own; **Start** sets it back to `true`. See [json_config.md](json_config.md#background-workers-workerautostart).
+- **Start** during a scan returns `status: "pending"` and the worker launches when the scan ends.
 
 ---
 
 ## Auto-DJ — BPM Continuity & Harmonic Mixing
 
-Open the **Auto-DJ panel** (▶▶ button or via the queue panel) to enable the new options.
+Open the **Auto-DJ** settings in the player to find the options.
+
+Auto-DJ asks the server for a batch of candidate songs (`POST /api/v1/db/random-songs` with `returnAll: true`). The server only applies the hard scope: selected collections, minimum rating, track-length window, the similar-artist list and the artist cooldown. BPM and key are **not** hard filters: the player scores every candidate and plays the one with the highest score. The only hard block on the client is the keyword filter. Songs without BPM or key data are not excluded — they get a neutral score for that signal.
+
+Scoring weights (`_djScoreSong` in `webapp/app.js`):
+
+| Signal | Weight | Notes |
+|--------|--------|-------|
+| Similar artist (Last.fm rank) | 0.35 | When there is no similar-artist data, this share is spread over BPM, genre and harmonic |
+| BPM proximity | 0.25 | Full score inside ±tolerance, falling to 0 at ±2× tolerance |
+| Genre | 0.13 | |
+| Harmonic (Camelot) | 0.07 | Same key 1.0, adjacent 0.7, two steps 0.3 |
+| Year/era | 0.10 | ±12 years |
+| Artist diversity | 0.10 | Penalises artists played recently |
+
+BPM and key are always part of the score. The two toggles change which BPM reference is used and what the status chip shows.
 
 ### BPM Continuity
 
-When enabled, only songs that **have BPM data AND fall within ±N BPM** of the session anchor (see below) are selected. Songs without BPM data are always **excluded** — the server requires `f.bpm IS NOT NULL` when this feature is on.
-
-- **BPM Tolerance** slider (shown when BPM Continuity is on): range 1–20 BPM, default ±8. Higher values allow more tempo variation; lower values enforce strict tempo matching.
-
-#### BPM octave equivalence
-
-A song at 145 BPM and a song at 72.5 BPM are the same tempo at different octave doublings — they feel identical to mix. Velvet automatically treats these as compatible.
-
-When a BPM anchor is set, Auto-DJ checks **three windows at once**:
-
-| Window | Range | Tolerance scaling |
-|--------|-------|------------------|
-| Normal (1×) | `anchor ± tol` | as set |
-| Half-time (½×) | `anchor/2 ± tol/2` | halved |
-| Double-time (2×) | `anchor×2 ± tol×2` | doubled |
-
-A song is accepted if its BPM falls in **any** of the three windows. Tolerance scales proportionally so a ±8 BPM window at 140 BPM becomes ±4 at 70 BPM and ±16 at 280 BPM — keeping the relative tightness consistent.
-
-> **Example:** anchor 145 BPM, tolerance ±8 → accepts 137–153 BPM (normal), 68.5–76.5 BPM (half-time), or 274–306 BPM (double-time).
-
-This is always active when BPM Continuity is on — no separate setting is needed.
+- **BPM Tolerance** slider (shown when BPM Continuity is on): 1–20 BPM, default ±8.
+- **Base BPM** (shown when BPM Continuity is on): a fixed BPM (20–300) to steer towards. Empty = "auto (follows session)".
+- With BPM Continuity on, the BPM of each Auto-DJ song is added to a rolling history of the last 8 songs; the **anchor** is the rounded average of that history. Without a Base BPM, the BPM reference for scoring is `60 % current song + 40 % anchor`, so the tempo can move slowly but does not run away. With a Base BPM set, the base replaces the anchor and the history is not used.
+- With BPM Continuity off, the history is cleared and only the current song's BPM is used as reference.
 
 ### Harmonic Mixing
 
-When enabled, only songs that **have musical key data AND whose key is harmonically compatible** with the session anchor are selected. Songs without key data are always **excluded** — the server requires `f.musical_key IS NOT NULL` when this feature is on.
-
 Compatible keys for a track at Camelot position NX are:
-- **Same number, both modes**: NA and NB (e.g. 8A ↔ 8B — relative major/minor, same feel)
-- **One step clockwise (dominant)**: (N+1)A and (N+1)B
-- **One step counter-clockwise (subdominant)**: (N−1)A and (N−1)B
+- **Same number, both modes**: NA and NB (e.g. 8A ↔ 8B — relative major/minor)
+- **One step clockwise**: (N+1)A and (N+1)B
+- **One step counter-clockwise**: (N−1)A and (N−1)B
 
-This gives **6 compatible Camelot slots** per track. Keys are stored as long-form names (`A minor`, `C major`, `F# major`, `A# major`, etc.) and expanded to all matching raw key names before the SQL query.
+This gives **6 compatible Camelot slots** per track.
 
-> **Example:** anchor 8A (A minor) → compatible: 7A (D minor), 7B (F major), 8A (A minor), 8B (C major), 9A (E minor), 9B (G major).
+> **Example:** 8A (A minor) → compatible: 7A (D minor), 7B (F major), 8A (A minor), 8B (C major), 9A (E minor), 9B (G major).
+
+The harmonic score always compares a candidate with the key of the **current** song. When Harmonic Mixing is on, the first Auto-DJ song with a key locks a **Camelot anchor**; that anchor is what the status chip shows. The **ⓘ** button next to the toggle opens a Camelot wheel reference.
 
 ---
 
-## Session anchors — how drift is prevented
+## Session anchors
 
-### The problem without anchors
+### Picks without BPM ("free picks")
 
-Without a fixed reference point, BPM and key filtering would drift across the session:
-
-| Song | BPM | Reference | Range used |
-|------|-----|-----------|------------|
-| 1 | 112 | current song (112) | 104–120 |
-| 2 | 120 | current song (120) | 112–128 |
-| 3 | 128 | current song (128) | 120–136 |
-| 4 | 136 | current song (136) | 128–144 |
-
-Starting at 112, you would be at 144 BPM after just four tracks — a completely different feel — without the listener changing any setting.
-
-The same drift happens with harmonic keys: each selected song becomes the new reference and the key zone shifts one step at a time around the Camelot Wheel.
-
-### The anchor solution
-
-When Auto-DJ makes its **first filtered selection** of the session, it locks a **BPM anchor** and a **Camelot anchor** to the starting song's values. Every subsequent selection is filtered against those locked anchor values — never against the current playing song.
-
-| Song | BPM | Anchor | Range used |
-|------|-----|--------|------------|
-| 1 | 112 | **locked → 112** | 104–120 |
-| 2 | 120 | 112 (unchanged) | 104–120 |
-| 3 | 117 | 112 (unchanged) | 104–120 |
-| 4 | 108 | 112 (unchanged) | 104–120 |
-
-The BPM zone stays at 104–120 for the entire session regardless of which songs are chosen. The same applies to the key zone.
-
-### Free-pick songs do not lock the anchor
-
-When the session starts from a song that has **no BPM data**, Auto-DJ picks the next song freely (no BPM filter applied). That freely-picked song does **not** lock the BPM anchor — it would be arbitrary to anchor the entire session to a BPM that was never filtered against.
-
-The anchor stays `null` until:
-- The user manually plays a song that has BPM data (that song's BPM locks the anchor), or
-- Auto-DJ picks a song that was meaningfully filtered (i.e. the pick was constrained by a BPM range because the current song already had BPM data).
-
-This prevents a common frustration where the anchor would lock to a random disco track at 120 BPM just because it happened to be the first Auto-DJ pick of the session, forcing every subsequent song to match 120 BPM.
+When Auto-DJ picks a song that has no BPM, the pick is marked as free. A free pick adds nothing to the BPM or year history, and for the next pick the BPM reference is not blended (the current BPM, or else the anchor, is used on its own). Manually playing a song clears the flag.
 
 ### What the status chip shows
 
-The chip in the Now Playing label (visible when Auto-DJ is active) always shows the **anchor** value — for example `BPM 112 ±8` — not the current song's BPM. This is the zone the system is filtering against.
+The chip in the Now Playing label (visible when Auto-DJ is on) shows `BPM <ref> ±<tol>` — the Base BPM (marked `base`), else the anchor, else the current song's BPM — and `♪ <Camelot code>` for the Camelot anchor (or the current song's key). A dash means there is no data yet.
 
 ### When anchors reset
 
-Anchors are intentionally reset in the following situations so the next DJ session starts fresh from the new context:
-
-| Event | BPM anchor | Camelot anchor |
+| Event | BPM history/anchor | Camelot anchor |
 |-------|-----------|----------------|
 | User manually plays a song (not Auto-DJ generated) | ✓ reset | ✓ reset |
 | Auto-DJ is stopped | ✓ reset | ✓ reset |
 | BPM Continuity is toggled off | ✓ reset | — |
+| A Base BPM is set | ✓ reset | — |
 | Harmonic Mixing is toggled off | — | ✓ reset |
 
-After a reset the anchors are `null`. The next time Auto-DJ calls for a song and the feature is enabled, it locks fresh anchors to whatever song is playing at that moment.
+The BPM history and Camelot anchor are kept per user in `localStorage`, so they survive a page reload.
 
 ---
 
-## Combining BPM Continuity, Harmonic Mixing, and Similar Artists
+## Velvet Rooms and Music Assistant
 
-All three Auto-DJ modes work together:
-
-1. **Similar Artists** (requires Last.fm API key): fetches artists similar to the current track from Last.fm.
-2. The server queries the DB for a random song from those artists **that also matches the anchor BPM range and/or Camelot key zone**.
-3. The client applies a second check (`_djSongBlocked`) against the anchor values.
-4. If no song passes within 3 attempts, the engine applies the server-side fallback chain (see below).
-
----
-
-## Server-side fallback chain
-
-When filters are active and reduce the candidate pool to zero, the server degrades gracefully through three tiers rather than failing with an error. The client retry limit is 3 attempts per tier.
-
-| BPM On | Key On | Tier 1 tried first | Tier 2 if Tier 1 = 0 | Tier 3 if Tier 2 = 0 |
-|--------|--------|-------------------|----------------------|----------------------|
-| ✓ | ✓ | BPM range + Camelot key zone | BPM range only | Random |
-| ✓ | ✗ | BPM range only | — | Random |
-| ✗ | ✓ | Camelot key zone only | — | Random |
-| ✗ | ✗ | Random | — | — |
-
-**In each tier, the `ignoreArtists` cooldown is applied first.** If dropping the artist cooldown (but keeping BPM/key) yields results, that is used before degrading to the next tier.
-
-The Similar Artists filter (if active) is also dropped before the artist cooldown, following the same pattern.
+A Velvet Room's Auto-DJ and the Subsonic `getSimilarSongs` radio (used by Music Assistant) run on the server in `src/autodj/` and use the same settings (BPM Continuity, Base BPM, tolerance) and the same kind of scoring.
 
 ---
 
 ## Key format
 
-Musical keys are stored in standard long-form notation: `C major`, `A minor`, `F# minor`, `A# major`, etc. Both flat and sharp enharmonic variants are stored and supported:
+Musical keys are stored in long-form notation: `C major`, `A minor`, `F# minor`, `A# major`, etc. Flat and sharp spellings map to the same Camelot code:
 
 | Flat name | Sharp name | Camelot |
 |-----------|------------|--------|
@@ -190,23 +151,27 @@ Musical keys are stored in standard long-form notation: `C major`, `A minor`, `F
 | `Eb major` | `D# major` | 5B |
 | `Bb major` | `A# major` | 6B |
 
-When harmonic mixing is active, the server expands Camelot codes to all matching raw key names before the SQL `IN (...)` clause — both flat and sharp variants are included. This is why `A# major` (667 songs), `G# major` (353), `D# major` (257), etc. are properly matched.
-
 ---
 
 ## API endpoints
 
-All endpoints require an admin-level token (`x-access-token`).
+All endpoints require an admin token (`x-access-token`); others get 403.
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `GET` | `/api/v1/admin/bpm/status` | Combined coverage stats + worker status |
-| `POST` | `/api/v1/admin/bpm/ab/start` | Start AcousticBrainz worker |
+| `GET` | `/api/v1/admin/bpm/status` | `{ ab, essentia, coverage }` — worker state, counts and coverage by source |
+| `POST` | `/api/v1/admin/bpm/ab/start` | Start AcousticBrainz worker (`status: "pending"` during a scan) |
 | `POST` | `/api/v1/admin/bpm/ab/stop` | Stop AcousticBrainz worker |
 | `POST` | `/api/v1/admin/bpm/ab/reset-failed` | Reset `ab_status='error'` rows to NULL |
-| `POST` | `/api/v1/admin/bpm/essentia/start` | HTTP 501 — not yet implemented |
-| `POST` | `/api/v1/admin/bpm/essentia/stop` | No-op |
-| `POST` | `/api/v1/admin/bpm/essentia/reset-failed` | Reset `bpm_status='error'` rows |
-| `POST` | `/api/v1/admin/bpm/reset-all` | Clear all BPM data (409 if workers running) |
+| `POST` | `/api/v1/admin/bpm/ab/reset-not-found` | Reset `ab_status='not_found'` rows to NULL (409 while running) |
+| `POST` | `/api/v1/admin/bpm/essentia/start` | Start Essentia worker (`status: "pending"` during a scan) |
+| `POST` | `/api/v1/admin/bpm/essentia/stop` | Stop Essentia worker |
+| `POST` | `/api/v1/admin/bpm/essentia/reset-failed` | Reset `bpm_status='error'` rows to NULL |
+| `POST` | `/api/v1/admin/bpm/reset-all` | Clear all BPM data (409 if a worker runs) |
+| `POST` | `/api/v1/admin/bpm/genre-correct` | Genre octave correction; `?dryRun=true` previews without writing |
+| `POST` | `/api/v1/admin/bpm/genre-correct-selected` | Apply chosen dry-run rows. Body: `{ corrections: [{ filepath, vpath, bpm, corrected }] }` |
+| `POST` | `/api/v1/admin/bpm/genre-correct-undo` | Restore `bpm_raw` for all genre-corrected rows |
 
-See also: [docs/acoustid.md](acoustid.md) for AcoustID fingerprinting (prerequisite for Tier 0).
+The three genre-correct endpoints return 409 while the Essentia worker runs.
+
+See also: [acoustid.md](acoustid.md) for AcoustID fingerprinting (needed for Tier 0) and [audio-analysis.md](audio-analysis.md) for the wider audio-analysis plan.

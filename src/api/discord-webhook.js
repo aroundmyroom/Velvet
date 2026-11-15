@@ -1,9 +1,9 @@
-import fs from 'node:fs/promises';
 import https from 'node:https';
 import Joi from 'joi';
 import winston from 'winston';
 import * as config from '../state/config.js';
 import { joiValidate } from '../util/validation.js';
+import WebError from '../util/web-error.js';
 import { findUserFile } from './scrobbler.js';
 
 // ── Deterministic fun nick from username ────────────────────────────────────
@@ -23,7 +23,7 @@ function getDisplayNick(user) {
 }
 
 // ── Send one message to the configured Discord webhook ──────────────────────
-export async function sendDiscordScrobble(user, { artist, album, track }) {
+async function sendDiscordScrobble(user, { artist, album, track }) {
   if (config.program.discordWebhook?.enabled !== true) return;
   if (!user['discord-webhook-enabled']) return;
 
@@ -111,19 +111,12 @@ export function setup(velvet) {
     });
     joiValidate(schema, req.body);
 
-    const loadConfig = JSON.parse(await fs.readFile(config.configFile, 'utf-8'));
-    if (!loadConfig.users) loadConfig.users = {};
-    if (!loadConfig.users[req.user.username]) loadConfig.users[req.user.username] = {};
-    loadConfig.users[req.user.username]['discord-webhook-enabled'] = req.body.enabled;
-    if (req.body.nick !== undefined) {
-      loadConfig.users[req.user.username]['discord-webhook-nick'] = req.body.nick;
-    }
-    await fs.writeFile(config.configFile, JSON.stringify(loadConfig, null, 2), 'utf8');
+    // No-user mode has no account to store this on, and a password-less user entry would stop the next boot.
+    if (!config.program.users[req.user.username]) throw new WebError('Per-user settings need a user account', 403);
 
-    config.program.users[req.user.username]['discord-webhook-enabled'] = req.body.enabled;
-    if (req.body.nick !== undefined) {
-      config.program.users[req.user.username]['discord-webhook-nick'] = req.body.nick;
-    }
+    const fields = { 'discord-webhook-enabled': req.body.enabled };
+    if (req.body.nick !== undefined) fields['discord-webhook-nick'] = req.body.nick;
+    await config.updateUserFields(req.user.username, fields);
 
     res.json({});
   });

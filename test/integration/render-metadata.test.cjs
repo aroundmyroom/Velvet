@@ -1,6 +1,6 @@
 /**
  * renderMetadataObj — Unit Tests
- * Tests the metadata transformation function from src/api/db.js.
+ * Tests the exported renderMetadataObj from src/api/db.js.
  *
  * Verifies field mapping, null handling, and the correct filepath format
  * (vpath + '/' + filepath, forward-slash normalized).
@@ -10,37 +10,7 @@
 
 const { describe, it } = require('node:test');
 const assert = require('node:assert/strict');
-const path = require('node:path');
 
-// ── Inline mirror of renderMetadataObj from src/api/db.js ────────────────────
-function renderMetadataObj(row) {
-  return {
-    'filepath': path.join(row.vpath, row.filepath).replace(/\\/g, '/'),
-    'metadata': {
-      'artist':              row.artist      ? row.artist      : null,
-      'hash':                row.hash        ? row.hash        : null,
-      'album':               row.album       ? row.album       : null,
-      'track':               row.track       ? row.track       : null,
-      'track-of':            row.trackOf     ? row.trackOf     : null,
-      'disk':                row.disk        ? row.disk        : null,
-      'title':               row.title       ? row.title       : null,
-      'year':                row.year        ? row.year        : null,
-      'album-art':           row.aaFile      ? row.aaFile      : null,
-      'rating':              row.rating      ? row.rating      : null,
-      'play-count':          row.playCount   ? row.playCount   : null,
-      'last-played':         row.lastPlayed  ? row.lastPlayed  : null,
-      'genre':               row.genre       || null,
-      'replaygain-track-db': row.replaygainTrackDb != null ? row.replaygainTrackDb : null,
-      'duration':            row.duration    != null ? row.duration    : null,
-      'bitrate':             row.bitrate     != null ? row.bitrate     : null,
-      'sample-rate':         row.sample_rate != null ? row.sample_rate : null,
-      'channels':            row.channels    != null ? row.channels    : null,
-      'bit-depth':           row.bit_depth   != null ? row.bit_depth   : null,
-      'album-version':       row.album_version || null,
-    },
-  };
-}
-// ─────────────────────────────────────────────────────────────────────────────
 
 const FULL_ROW = {
   vpath:             'Music',
@@ -67,7 +37,8 @@ const FULL_ROW = {
   album_version:     null,
 };
 
-describe('renderMetadataObj', () => {
+describe('renderMetadataObj', async () => {
+  const { renderMetadataObj } = await import('../../src/api/db.js');
 
   describe('filepath construction', () => {
     it('joins vpath + filepath with forward slash', () => {
@@ -77,8 +48,11 @@ describe('renderMetadataObj', () => {
 
     it('normalizes backslashes to forward slashes', () => {
       const row = { ...FULL_ROW, filepath: 'Rock\\Queen\\song.mp3' };
-      const result = renderMetadataObj(row);
-      assert.ok(!result.filepath.includes('\\'), 'should not contain backslashes');
+      assert.equal(renderMetadataObj(row).filepath, 'Music/Rock/Queen/song.mp3');
+    });
+
+    it('does not double the slash when vpath or filepath carry one', () => {
+      assert.equal(renderMetadataObj({ vpath: 'Music/', filepath: '/a/b.mp3' }).filepath, 'Music/a/b.mp3');
     });
 
     it('preserves spaces in filepath', () => {
@@ -110,9 +84,22 @@ describe('renderMetadataObj', () => {
     it('maps genre correctly', () => assert.equal(renderMetadataObj(FULL_ROW).metadata.genre, 'Rock'));
     it('maps replaygain-track-db correctly', () => assert.equal(renderMetadataObj(FULL_ROW).metadata['replaygain-track-db'], -6.5));
     it('maps duration correctly', () => assert.equal(renderMetadataObj(FULL_ROW).metadata.duration, 354000));
-    it('maps bitrate correctly', () => assert.equal(renderMetadataObj(FULL_ROW).metadata.bitrate, 320));
+    it('maps bitrate (kbps in the DB) to bits per second', () => assert.equal(renderMetadataObj(FULL_ROW).metadata.bitrate, 320000));
     it('maps sample-rate (sample_rate) correctly', () => assert.equal(renderMetadataObj(FULL_ROW).metadata['sample-rate'], 44100));
     it('maps channels correctly', () => assert.equal(renderMetadataObj(FULL_ROW).metadata.channels, 2));
+    it('maps bit-depth (bit_depth) correctly', () => assert.equal(renderMetadataObj(FULL_ROW).metadata['bit-depth'], 16));
+    it('rounds bpm', () => assert.equal(renderMetadataObj({ ...FULL_ROW, bpm: 127.6 }).metadata.bpm, 128));
+    it('maps musical-key correctly', () => assert.equal(renderMetadataObj({ ...FULL_ROW, musical_key: '8A' }).metadata['musical-key'], '8A'));
+    it('falls back to album_artist when artist is empty', () => {
+      const m = renderMetadataObj({ ...FULL_ROW, artist: null, album_artist: 'Various' }).metadata;
+      assert.equal(m.artist, 'Various');
+      assert.equal(m['album-artist'], 'Various');
+    });
+    it('builds the rg object from the track gain tag', () => {
+      const { rg } = renderMetadataObj(FULL_ROW);
+      assert.equal(rg.trackGain, -6.5);
+      assert.equal(rg.src, 'tag');
+    });
   });
 
   describe('null/missing field handling', () => {
@@ -170,6 +157,8 @@ describe('renderMetadataObj', () => {
       assert.equal(result.metadata.artist, null);
       assert.equal(result.metadata.title, null);
       assert.equal(result.metadata.duration, null);
+      assert.equal(result.metadata.bitrate, null);
+      assert.equal(result.rg, null);
     });
   });
 

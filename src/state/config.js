@@ -7,6 +7,7 @@ import winston from 'winston';
 import { getDirname } from '../util/esm-helpers.js';
 import { getTransAlgos, getTransCodecs, getTransBitrates } from '../api/transcode.js';
 import { VERSION_WORDS_SCHEMA } from '../util/version-words.js';
+import { VALID_RETENTIONS, DEFAULT_RETENTION } from '../logger.js';
 
 const __dirname = getDirname(import.meta.url);
 
@@ -15,14 +16,12 @@ const storageJoi = Joi.object({
   waveformDirectory: Joi.string().default(path.join(__dirname, '../../waveform-cache')),
   dbDirectory: Joi.string().default(path.join(__dirname, '../../save/db')),
   logsDirectory: Joi.string().default(path.join(__dirname, '../../save/logs')),
-  syncConfigDirectory:  Joi.string().default(path.join(__dirname, '../../save/sync')),
 });
 
 const scanOptions = Joi.object({
   skipImg: Joi.boolean().default(false),
   scanInterval: Joi.number().min(0).default(24),
   scanStartTime: Joi.string().pattern(/^\d{1,2}:\d{2}$/).allow(null, '').default(null),
-  saveInterval: Joi.number().default(250),
   pause: Joi.number().min(0).default(0),
   bootScanDelay: Joi.number().default(3),
   bootScanEnabled: Joi.boolean().default(false),
@@ -43,15 +42,6 @@ const transcodeOptions = Joi.object({
   ffmpegDirectory: Joi.string().default(path.join(__dirname, '../../bin/ffmpeg')),
   defaultCodec: Joi.string().valid(...getTransCodecs()).default('opus'),
   defaultBitrate: Joi.string().valid(...getTransBitrates()).default('96k')
-});
-
-const rpnOptions = Joi.object({
-  iniFile: Joi.string().default(path.join(__dirname, `../../bin/rpn/frps.ini`)),
-  apiUrl: Joi.string().default('https://api.velvet.io'),
-  email: Joi.string().allow('').optional(),
-  password: Joi.string().allow('').optional(),
-  token: Joi.string().optional(),
-  url: Joi.string().optional()
 });
 
 const lastFMOptions = Joi.object({
@@ -101,12 +91,7 @@ const discogsOptions = Joi.object({
 const albumArtOptions = Joi.object({
   autoApprove:           Joi.boolean().default(false),
   autoSuggestNewContent: Joi.boolean().default(false),
-});
-
-const federationOptions = Joi.object({
-  enabled: Joi.boolean().default(false),
-  folder: Joi.string().optional(),
-  federateUsersMode: Joi.boolean().default(false),
+  coverArtArchive:       Joi.boolean().default(true),
 });
 
 const serverAudioOptions = Joi.object({
@@ -128,6 +113,10 @@ const dlnaOptions = Joi.object({
 });
 
 const sonosOptions = Joi.object({
+  enabled:         Joi.boolean().default(true),
+  transcodeOpus:   Joi.boolean().default(false),
+  sleepEnabled:    Joi.boolean().default(false),
+  hiddenFavorites: Joi.array().items(Joi.string()).default([]),
   knownIps:    Joi.array().items(Joi.string()).default([]),
   defaultRoom: Joi.object({
     name: Joi.string().allow('').default(''),
@@ -191,11 +180,10 @@ const schema = Joi.object({
   scanOptions: scanOptions.default(scanOptions.validate({}).value),
   noUpload: Joi.boolean().default(false),
   writeLogs: Joi.boolean().default(false),
-  logRetention: Joi.string().valid('1d', '3d', '7d', '14d', '30d').default('14d'),
+  logRetention: Joi.string().valid(...VALID_RETENTIONS).default(DEFAULT_RETENTION),
   lockAdmin: Joi.boolean().default(false),
   storage: storageJoi.default(storageJoi.validate({}).value),
   webAppDirectory: Joi.string().default(path.join(__dirname, '../../webapp')),
-  rpn: rpnOptions.default(rpnOptions.validate({}).value),
   transcode: transcodeOptions.default(transcodeOptions.validate({}).value),
   secret: Joi.string().optional(),
   maxRequestSize: Joi.string().pattern(/\d+(KB|MB)/i).default('10MB'),
@@ -226,13 +214,13 @@ const schema = Joi.object({
       'allow-youtube-download': Joi.boolean().optional(),
       'allow-upload': Joi.boolean().optional(),
       'allow-ai-dj': Joi.boolean().optional(),
+      tokenVersion: Joi.number().integer().min(0).optional(),
     })
   ).default({}),
   ssl: Joi.object({
     key: Joi.string().allow('').optional(),
     cert: Joi.string().allow('').optional()
   }).optional(),
-  federation: federationOptions.default(federationOptions.validate({}).value),
   serverAudio: serverAudioOptions.default(serverAudioOptions.validate({}).value),
   acoustid: acoustidOptions.default(acoustidOptions.validate({}).value),
   dlna: dlnaOptions.default(dlnaOptions.validate({}).value),
@@ -256,14 +244,66 @@ export function asyncRandom(numBytes) {
   });
 }
 
+export function normaliseFolderRoot(root) {
+  const trimmed = root.replace(/[\\/]+$/, '');
+  return trimmed === '' || /^[A-Za-z]:$/.test(trimmed) ? root : trimmed;
+}
+
+async function writeJsonAtomic(file, data) {
+  let mode = 0o600;
+  try {
+    mode = (await fs.stat(file)).mode & 0o777;
+  } catch (err) {
+    if (err.code !== 'ENOENT') throw err;
+  }
+  const tmp = path.join(path.dirname(file), `.${path.basename(file)}.${process.pid}.${crypto.randomUUID()}.tmp`);
+  const fh = await fs.open(tmp, 'wx', mode);
+  try {
+    await fh.chmod(mode);
+    await fh.writeFile(JSON.stringify(data, null, 2), 'utf8');
+    await fh.sync();
+  } finally {
+    await fh.close();
+  }
+  try {
+    await fs.rename(tmp, file);
+  } catch (err) {
+    await fs.unlink(tmp).catch(() => {});
+    throw err;
+  }
+}
+
+let _configWriteChain = Promise.resolve();
+
+// The only way to change the config file: writers run one at a time on the current
+// file contents, and each write lands atomically (temp file + fsync + rename).
+export function updateConfigFile(mutator) {
+  const run = _configWriteChain.then(async () => {
+    const data = JSON.parse(await fs.readFile(configFile, 'utf8'));
+    const result = await mutator(data);
+    await writeJsonAtomic(configFile, data);
+    return result;
+  });
+  _configWriteChain = run.catch(() => {});
+  return run;
+}
+
+// Callers check the user exists first (and answer 403/404); a missing user here is a bug.
+export async function updateUserFields(username, fields) {
+  await updateConfigFile(c => {
+    if (!c.users?.[username]) throw new Error(`user '${username}' is not in the config file`);
+    Object.assign(c.users[username], fields);
+  });
+  Object.assign(program.users[username], fields);
+}
+
 export async function setup(configFileArg) {
-  // Create config directory + file if they don't exist
   try {
     await fs.access(configFileArg);
   } catch {
     winston.info('Config File does not exist. Attempting to create file');
     await fs.mkdir(path.dirname(configFileArg), { recursive: true });
-    await fs.writeFile(configFileArg, JSON.stringify({}), 'utf8');
+    await writeJsonAtomic(configFileArg, {});
   }
 
   const programData = JSON.parse(await fs.readFile(configFileArg, 'utf8'));
@@ -272,6 +312,7 @@ export async function setup(configFileArg) {
   // Verify paths are real; auto-create app-managed folders (recordings/youtube)
   for (const folder in programData.folders) {
     const folderCfg = programData.folders[folder];
+    if (typeof folderCfg.root === 'string') folderCfg.root = normaliseFolderRoot(folderCfg.root);
     if (folderCfg.type === 'recordings' || folderCfg.type === 'youtube') {
       await fs.mkdir(folderCfg.root, { recursive: true }).catch(() => {});
     }
@@ -291,20 +332,17 @@ export async function setup(configFileArg) {
     programData.instanceId = crypto.randomUUID();
     _needsSave = true;
   }
+  // Older auth middleware wrote these per-request fields onto the live user object, which then got saved.
+  for (const user of Object.values(programData.users || {})) {
+    for (const key of ['username', 'dbVpaths']) {
+      if (key in user) { delete user[key]; _needsSave = true; }
+    }
+  }
   if (_needsSave) {
-    await fs.writeFile(configFileArg, JSON.stringify(programData, null, 2), 'utf8');
+    await writeJsonAtomic(configFileArg, programData);
   }
 
   program = await schema.validateAsync(programData, { allowUnknown: true });
-}
-
-export function getDefaults() {
-  const { value } = schema.validate({});
-  return value;
-}
-
-export async function testValidation(validateThis) {
-  await schema.validateAsync(validateThis, { allowUnknown: true });
 }
 
 let isHttps = false;

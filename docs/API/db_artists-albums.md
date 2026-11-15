@@ -38,10 +38,14 @@
     ```json
     {
       "albums": [
-        { "name": "Supernature", "year": 1977, "album_art_file": "abc123.jpg" },
-        { "name": "Cerrone IV",  "year": 1978, "album_art_file": null }
+        { "name": "Supernature", "year": 1977, "album_art_file": "abc123.jpg", "album_version": null },
+        { "name": "Cerrone IV",  "year": 1978, "album_art_file": null, "album_version": null }
       ]
     }
     ```
+
+    The artist is matched on `album_artist`, else `artist`. Albums are sorted newest year first; songs without an album tag are returned as an entry with `"name": null` (one per folder).
+
+* **Related:** `POST /api/v1/db/artists-albums-multi` takes `artists: string[]` (at least one) instead of `artist`, with the same optional filters, and returns `{ "albums": [ … ] }` for all of them.
 
 See also: [db_albums.md](db_albums.md), [Admin directory flags](admin_directory-flags.md)

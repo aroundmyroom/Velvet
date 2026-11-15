@@ -7,7 +7,7 @@ Authentication uses the Last.fm **Mobile Session** flow — your password is sen
 
 ## How it works for users
 
-1. Open the **Last.fm** section in the GUIv2 sidebar (Tools → Last.fm).
+1. Open **Connectors → Last.fm** in the player sidebar.
 2. Enter your Last.fm username and Last.fm password and click **Connect**.
 3. Velvet authenticates with Last.fm and stores only the session key in `save/conf/default.json`.  
    Your password is discarded immediately.
@@ -23,9 +23,9 @@ Admins can enable or disable Last.fm scrobbling entirely from the **Last.fm** se
 - The Last.fm nav button is hidden in the player sidebar for all users.
 - Scrobble timers never fire — no calls to Last.fm are made.
 
-Admins can also override the built-in API key and shared secret with their own credentials.
+Admins enter the Last.fm API key and shared secret here. There is no built-in key: without one, connecting, scrobbling and similar-artists do not work.
 
-- The shared secret is stored server-side only and is **never** sent to browser clients.
+- The shared secret is only returned to admins (via the admin config endpoint below); regular users never receive it.
 - All changes take effect immediately without restarting the server.
 
 To get your own credentials: <https://www.last.fm/api/account/create>
@@ -44,8 +44,9 @@ Returns whether Last.fm is enabled server-side and the Last.fm username currentl
 
 **Response**
 ```json
-{ "serverEnabled": true, "linkedUser": "yourusername" }
+{ "serverEnabled": true, "hasApiKey": true, "linkedUser": "yourusername" }
 ```
+`hasApiKey` is `true` when an API key is configured.
 Returns `null` for `linkedUser` when no account is linked.  
 `serverEnabled` is `false` when the admin has disabled Last.fm — the player uses this to hide the nav button and suppress scrobbling for all users.
 
@@ -101,8 +102,8 @@ change the play count: that is raised once per play by `POST /api/v1/db/stats/lo
 
 **Response** — `{}`
 
-Returns `{}` silently (no error thrown) when no Last.fm account is linked.  
-If the file is not found in the database, returns a 404.
+Also returns `{}` when no Last.fm account is linked (nothing is sent).  
+Returns `{ "scrobble": false }` when the file is not found in the database for this user.
 
 ---
 
@@ -126,11 +127,25 @@ Scrobbles a track by providing the metadata directly (no file lookup).
 
 ### GET `/api/v1/lastfm/similar-artists`
 
-Returns similar artists from Last.fm for the given artist name.
+Returns similar artists from Last.fm for the given artist name, resolved to library artist names.
 
 **Query param** — `?artist=David+Bowie`
 
-**Response** — Last.fm `getSimilar` payload (array of artist objects with name, match score, images).
+**Response** — `{ artists, displayArtists, displayVariantMap, variantRankMap }`. See [lastfm_similar-artists.md](lastfm_similar-artists.md).
+
+---
+
+### GET `/api/v1/lastfm/artist-info`
+
+Artist bio and stats from Last.fm.
+
+**Query param** — `?artist=David+Bowie`
+
+**Response**
+```json
+{ "bio": "David Robert Jones …", "tags": ["rock", "glam rock"], "listeners": 4000000, "plays": 300000000 }
+```
+`bio` is the Last.fm summary with HTML removed; `tags` holds up to 5 tags. Returns `{}` when there is no API key or Last.fm does not know the artist.
 
 ---
 
@@ -142,11 +157,11 @@ Returns the current Last.fm server configuration.
 ```json
 {
   "enabled":   true,
-  "apiKey":    "33098eb88840fdded379a7e5a7da67dd",
-  "apiSecret": ""
+  "apiKey":    "your-lastfm-api-key",
+  "apiSecret": "your-lastfm-shared-secret"
 }
 ```
-`apiSecret` is always returned as an empty string to avoid leaking it to the browser; it is write-only from the admin panel.
+Both values are returned as stored (empty string when not set). This endpoint is admin-only.
 
 ---
 
@@ -175,7 +190,7 @@ After a user connects, their `save/conf/default.json` will contain:
 ```json
 "users": {
   "dennis": {
-    "password": "<bcrypt hash>",
+    "password": "<pbkdf2 hash>",
     "salt": "<salt>",
     "vpaths": ["Music"],
     "lastfm-user":    "yourusername",

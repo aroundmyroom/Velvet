@@ -1,4 +1,4 @@
-**Podcast Feeds & Episodes** *(GitHub Copilot, 2026-03-21)*
+**Podcast Feeds & Episodes**
 
 Server-side RSS podcast subscription. Users subscribe to RSS 2.0 feed URLs and browse/play episodes directly from the sidebar. No external service or account is required.
 
@@ -27,7 +27,14 @@ Fetches and parses a feed URL without saving anything. Used by the Subscribe for
 }
 ```
 
-**Errors:** `400` for invalid URL, SSRF-blocked address, HTTP errors, non-RSS XML, or feeds with no audio episodes.
+**Errors** (all `400`):
+- `{"error":"url is required"}` — no URL provided
+- `{"error":"Invalid URL"}` — malformed URL
+- `{"error":"Only http/https URLs are allowed"}` — other scheme
+- `{"error":"That URL is not allowed"}` — SSRF-blocked address
+- `{"error":"Feed returned HTTP 404"}` — upstream HTTP error
+- `{"error":"Not a valid RSS 2.0 feed"}` — XML parsed but no `<rss><channel>`
+- `{"error":"No audio episodes found in this feed"}` — feed has items but none have an audio enclosure
 
 ---
 
@@ -50,10 +57,13 @@ Fetches and parses a feed URL without saving anything. Used by the Subscribe for
     "last_fetched": 1742500000,
     "created_at":   1742490000,
     "sort_order":   0,
-    "episode_count": 257
+    "episode_count": 257,
+    "latest_pub_date": 1742400000
   }
 ]
 ```
+
+Timestamps are Unix seconds. Feeds with the same `sort_order` are ordered newest `created_at` first.
 
 `img` is a relative filename; retrieve cover art at `/album-art/{img}`.
 
@@ -68,11 +78,11 @@ Fetches and parses a feed URL without saving anything. Used by the Subscribe for
 | Field | Required | Description |
 |---|---|---|
 | `url` | Yes | `http`/`https` RSS URL, max 2048 chars. |
-| `name` | No | Custom display name; overrides the feed's own title. |
+| `name` | No | Custom display name (max 200 chars); overrides the feed's own title. |
 
 **Behaviour:** SSRF check → fetch+parse RSS → download+cache cover art → insert feed + episodes → return new feed object.
 
-**Error `400`:** Feed URL already subscribed, or upstream fetch/parse failure.
+**Error `400`:** Validation error, blocked/invalid URL, or upstream fetch/parse failure. There is no duplicate check: subscribing to the same URL twice creates a second feed.
 
 ---
 
@@ -88,13 +98,13 @@ Persist a new drag-reorder sequence.
 
 ---
 
-## Rename a feed
+## Rename a feed / change its URL
 
 * **URL:** `PATCH /api/v1/podcast/feeds/:id`
 
-**Body:** `{ "title": "My Custom Name" }`
+**Body:** `{ "title": "My Custom Name" }` and/or `{ "url": "https://new.example.com/feed.rss" }` — at least one of the two. `title` max 200 chars; `url` must be `http`/`https`, max 2048 chars.
 
-**Response `200`:** Updated feed object.
+**Response `200`:** Updated feed object. `404` when the feed is not yours.
 
 ---
 
@@ -110,7 +120,7 @@ Deletes the feed and all its episodes. Cached cover art is deleted from disk if 
 
 ## Refresh a feed
 
-Re-fetches the RSS and upserts new episodes. Existing episodes are never overwritten (preserves `played`/`play_position`). Updates `last_fetched`.
+Re-fetches the RSS and upserts episodes by `guid`: new episodes are added, existing ones get their title, description, audio URL, date, duration and image updated, while `played`/`play_position` are kept. Updates `last_fetched`, and re-caches the cover art if the cached file is missing from disk.
 
 * **URL:** `POST /api/v1/podcast/feeds/:id/refresh`
 
@@ -157,9 +167,22 @@ Returns episodes sorted by `pub_date DESC` (newest first).
 | `episodeId` | Yes | Episode `id` |
 | `feedId` | Yes | Feed `id` — verifies ownership |
 | `position` | Yes | Playback position in seconds (float) |
-| `played` | No | Boolean flag (default `false`) |
+| `played` | No | Boolean flag |
 
 **Response `200`:** `{}`
+
+---
+
+## Get episode playback progress
+
+* **URL:** `GET /api/v1/podcast/episode/:id/progress`
+
+**Response `200`:**
+```json
+{ "episodeId": 42, "feedId": 1, "play_position": 312.5, "played": false, "duration_secs": 2847 }
+```
+
+`404` when the episode does not exist or its feed is not yours.
 
 ---
 

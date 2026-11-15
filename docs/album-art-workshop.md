@@ -3,7 +3,7 @@
 Admin tool to find and fix album covers across the library. Source priority is
 **MusicBrainz / Cover Art Archive first**, then Discogs → Deezer → iTunes.
 
-Open it at **Admin → Album-Art Workshop**. It has two modes.
+Open it at **Admin → Tools → Album Art**. It has two modes.
 
 ## Philosophy — detect automatically, apply only on a human decision
 
@@ -26,8 +26,9 @@ Finds albums (folders) where **no** track has art and suggests covers.
 
 **Journey: find → preview → apply → verify → restore**
 
-1. **Find** — click **Find missing covers** (global pass, up to 200 albums, paced
-   for API rate limits), or **Find missing covers (MusicBrainz)** in the
+1. **Find** — click **Find missing covers** (global pass, up to 200 albums, 1.5 s
+   between albums for API rate limits; runs as a background task that waits while
+   a library scan runs), or **Find missing covers (MusicBrainz)** in the
    MusicBrainz box to fetch only official Cover Art Archive covers for albums that
    have a MusicBrainz release id. Per-album, the **Find cover** button (on a card
    with no suggestion yet) searches just that folder on demand.
@@ -50,10 +51,15 @@ Finds albums (folders) where **no** track has art and suggests covers.
    **Restore** button that reverts to exactly what was there before (folder cover
    and DB pointers). Restored albums return to Suggested so you can pick again.
 
+Container folders (a folder that only holds other album folders, e.g. a letter
+bucket `12 inches A-Z/M`) never become candidates. Albums already suggested or
+not found are re-queried after 30 days; errored albums after 24 hours.
+
 ### Settings
-- **Prefer official Cover Art Archive covers** (on by default) — CAA-first.
-- **Auto-approve the best match** — applies the top suggestion automatically.
-- **Auto-suggest for newly added folders** — runs after each library scan.
+Stored in `save/conf/default.json` under `albumArt`:
+- **Prefer official Cover Art Archive covers** (`coverArtArchive`, on by default) — CAA-first.
+- **Auto-approve the best match** (`autoApprove`, off by default) — applies the top suggestion automatically during a pass.
+- **Auto-suggest for newly added folders** (`autoSuggestNewContent`, off by default) — starts a pass after each library scan.
 - **Shelve** a folder to hide it (and everything under it) from the workshop.
 
 ## Mode 2 — Fix a cover

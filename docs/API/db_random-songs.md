@@ -1,7 +1,11 @@
-**Get Random Songs** *(added by GitHub Copilot, 2026-02-27)*
+**Get Random Songs**
 ----
-  Returns a single random song from the library, together with an updated
-  ignore list to prevent repeats. Used internally by the Auto-DJ feature.
+  Returns random songs from the library for Auto-DJ. Two modes:
+
+  - **Single pick** (default) — one random song plus an updated ignore list to prevent repeats.
+  - **Batch mode** (`returnAll: true`) — a pool of up to 500 candidates; the client scores them (genre, BPM, key) and picks one. This is what the web player's Auto-DJ uses.
+
+  Clients that want the server to do the whole Auto-DJ pick (scoring included) use [`POST /api/v1/autodj/next`](../API.md#library) instead — the Samsung TV app and Server Remote do.
 
 * **URL**
 
@@ -22,17 +26,28 @@
 
   All fields are optional.
 
-  | Field | Type | Description |
-  |---|---|---|
-  | `ignoreList` | `integer[]` | Array of positional indices (from previous responses) to skip so the same song is not repeated immediately. Automatically trimmed to `ignorePercentage × totalSongCount` entries. |
-  | `ignorePercentage` | `number` | Fraction (0–1) of the library that may appear in `ignoreList` before old entries are evicted. Defaults to `0.5`. |
-  | `ignoreVPaths` | `string[]` | Exclude songs from these virtual paths. |
-  | `minRating` | `integer` | Only consider songs with a rating ≥ this value (0–10 scale, matches `POST /api/v1/db/rate-song`). |
-  | `filepathPrefix` | `string\|null` | Restrict candidates to songs whose filepath starts with this prefix. Used to limit Auto-DJ to a specific vpath sub-folder. |
-  | `artists` | `string[]` | When provided, only songs whose artist is in this list are considered. Used by the Auto-DJ Similar Artists mode (see [`/api/v1/lastfm/similar-artists`](lastfm_similar-artists.md)). |
-  | `minDuration` | `number` | Lower bound of the track-length window, in **seconds**. `0` or omitted means no lower bound. A hard scope filter (like `minRating`) — never relaxed. |
-  | `maxDuration` | `number` | Upper bound of the track-length window, in **seconds**. `0` or omitted means no upper bound. Sending both with `minDuration` > `maxDuration` returns 400. |
-  | `allowUnknownDuration` | `boolean` | Default `false`. Tracks whose duration the scanner never read (`NULL`) are excluded from the window unless this is `true`. Ignored when neither bound is set. |
+  | Field | Type | Mode | Description |
+  |---|---|---|---|
+  | `returnAll` | `boolean` | — | `true` switches to batch mode. |
+  | `ignoreVPaths` | `string[]` | both | Exclude songs from these root vpaths. |
+  | `filepathPrefix` | `string\|null` | both | Only songs whose filepath starts with this prefix. |
+  | `excludeFilepathPrefixes` | `{ vpath, prefix }[]` | both | Exclude rows under these prefixes. |
+  | `includeFilepathPrefixes` | `{ vpath, prefix }[]` | both | Whitelist — only rows under these prefixes for the named vpaths. |
+  | `minRating` | `integer` | both | Only songs with a rating ≥ this value (0–10, as `POST /api/v1/db/rate-song`). |
+  | `artists` | `string[]` | both | Only songs by these artists (Similar Artists mode, see [`/api/v1/lastfm/similar-artists`](lastfm_similar-artists.md)). Dropped when nothing matches. |
+  | `ignoreArtists` | `string[]` | both | Artist cooldown list — skipped when possible, dropped when it would leave nothing. |
+  | `minDuration` / `maxDuration` | `number` | both | Track-length window in **seconds**; `0` or omitted = no bound, capped at 86400. A hard filter, never relaxed. A backwards window returns 400. |
+  | `allowUnknownDuration` | `boolean` | both | Default `false`: songs with no known duration are left out when a window is set. |
+  | `ignoreList` | `integer[]` | single | Positions from previous responses to skip. Trimmed to `ignorePercentage × matching songs` entries. |
+  | `ignorePercentage` | `number` | single | Fraction (0–1) of the matches that may be in `ignoreList`. Default `0.5`. |
+  | `genres` | `string[]` | single | Genre display names (as `GET /api/v1/db/genres`). |
+  | `genreMode` | `string` | single | `whitelist` (default) or `blacklist` for `genres`. |
+  | `bpmRanges` | `{ min, max }[]` | single | Allowed BPM ranges. Wins over `bpmMin`/`bpmMax`/`requireBpm`. |
+  | `bpmRangesWide` | `{ min, max }[]` | single | Wider ranges tried when the normal ranges find nothing. |
+  | `bpmMin` / `bpmMax` / `requireBpm` | `number` / `number` / `boolean` | single | Simple BPM window. |
+  | `musicalKeys` / `requireMusicalKey` | `string[]` / `boolean` | single | Allowed keys. |
+
+  In single-pick mode the BPM/key/genre wishes are relaxed step by step (drop the cooldown list, drop the key, use the wide ranges, ignore the genre) before giving up; songs whose BPM/key is known to be in range are preferred over untagged ones.
 
   ```json
   {
@@ -40,13 +55,11 @@
     "ignorePercentage": 0.5,
     "ignoreVPaths": ["Audiobooks"],
     "minRating": 6,
-    "artists": ["Iggy Pop", "Lou Reed", "T. Rex"],
-    "minDuration": 90,
-    "maxDuration": 600
+    "artists": ["Iggy Pop", "Lou Reed", "T. Rex"]
   }
   ```
 
-* **Success Response:**
+* **Success Response — single pick:**
 
   * **Code:** 200
 
@@ -54,7 +67,7 @@
   {
     "songs": [
       {
-        "filepath": "/Music/Artist/Album/01 Track.flac",
+        "filepath": "Music/Artist/Album/01 Track.flac",
         "metadata": {
           "artist": "Artist",
           "album": "Album",
@@ -66,9 +79,9 @@
           "rating": 8,
           "play-count": 5,
           "last-played": 1740000000,
-          "replaygain-track": -7.2,
           "duration": 237.431
-        }
+        },
+        "rg": null
       }
     ],
     "ignoreList": [3, 17, 42, 88]
@@ -77,20 +90,18 @@
 
   | Field | Description |
   |---|---|
-  | `songs` | Array containing exactly one song object. |
-  | `ignoreList` | The input `ignoreList` with the new song's index appended. Pass this back on the next call. |
+  | `songs` | Array containing exactly one song object (same shape as [`POST /api/v1/db/metadata`](db_metadata.md)). |
+  | `ignoreList` | The ignore list with the new song's position appended. Pass this back on the next call. |
+
+* **Success Response — batch mode:**
+
+  `{ "songs": [ … ] }` — up to 500 song objects. With an `artists` filter at most 10 songs per artist are sampled. When the admin has approved genre families, each song's `metadata` also carries `genre-family`.
 
 * **Error Response:**
 
-  * **Code:** 400 — `{ "error": "No songs that match criteria" }` — no songs exist
-    that satisfy the `minRating` / `ignoreVPaths` / `filepathPrefix` / duration-window filters.
-  * **Code:** 400 — `{ "error": "minDuration must be <= maxDuration" }` — the
-    track-length window is backwards.
+  * **Code:** 400 — `{ "error": "No songs that match criteria" }`
+  * **Code:** 400 — `{ "error": "minDuration must be <= maxDuration" }`
 
 * **Notes**
 
-  - The Auto-DJ pre-fetches the next track ~2 seconds after the current track
-    starts (when it is the last queue item), so manual skips advance instantly.
-    A near-end prefetch `max(25, crossfade + 15)` seconds before the track ends
-    remains as a backstop for gapless playback.
-  - Only one song is returned per call; call again for the next track.
+  - The web player prefetches the next Auto-DJ song 2 seconds after the last queue item starts, so a manual skip advances at once. A second prefetch fires when that item has less than `max(25, crossfade + 15)` seconds left (`max(45, …)` in Similar Artists mode).

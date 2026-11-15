@@ -57,9 +57,9 @@ harmonic (Camelot) mixing — is additive scoring only:
 | Signal | Weight (when similar-artist data exists) | Notes |
 |---|---|---|
 | Similar-artist (Last.fm) | 35% | Redistributed into BPM/genre/harmonic when Last.fm has no data for the current artist, or Similar Artists mode is off |
-| BPM continuity | 25% (up to ~46% when artist weight is redistributed) | Blended reference: 60% current-song BPM + 40% session base/anchor |
-| Genre | 13% (up to ~24%) | Blends the user's explicit whitelist/blacklist (soft, not a hard gate) with a genre-compatibility matrix, scored against the current song and the session genre anchor |
-| Harmonic (Camelot) mixing | 7% (up to ~13%) | Uses the *currently playing* song's key directly — no separate locked "anchor" key to track |
+| BPM continuity | 25% (~44.4% when the artist weight is redistributed in proportion 25:13:7) | Blended reference: 60% current-song BPM + 40% session base/anchor |
+| Genre | 13% (~23.1% when redistributed) | Blends the user's explicit whitelist/blacklist (soft, not a hard gate) with a genre-compatibility matrix, scored against the current song and the session genre anchor |
+| Harmonic (Camelot) mixing | 7% (~12.4% when redistributed) | Uses the *currently playing* song's key directly — no separate locked "anchor" key to track |
 | Year/era continuity | 10% (fixed) | Blended reference: 60% current-song year + 40% rolling anchor |
 | Artist diversity (cooldown) | 10% (fixed) | Penalises artists played very recently |
 
@@ -178,7 +178,7 @@ before splitting duo/group names: `Mel & Kim vs. Frantique` tries `Mel & Kim`
 before `Mel` or `Kim`. Fallback also continues when Last.fm returns names that
 do not map to library artists.
 
-The collaboration separators are `feat.`, `ft.`, `fe.`, `featuring`, `vs.`,
+The collaboration separators are `;`, `feat.`, `ft.`, `fe.`, `featuring`, `vs.`,
 `pres.`/`presents`, and a standalone `x`; a leading track number in the artist
 tag (`12. Joel Corry Fe. MNEK`) is stripped first. This lives in
 [src/util/artist-credit.js](../src/util/artist-credit.js). A shorthand the
@@ -190,11 +190,30 @@ often an initial (`George F. Zimmer`).
 
 ## Backward compatibility
 
-`returnAll` is opt-in. `webapp/tizen/app.js` (Samsung TV) and
-`webapp/server-remote/index.html` (remote control) do not send it and
-continue to use the original single-song-per-request endpoint behaviour
-(`_leanRandomPick` / `_fullLoadFallbackChain` / `_qualityTierFilter` /
-`_selectRandom` in `src/api/db.js`), unchanged.
+`returnAll` is opt-in. Without it, `POST /api/v1/db/random-songs` keeps the
+original single-song-per-request behaviour (`_leanRandomPick` /
+`_fullLoadFallbackChain` / `_qualityTierFilter` / `_selectRandom` in
+`src/api/db.js`) for API clients that still call it that way. No Velvet
+client uses that path any more.
+
+## Clients without their own Auto-DJ (`POST /api/v1/autodj/next`)
+
+`webapp/tizen/app.js` (Samsung TV) and `webapp/server-remote/app.js` (Server
+Remote) do not run the scoring themselves: they call
+`POST /api/v1/autodj/next` with `{ recent: [filepaths…] (up to 200),
+seedFilepath? }` and play the `song` it answers (no `song` when nothing
+fits). The server picks with the same engine as Velvet
+Rooms and the Subsonic radio below. The TV sends the last queued song as the
+seed; the Server Remote sends it only in Similar mode.
+
+## Velvet Rooms
+
+A room tops up its own queue on the server: `nextForRoom()` in
+`src/autodj/library.js` picks one song with the browser's settings (similar
+artists, BPM continuity and tolerance, genre filter, keywords, folders,
+minimum rating, length window) and carries the DJ state (artist cooldown,
+BPM/year/genre history) from pick to pick. The browser does not prefetch
+while it is in a room.
 
 ## Server-side radio (Subsonic `getSimilarSongs`, Music Assistant)
 
@@ -230,9 +249,11 @@ What the radio adds, because it answers with a whole list at once:
 
 ## What the server log shows (`journalctl -fu music.service`)
 
-The decision is made in the browser, so the server log carries three compact
-lines per Auto-DJ track — enough to reconstruct *why* a pick happened without
-opening the browser console:
+For the web player the decision is made in the browser, so the server log
+carries three compact lines per Auto-DJ track — enough to reconstruct *why* a
+pick happened without opening the browser console (server-side picks log their
+own line: `[autodj] room pick …` for rooms, `[autodj] radio …` for the
+Subsonic radio):
 
 ```
 [autodj] similar-artists "Martin Solveig Fe. Roy Woods" → 358 from Last.fm via "Martin Solveig", 33 in library

@@ -1,8 +1,11 @@
 /**
  * bg-task-broker.js — Background DB-writing task broker
  *
- * Centralises scheduling of all background tasks that write to the database.
- * Guarantees:
+ * Serialises main-thread background tasks that write to the database (artist
+ * rebuild, album-art suggest, smart-playlist ML, self-update) and long
+ * main-thread passes such as the Duplicate Workshop scan. Worker threads
+ * are coordinated separately by util/worker-controller.js (pause/resume).
+ * Guarantees for submitted tasks:
  *   1. Only ONE task runs at a time (serialised queue).
  *   2. No task starts while a scan is in progress.
  *   3. Tasks deferred by a scan are replayed automatically when the scan ends
@@ -45,6 +48,21 @@ let _waitingForScan = false;
 export function submit(key, label, fn) {
   _queue.set(key, { label, fn });
   _tryDrain();
+}
+
+/**
+ * Submit long work as a chain of short tasks. `runChunk` does one slice and
+ * resolves true while work remains; the next slice is re-queued behind any
+ * task submitted meanwhile, so a long pass never holds the queue for minutes.
+ * Between slices the event loop gets a turn, so requests are served (and can
+ * cancel the pass) even when the slices themselves never await.
+ */
+export function submitChunks(key, label, runChunk) {
+  submit(key, label, async () => {
+    if (!(await runChunk())) return;
+    await new Promise(r => setImmediate(r));
+    submitChunks(key, label, runChunk);
+  });
 }
 
 /** How many tasks are currently pending (not counting the running one). */

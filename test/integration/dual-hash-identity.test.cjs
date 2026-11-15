@@ -1,159 +1,86 @@
 /**
  * Dual-Hash Identity Tests
- * Verifies audio_hash is computed and stored correctly
+ * Scans real files with the shipped scanner (src/db/scanner.mjs) and checks the
+ * audio_hash it stores: tag + duration based, so it survives transcoding while
+ * the file hash changes. The Duplicate Workshop groups "audio duplicates" by it.
  */
 
+'use strict';
+
 const { describe, it, before, after } = require('node:test');
-const assert = require('node:assert');
-const crypto = require('crypto');
+const assert = require('node:assert/strict');
+const fs = require('node:fs/promises');
+const os = require('node:os');
+const path = require('node:path');
+const { execFile } = require('node:child_process');
+const { promisify } = require('node:util');
+const { DatabaseSync } = require('node:sqlite');
 
-describe('Dual-Hash Identity', () => {
-  describe('audio_hash computation', () => {
-    it('should compute consistent hash for song metadata', () => {
-      // Simulate audio_hash calculation
-      const song1 = { artist: 'Queen', album: 'A Night at the Opera', title: 'Bohemian Rhapsody', duration: 360 };
-      const song2 = { artist: 'Queen', album: 'A Night at the Opera', title: 'Bohemian Rhapsody', duration: 360 };
-      
-      function calcAudioHash(song) {
-        const id = `${(song.artist || '').toLowerCase()}|${(song.album || '').toLowerCase()}|${(song.title || '').toLowerCase()}|${Math.round(song.duration || 0)}`;
-        return crypto.createHash('sha256').update(id).digest('hex');
-      }
-      
-      const hash1 = calcAudioHash(song1);
-      const hash2 = calcAudioHash(song2);
-      
-      assert.strictEqual(hash1, hash2, 'same song metadata should produce same hash');
-      assert(hash1.length === 64, 'SHA-256 should produce 64 hex chars');
-    });
+const execFileP = promisify(execFile);
 
-    it('should produce different hashes for different songs', () => {
-      const song1 = { artist: 'Queen', album: 'A Night at the Opera', title: 'Bohemian Rhapsody', duration: 360 };
-      const song2 = { artist: 'Queen', album: 'A Night at the Opera', title: 'Don\'t Stop Me Now', duration: 240 };
-      
-      function calcAudioHash(song) {
-        const id = `${(song.artist || '').toLowerCase()}|${(song.album || '').toLowerCase()}|${(song.title || '').toLowerCase()}|${Math.round(song.duration || 0)}`;
-        return crypto.createHash('sha256').update(id).digest('hex');
-      }
-      
-      const hash1 = calcAudioHash(song1);
-      const hash2 = calcAudioHash(song2);
-      
-      assert.notStrictEqual(hash1, hash2, 'different songs should have different hashes');
-    });
+async function makeTrack(dest, { title, artist = 'Queen', album = 'A Night at the Opera', seconds = 1, flac = false }) {
+  await fs.mkdir(path.dirname(dest), { recursive: true });
+  const args = ['-nostdin', '-y', '-f', 'lavfi', '-t', String(seconds), '-i', 'anullsrc=r=44100:cl=stereo'];
+  if (flac) args.push('-codec:a', 'flac');
+  else args.push('-codec:a', 'libmp3lame', '-b:a', '128k', '-id3v2_version', '3');
+  args.push('-metadata', `title=${title}`, '-metadata', `artist=${artist}`, '-metadata', `album=${album}`, dest);
+  await execFileP('ffmpeg', args);
+}
 
-    it('should survive metadata normalization (case-insensitive)', () => {
-      const song1 = { artist: 'QUEEN', album: 'A NIGHT AT THE OPERA', title: 'BOHEMIAN RHAPSODY', duration: 360 };
-      const song2 = { artist: 'queen', album: 'a night at the opera', title: 'bohemian rhapsody', duration: 360 };
-      
-      function calcAudioHash(song) {
-        const id = `${(song.artist || '').toLowerCase()}|${(song.album || '').toLowerCase()}|${(song.title || '').toLowerCase()}|${Math.round(song.duration || 0)}`;
-        return crypto.createHash('sha256').update(id).digest('hex');
+describe('Dual-Hash Identity (scanner audio_hash)', () => {
+  let srv, workDir, rows;
+  const row = name => rows.find(r => r.filepath === name);
+
+  before(async () => {
+    const { startServer } = await import('../helpers/server.mjs');
+    workDir = await fs.mkdtemp(path.join(os.tmpdir(), 'dual-hash-'));
+    const lib = path.join(workDir, 'lib');
+    await makeTrack(path.join(lib, 'orig.mp3'), { title: 'Bohemian Rhapsody' });
+    await makeTrack(path.join(lib, 'transcoded.flac'), { title: 'Bohemian Rhapsody', flac: true });
+    await makeTrack(path.join(lib, 'shouting.mp3'), { title: 'BOHEMIAN RHAPSODY', artist: 'QUEEN', album: 'A NIGHT AT THE OPERA' });
+    await makeTrack(path.join(lib, 'other-title.mp3'), { title: "Don't Stop Me Now" });
+    await makeTrack(path.join(lib, 'longer.mp3'), { title: 'Bohemian Rhapsody', seconds: 3 });
+
+    srv = await startServer({ waitForScan: false, extraFolders: { Dual: lib } });
+    const dbPath = path.join(srv.tmpDir, 'db', 'velvet.sqlite');
+    const deadline = Date.now() + 30_000;
+    for (;;) {
+      const st = await (await fetch(`${srv.baseUrl}/api/v1/db/status`)).json();
+      if (!st.locked) {
+        const db = new DatabaseSync(dbPath, { readOnly: true });
+        rows = db.prepare("SELECT filepath, hash, audio_hash FROM files WHERE vpath = 'Dual'").all();
+        db.close();
+        if (rows.length === 5) break;
       }
-      
-      const hash1 = calcAudioHash(song1);
-      const hash2 = calcAudioHash(song2);
-      
-      assert.strictEqual(hash1, hash2, 'case variations should produce same hash');
-    });
+      if (Date.now() > deadline) throw new Error('scan did not finish');
+      await new Promise(r => setTimeout(r, 250));
+    }
   });
 
-  describe('transcode scenarios', () => {
-    it('should preserve audio_hash across transcoding (MP3 → FLAC)', () => {
-      // Original file
-      const original = { 
-        artist: 'Queen', 
-        album: 'A Night at the Opera', 
-        title: 'Bohemian Rhapsody', 
-        duration: 360,
-        file_hash: 'abc123def456',  // original file hash (first 512 KB)
-        format: 'mp3'
-      };
-      
-      // Transcoded file (same audio content, different encoding)
-      const transcoded = {
-        artist: 'Queen',
-        album: 'A Night at the Opera', 
-        title: 'Bohemian Rhapsody',
-        duration: 360,  // duration preserved
-        file_hash: 'xyz789uvw012',  // different file (different encoding)
-        format: 'flac'
-      };
-      
-      function calcAudioHash(song) {
-        const id = `${(song.artist || '').toLowerCase()}|${(song.album || '').toLowerCase()}|${(song.title || '').toLowerCase()}|${Math.round(song.duration || 0)}`;
-        return crypto.createHash('sha256').update(id).digest('hex');
-      }
-      
-      const audioHashOrig = calcAudioHash(original);
-      const audioHashTransc = calcAudioHash(transcoded);
-      
-      assert.strictEqual(audioHashOrig, audioHashTransc, 'transcoded file should have same audio_hash');
-      assert.notStrictEqual(original.file_hash, transcoded.file_hash, 'but file_hash should differ');
-    });
-
-    it('should detect when different audio is added to same file metadata', () => {
-      // Use case: user re-encodes file with same tags but different audio content
-      const original = {
-        artist: 'Queen',
-        album: 'A Night at the Opera',
-        title: 'Bohemian Rhapsody',
-        duration: 360
-      };
-      
-      const replacement = {
-        artist: 'Queen',
-        album: 'A Night at the Opera',
-        title: 'Bohemian Rhapsody',
-        duration: 358  // slightly different duration = different audio
-      };
-      
-      function calcAudioHash(song) {
-        const id = `${(song.artist || '').toLowerCase()}|${(song.album || '').toLowerCase()}|${(song.title || '').toLowerCase()}|${Math.round(song.duration || 0)}`;
-        return crypto.createHash('sha256').update(id).digest('hex');
-      }
-      
-      const hash1 = calcAudioHash(original);
-      const hash2 = calcAudioHash(replacement);
-      
-      assert.notStrictEqual(hash1, hash2, 'different duration = different audio_hash');
-    });
+  after(async () => {
+    await srv?.stop();
+    await fs.rm(workDir, { recursive: true, force: true });
   });
 
-  describe('data preservation', () => {
-    it('should enable play-count preservation across transcodes', () => {
-      // User's play counts and ratings stored by audio_hash
-      const playCountDB = {};
-      
-      const originalFile = {
-        artist: 'Queen',
-        album: 'A Night at the Opera',
-        title: 'Bohemian Rhapsody',
-        duration: 360
-      };
-      
-      function calcAudioHash(song) {
-        const id = `${(song.artist || '').toLowerCase()}|${(song.album || '').toLowerCase()}|${(song.title || '').toLowerCase()}|${Math.round(song.duration || 0)}`;
-        return crypto.createHash('sha256').update(id).digest('hex');
-      }
-      
-      const audioHash = calcAudioHash(originalFile);
-      
-      // User has played this song 42 times
-      playCountDB[audioHash] = { plays: 42, rating: 5, lastPlayed: 1703001600 };
-      
-      // After transcode, same audio_hash retrieves play count
-      const transcodedFile = {
-        artist: 'Queen',
-        album: 'A Night at the Opera',
-        title: 'Bohemian Rhapsody',
-        duration: 360  // same duration
-      };
-      
-      const transcodedAudioHash = calcAudioHash(transcodedFile);
-      const metadata = playCountDB[transcodedAudioHash];
-      
-      assert(metadata, 'transcoded file should find existing play count');
-      assert.strictEqual(metadata.plays, 42, 'play count preserved across transcode');
-    });
+  it('stores a SHA-256 audio_hash next to the MD5 file hash', () => {
+    assert.match(row('orig.mp3').audio_hash, /^[a-f0-9]{64}$/);
+    assert.match(row('orig.mp3').hash, /^[a-f0-9]{32}$/);
+  });
+
+  it('keeps audio_hash across a transcode (MP3 -> FLAC) while the file hash differs', () => {
+    assert.equal(row('transcoded.flac').audio_hash, row('orig.mp3').audio_hash);
+    assert.notEqual(row('transcoded.flac').hash, row('orig.mp3').hash);
+  });
+
+  it('ignores tag case', () => {
+    assert.equal(row('shouting.mp3').audio_hash, row('orig.mp3').audio_hash);
+  });
+
+  it('differs for a different song', () => {
+    assert.notEqual(row('other-title.mp3').audio_hash, row('orig.mp3').audio_hash);
+  });
+
+  it('differs when the duration differs (different audio, same tags)', () => {
+    assert.notEqual(row('longer.mp3').audio_hash, row('orig.mp3').audio_hash);
   });
 });

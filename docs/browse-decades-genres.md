@@ -1,6 +1,6 @@
 # Browse — Decades & Genres
 
-Decades and Genres are two dedicated navigation views reachable from the left sidebar. Both share the same drill-down UI introduced in v5.16.24–v5.16.25.
+Decades and Genres are two dedicated navigation views reachable from the left sidebar. Both share the same drill-down UI.
 
 ---
 
@@ -8,7 +8,7 @@ Decades and Genres are two dedicated navigation views reachable from the left si
 
 ### Decades
 
-The **Decades** view lists every decade represented in your library as a card showing the decade label (e.g. *1980s*) and counts of albums and tracks.
+The **Decades** view lists every decade represented in your library (years 1900–2030) as a card showing the decade label (e.g. *1980s*) and counts of tracks and albums.
 
 Clicking a decade opens the **Detail view** with two tabs:
 
@@ -21,7 +21,9 @@ If a decade has no albums (e.g. isolated tracks with year 1905 but no known albu
 
 ### Genres
 
-The **Genres** view lists all normalised genres with track counts. Clicking a genre opens the same Albums/Tracks tab UI. Genre normalisation is handled server-side (`genre-merge.js`): near-duplicates are merged, genres with fewer than 10 songs are folded into the nearest larger genre, and multi-value fields are split.
+The **Genres** view lists all normalised genres with track counts, as chips. When an admin has set up genre groups (Admin → Groups & Genres), the chips are shown in collapsible group sections; genres not in any group go to an **Other** section. Clicking a genre opens the same Albums/Tracks tab UI.
+
+Genre normalisation is handled server-side (`src/util/genre-merge.js`): multi-value fields are split on `,` `;` `/`, near-duplicates are merged (`Synth-pop` = `Synthpop` = `Synth Pop`), noise tags (`Genre`, `Misc`, bare numbers, …) are dropped, and genres with fewer than 10 songs are folded into the most word-similar larger genre (or dropped when none is similar).
 
 ---
 
@@ -59,14 +61,15 @@ Both views share the same tab bar layout:
 
 | Method | Path | Parameters | Returns |
 |--------|------|-----------|---------|
-| `GET` | `/api/v1/db/decades` | — | `[{ decade, albumCount, trackCount }]` |
-| `POST` | `/api/v1/db/decade/albums` | `{ decade }` | `{ albums: [{ name, artist, year, album_art_file }] }` |
-| `POST` | `/api/v1/db/decade/songs` | `{ decade }` | `[song…]` (full metadata objects) |
-| `GET` | `/api/v1/db/genres` | — | `[{ genre, count }]` |
-| `POST` | `/api/v1/db/genre/albums` | `{ genre }` | `{ albums: [{ name, artist, year, album_art_file }] }` |
-| `POST` | `/api/v1/db/genre/songs` | `{ genre }` | `[song…]` (full metadata objects) |
+| `GET` / `POST` | `/api/v1/db/decades` | POST: `{ ignoreVPaths? }` | `{ decades: [{ decade, cnt, albums }] }` |
+| `POST` | `/api/v1/db/decade/albums` | `{ decade, ignoreVPaths?, excludeFilepathPrefixes? }` | `{ albums: [{ name, artist, year, album_art_file }] }` |
+| `POST` | `/api/v1/db/decade/songs` | `{ decade, ignoreVPaths? }` | `[song…]` (full metadata objects) |
+| `GET` / `POST` | `/api/v1/db/genres` | POST: `{ ignoreVPaths? }` | `{ genres: [{ genre, cnt }] }` |
+| `GET` | `/api/v1/db/genre-groups` | — | `{ groups, genres }` — the admin's groups, or automatic groups when none are saved |
+| `POST` | `/api/v1/db/genre/albums` | `{ genre, ignoreVPaths?, excludeFilepathPrefixes? }` | `{ albums: [{ name, artist, year, album_art_file }] }` |
+| `POST` | `/api/v1/db/genre/songs` | `{ genre, ignoreVPaths? }` | `[song…]` (full metadata objects) |
 
-All song responses are filtered by the requesting user's accessible vpaths.
+All responses are filtered by the requesting user's accessible vpaths (and child-vpath scopes).
 
 ---
 
@@ -75,9 +78,10 @@ All song responses are filtered by the requesting user's accessible vpaths.
 | Function | File | Purpose |
 |----------|------|---------|
 | `viewDecades()` | `webapp/app.js` | Renders the decade grid |
-| `viewDecadeDetail(decade, label, defaultTab)` | `webapp/app.js` | Parallel-fetches albums + songs, renders tab bar |
-| `viewGenres()` | `webapp/app.js` | Renders the genre list |
-| `viewGenreDetail(genre, defaultTab)` | `webapp/app.js` | Parallel-fetches albums + songs, renders tab bar |
+| `viewDecadeDetail(decade, label, defaultTab)` | `webapp/app.js` | Opens the shared detail view for a decade |
+| `viewGenres()` | `webapp/app.js` | Renders the genre chips / group sections |
+| `viewGenreDetail(genre, defaultTab)` | `webapp/app.js` | Opens the shared detail view for a genre |
+| `_viewBrowseDetail({...})` | `webapp/app.js` | Parallel-fetches albums + songs, renders tab bar and filter |
 | `_mountAlbumVScroll(albums, buildCard, onClick, containerEl)` | `webapp/app.js` | Virtual album grid, optional target container |
 | `_mountSongVScroll(allSongs, container)` | `webapp/app.js` | Virtual track list with sort bar |
 | `_showSongsIn(songs, container)` | `webapp/app.js` | Thin wrapper over `_mountSongVScroll` |
@@ -88,9 +92,9 @@ All song responses are filtered by the requesting user's accessible vpaths.
 
 | Function | Module | Query |
 |----------|--------|-------|
-| `getDecades(vpaths, ignoreVPaths)` | `src/db/manager.js` | Distinct decades with album + track counts |
-| `getAlbumsByDecade(decade, vpaths, ignoreVPaths)` | `src/db/manager.js` | Albums for a decade |
-| `getSongsByDecade(decade, vpaths, username, ignoreVPaths)` | `src/db/manager.js` | All tracks for a decade (year range) |
-| `getGenres(vpaths, ignoreVPaths)` | `src/db/manager.js` | Distinct genre names with track counts |
-| `getAlbumsByGenre(rawGenres, vpaths, ignoreVPaths)` | `src/db/manager.js` | Albums for a genre (post-normalisation) |
-| `getSongsByGenre(rawGenres, vpaths, username, ignoreVPaths)` | `src/db/manager.js` | All tracks for a genre |
+| `getDecades(vpaths, ignoreVPaths, includeFilepathPrefixes)` | `src/db/manager.js` | Distinct decades with track + album counts |
+| `getAlbumsByDecade(decade, vpaths, ignoreVPaths, excludeFilepathPrefixes, includeFilepathPrefixes)` | `src/db/manager.js` | Albums for a decade |
+| `getSongsByDecade(decade, vpaths, username, ignoreVPaths, includeFilepathPrefixes)` | `src/db/manager.js` | All tracks for a decade (year range) |
+| `getGenres(vpaths, ignoreVPaths, opts)` | `src/db/manager.js` | Raw genre strings with track counts (merged by `mergeGenreRows()`) |
+| `getAlbumsByGenre(rawGenres, vpaths, ignoreVPaths, excludeFilepathPrefixes, includeFilepathPrefixes)` | `src/db/manager.js` | Albums for a genre (post-normalisation) |
+| `getSongsByGenreRaw(rawGenres, vpaths, username, ignoreVPaths, includeFilepathPrefixes)` | `src/db/manager.js` | All tracks for a genre |

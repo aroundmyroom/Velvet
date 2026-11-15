@@ -2,7 +2,7 @@
 // Survives transcoding: if audio content is the same, audio_hash stays the same
 // even if file encoding changes (MP3 → FLAC, 128k → 320k, etc.)
 function calculateAudioHash(songInfo) {
-  const audioId = `${(songInfo.artist || '').toLowerCase().trim()}|${(songInfo.album || '').toLowerCase().trim()}|${(songInfo.title || '').toLowerCase().trim()}|${Math.round(songInfo.duration || 0)}`;
+  const audioId = `${(songInfo.artist || '').toLowerCase().trim()}|${(songInfo.album || '').toLowerCase().trim()}|${(songInfo.title || '').toLowerCase().trim()}|${Math.round(songInfo._duration || 0)}`;
   return crypto.createHash('sha256').update(audioId).digest('hex');
 }
 
@@ -252,14 +252,14 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import Joi from 'joi';
-import sharp from 'sharp';
-import mime from 'mime-types';
 import axios from 'axios';
 import http from 'node:http';
 import https from 'node:https';
 import { execFile } from 'node:child_process';
 import { resolvePathWithinRoot } from '../util/path-security.js';
 import { chooseEmbeddedAlbumArt } from './album-art-select.js';
+import { artFileName, writeArtWithThumbs } from '../util/art-cache.js';
+import { computeFileHash } from '../util/file-hash.js';
 
 // Disable keep-alive on both agents: between batch flushes the server-side
 // keep-alive timeout can expire, leaving a stale socket in the pool. When
@@ -348,15 +348,6 @@ function canonicalGenreName(raw) {
   return key.replaceAll(/\b\w/g, c => c.toUpperCase());
 }
 
-// ── Subsonic ID helpers ───────────────────────────────────────────────────────
-function _makeArtistId(artist) {
-  return crypto.createHash('md5').update((artist || '').toLowerCase().trim()).digest('hex').slice(0, 16); // NOSONAR: MD5 used as DB identity key, not for security
-}
-function _makeAlbumId(artist, album) {
-  return crypto.createHash('md5') // NOSONAR: MD5 used as DB identity key, not for security
-    .update(`${(artist || '').toLowerCase().trim()}|||${(album || '').toLowerCase().trim()}`)
-    .digest('hex').slice(0, 16);
-}
 // Strip embedded null bytes (and anything after) from tag text.
 // Some encoders store multi-value ID3/APE frames with NUL separators;
 // keeping only the first part prevents corrupt DB values.
@@ -366,8 +357,7 @@ function _tagText(v) {
   return s || null;
 }
 
-async function insertEntries(song) {
-  const modifiedSec = Number.isFinite(song.modified) ? Math.floor(song.modified / 1000) : null;
+function queueInsert(absPath, song) {
   const data = {
     "title": _tagText(song.title),
     "artist": _tagText(song.artist),
@@ -402,8 +392,6 @@ async function insertEntries(song) {
     "musical_key": song._musicalKey  ?? null,
     "bpm_source":  song._bpmSource   ?? null,
     "ab_status":   song._abStatus    ?? null,
-    "artist_id": _makeArtistId(_tagText(song.artist)),
-    "album_id": _makeAlbumId(_tagText(song.artist), _tagText(song.album)),
     "_oldHash": song._oldHash || null,
     "_preserveRgMeasuredTs": song._preserveRgMeasuredTs ?? null,
     "_preserveRgMeasurementTool": song._preserveRgMeasurementTool ?? null,
@@ -414,14 +402,32 @@ async function insertEntries(song) {
     "_preserveRgAlbumGainDb": song._preserveRgAlbumGainDb ?? null,
     "_preserveRgAlbumPeakDbfs": song._preserveRgAlbumPeakDbfs ?? null
   };
+  _pendingInserts.push({ absPath, data });
+}
 
-  await ax({
-    method: 'POST',
-    url: `http${loadJson.isHttps === true ? 's': ''}://localhost:${loadJson.port}/api/v1/scanner/add-file`,
-    headers: { 'accept': 'application/json', 'x-access-token': loadJson.token },
-    responseType: 'json',
-    data: data
-  });
+// Parsed rows are written in one request per batch; the server stores each batch
+// in a single short transaction, so a killed scan never leaves one open.
+async function flushInserts() {
+  if (_pendingInserts.length === 0) return;
+  const batch = _pendingInserts.splice(0);
+  let failed;
+  try {
+    const res = await ax({
+      method: 'POST',
+      url: `http${loadJson.isHttps === true ? 's': ''}://localhost:${loadJson.port}/api/v1/scanner/add-files`,
+      headers: { 'accept': 'application/json', 'x-access-token': loadJson.token },
+      responseType: 'json',
+      data: { files: batch.map(b => b.data) }
+    });
+    failed = res.data.failed;
+  } catch (err) {
+    failed = batch.map(b => ({ filepath: b.data.filepath, error: err.message }));
+  }
+  const absByRel = new Map(batch.map(b => [b.data.filepath, b.absPath]));
+  for (const f of failed) {
+    console.error(`Warning: failed to add file ${absByRel.get(f.filepath)} to database: ${f.error}`);
+    await reportError(absByRel.get(f.filepath), 'insert', f.error, '');
+  }
 }
 
 /**
@@ -504,8 +510,8 @@ const CHECKPOINT_WRITE_INTERVAL_MS = 60 * 1000; // write at most once per 60 s
 // wraps all unchanged-file scanId UPDATEs in a single SQL transaction per batch.
 const SCAN_BATCH_SIZE = 200;
 const _pendingBatch = [];
+const _pendingInserts = [];
 let _totalDirsEntered = 0; // incremented per dir entered this scan run (after resume-skip)
-const HASH_READ_LIMIT = 524288; // 512 KB — max bytes read when hashing (avoids 30-s timeouts on large files)
 const PARSE_TIMEOUT_MS = 30000; // 30 s — enough for any normal file; hangs abort cleanly
 const mapOfDirectoryAlbumArt = {};
 const _visitedRealDirs = new Set();
@@ -616,7 +622,7 @@ async function run() {
         `[scanner] ABORTED scan for vpath "${loadJson.vpath}": ` +
         `directory returned 0 files but DB has existing records. ` +
         `The music directory may be unmounted or inaccessible. ` +
-        `Database was NOT modified.`
+        `No library rows were changed.`
       );
       // Signal the progress tracker that this scan did not finish cleanly.
       try {
@@ -654,7 +660,7 @@ async function run() {
     // (after the resume-skip check). Any dir that threw a readdirSync error
     // was entered but never reached _markDirComplete, so it stays absent from
     // _completedDirsSet. If ANY entered dirs are missing, finish-scan is
-    // blocked to prevent data loss. The scan will resume on next start.
+    // blocked to prevent data loss. abort-scan drops the checkpoint, so the next scan starts fresh.
     {
       const completedThisRun = _completedDirsSet.size - _initialCompletedCount;
       if (completedThisRun < _totalDirsEntered) {
@@ -662,7 +668,7 @@ async function run() {
           `[scanner] INTEGRITY CHECK FAILED for vpath "${loadJson.vpath}": ` +
           `${_totalDirsEntered} dirs were entered but only ${completedThisRun} completed. ` +
           `${_totalDirsEntered - completedThisRun} dir(s) were not fully processed. ` +
-          `finish-scan BLOCKED to prevent data loss. Scan will resume on next start.`
+          `finish-scan BLOCKED to prevent data loss. The next scan starts fresh.`
         );
         try {
           await ax({
@@ -715,7 +721,7 @@ async function processFileResult(absPath, relPath, modTime, data) {
     // re-flood "Recently Added" (file hash changes after rewrite → ts = now without this).
     // Only set _isReindex for files that were already in the DB (_stale).
     // For brand-new files (data = {}), _isReindex must remain unset so that
-    // ts = song.modified (file mtime) — making them appear in Recently Added.
+    // ts = scan time — making them appear in Recently Added.
     if (data._stale) {
       songInfo._isReindex = true;
     }
@@ -748,8 +754,7 @@ async function processFileResult(absPath, relPath, modTime, data) {
     if (data._preserveAbStatus != null) {
       songInfo._abStatus = data._preserveAbStatus;
     }
-    await insertEntries(songInfo);
-    await confirmOk(absPath);
+    queueInsert(absPath, songInfo);
   } else {
     // File already in DB — run targeted updates for anything still missing
 
@@ -963,6 +968,7 @@ async function flushBatch() {
     }
     if (loadJson.pause) await timeout(loadJson.pause);
   }
+  await flushInserts();
 }
 
 async function recursiveScan(dir) {
@@ -1030,33 +1036,6 @@ async function recursiveScan(dir) {
 
 function timeout(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
-}
-
-/**
- * Fast directory-only count under rootDir.
- * Uses readdirSync with withFileTypes to avoid extra statSync calls.
- * Skips otherRoots and excludedPaths — same exclusion rules as recursiveScan.
- * Returns the total number of directories (including rootDir itself).
- */
-function _quickCountDirs(rootDir) {
-  let count = 0;
-  const stack = [rootDir];
-  while (stack.length > 0) {
-    const dir = stack.pop();
-    count++;
-    let entries;
-    try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { continue; }
-    for (const ent of entries) {
-      if (!ent.isDirectory()) continue;
-      let full;
-      try { full = resolvePathWithinRoot(dir, ent.name); }
-      catch { continue; }
-      if (loadJson.otherRoots.includes(full)) continue;
-      if (loadJson.excludedPaths.includes(full)) continue;
-      stack.push(full);
-    }
-  }
-  return count;
 }
 
 // Parse a sidecar .cue file alongside an audio file.
@@ -1302,7 +1281,7 @@ async function parseMyFile(thisSong, modified) {
   _applyFolderNameFallbacks(songInfo, thisSong);
 
   try {
-    songInfo.hash = await withTimeout(calculateHash(thisSong), PARSE_TIMEOUT_MS);
+    songInfo.hash = await withTimeout(computeFileHash(thisSong), PARSE_TIMEOUT_MS);
   } catch (err) {
     console.error(`Warning: hash failed on ${thisSong}: ${err.message}`);
     await reportError(thisSong, 'parse', `Hash failed: ${err.message}`, err.stack);
@@ -1333,42 +1312,6 @@ async function parseMyFile(thisSong, modified) {
   return songInfo;
 }
 
-function calculateHash(filepath) {
-  return new Promise((resolve, reject) => {
-    try {
-      const hash = crypto.createHash('md5').setEncoding('hex'); // NOSONAR: MD5 used as file identity hash (DB primary key), not for security
-      const fileStream = fs.createReadStream(filepath, { start: 0, end: HASH_READ_LIMIT - 1 });
-      let bytesRead = 0;
-
-      fileStream.on('error', (err) => {
-        reject(err);
-      });
-
-      fileStream.on('data', (chunk) => { bytesRead += chunk.length; });
-
-      fileStream.on('end', () => {
-        hash.end();
-        fileStream.close();
-        // Guard: if zero bytes were read (empty/unreadable file or a transient
-        // read failure that still ended cleanly), do NOT emit MD5("")
-        // (d41d8cd98f00b204e9800998ecf8427e). That sentinel is identical for every
-        // such file, so unrelated tracks would collide onto one Subsonic id and
-        // stream the wrong file. Reject so the caller stores hash=null and the
-        // file is retried on a later scan instead.
-        if (bytesRead === 0) {
-          reject(new Error(`calculateHash: 0 bytes read from ${filepath}`));
-          return;
-        }
-        resolve(hash.read());
-      });
-
-      fileStream.pipe(hash);
-    }catch(err) {
-      reject(err);
-    }
-  });
-}
-
 async function getAlbumArt(songInfo) {
   if (loadJson.skipImg === true) { return; }
 
@@ -1381,18 +1324,9 @@ async function getAlbumArt(songInfo) {
       originalFileBuffer = await checkDirectoryForAlbumArt(songInfo);
       if (songInfo.aaFile) { songInfo._artSource = 'directory'; }
     } else {
-    // Generate unique name based off hash of album art and metadata
-    const picHashString = crypto.createHash('md5').update(frontCover.data).digest('hex'); // NOSONAR: MD5 used as album-art cache filename, not for security
-    // mime-types returns 'jpeg' for image/jpeg — normalise to 'jpg' so filenames
-    // are consistent with what the Discogs embed endpoint writes (.jpg hardcoded).
-    const _rawExt = mime.extension(frontCover.format);
-    const _normExt = (_rawExt === 'jpeg') ? 'jpg' : (_rawExt || 'jpg');
-    songInfo.aaFile = picHashString + '.' + _normExt;
+    songInfo.aaFile = artFileName(frontCover.data, frontCover.format);
     songInfo._artSource = 'embedded';
-    // Check image-cache folder for filename and save if doesn't exist
     if (!fs.existsSync(resolvePathWithinRoot(loadJson.albumArtDirectory, songInfo.aaFile))) {
-      // Save file sync
-      fs.writeFileSync(resolvePathWithinRoot(loadJson.albumArtDirectory, songInfo.aaFile), frontCover.data);
       originalFileBuffer = Buffer.from(frontCover.data);
     }
     }
@@ -1402,31 +1336,10 @@ async function getAlbumArt(songInfo) {
   }
 
   if (originalFileBuffer) {
-    try {
-      await compressAlbumArt(originalFileBuffer, songInfo.aaFile);
-    } catch (err) {
-      // sharp couldn't decode the image (e.g. corrupted embedded PNG/JPEG).
-      // The original is already on disk; copy it as a fallback thumbnail so
-      // art still displays. Don't report a scan error — the user can't fix a
-      // corrupted embedded image and the error would persist every rescan.
-      try {
-        const zlPath = resolvePathWithinRoot(loadJson.albumArtDirectory, 'zl-' + songInfo.aaFile);
-        const zsPath = resolvePathWithinRoot(loadJson.albumArtDirectory, 'zs-' + songInfo.aaFile);
-        if (!fs.existsSync(zlPath)) { fs.writeFileSync(zlPath, originalFileBuffer); }
-        if (!fs.existsSync(zsPath)) { fs.writeFileSync(zsPath, originalFileBuffer); }
-      } catch (e) { console.debug('[velvet]', e?.message ?? e); }
-      console.warn(`Warning: could not compress album art for ${songInfo.filePath} (${err.message}) — using original`);
-    }
+    const compressed = await writeArtWithThumbs(loadJson.albumArtDirectory, originalFileBuffer, songInfo.aaFile, { compress: loadJson.compressImage !== false });
+    // A corrupt embedded image can't be fixed by the user, so warn instead of recording a scan error.
+    if (!compressed) console.warn(`Warning: could not compress album art for ${songInfo.filePath} — using original`);
   }
-}
-
-async function compressAlbumArt(buff, imgName) {
-  if (loadJson.compressImage === false) { return; }
-  if (buff.length < 100) { return; } // guard against malformed micro-buffers (file-type CVE workaround)
-
-  await sharp(buff).resize(256, 256, { fit: 'inside', withoutEnlargement: true }).toFile(resolvePathWithinRoot(loadJson.albumArtDirectory, 'zl-' + imgName));
-  await sharp(buff).resize(92,  92,  { fit: 'inside', withoutEnlargement: true }).toFile(resolvePathWithinRoot(loadJson.albumArtDirectory, 'zs-' + imgName));
-  await sharp(buff).resize(512, 512, { fit: 'inside', withoutEnlargement: true }).toFile(resolvePathWithinRoot(loadJson.albumArtDirectory, 'zm-' + imgName));
 }
 
 function checkDirectoryForAlbumArt(songInfo) {
@@ -1564,13 +1477,9 @@ function checkDirectoryForAlbumArt(songInfo) {
     return mapOfDirectoryAlbumArt[directory];
   }
 
-  const picHashString = crypto.createHash('md5').update(imageBuffer).digest('hex'); // NOSONAR: MD5 used as album-art cache filename, not for security
-  songInfo.aaFile = picHashString + '.' + picFormat;
+  songInfo.aaFile = artFileName(imageBuffer, picFormat);
   if (selectedImageFile) songInfo._coverFile = selectedImageFile;
-  // Check image-cache folder for filename and save if doesn't exist
-  if (!fs.existsSync(path.join(loadJson.albumArtDirectory, songInfo.aaFile))) {
-    // Save file sync
-    fs.writeFileSync(path.join(loadJson.albumArtDirectory, songInfo.aaFile), imageBuffer);
+  if (!fs.existsSync(resolvePathWithinRoot(loadJson.albumArtDirectory, songInfo.aaFile))) {
     newFileFlag = true;
   }
 

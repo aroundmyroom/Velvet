@@ -10,8 +10,8 @@ Nothing older than this will be supported or accommodated.
 | Web Audio API (`AudioContext`) | Chrome 35+ / Firefox 25+ |
 | Canvas 2D (`getContext('2d')`) | Universally available |
 | `canvas.roundRect()` | Chrome 99+ (Jan 2022) — **polyfilled** |
-| CSS Grid / `dvh` units | Chrome 108+ (Nov 2022) |
-| `OffscreenCanvas` | Chrome 69+ |
+| CSS Grid | Chrome 57+ |
+| `dvh` units | Chrome 108+ (Nov 2022) — older browsers fall back to `vh` |
 
 ## CleverShare polyfill note
 
@@ -20,7 +20,7 @@ CleverShare's browser predates the native `CanvasRenderingContext2D.roundRect()`
 meters, spectrum analyser, and ref-level knob throws a silent `TypeError` and the
 canvases stay blank.
 
-A lightweight polyfill is baked into `webapp/v2/app.js` at startup that implements
+A lightweight polyfill is baked into `webapp/app.js` at startup that implements
 `roundRect` using standard `arcTo` calls:
 
 ```js
@@ -42,12 +42,12 @@ inside its configured library root. This supports library names with spaces,
 including child libraries, while retaining the same root-confinement and access
 checks as other media requests.
 
-Velvet reports track bitrate in bits per second. Compatible players convert this
-to a human-readable kbps label.
+Over the Subsonic API Velvet reports track bitrate in kbps (`bitRate`): the
+scanned bitrate when known, otherwise an average for the file format.
 
 ## Web Audio failure handling
 
-If a browser does not expose `AudioContext` or `webkitAudioContext` at all, the app
+If a browser does not expose `AudioContext` or `webkitAudioContext` at all (or has no 2D canvas), the app
 detects this once at load time via the `_webAudioSupported` flag and:
 
 - hides the entire VU / spectrum strip (`#vu-spec-row`) gracefully

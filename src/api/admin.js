@@ -1,4 +1,3 @@
-import { promisify } from 'node:util';
 import { randomBytes } from 'node:crypto';
 import WebError from '../util/web-error.js';
 import path from 'node:path';
@@ -24,10 +23,23 @@ import * as scanProgress from '../state/scan-progress.js';
 import { invalidateCache as invalidateAlbumsCache, resolveAlbumsSources } from './albums-browse.js';
 import { invalidateArtistCache } from './artists-browse.js';
 import * as scrobblerApi from './scrobbler.js';
-import { mergeGenreRows } from '../util/genre-merge.js';
+import { mergeGenreRows, autoGroupGenres } from '../util/genre-merge.js';
 import * as serverPlaybackApi from './server-playback.js';
+import { VALID_RETENTIONS } from '../logger.js';
+import { writeTags } from '../util/ffmpeg-tags.js';
+import { ffmpegBin, ffprobeBin } from '../util/ffmpeg-bootstrap.js';
+import { signUserToken, setTokenCookie } from './auth.js';
 
-const execFileAsync = promisify(child.execFile);
+// A vpath is a URL segment (/media/<vpath>/) and the first segment of every song path, so no slashes.
+// eslint-disable-next-line no-control-regex
+const VPATH_SCHEMA = Joi.string().pattern(/^[^/\\\x00-\x1F\x7F]+$/).invalid('.', '..', '__proto__', 'constructor', 'prototype');
+
+// Fields of a user the admin Users view needs; secrets and third-party tokens stay on the server.
+const ADMIN_USER_FIELDS = [
+  'vpaths', 'admin',
+  'allow-radio-recording', 'allow-youtube-download', 'allow-upload', 'allow-ai-dj',
+  'allow-server-remote', 'allow-mpv-cast',
+];
 
 let _artistRebuildState = {
   running: false,
@@ -36,10 +48,12 @@ let _artistRebuildState = {
   lastError: null,
 };
 
-function _errMsg(err) {
-  if (err && typeof err.message === 'string' && err.message) return err.message;
-  if (typeof err === 'string' && err) return err;
-  try { return JSON.stringify(err); } catch { return 'Unknown error'; }
+// Revoking the admin's own tokens would end this session too, so hand it a fresh token.
+function _freshOwnToken(req, res, username) {
+  if (username !== req.user.username) return {};
+  const token = signUserToken(username);
+  setTokenCookie(req, res, token);
+  return { token };
 }
 
 /** Remove flags incompatible with a newly-assigned folder type */
@@ -62,63 +76,6 @@ function _triggerExcludedParentScan(vpath) {
 }
 
 // ── Helpers for /api/v1/admin/tags/write ────────────────────────────────────────
-
-/** Silently delete temp files used by the tag-write pipeline. */
-function _cleanupTagTmps(...files) {
-  for (const f of files) { try { fs.unlinkSync(f); } catch (e) { console.debug('[velvet]', e?.message ?? e); } }
-}
-
-/** Build ffmpeg -metadata argument pairs from the request body fields. */
-function _buildTagMetaArgs(body) {
-  const args = [];
-  if (body.title  !== undefined) args.push('-metadata', `title=${body.title}`);
-  if (body.artist !== undefined) args.push('-metadata', `artist=${body.artist}`);
-  if (body.album  !== undefined) args.push('-metadata', `album=${body.album}`);
-  if (body.year   !== undefined) args.push('-metadata', `date=${body.year}`);
-  if (body.genre  !== undefined) args.push('-metadata', `genre=${body.genre}`);
-  if (body.track  !== undefined) args.push('-metadata', `track=${body.track}`);
-  if (body.disk   !== undefined) args.push('-metadata', `disc=${body.disk}`);
-  return args;
-}
-
-/** Extract embedded picture stream to tmpArt. Returns true if art was found. */
-async function _extractTagArt(ffmpegBin, absPath, tmpArt) {
-  try {
-    await execFileAsync(ffmpegBin, [
-      '-y', '-i', absPath,
-      '-map', '0:v:0', '-frames:v', '1', '-f', 'image2', tmpArt,
-    ]);
-    return fs.existsSync(tmpArt) && fs.statSync(tmpArt).size > 100;
-  } catch { return false; }
-}
-
-/**
- * Re-embed extracted art (tmpArt) into the tag-written file (tmpOut),
- * writing to tmpOut2 then atomically renaming over absPath.
- * If re-embed fails the tag-only version is still committed.
- */
-async function _reembedTagArt(ffmpegBin, tmpOut, tmpArt, tmpOut2, absPath) {
-  try {
-    await execFileAsync(ffmpegBin, [
-      '-y',
-      '-i', tmpOut, '-i', tmpArt,
-      '-map', '0:a', '-map', '1:v',
-      '-c:a', 'copy',
-      '-c:v', 'mjpeg',
-      '-disposition:v:0', 'attached_pic',
-      '-metadata:s:v', 'title=Cover (Front)',
-      '-metadata:s:v', 'comment=Cover (Front)',
-      tmpOut2,
-    ]);
-    fs.renameSync(tmpOut2, absPath);
-    try { fs.unlinkSync(tmpOut); } catch (e) { console.debug('[velvet]', e?.message ?? e); }
-  } catch {
-    // Re-embed failed — still commit the tag changes without art
-    try { fs.unlinkSync(tmpOut2); } catch (e) { console.debug('[velvet]', e?.message ?? e); }
-    fs.renameSync(tmpOut, absPath);
-  }
-  try { fs.unlinkSync(tmpArt); } catch (e) { console.debug('[velvet]', e?.message ?? e); }
-}
 
 /** Write updated tag values to the DB and sync the mtime. */
 function _updateTagsInDb(pathInfo, body, absPath) {
@@ -192,10 +149,8 @@ async function _fixParseOrDurationError(err, guid) {
   // For non-FLAC formats, fall through to remuxAudio which now includes -fflags +genpts.
   const isPlayerReport = err.stack === 'reported by player';
   if (isPlayerReport && ext === '.flac') {
-    const ffmpegDir = config.program.transcode?.ffmpegDirectory;
-    const binExt    = process.platform === 'win32' ? '.exe' : '';
-    const ffmpegBinPath = ffmpegDir ? path.join(ffmpegDir, `ffmpeg${binExt}`) : null;
-    if (!ffmpegBinPath || !fs.existsSync(ffmpegBinPath)) {
+    const ffmpegBinPath = ffmpegBin();
+    if (!fs.existsSync(ffmpegBinPath)) {
       throw _scanErrHttp(500, 'ffmpeg binary not found');
     }
     const dir  = path.dirname(absPath);
@@ -446,7 +401,7 @@ export function setup(velvet) {
 
   velvet.post("/api/v1/admin/db/params/max-concurrent-scans", async (req, res) => {
     const schema = Joi.object({
-      maxConcurrentTasks:  Joi.number().integer().min(0).required()
+      maxConcurrentTasks:  Joi.number().integer().min(1).required()
     });
     joiValidate(schema, req.body);
 
@@ -516,21 +471,17 @@ export function setup(velvet) {
   });
 
   velvet.get("/api/v1/admin/users", (req, res) => {
-    // Scrub passwords and salts before sending to frontend
-    const memClone = structuredClone(config.program.users);
-    Object.keys(memClone).forEach(username => {
-      delete memClone[username].password;
-      delete memClone[username].salt;
-      delete memClone[username]['subsonic-password'];
-    });
-
-    res.json(memClone);
+    const users = {};
+    for (const [username, user] of Object.entries(config.program.users)) {
+      users[username] = Object.fromEntries(ADMIN_USER_FIELDS.filter(k => k in user).map(k => [k, user[k]]));
+    }
+    res.json(users);
   });
 
   velvet.put("/api/v1/admin/directory", async (req, res) => {
     const schema = Joi.object({
       directory: Joi.string().required(),
-      vpath: Joi.string().pattern(/[a-zA-Z0-9-]+/).required(),
+      vpath: VPATH_SCHEMA.required(),
       autoAccess: Joi.boolean().default(false),
       isAudioBooks: Joi.boolean().default(false),
       isRecording: Joi.boolean().default(false),
@@ -573,7 +524,7 @@ export function setup(velvet) {
   // Supports: allowRecordDelete (recordings/youtube folders), albumsOnly/dlnaEnabled (music/audio-books only), artistsOn (all non-excluded folders)
   velvet.patch("/api/v1/admin/directory/flags", async (req, res) => {
     const schema = Joi.object({
-      vpath: Joi.string().pattern(/[a-zA-Z0-9-]+/).required(),
+      vpath: VPATH_SCHEMA.required(),
       allowRecordDelete: Joi.boolean().optional(),
       albumsOnly: Joi.boolean().optional(),
       dlnaEnabled: Joi.boolean().optional(),
@@ -592,17 +543,14 @@ export function setup(velvet) {
     _applyFolderFlag(config.program.folders[vpath], 'dlnaEnabled', dlnaEnabled, true);
     if (artistsOn !== undefined) config.program.folders[vpath].artistsOn = artistsOn;
 
-    // Persist to config file
-    const loadConfig = await admin.loadFile(config.configFile);
-    if (!loadConfig.folders) loadConfig.folders = {};
-    if (!loadConfig.folders[vpath]) loadConfig.folders[vpath] = {};
-
-    _applyFolderFlag(loadConfig.folders[vpath], 'allowRecordDelete', allowRecordDelete, true);
-    _applyFolderFlag(loadConfig.folders[vpath], 'albumsOnly', albumsOnly, true);
-    _applyFolderFlag(loadConfig.folders[vpath], 'dlnaEnabled', dlnaEnabled, true);
-    if (artistsOn !== undefined) loadConfig.folders[vpath].artistsOn = artistsOn;
-
-    await admin.saveFile(loadConfig, config.configFile);
+    await config.updateConfigFile(c => {
+      if (!c.folders) c.folders = {};
+      if (!c.folders[vpath]) c.folders[vpath] = {};
+      _applyFolderFlag(c.folders[vpath], 'allowRecordDelete', allowRecordDelete, true);
+      _applyFolderFlag(c.folders[vpath], 'albumsOnly', albumsOnly, true);
+      _applyFolderFlag(c.folders[vpath], 'dlnaEnabled', dlnaEnabled, true);
+      if (artistsOn !== undefined) c.folders[vpath].artistsOn = artistsOn;
+    });
     if (albumsOnly !== undefined || dlnaEnabled !== undefined) invalidateAlbumsCache();
     res.json({});
     if (artistsOn !== undefined) {
@@ -615,7 +563,7 @@ export function setup(velvet) {
   // PATCH /api/v1/admin/directory/type — change the type of an existing folder
   velvet.patch("/api/v1/admin/directory/type", async (req, res) => {
     const schema = Joi.object({
-      vpath: Joi.string().pattern(/[a-zA-Z0-9-]+/).required(),
+      vpath: VPATH_SCHEMA.required(),
       type: Joi.string().valid('music', 'audio-books', 'recordings', 'youtube', 'excluded').required(),
     });
     const input = joiValidate(schema, req.body);
@@ -623,14 +571,13 @@ export function setup(velvet) {
     const folder = config.program.folders[vpath];
     if (!folder) return res.status(404).json({ error: 'vpath not found' });
 
+    await config.updateConfigFile(c => {
+      if (!c.folders?.[vpath]) throw new WebError('vpath not in config', 404);
+      c.folders[vpath].type = type;
+      _clearIncompatibleFlags(c.folders[vpath], type);
+    });
     config.program.folders[vpath].type = type;
     _clearIncompatibleFlags(config.program.folders[vpath], type);
-
-    const loadConfig = await admin.loadFile(config.configFile);
-    if (!loadConfig.folders?.[vpath]) return res.status(404).json({ error: 'vpath not in config' });
-    loadConfig.folders[vpath].type = type;
-    _clearIncompatibleFlags(loadConfig.folders[vpath], type);
-    await admin.saveFile(loadConfig, config.configFile);
 
     // When a folder is marked as excluded, trigger a scan of its parent ROOT
     // so that already-indexed files under it get purged from the DB.
@@ -643,91 +590,55 @@ export function setup(velvet) {
   // PATCH /api/v1/admin/directory/root — change filesystem path of an existing folder
   velvet.patch("/api/v1/admin/directory/root", async (req, res) => {
     const schema = Joi.object({
-      vpath: Joi.string().pattern(/[a-zA-Z0-9-]+/).required(),
+      vpath: VPATH_SCHEMA.required(),
       root: Joi.string().required(),
     });
     const input = joiValidate(schema, req.body);
-    const { vpath, root } = input.value;
+    const { vpath } = input.value;
+    const root = config.normaliseFolderRoot(input.value.root);
     if (!config.program.folders[vpath]) return res.status(404).json({ error: 'vpath not found' });
 
     const stat = await fs.promises.stat(root).catch(() => null);
     if (!stat?.isDirectory()) return res.status(400).json({ error: `${root} is not a valid directory` });
 
+    await config.updateConfigFile(c => { if (c.folders?.[vpath]) c.folders[vpath].root = root; });
     config.program.folders[vpath].root = root;
-    const loadConfig = await admin.loadFile(config.configFile);
-    if (loadConfig.folders?.[vpath]) loadConfig.folders[vpath].root = root;
-    await admin.saveFile(loadConfig, config.configFile);
     res.json({ restartRequired: true });
   });
 
   // PATCH /api/v1/admin/directory/users — set which users have access to a folder
   velvet.patch("/api/v1/admin/directory/users", async (req, res) => {
     const schema = Joi.object({
-      vpath: Joi.string().pattern(/[a-zA-Z0-9-]+/).required(),
+      vpath: VPATH_SCHEMA.required(),
       users: Joi.array().items(Joi.string()).required(),
     });
     const input = joiValidate(schema, req.body);
     const { vpath, users: newUsers } = input.value;
     if (!config.program.folders[vpath]) return res.status(404).json({ error: 'vpath not found' });
 
-    // Update each user's vpaths list
-    const loadConfig = await admin.loadFile(config.configFile);
-    Object.entries(config.program.users).forEach(([uname, u]) => {
-      const shouldHave = newUsers.includes(uname);
-      const has = (u.vpaths || []).includes(vpath);
-      if (shouldHave && !has) {
-        u.vpaths.push(vpath);
-        if (loadConfig.users?.[uname]) loadConfig.users[uname].vpaths = u.vpaths;
-      } else if (!shouldHave && has) {
-        u.vpaths.splice(u.vpaths.indexOf(vpath), 1);
-        if (loadConfig.users?.[uname]) loadConfig.users[uname].vpaths = u.vpaths;
+    const withAccess = (vpaths, shouldHave) => {
+      const rest = (vpaths || []).filter(v => v !== vpath);
+      return shouldHave ? [...rest, vpath] : rest;
+    };
+    await config.updateConfigFile(c => {
+      for (const [uname, u] of Object.entries(c.users || {})) {
+        if (newUsers.includes(uname) !== (u.vpaths || []).includes(vpath)) u.vpaths = withAccess(u.vpaths, newUsers.includes(uname));
       }
     });
-    await admin.saveFile(loadConfig, config.configFile);
+    for (const [uname, u] of Object.entries(config.program.users)) {
+      if (newUsers.includes(uname) !== (u.vpaths || []).includes(vpath)) u.vpaths = withAccess(u.vpaths, newUsers.includes(uname));
+    }
     res.json({});
   });
 
   velvet.delete("/api/v1/admin/directory", async (req, res) => {
     const schema = Joi.object({
-      vpath: Joi.string().pattern(/[a-zA-Z0-9-]+/).required()
+      vpath: VPATH_SCHEMA.required()
     });
     joiValidate(schema, req.body);
 
     await admin.removeDirectory(req.body.vpath);
     res.json({});
-  });
-
-  // POST /api/v1/admin/directory/reset-sentinel
-  // Re-writes the .velvet.md mount-guard file to the vpath root.
-  // Use this if the file was accidentally deleted and scanning is now blocked.
-  velvet.post("/api/v1/admin/directory/reset-sentinel", (req, res) => {
-    const schema = Joi.object({
-      vpath: Joi.string().pattern(/[a-zA-Z0-9-]+/).required()
-    });
-    const input = joiValidate(schema, req.body);
-    const { vpath } = input.value;
-    const folder = config.program.folders[vpath];
-    if (!folder) return res.status(404).json({ error: 'vpath not found' });
-    const rootDir = folder.root;
-    if (!rootDir) return res.status(400).json({ error: 'folder has no root path' });
-    try {
-      const sentinelPath = path.join(rootDir, '.velvet.md');
-      const sentinelContent =
-        '# Velvet \u2014 Mount Guard\n\n' +
-        'This file protects your Velvet database from being wiped\n' +
-        'when your music share (NFS, SMB, or Docker volume) is not mounted.\n\n' +
-        'How it works:\n' +
-        '- Velvet writes this file after every successful library scan.\n' +
-        '- Before each new scan, Velvet checks that this file is present.\n' +
-        '- If this file is missing when a scan starts, the scan is aborted\n' +
-        '  and your database is left untouched.\n\n' +
-        'Do NOT delete this file. It is safe to leave it in your music root.\n';
-      fs.writeFileSync(sentinelPath, sentinelContent, 'utf8');
-      winston.info(`[admin] Reset mount-guard sentinel for vpath "${vpath}" at ${sentinelPath}`);
-      res.json({ ok: true, path: sentinelPath });
-    } catch (err) {
-      res.status(500).json({ error: err.message });
-    }
   });
 
   velvet.put("/api/v1/admin/users", async (req, res) => {
@@ -790,6 +701,18 @@ export function setup(velvet) {
 
   velvet.get('/api/v1/admin/db/scan/progress', (req, res) => {
     res.json(scanProgress.getAll());
+  });
+
+  velvet.post('/api/v1/admin/db/purge-orphaned-vpaths', (req, res) => {
+    try {
+      const known = new Set(Object.keys(config.program.folders || {}));
+      const orphaned = db.getOrphanedVpaths(known);
+      if (req.body.dryRun) return res.json({ orphaned, deleted: 0 });
+      const deleted = db.deleteOrphanedVpathRows(orphaned);
+      res.json({ orphaned, deleted });
+    } catch (e) {
+      res.status(500).json({ error: e?.message ?? String(e) });
+    }
   });
 
   // ── Scan Error Audit ──────────────────────────────────────────────────────────
@@ -869,7 +792,15 @@ export function setup(velvet) {
     joiValidate(schema, req.body);
 
     await admin.editUserPassword(req.body.username, req.body.password);
-    res.json({});
+    res.json(_freshOwnToken(req, res, req.body.username));
+  });
+
+  velvet.post("/api/v1/admin/users/revoke-tokens", async (req, res) => {
+    const schema = Joi.object({ username: Joi.string().required() });
+    joiValidate(schema, req.body);
+
+    await admin.revokeUserTokens(req.body.username);
+    res.json(_freshOwnToken(req, res, req.body.username));
   });
 
   velvet.post("/api/v1/admin/users/subsonic-password", async (req, res) => {
@@ -884,14 +815,9 @@ export function setup(velvet) {
   });
 
   // ── Subsonic API Key management ───────────────────────────────────────────────
-  // GET  /api/v1/admin/users/subsonic-apikeys          list keys for caller (or ?username= for admins)
-  // POST /api/v1/admin/users/subsonic-apikeys          generate a new key
-  // DELETE /api/v1/admin/users/subsonic-apikeys/:id    revoke a key
 
   velvet.get("/api/v1/admin/users/subsonic-apikeys", (req, res) => {
-    const targetUser = (req.user.admin === true && req.query.username)
-      ? req.query.username
-      : req.user.username;
+    const targetUser = req.query.username || req.user.username;
     const keys = db.getApiKeysByUsername(targetUser).map(k => ({
       id:      k.id,
       label:   k.label ?? '',
@@ -902,9 +828,8 @@ export function setup(velvet) {
   });
 
   velvet.post("/api/v1/admin/users/subsonic-apikeys", (req, res) => {
-    const targetUser = (req.user.admin === true && req.body?.username)
-      ? req.body.username
-      : req.user.username;
+    const targetUser = req.body?.username || req.user.username;
+    if (!Object.hasOwn(config.program.users || {}, targetUser)) return res.status(404).json({ error: 'User not found' });
     const label  = req.body?.label ?? null;
     const apiKey = randomBytes(32).toString('hex');
     db.insertApiKey(targetUser, apiKey, label);
@@ -913,52 +838,10 @@ export function setup(velvet) {
 
   velvet.delete("/api/v1/admin/users/subsonic-apikeys/:id", (req, res) => {
     const id         = Number.parseInt(req.params.id, 10);
-    const targetUser = (req.user.admin === true && req.query.username)
-      ? req.query.username
-      : req.user.username;
+    const targetUser = req.query.username || req.user.username;
     if (Number.isNaN(id)) return res.status(400).json({ error: 'Invalid id' });
     const deleted = db.deleteApiKeyById(id, targetUser);
     if (!deleted) return res.status(404).json({ error: 'Key not found' });
-    res.json({});
-  });
-
-  // Per-user: toggle Subsonic scrobble forwarding for Last.fm and/or ListenBrainz.
-  // A normal user can only change their own settings; admins can set any user.
-  velvet.post("/api/v1/admin/users/subsonic-scrobble", async (req, res) => {
-    const schema = Joi.object({
-      username:       Joi.string().required(),
-      scrobbleLastfm: Joi.boolean().optional(),
-      scrobbleLb:     Joi.boolean().optional(),
-    });
-    joiValidate(schema, req.body);
-    const { username, scrobbleLastfm, scrobbleLb } = req.body;
-    // Only admins can change other users; regular users can only change themselves
-    if (req.user.admin !== true && req.user.username !== username) {
-      return res.status(403).json({ error: 'Forbidden' });
-    }
-    const userConf = config.program.users[username];
-    if (!userConf) return res.status(404).json({ error: 'User not found' });
-    if (scrobbleLastfm !== undefined) userConf['subsonic-scrobble-lastfm'] = scrobbleLastfm;
-    if (scrobbleLb     !== undefined) userConf['subsonic-scrobble-lb']     = scrobbleLb;
-    // Persist to config file
-    const raw = JSON.parse(await fs.promises.readFile(config.configFile, 'utf-8'));
-    if (!raw.users) raw.users = {};
-    if (!raw.users[username]) raw.users[username] = {};
-    if (scrobbleLastfm !== undefined) raw.users[username]['subsonic-scrobble-lastfm'] = scrobbleLastfm;
-    if (scrobbleLb     !== undefined) raw.users[username]['subsonic-scrobble-lb']     = scrobbleLb;
-    await fs.promises.writeFile(config.configFile, JSON.stringify(raw, null, 2), 'utf8');
-    res.json({});
-  });
-
-  velvet.post("/api/v1/admin/users/lastfm", async (req, res) => {
-    const schema = Joi.object({
-      username: Joi.string().required(),
-      lastfmUser: Joi.string().required(),
-      lastfmPassword: Joi.string().required()
-    });
-    joiValidate(schema, req.body);
-
-    await admin.setUserLastFM(req.body.username, req.body.lastfmUser, req.body.lastfmPassword);
     res.json({});
   });
 
@@ -980,12 +863,9 @@ export function setup(velvet) {
     });
     joiValidate(schema, req.body);
 
-    const loadConfig = await admin.loadFile(config.configFile);
-    if (!loadConfig.lastFM) loadConfig.lastFM = {};
-    loadConfig.lastFM.enabled   = req.body.enabled;
-    loadConfig.lastFM.apiKey    = req.body.apiKey;
-    loadConfig.lastFM.apiSecret = req.body.apiSecret;
-    await admin.saveFile(loadConfig, config.configFile);
+    await config.updateConfigFile(c => {
+      c.lastFM = { ...c.lastFM, enabled: req.body.enabled, apiKey: req.body.apiKey, apiSecret: req.body.apiSecret };
+    });
 
     config.program.lastFM.enabled   = req.body.enabled;
     config.program.lastFM.apiKey    = req.body.apiKey;
@@ -1023,11 +903,9 @@ export function setup(velvet) {
       }
     }
 
-    const loadConfig = await admin.loadFile(config.configFile);
-    if (!loadConfig.discordWebhook) loadConfig.discordWebhook = {};
-    loadConfig.discordWebhook.enabled = req.body.enabled;
-    loadConfig.discordWebhook.url     = req.body.url;
-    await admin.saveFile(loadConfig, config.configFile);
+    await config.updateConfigFile(c => {
+      c.discordWebhook = { ...c.discordWebhook, enabled: req.body.enabled, url: req.body.url };
+    });
 
     config.program.discordWebhook.enabled = req.body.enabled;
     config.program.discordWebhook.url     = req.body.url;
@@ -1057,9 +935,7 @@ export function setup(velvet) {
     const schema = Joi.object({ webhooks: Joi.array().items(slotSchema).max(2).required() });
     joiValidate(schema, req.body);
 
-    const loadConfig = await admin.loadFile(config.configFile);
-    loadConfig.customWebhooks = req.body.webhooks;
-    await admin.saveFile(loadConfig, config.configFile);
+    await config.updateConfigFile(c => { c.customWebhooks = req.body.webhooks; });
     config.program.customWebhooks = req.body.webhooks;
 
     res.json({});
@@ -1154,7 +1030,6 @@ export function setup(velvet) {
       ssl: config.program.ssl,
       storage: config.program.storage,
       maxRequestSize: config.program.maxRequestSize,
-      federation: config.program.federation,
       ui: config.program.ui || 'velvet'
     });
   });
@@ -1218,7 +1093,7 @@ export function setup(velvet) {
 
   velvet.post("/api/v1/admin/config/log-retention", async (req, res) => {
     const schema = Joi.object({
-      logRetention: Joi.string().valid('1d', '3d', '7d', '14d', '30d').required()
+      logRetention: Joi.string().valid(...VALID_RETENTIONS).required()
     });
     joiValidate(schema, req.body);
 
@@ -1234,7 +1109,7 @@ export function setup(velvet) {
 
   velvet.post("/api/v1/admin/config/secret", async (req, res) => {
     const schema = Joi.object({
-      strength: Joi.number().integer().positive().required()
+      strength: Joi.number().integer().min(32).max(512).required()
     });
     joiValidate(schema, req.body);
 
@@ -1333,35 +1208,16 @@ export function setup(velvet) {
     joiValidate(schema, req.body);
 
     db.removeSharedPlaylistById(req.body.id);
-    db.saveShareDB();
     res.json({});
   });
 
   velvet.delete("/api/v1/admin/db/shared/expired", (req, res) => {
     db.removeExpiredSharedPlaylists();
-    db.saveShareDB();
     res.json({});
   });
 
   velvet.delete("/api/v1/admin/db/shared/eternal", (req, res) => {
     db.removeEternalSharedPlaylists();
-    db.saveShareDB();
-    res.json({});
-  });
-
-  let enableFederationDebouncer = false;
-  velvet.post('/api/v1/admin/federation/enable', async (req, res) => {
-    const schema = Joi.object({ enable: Joi.boolean().required() });
-    joiValidate(schema, req.body);
-
-    if (enableFederationDebouncer === true) { throw new Error('Debouncer Enabled'); }
-    await admin.enableFederation(req.body.enable);
-
-    enableFederationDebouncer = true;
-    setTimeout(() => {
-      enableFederationDebouncer = false;
-    }, 5000);
-
     res.json({});
   });
 
@@ -1420,16 +1276,18 @@ export function setup(velvet) {
     });
     joiValidate(schema, req.body);
 
-    const loadConfig = await admin.loadFile(config.configFile);
-    if (!loadConfig.discogs) loadConfig.discogs = {};
-    loadConfig.discogs.enabled        = req.body.enabled;
-    loadConfig.discogs.allowArtUpdate = req.body.allowArtUpdate;
-    loadConfig.discogs.apiKey         = req.body.apiKey;
-    loadConfig.discogs.apiSecret      = req.body.apiSecret;
-    loadConfig.discogs.userAgentTag   = req.body.userAgentTag;
-    loadConfig.discogs.itunesEnabled  = req.body.itunesEnabled;
-    loadConfig.discogs.deezerEnabled  = req.body.deezerEnabled;
-    await admin.saveFile(loadConfig, config.configFile);
+    await config.updateConfigFile(c => {
+      c.discogs = {
+        ...c.discogs,
+        enabled:        req.body.enabled,
+        allowArtUpdate: req.body.allowArtUpdate,
+        apiKey:         req.body.apiKey,
+        apiSecret:      req.body.apiSecret,
+        userAgentTag:   req.body.userAgentTag,
+        itunesEnabled:  req.body.itunesEnabled,
+        deezerEnabled:  req.body.deezerEnabled,
+      };
+    });
 
     config.program.discogs.enabled        = req.body.enabled;
     config.program.discogs.allowArtUpdate = req.body.allowArtUpdate;
@@ -1455,10 +1313,7 @@ export function setup(velvet) {
     const schema = Joi.object({ enabled: Joi.boolean().required() });
     joiValidate(schema, req.body);
 
-    const loadConfig = await admin.loadFile(config.configFile);
-    if (!loadConfig.lyrics) loadConfig.lyrics = {};
-    loadConfig.lyrics.enabled = req.body.enabled;
-    await admin.saveFile(loadConfig, config.configFile);
+    await config.updateConfigFile(c => { c.lyrics = { ...c.lyrics, enabled: req.body.enabled }; });
 
     if (!config.program.lyrics) config.program.lyrics = {};
     config.program.lyrics.enabled = req.body.enabled;
@@ -1496,11 +1351,7 @@ export function setup(velvet) {
     const isUnchangedMask = incomingKey.includes('*') && incomingKey.length > 0;
     const newKey = isUnchangedMask ? (config.program.acoustid?.apiKey || '') : incomingKey;
 
-    const loadConfig = await admin.loadFile(config.configFile);
-    if (!loadConfig.acoustid) loadConfig.acoustid = {};
-    loadConfig.acoustid.enabled = req.body.enabled;
-    loadConfig.acoustid.apiKey  = newKey;
-    await admin.saveFile(loadConfig, config.configFile);
+    await config.updateConfigFile(c => { c.acoustid = { ...c.acoustid, enabled: req.body.enabled, apiKey: newKey }; });
 
     if (!config.program.acoustid) config.program.acoustid = {};
     config.program.acoustid.enabled = req.body.enabled;
@@ -1556,9 +1407,7 @@ export function setup(velvet) {
       autoCreateUsers:  req.body.autoCreateUsers,
     };
 
-    const loadConfig = await admin.loadFile(config.configFile);
-    loadConfig.extAuth = newExtAuth;
-    await admin.saveFile(loadConfig, config.configFile);
+    await config.updateConfigFile(c => { c.extAuth = newExtAuth; });
 
     config.program.extAuth = newExtAuth;
 
@@ -1566,36 +1415,6 @@ export function setup(velvet) {
   });
 
   // ── Genre Groups (admin-configurable display groupings) ─────────────────
-  // Mirrors GENRE_BUCKETS in webapp/app.js — used to build auto-defaults when no groups saved
-  const GENRE_BUCKETS_DEFAULT = [
-    ['Rock',               /\b(rock|punk|metal|grunge|emo|hardcore|alternative|indie|shoegaze|post.rock|new.wave|prog(ressive)?|glam|gothic|psychedel|garage|britpop|surf|math.rock|noise.rock|skate)\b/i],
-    ['Electronic',         /\b(electro(nic)?|techno|house|trance|drum.?n?.?bass|dnb|d&b|ambient|synth|rave|edm|idm|breakbeat|dubstep|chillout|chill(?!i)|deep.house|trip.hop|downtempo|jungle|acid|minimal(?! folk|ist)|dance(?!.pop)|club|industrial|dark.wave|ebm|vaporwave|lo.?fi|hardstyle|psytrance|psybient|dub(?!step)|gabber|neurofunk|liquid drum|deathstep)\b/i],
-    ['Pop',                /\b(pop(?!.punk|.rock)|disco|bubblegum|teen.pop|j.?pop|k.?pop|c.?pop|city.pop)\b/i],
-    ['Hip-Hop & R&B',      /\b(hip.?hop|rap|r&b|rnb|neo.?soul|urban|grime|trap|drill|afroswing)\b/i],
-    ['Soul & Funk',        /\b(soul|funk|motown|rhythm.and.blues|boogie|northern.soul|groove(?! metal))\b/i],
-    ['Jazz & Blues',       /\b(jazz|blues|swing|bebop|be.bop|fusion|bossa|latin.jazz|cool.jazz|dixieland|delta|smooth.jazz|acid.jazz|nu.jazz)\b/i],
-    ['Classical',          /\b(classical|orchestral|opera|chamber|symphony|baroque|contempor|neoclassic|minimali(st)?|modern.classical)\b/i],
-    ['Folk & Country',     /\b(folk|country|bluegrass|acoustic(?!.rock)|singer.?songwriter|americana|celtic|irish|western|cowboy|outlaw|appalachian)\b/i],
-    ['World & Reggae',     /\b(world|reggae|latin(?!.jazz)|african|caribbean|cuban|salsa|bossa.nova|afrobeat|cumbia|flamenco|tango|polka|turkish|arabic|indian|bollywood|samba|merengue|calypso|afrobeats|dancehall)\b/i],
-    ['Gospel & Christian', /\b(gospel|christian|worship|spiritual|hymn|ccm|praise|inspirational|devotional)\b/i],
-  ];
-  function _autoGroupGenres(allGenres) {
-    const bucketMap = new Map(GENRE_BUCKETS_DEFAULT.map(([label]) => [label, []]));
-    const other = [];
-    for (const g of allGenres) {
-      let classified = false;
-      for (const [label, re] of GENRE_BUCKETS_DEFAULT) {
-        if (re.test(g)) { bucketMap.get(label).push(g); classified = true; break; }
-      }
-      if (!classified) other.push(g);
-    }
-    const result = GENRE_BUCKETS_DEFAULT
-      .map(([label]) => ({ name: label, genres: bucketMap.get(label) }))
-      .filter(g => g.genres.length > 0);
-    if (other.length > 0) result.push({ name: 'Other', genres: other });
-    return result;
-  }
-
   velvet.get('/api/v1/admin/genre-groups', (req, res) => {
     if (req.user.admin !== true) return res.status(403).json({ error: 'Admin only' });
     try {
@@ -1611,7 +1430,7 @@ export function setup(velvet) {
       const isDefault = !savedGroups || savedGroups.length === 0;
       let groups;
       if (isDefault) {
-        groups = _autoGroupGenres(allGenres);
+        groups = autoGroupGenres(allGenres);
       } else {
         // Normalize any old raw strings to display names; drop genres not in current library
         groups = savedGroups.map(grp => ({
@@ -1661,41 +1480,15 @@ export function setup(velvet) {
     const absPath = pathInfo.fullPath;
     if (!fs.existsSync(absPath)) return res.status(404).json({ error: 'File not found' });
 
-    const ext       = path.extname(absPath).toLowerCase();
-    const ffmpegDir = config.program.transcode?.ffmpegDirectory;
-    const ffmpegExe = process.platform === 'win32' ? 'ffmpeg.exe' : 'ffmpeg';
-    const ffmpegBin = ffmpegDir ? path.join(ffmpegDir, ffmpegExe) : 'ffmpeg';
-    // Write to same directory so fs.renameSync is atomic (avoids cross-device EXDEV errors).
-    const tmpOut  = resolvePathWithinRoot(path.dirname(absPath), `.velvet-tags-tmp-${Date.now()}${ext}`);
-    const tmpArt  = path.join(os.tmpdir(), `.velvet-art-${Date.now()}.jpg`);
-    const tmpOut2 = resolvePathWithinRoot(path.dirname(absPath), `.velvet-tags-art-${Date.now()}${ext}`);
-
+    const b = req.body;
     try {
-      const metaArgs = _buildTagMetaArgs(req.body);
-
-      // Step 1: extract any embedded picture stream (re-embed after tag write)
-      const hasArt = await _extractTagArt(ffmpegBin, absPath, tmpArt);
-
-      // Step 2: write tags, audio stream only
-      await execFileAsync(ffmpegBin, [
-        '-y', '-fflags', '+genpts', '-i', absPath,
-        '-map', '0:a', '-map_metadata', '0', '-codec', 'copy',
-        ...metaArgs,
-        tmpOut,
-      ]);
-
-      // Step 3 (optional): re-embed art; Step 4: atomic rename
-      if (hasArt) {
-        await _reembedTagArt(ffmpegBin, tmpOut, tmpArt, tmpOut2, absPath);
-      } else {
-        fs.renameSync(tmpOut, absPath);
-      }
-
-      // Step 5: update DB
+      await writeTags(absPath, {
+        title: b.title, artist: b.artist, album: b.album, date: b.year,
+        genre: b.genre, track: b.track, disc: b.disk,
+      });
       _updateTagsInDb(pathInfo, req.body, absPath);
       res.json({ ok: true });
     } catch (e) {
-      _cleanupTagTmps(tmpOut, tmpOut2, tmpArt);
       res.status(500).json({ error: e.message });
     }
   });
@@ -1738,9 +1531,10 @@ export function setup(velvet) {
     };
     res.json({ ok: true, started: true });
 
-    db.rebuildArtistIndex(() => {
+    db.rebuildArtistIndex((err) => {
       _artistRebuildState.running = false;
       _artistRebuildState.finishedAt = Date.now();
+      _artistRebuildState.lastError = err ? String(err.message ?? err) : null;
       invalidateArtistCache();
     });
   });
@@ -1796,12 +1590,12 @@ export function setup(velvet) {
     if (req.body.mpvBin  !== undefined) config.program.serverAudio.mpvBin  = req.body.mpvBin;
     if (req.body.autoUnmute !== undefined) config.program.serverAudio.autoUnmute = req.body.autoUnmute;
 
-    const loadConfig = await admin.loadFile(config.configFile);
-    if (!loadConfig.serverAudio) loadConfig.serverAudio = {};
-    if (req.body.enabled !== undefined) loadConfig.serverAudio.enabled = req.body.enabled;
-    if (req.body.mpvBin  !== undefined) loadConfig.serverAudio.mpvBin  = req.body.mpvBin;
-    if (req.body.autoUnmute !== undefined) loadConfig.serverAudio.autoUnmute = req.body.autoUnmute;
-    await admin.saveFile(loadConfig, config.configFile);
+    await config.updateConfigFile(c => {
+      if (!c.serverAudio) c.serverAudio = {};
+      if (req.body.enabled !== undefined) c.serverAudio.enabled = req.body.enabled;
+      if (req.body.mpvBin  !== undefined) c.serverAudio.mpvBin  = req.body.mpvBin;
+      if (req.body.autoUnmute !== undefined) c.serverAudio.autoUnmute = req.body.autoUnmute;
+    });
 
     if (req.body.enabled === true)  serverPlaybackApi.bootMpv();
     if (req.body.enabled === false) serverPlaybackApi.killMpv();
@@ -1839,10 +1633,7 @@ export function setup(velvet) {
     // English is always first and always present
     const enabled = ['en', ...req.body.enabled.filter(c => c !== 'en' && _ALL_LANG_CODES.includes(c))];
 
-    const loadConfig = await admin.loadFile(config.configFile);
-    if (!loadConfig.languages) loadConfig.languages = {};
-    loadConfig.languages.enabled = enabled;
-    await admin.saveFile(loadConfig, config.configFile);
+    await config.updateConfigFile(c => { c.languages = { ...c.languages, enabled }; });
 
     if (!config.program.languages) config.program.languages = {};
     config.program.languages.enabled = enabled;
@@ -1865,56 +1656,22 @@ export function setup(velvet) {
     if (!artistParam) {
       return res.status(400).json({ error: 'Missing ?artist= parameter' });
     }
-    const rawDb = db.getDB();
-
-    // 1. All distinct effective-artist values where this name appears anywhere
-    const effectiveRows = rawDb.prepare(`
-      SELECT DISTINCT COALESCE(album_artist, artist) AS effective, COUNT(*) AS track_count
-      FROM files
-      WHERE COALESCE(album_artist, artist) LIKE ? OR artist LIKE ? OR album_artist LIKE ?
-      GROUP BY COALESCE(album_artist, artist)
-      ORDER BY track_count DESC
-    `).all(`%${artistParam}%`, `%${artistParam}%`, `%${artistParam}%`);
-
-    // 2. Normalized index entry
-    const normRow = rawDb.prepare(
-      "SELECT artist_clean, artist_raw_variants, vpaths_json, song_count FROM artists_normalized WHERE lower(artist_clean) = lower(?)"
-    ).get(artistParam);
+    const effectiveRows = db.diagEffectiveArtistValues(artistParam);
+    const normRow = db.diagNormalizedArtist(artistParam);
 
     let rawVariants = [];
     if (normRow) {
       try { rawVariants = JSON.parse(normRow.artist_raw_variants); } catch { rawVariants = [normRow.artist_clean]; }
     }
 
-    // 3. Per-variant album breakdown
     const albumsByVariant = {};
-    for (const variant of rawVariants) {
-      const albums = rawDb.prepare(`
-        SELECT DISTINCT album, rtrim(filepath, replace(filepath, '/', '')) AS dir, vpath
-        FROM files
-        WHERE COALESCE(album_artist, artist) = ?
-        ORDER BY album
-      `).all(variant);
-      albumsByVariant[variant] = albums.map(r => ({ album: r.album, dir: r.dir, vpath: r.vpath }));
-    }
+    for (const variant of rawVariants) albumsByVariant[variant] = db.diagAlbumsForEffectiveArtist(variant);
 
-    // 4. Albums that match the search but whose effective artist is NOT in rawVariants
+    // Albums that match the search but whose effective artist is NOT in rawVariants
     const variantSet = new Set(rawVariants.map(v => v.toLowerCase()));
     const orphanAlbums = effectiveRows
       .filter(r => !variantSet.has((r.effective || '').toLowerCase()))
-      .map(r => {
-        const orphanRows = rawDb.prepare(`
-          SELECT DISTINCT album, rtrim(filepath, replace(filepath, '/', '')) AS dir, vpath
-          FROM files
-          WHERE COALESCE(album_artist, artist) = ?
-          ORDER BY album
-        `).all(r.effective);
-        return {
-          effective: r.effective,
-          track_count: r.track_count,
-          albums: orphanRows.map(o => ({ album: o.album, dir: o.dir, vpath: o.vpath })),
-        };
-      });
+      .map(r => ({ effective: r.effective, track_count: r.track_count, albums: db.diagAlbumsForEffectiveArtist(r.effective) }));
 
     res.json({
       query: artistParam,
@@ -1944,10 +1701,8 @@ export function setup(velvet) {
 // files before wasting a remux attempt.
 // ─────────────────────────────────────────────────────────────────────────────
 async function probeHasAudio(absFilepath) {
-  const ffmpegDir = config.program.transcode?.ffmpegDirectory;
-  const binExt    = process.platform === 'win32' ? '.exe' : '';
-  const ffprobeBin = ffmpegDir ? path.join(ffmpegDir, `ffprobe${binExt}`) : null;
-  if (!ffprobeBin || !fs.existsSync(ffprobeBin)) return true; // can't probe — optimistically try remux
+  const ffprobePath = ffprobeBin();
+  if (!fs.existsSync(ffprobePath)) return true; // can't probe — optimistically try remux
 
   try {
     const stdout = await new Promise((resolve, reject) => {
@@ -1958,7 +1713,7 @@ async function probeHasAudio(absFilepath) {
         '-of', 'csv=p=0',
         absFilepath
       ];
-      const proc = child.spawn(ffprobeBin, args);
+      const proc = child.spawn(ffprobePath, args);
       let out = '';
       proc.stdout.on('data', d => { out += d.toString(); });
       proc.on('close', _code => resolve(out.trim()));
@@ -2040,10 +1795,8 @@ function _runFfmpegReencode(ffmpegBin, absFilepath, tmp) {
 }
 
 async function remuxAudio(absFilepath) {
-  const ffmpegDir = config.program.transcode?.ffmpegDirectory;
-  const binExt    = process.platform === 'win32' ? '.exe' : '';
-  const ffmpegBin = ffmpegDir ? path.join(ffmpegDir, `ffmpeg${binExt}`) : null;
-  if (!ffmpegBin || !fs.existsSync(ffmpegBin)) return { ok: false, reason: 'ffmpeg binary not found' };
+  const ffmpegPath = ffmpegBin();
+  if (!fs.existsSync(ffmpegPath)) return { ok: false, reason: 'ffmpeg binary not found' };
 
   const dir  = path.dirname(absFilepath);
   const base = path.basename(absFilepath, path.extname(absFilepath));
@@ -2060,7 +1813,7 @@ async function remuxAudio(absFilepath) {
   // For MP3: strip APEv2 footer (causes RangeError in music-metadata) and write
   // clean ID3v2.3. For WAV: omit ID3v2 block from RIFF container.
   try {
-    await _runFfmpegStreamCopy(ffmpegBin, absFilepath, tmp, isFlac, isMp3, isWav);
+    await _runFfmpegStreamCopy(ffmpegPath, absFilepath, tmp, isFlac, isMp3, isWav);
     fs.renameSync(tmp, absFilepath);
     return { ok: true };
   } catch (streamCopyErr) {
@@ -2074,7 +1827,7 @@ async function remuxAudio(absFilepath) {
     }
 
     try {
-      await _runFfmpegReencode(ffmpegBin, absFilepath, tmp);
+      await _runFfmpegReencode(ffmpegPath, absFilepath, tmp);
       fs.renameSync(tmp, absFilepath);
       return { ok: true, reencoded: true };
     } catch (reEncodeErr) {
@@ -2096,11 +1849,8 @@ async function remuxAudio(absFilepath) {
 // Caller must verify the file exists before calling this function.
 // ─────────────────────────────────────────────────────────────────────────────
 async function stripEmbeddedImages(absFilepath) {
-  const ffmpegDir = config.program.transcode?.ffmpegDirectory;
-  const binExt    = process.platform === 'win32' ? '.exe' : '';
-  const ffmpegBin = ffmpegDir ? path.join(ffmpegDir, `ffmpeg${binExt}`) : null;
-
-  if (!ffmpegBin || !fs.existsSync(ffmpegBin)) {
+  const ffmpegPath = ffmpegBin();
+  if (!fs.existsSync(ffmpegPath)) {
     return { ok: false, reason: 'ffmpeg binary not found' };
   }
 
@@ -2124,7 +1874,7 @@ async function stripEmbeddedImages(absFilepath) {
       if (isWav) args.push('-write_id3v2', '0');
       args.push(tmp);
 
-      const proc = child.spawn(ffmpegBin, args);
+      const proc = child.spawn(ffmpegPath, args);
       let stderr = '';
       proc.stderr.on('data', d => { stderr += d.toString(); });
       proc.on('close', code => {

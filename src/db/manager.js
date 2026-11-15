@@ -1,3 +1,4 @@
+import path from 'node:path';
 import winston from 'winston';
 import * as config from '../state/config.js';
 import * as backend from './sqlite-backend.js';
@@ -6,10 +7,6 @@ let clearShared;
 
 export async function initDB() {
   backend.init(config.program.storage.dbDirectory, config.program.db);
-
-  // Build the duplicate-content-hash set used by the Subsonic layer to emit
-  // exact-file ("<hash>@<rowid>") ids. Cheap one-time scan; refreshed after scans.
-  try { backend.refreshDuplicateHashes(); } catch { /* non-fatal */ }
 
   // Shared playlist cleanup interval
   if (clearShared) {
@@ -21,7 +18,6 @@ export async function initDB() {
     clearShared = setInterval(() => {
       try {
         backend.removeExpiredSharedPlaylists();
-        backend.saveShareDB();
         winston.info('Successfully cleared shared playlists');
       } catch (err) {
         winston.error('Failed to clear expired saved playlists', { stack: err });
@@ -30,20 +26,27 @@ export async function initDB() {
   }
 }
 
-// Save operations
-export function saveFilesDB() { backend.saveFilesDB(); }
-export function saveUserDB() { backend.saveUserDB(); }
-export function saveShareDB() { backend.saveShareDB(); }
+// The SQLite file worker threads open (they get the path through workerData)
+export function dbFilePath() {
+  return path.join(config.program.storage.dbDirectory, 'velvet.sqlite');
+}
+
+export function close() {
+  if (clearShared) {
+    clearInterval(clearShared);
+    clearShared = undefined;
+  }
+  backend.close();
+}
 
 // File Operations
 export function findFileByPath(filepath, vpath) { return backend.findFileByPath(filepath, vpath); }
 export function findFilesByPaths(filepaths, vpath) { return backend.findFilesByPaths(filepaths, vpath); }
 export function updateFileScanId(file, scanId) { return backend.updateFileScanId(file, scanId); }
 export function batchUpdateScanIds(filepaths, vpath, scanId) { return backend.batchUpdateScanIds(filepaths, vpath, scanId); }
+export { ON_DEMAND_SCAN_ID } from './sqlite-backend.js';
 export function insertFile(fileData) { return backend.insertFile(fileData); }
 export function albumFolderName(albumId) { return backend.albumFolderName(albumId); }
-export function beginTransaction() { backend.beginTransaction(); }
-export function commitTransaction() { backend.commitTransaction(); }
 export function beginTransactionStrict() { backend.beginTransactionStrict(); }
 export function commitTransactionStrict() { backend.commitTransactionStrict(); }
 export function rollbackTransactionStrict() { backend.rollbackTransactionStrict(); }
@@ -57,14 +60,11 @@ export function getLiveArtFilenames() { return backend.getLiveArtFilenames(); }
 export function getLiveHashes() { return backend.getLiveHashes(); }
 export function getStaleFileHashes(vpath, scanId) { return backend.getStaleFileHashes(vpath, scanId); }
 export function removeStaleFiles(vpath, scanId) { return backend.removeStaleFiles(vpath, scanId); }
-export function clampRecentTsToModified(vpath, scanId, scanStartTs, oldMtimeCutoffTs) {
-  return backend.clampRecentTsToModified(vpath, scanId, scanStartTs, oldMtimeCutoffTs);
-}
 export function clearScanIds(vpath) { return backend.clearScanIds(vpath); }
 export function removeFilesByVpath(vpath) { return backend.removeFilesByVpath(vpath); }
 export function removeFilesByPrefix(vpath, prefix) { return backend.removeFilesByPrefix(vpath, prefix); }
 export function countFilesByVpath(vpath) { return backend.countFilesByVpath(vpath); }
-export function countFilesByVpaths(vpaths) { return backend.countFilesByVpaths(vpaths); }
+export function countFilesByVpaths(vpaths, includeFilepathPrefixes) { return backend.countFilesByVpaths(vpaths, includeFilepathPrefixes); }
 export function countFilesByScanId(vpath, scanId) { return backend.countFilesByScanId(vpath, scanId); }
 export function getOrphanedVpaths(knownVpaths) { return backend.getOrphanedVpaths(knownVpaths); }
 export function deleteOrphanedVpathRows(vpaths) { return backend.deleteOrphanedVpathRows(vpaths); }
@@ -76,24 +76,14 @@ export function rebuildFolderIndex() { backend.rebuildFolderIndex(); }
 export function rebuildArtistIndex(onComplete) { backend.rebuildArtistIndex(onComplete); }
 
 // AcoustID fingerprinting helpers
-export function getAcoustidQueue(limit, retryAfterSec) { return backend.getAcoustidQueue(limit, retryAfterSec); }
-export function setAcoustidPending(filepath, vpath) { return backend.setAcoustidPending(filepath, vpath); }
-export function setAcoustidResult(filepath, vpath, result) { return backend.setAcoustidResult(filepath, vpath, result); }
-export function resetAcoustidPending() { return backend.resetAcoustidPending(); }
 export function resetAcoustidErrors()  { return backend.resetAcoustidErrors(); }
 export function resetNotFoundForAcoustid() { return backend.resetNotFoundForAcoustid(); }
 export function resetFilesForAcoustid(files) { return backend.resetFilesForAcoustid(files); }
 export function getAcoustidStats() { return backend.getAcoustidStats(); }
 
 // Tag Workshop — MB enrichment + tag review
-export function getMbEnrichQueue(limit) { return backend.getMbEnrichQueue(limit); }
-export function setMbEnrichPending(filepath, vpath) { return backend.setMbEnrichPending(filepath, vpath); }
-export function setMbEnrichResult(filepath, vpath, data) { return backend.setMbEnrichResult(filepath, vpath, data); }
-export function resetMbEnrichPending() { return backend.resetMbEnrichPending(); }
-export function getMbEnrichStats() { return backend.getMbEnrichStats(); }
 export function getMbEnrichErrors(limit) { return backend.getMbEnrichErrors(limit); }
 export function retryMbEnrichErrors() { return backend.retryMbEnrichErrors(); }
-export function getMbTextSearchStats() { return backend.getMbTextSearchStats(); }
 export function resetMbTextSearchNotFound() { return backend.resetMbTextSearchNotFound(); }
 export function getMbTextSearchErrors(limit) { return backend.getMbTextSearchErrors(limit); }
 export function retryMbTextSearchErrors() { return backend.retryMbTextSearchErrors(); }
@@ -102,7 +92,6 @@ export function resetFilesForEnrichment(files) { return backend.resetFilesForEnr
 export function getTagWorkshopStatus() { return backend.getTagWorkshopStatus(); }
 export function getTagWorkshopAlbums(filter, sort, page, search) { return backend.getTagWorkshopAlbums(filter, sort, page, search); }
 export function getTagWorkshopAlbumTracks(mb_release_id, album_dir) { return backend.getTagWorkshopAlbumTracks(mb_release_id, album_dir); }
-export function getTracksForAccept(mb_release_id, album_dir) { return backend.getTracksForAccept(mb_release_id, album_dir); }
 export function getTrackForAccept(filepath, vpath) { return backend.getTrackForAccept(filepath, vpath); }
 export function markTrackAccepted(filepath, vpath) { return backend.markTrackAccepted(filepath, vpath); }
 export function skipAlbumTags(mb_release_id, album_dir) { return backend.skipAlbumTags(mb_release_id, album_dir); }
@@ -129,7 +118,6 @@ export function getArtistFolderSongs(artists, vpaths, username, ignoreVPaths, ex
 export function getAlbums(vpaths, ignoreVPaths, excludeFilepathPrefixes, includeFilepathPrefixes) { return backend.getAlbums(vpaths, ignoreVPaths, excludeFilepathPrefixes, includeFilepathPrefixes); }
 export function getAlbumSongs(album, vpaths, username, opts) { return backend.getAlbumSongs(album, vpaths, username, opts); }
 export function getFilesForAlbumsBrowse(sources) { return backend.getFilesForAlbumsBrowse(sources); }
-export function getDB() { return backend.getDB(); }
 export function searchFiles(searchCol, searchTerm, vpaths, ignoreVPaths, filepathPrefix, excludeFilepathPrefixes, negativeTerms, limit) { return backend.searchFiles(searchCol, searchTerm, vpaths, ignoreVPaths, filepathPrefix, excludeFilepathPrefixes, negativeTerms, limit); }
 export function getAlbumVersionInventory() { return backend.getAlbumVersionInventory(); }
 export function searchAlbumsByArtist(searchTerm, vpaths, ignoreVPaths, filepathPrefix, excludeFilepathPrefixes, negativeTerms, limit) { return backend.searchAlbumsByArtist(searchTerm, vpaths, ignoreVPaths, filepathPrefix, excludeFilepathPrefixes, negativeTerms, limit); }
@@ -137,14 +125,12 @@ export function listAllSongs(vpaths, ignoreVPaths, excludeFilepathPrefixes, file
 export function searchFilesAllWords(tokens, vpaths, ignoreVPaths, filepathPrefix, excludeFilepathPrefixes, negativeTerms, limit) { return backend.searchFilesAllWords(tokens, vpaths, ignoreVPaths, filepathPrefix, excludeFilepathPrefixes, negativeTerms, limit); }
 export function searchFolders(query, vpaths, ignoreVPaths) { return backend.searchFolders(query, vpaths, ignoreVPaths); }
 export function searchArtistsNormalized(query, vpaths, ignoreVPaths) { return backend.searchArtistsNormalized(query, vpaths, ignoreVPaths); }
-export function getArtistsForBrowse(vpaths, ignoreVPaths) { return backend.getArtistsForBrowse(vpaths, ignoreVPaths); }
 export function getArtistsByLetter(letter, includeFilepathPrefixes) { return backend.getArtistsByLetter(letter, includeFilepathPrefixes); }
 export function getArtistHomeStats(includeFilepathPrefixes) { return backend.getArtistHomeStats(includeFilepathPrefixes); }
 export function getArtistRow(artistClean) { return backend.getArtistRow(artistClean); }
 export function getArtistRowByName(name) { return backend.getArtistRowByName(name); }
 export function getArtistFiles(rawVariants, vpaths, ignoreVPaths) { return backend.getArtistFiles(rawVariants, vpaths, ignoreVPaths); }
 export function resolveArtistNamesForDJ(names) { return backend.resolveArtistNamesForDJ(names); }
-export function artistHasAlbums(variants, vpaths) { return backend.artistHasAlbums(variants, vpaths); }
 export function artistsWithAlbums(variants, vpaths) { return backend.artistsWithAlbums(variants, vpaths); }
 export function saveArtistInfo(artistClean, data) { return backend.saveArtistInfo(artistClean, data); }
 export function getArtistImageByArtistId(artistId) { return backend.getArtistImageByArtistId(artistId); }
@@ -179,7 +165,6 @@ export function getAlbumsByGenre(rawGenres, vpaths, ignoreVPaths, excludeFilepat
 export function findUserMetadata(hash, username) { return backend.findUserMetadata(hash, username); }
 export function insertUserMetadata(obj) { return backend.insertUserMetadata(obj); }
 export function updateUserMetadata(obj) { return backend.updateUserMetadata(obj); }
-export function removeUserMetadataByUser(username) { return backend.removeUserMetadataByUser(username); }
 export function resetPlayCounts(username) { return backend.resetPlayCounts(username); }
 export function resetRecentlyPlayed(username) { return backend.resetRecentlyPlayed(username); }
 
@@ -193,7 +178,6 @@ export function getPlaylistEntryById(id) { return backend.getPlaylistEntryById(i
 export function removePlaylistEntryById(id) { return backend.removePlaylistEntryById(id); }
 export function loadPlaylistEntries(username, playlistName) { return backend.loadPlaylistEntries(username, playlistName); }
 export function reorderPlaylistEntries(username, playlistName, ids) { return backend.reorderPlaylistEntries(username, playlistName, ids); }
-export function removePlaylistsByUser(username) { return backend.removePlaylistsByUser(username); }
 
 // Shared Playlists
 export function findSharedPlaylist(playlistId) { return backend.findSharedPlaylist(playlistId); }
@@ -202,7 +186,6 @@ export function getAllSharedPlaylists() { return backend.getAllSharedPlaylists()
 export function removeSharedPlaylistById(playlistId) { return backend.removeSharedPlaylistById(playlistId); }
 export function removeExpiredSharedPlaylists() { return backend.removeExpiredSharedPlaylists(); }
 export function removeEternalSharedPlaylists() { return backend.removeEternalSharedPlaylists(); }
-export function removeSharedPlaylistsByUser(username) { return backend.removeSharedPlaylistsByUser(username); }
 // Scan Error Audit
 export function insertScanError(guid, filepath, vpath, errorType, errorMsg, stack) { return backend.insertScanError(guid, filepath, vpath, errorType, errorMsg, stack); }
 export function getScanErrors(limit) { return backend.getScanErrors(limit); }
@@ -213,18 +196,13 @@ export function clearResolvedErrors(vpath, scanStartTs) { return backend.clearRe
 export function getScanErrorCount() { return backend.getScanErrorCount(); }
 export function markScanErrorFixed(guid, fixAction) { return backend.markScanErrorFixed(guid, fixAction); }
 export function confirmScanErrorOk(filepath, vpath) { return backend.confirmScanErrorOk(filepath, vpath); }
-export function markFileArtChecked(filepath, vpath) { return backend.markFileArtChecked(filepath, vpath); }
-export function markFileCueChecked(filepath, vpath) { return backend.markFileCueChecked(filepath, vpath); }
 
 // Subsonic queries
-export function getFilesByArtistId(artistId, vpaths, username, opts) { return backend.getFilesByArtistId(artistId, vpaths, username, opts); }
 export function getFilesByAlbumId(albumId, vpaths, username, opts) { return backend.getFilesByAlbumId(albumId, vpaths, username, opts); }
 export function getSongByHash(hash, username) { return backend.getSongByHash(hash, username); }
 export function getSongsByHashes(hashes, username) { return backend.getSongsByHashes(hashes, username); }
 export function getSongByRowid(rowid, username) { return backend.getSongByRowid(rowid, username); }
 export function getSongsByRowids(rowids, username) { return backend.getSongsByRowids(rowids, username); }
-export function refreshDuplicateHashes() { return backend.refreshDuplicateHashes(); }
-export function isDuplicatedHash(hash) { return backend.isDuplicatedHash(hash); }
 export function getFilesWithMetadataByPaths(filepaths, vpath, username) { return backend.getFilesWithMetadataByPaths(filepaths, vpath, username); }
 export function getAaFileById(id) { return backend.getAaFileById(id); }
 export function getAaFileForDir(vpath, dirRelPath) { return backend.getAaFileForDir(vpath, dirRelPath); }
@@ -272,8 +250,8 @@ export function getPodcastEpisodes(feedId) { return backend.getPodcastEpisodes(f
 export function upsertPodcastEpisodes(feedId, episodes) { return backend.upsertPodcastEpisodes(feedId, episodes); }
 export function saveEpisodeProgress(episodeId, feedId, position, played) { return backend.saveEpisodeProgress(episodeId, feedId, position, played); }
 // Smart Playlists
-export function runSmartPlaylist(filters, sort, limitN, vpaths, username, ignoreVPaths, filepathPrefix) { return backend.runSmartPlaylist(filters, sort, limitN, vpaths, username, ignoreVPaths, filepathPrefix); }
-export function countSmartPlaylist(filters, vpaths, username, ignoreVPaths, filepathPrefix) { return backend.countSmartPlaylist(filters, vpaths, username, ignoreVPaths, filepathPrefix); }
+export function runSmartPlaylist(filters, sort, limitN, vpaths, username, ignoreVPaths, filepathPrefix, includeFilepathPrefixes) { return backend.runSmartPlaylist(filters, sort, limitN, vpaths, username, ignoreVPaths, filepathPrefix, includeFilepathPrefixes); }
+export function countSmartPlaylist(filters, vpaths, username, ignoreVPaths, filepathPrefix, includeFilepathPrefixes) { return backend.countSmartPlaylist(filters, vpaths, username, ignoreVPaths, filepathPrefix, includeFilepathPrefixes); }
 export function getSmartPlaylists(username) { return backend.getSmartPlaylists(username); }
 export function getSmartPlaylist(id, username) { return backend.getSmartPlaylist(id, username); }
 export function saveSmartPlaylist(username, name, filters, sort, limitN) { return backend.saveSmartPlaylist(username, name, filters, sort, limitN); }
@@ -331,12 +309,9 @@ export function previewFolderMetadata() { return backend.previewFolderMetadata()
 export function backfillFolderMetadata() { return backend.backfillFolderMetadata(); }
 // ReplayGain worker helpers
 export function getRgStatus() { return backend.getRgStatus(); }
-export function resetRgFailed() { return backend.resetRgFailed(); }
 export function getRgFailedRows() { return backend.getRgFailedRows(); }
 export function getRgFailedDetail() { return backend.getRgFailedDetail(); }
 export function shelveRgRows(ids) { return backend.shelveRgRows(ids); }
-export function unshelveRgRows(ids) { return backend.unshelveRgRows(ids); }
-export function purgeRgRowsByIds(ids) { return backend.purgeRgRowsByIds(ids); }
 export function resetRgFailedByIds(ids) { return backend.resetRgFailedByIds(ids); }
 export function resetRgAll() { return backend.resetRgAll(); }
 export function undoRgAll() { return backend.undoRgAll(); }
@@ -352,8 +327,6 @@ export function genreCorrectBpm(dryRun) { return backend.genreCorrectBpm(dryRun)
 export function genreCorrectBpmUndo() { return backend.genreCorrectBpmUndo(); }
 export function genreCorrectBpmSelected(corrections) { return backend.genreCorrectBpmSelected(corrections); }
 // Essentia audio features
-export function saveAudioFeatures(hash, features) { return backend.saveAudioFeatures(hash, features); }
-export function getAudioFeatures(hash) { return backend.getAudioFeatures(hash); }
 export function getSimilarSongs(hash, limit) { return backend.getSimilarSongs(hash, limit); }
 // Radio / Podcast Play Events
 export function insertRadioPlayEvent(e) { return backend.insertRadioPlayEvent(e); }
@@ -383,4 +356,78 @@ export function getApiKeysByUsername(username) { return backend.getApiKeysByUser
 export function getUsernameByApiKey(apiKey) { return backend.getUsernameByApiKey(apiKey); }
 export function insertApiKey(username, apiKey, label) { return backend.insertApiKey(username, apiKey, label); }
 export function deleteApiKeyById(id, username) { return backend.deleteApiKeyById(id, username); }
-export function deleteAllApiKeysByUsername(username) { return backend.deleteAllApiKeysByUsername(username); }
+export function deleteAllUserData(username) { return backend.deleteAllUserData(username); }
+
+export function getPasskeysByUsername(username) { return backend.getPasskeysByUsername(username); }
+export function getPasskeyByCredentialId(credentialId) { return backend.getPasskeyByCredentialId(credentialId); }
+export function insertPasskey(passkey) { return backend.insertPasskey(passkey); }
+export function updatePasskeyCounter(credentialId, counter) { return backend.updatePasskeyCounter(credentialId, counter); }
+export function deletePasskeyById(id, username) { return backend.deletePasskeyById(id, username); }
+
+export function spGetProfile(userId, slot) { return backend.spGetProfile(userId, slot); }
+export function spUpsertProfile(userId, slot, profileJson, playCount, lastEventId) { return backend.spUpsertProfile(userId, slot, profileJson, playCount, lastEventId); }
+export function spGetNewEvents(userId, afterId) { return backend.spGetNewEvents(userId, afterId); }
+export function getDlnaTrack(vpath, filepath) { return backend.getDlnaTrack(vpath, filepath); }
+export function getDlnaTracks(sources) { return backend.getDlnaTracks(sources); }
+export function spGetTrackFeatures(hash) { return backend.spGetTrackFeatures(hash); }
+export function spGetAllTracksWithFeatures(vpaths) { return backend.spGetAllTracksWithFeatures(vpaths); }
+export function spGetGeneratedPlaylist(userId, slot) { return backend.spGetGeneratedPlaylist(userId, slot); }
+export function spUpsertGeneratedPlaylist(userId, slot, tracksJson) { return backend.spUpsertGeneratedPlaylist(userId, slot, tracksJson); }
+export function spGetAllUserIds() { return backend.spGetAllUserIds(); }
+export function spGetStats() { return backend.spGetStats(); }
+export function spResetProfiles(userId) { return backend.spResetProfiles(userId); }
+
+// Album-Art Workshop
+export function artWorkshopEnsureTables() { backend.artWorkshopEnsureTables(); }
+export function artWorkshopShelves() { return backend.artWorkshopShelves(); }
+export function artWorkshopAudioFilepaths() { return backend.artWorkshopAudioFilepaths(); }
+export function artWorkshopArtlessAlbums() { return backend.artWorkshopArtlessAlbums(); }
+export function artWorkshopReleaseId(vpath, albumId) { return backend.artWorkshopReleaseId(vpath, albumId); }
+export function artWorkshopUpsertCandidate(candidate) { backend.artWorkshopUpsertCandidate(candidate); }
+export function artWorkshopReconcile(candidates) { backend.artWorkshopReconcile(candidates); }
+export function artWorkshopAllRows() { return backend.artWorkshopAllRows(); }
+export function artWorkshopRow(albumKey) { return backend.artWorkshopRow(albumKey); }
+export function artWorkshopSaveSuggestions(albumKey, suggestions, status, ts) { backend.artWorkshopSaveSuggestions(albumKey, suggestions, status, ts); }
+export function artWorkshopAlbumArt(vpath, albumId) { return backend.artWorkshopAlbumArt(vpath, albumId); }
+export function artWorkshopSetAlbumArt(vpath, albumId, aaFile, artSource, coverFile) { backend.artWorkshopSetAlbumArt(vpath, albumId, aaFile, artSource, coverFile); }
+export function artWorkshopMarkApplied(albumKey, info) { backend.artWorkshopMarkApplied(albumKey, info); }
+export function artWorkshopClearApplied(albumKey, status, ts) { backend.artWorkshopClearApplied(albumKey, status, ts); }
+export function artWorkshopStatusCounts() { return backend.artWorkshopStatusCounts(); }
+export function artWorkshopSourceCounts() { return backend.artWorkshopSourceCounts(); }
+export function artWorkshopCandidateKeys(filter) { return backend.artWorkshopCandidateKeys(filter); }
+export function artWorkshopCandidates(filter, limit, offset) { return backend.artWorkshopCandidates(filter, limit, offset); }
+export function artWorkshopFindAlbums(q) { return backend.artWorkshopFindAlbums(q); }
+export function artWorkshopAlbumInfo(vpath, albumId) { return backend.artWorkshopAlbumInfo(vpath, albumId); }
+export function artWorkshopSkip(albumKey, ts) { return backend.artWorkshopSkip(albumKey, ts); }
+export function artWorkshopShelve(folders, ts) { return backend.artWorkshopShelve(folders, ts); }
+export function artWorkshopUnshelve(folders) { return backend.artWorkshopUnshelve(folders); }
+
+// Artist enrichment queue
+export function resetFetchForUnenrichedArtists() { return backend.resetFetchForUnenrichedArtists(); }
+export function getArtistsWithImageMissingEnrichment(limit) { return backend.getArtistsWithImageMissingEnrichment(limit); }
+
+// Artist-albums diagnostics
+export function diagEffectiveArtistValues(name) { return backend.diagEffectiveArtistValues(name); }
+export function diagNormalizedArtist(name) { return backend.diagNormalizedArtist(name); }
+export function diagAlbumsForEffectiveArtist(effective) { return backend.diagAlbumsForEffectiveArtist(effective); }
+
+// Duplicate workshop
+export function dupExactGroups() { return backend.dupExactGroups(); }
+export function dupAudioGroups() { return backend.dupAudioGroups(); }
+export function dupHashesForPaths(fullPaths) { return backend.dupHashesForPaths(fullPaths); }
+export function dupSimilarGroups() { return backend.dupSimilarGroups(); }
+export function dupContentHashedTracks() { return backend.dupContentHashedTracks(); }
+
+// Genre enricher
+export function genreEnricherArtistsQueued() { return backend.genreEnricherArtistsQueued(); }
+export function genreEnricherStats() { return backend.genreEnricherStats(); }
+export function genreEnricherMigrate() { return backend.genreEnricherMigrate(); }
+export function genreEnricherClearState(value, source) { return backend.genreEnricherClearState(value, source); }
+export function genreEnricherResetSource(source) { return backend.genreEnricherResetSource(source); }
+export function genreEnricherResetAll() { return backend.genreEnricherResetAll(); }
+export function genreEnricherCompare(opts) { return backend.genreEnricherCompare(opts); }
+export function genreEnricherApply(items) { return backend.genreEnricherApply(items); }
+export function genreEnricherApplyConsensus() { return backend.genreEnricherApplyConsensus(); }
+export function genreEnricherApplyMajority() { return backend.genreEnricherApplyMajority(); }
+export function genreEnricherApplyAllEmpty(source) { return backend.genreEnricherApplyAllEmpty(source); }
+export function genreEnricherSetGenre(artist, value) { return backend.genreEnricherSetGenre(artist, value); }

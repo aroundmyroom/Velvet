@@ -39,5 +39,3 @@ Returned when `newName` is already taken by another playlist of the same user.
 - The rename is atomic — `UPDATE playlists SET name = ? WHERE user = ? AND name = ?`
 - If `oldName` does not exist the update is a no-op (returns 200, no error)
 - Smart playlists are not affected by this endpoint
-
-*Added v6.0.1-velvet*

@@ -36,7 +36,9 @@ describe('Jukebox session codes cannot resolve to Object.prototype members', () 
 
     it(`/remote/${code} does not hand out a session`, async () => {
       const html = await (await fetch(`${srv.baseUrl}/remote/${encodeURIComponent(code)}`)).text();
-      assert.doesNotMatch(html, /remoteProperties = \{"code"/);
+      const block = html.match(/<script type="application\/json" id="remote-data">([^<]*)<\/script>/);
+      assert.ok(block, 'remote-data block missing');
+      assert.deepEqual(JSON.parse(block[1]), { error: true });
     });
   }
 

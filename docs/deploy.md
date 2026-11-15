@@ -25,9 +25,9 @@ server {
     proxy_read_timeout       3600s;        # keep idle streams alive
     proxy_send_timeout       3600s;
     proxy_connect_timeout    10s;
-    client_max_body_size     0;            # no upload-size limit (album art)
+    client_max_body_size     0;            # no upload-size limit (file + album-art uploads)
 
-    # WebSocket support (waveform + scan-progress events)
+    # WebSocket support (jukebox / remote control)
     proxy_http_version       1.1;
     proxy_set_header Upgrade    $http_upgrade;
     proxy_set_header Connection "upgrade";
@@ -54,7 +54,7 @@ nginx -t && systemctl reload nginx
 
 ## Nginx Proxy Manager (NPM)
 
-If you use [Nginx Proxy Manager](https://nginxproxymanager.com/) instead of a manual nginx config, apply all of the following — **every item is needed**; omitting any one of them can cause audio dropouts, `ERR_CONTENT_LENGTH_MISMATCH` on large FLAC files, or broken WebSocket connections (scan progress, waveform).
+If you use [Nginx Proxy Manager](https://nginxproxymanager.com/) instead of a manual nginx config, apply all of the following — **every item is needed**; omitting any one of them can cause audio dropouts, `ERR_CONTENT_LENGTH_MISMATCH` on large FLAC files, or broken WebSocket connections (jukebox / remote control).
 
 ### 1 — Enable WebSockets Support (UI toggle)
 
@@ -62,7 +62,7 @@ On your proxy host's **Details tab**, turn on **"Websockets Support"**. This inj
 
 ### 2 — Custom Nginx Configuration (Advanced tab)
 
-Paste all four lines into the **Advanced tab → Custom Nginx Configuration** box:
+Paste these three lines into the **Advanced tab → Custom Nginx Configuration** box:
 
 ```nginx
 proxy_set_header Connection "";
@@ -122,7 +122,4 @@ See [install.md](install.md) for full instructions including PM2 and the `music.
 
 ## Release Process
 
-- Bump the version in `package.json`
-- Commit with message `vX.X.X`
-- Tag: `git tag vX.X.X`
-- Push: `git push && git push --tags`
+Releases are cut with `npm run release` (bump, version sync, tests, commit, tag, GitHub release). See [dev/release.md](dev/release.md).

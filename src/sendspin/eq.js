@@ -36,7 +36,7 @@ export function isDefaultEq(eq) {
   return eq.enabled && eq.preset === null && eq.gains.every((g) => g === 0);
 }
 
-export function eqActive(eq) {
+function eqActive(eq) {
   return Boolean(eq?.enabled) && Array.isArray(eq.gains) && eq.gains.some((g) => g !== 0);
 }
 

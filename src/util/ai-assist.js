@@ -8,7 +8,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import * as config from '../state/config.js';
 import * as db from '../db/manager.js';
 
-export const DEFAULT_MODEL = 'claude-haiku-5-5';
+const DEFAULT_MODEL ='claude-haiku-5-5';
 // Absolute ceiling for one AI-built queue, whatever the admin configures.
 export const MAX_QUEUE_SONGS = 9999;
 // USD per million input / output tokens; prompts stay far below the 100K tier.
@@ -76,7 +76,7 @@ function record(entry) {
 }
 export function queueBuilderEnabled() { const s = settings(); return s.enabled && s.queueBuilder; }
 export function isEnabled() { return settings().enabled; }
-export function month() { return new Date().toISOString().slice(0, 7); }
+function month() { return new Date().toISOString().slice(0, 7); }
 export function usage() { return db.getAiUsage(month()); }
 
 let _client = null;

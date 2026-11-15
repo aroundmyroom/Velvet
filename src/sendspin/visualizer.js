@@ -1,15 +1,15 @@
 import { samplesToUs } from './audio.js';
 import { encodeVisLoudness, encodeVisBeat, encodeVisFPeak, encodeVisSpectrum, encodeVisPeak } from './wire.js';
 
-export const VIS_TYPES = Object.freeze(['beat', 'loudness', 'f_peak', 'peak', 'spectrum']);
+const VIS_TYPES = Object.freeze(['beat', 'loudness', 'f_peak', 'peak', 'spectrum']);
 const PERIODIC = ['loudness', 'f_peak', 'spectrum'];
 export const RATE_MAX_CAP = 60;
-export const MAX_DISP_BINS = 1024;
+const MAX_DISP_BINS = 1024;
 // Visualizer frames go out at most this far beyond the group's send-ahead, so they never run far ahead of the audio.
-export const LEAD_MS = 500;
-export const JOIN_MARGIN_MS = 50;
-export const TICK_MS = 20;
-export const KEEP_BEHIND_MS = 1000;
+const LEAD_MS = 500;
+const JOIN_MARGIN_MS = 50;
+const TICK_MS = 20;
+const KEEP_BEHIND_MS = 1000;
 const REFERENCE_RATE = 48_000;
 const REFERENCE_FFT = 2048;
 const SMOOTH_MS = 40;
@@ -33,7 +33,7 @@ const MAX_COAST = 4;
 const LOOKAHEAD_S = ACQUIRE_S + 0.5;
 const KIND = { beat: 0, peak: 1, frame: 2 };
 
-export function fftSize(rate) {
+function fftSize(rate) {
   const target = REFERENCE_FFT * rate / REFERENCE_RATE;
   let n = 256;
   while (n < target) n <<= 1;
@@ -150,7 +150,7 @@ export function bandEdges(nBins, scale, fMin, fMax) {
   return e;
 }
 
-export const spectrumKey = (sp) => `${sp.n_disp_bins}:${sp.scale}:${sp.f_min}:${sp.f_max}`;
+const spectrumKey =(sp) => `${sp.n_disp_bins}:${sp.scale}:${sp.f_min}:${sp.f_max}`;
 
 // Display bin -> FFT bins inside it; a bin too narrow to hold one FFT bin reads the spectrum at its centre instead.
 function bandMap(sp, n, rate) {
@@ -169,7 +169,7 @@ function bandMap(sp, n, rate) {
   return bands;
 }
 
-export function spectrumUsable(sp) {
+function spectrumUsable(sp) {
   return Boolean(sp) && sp.n_disp_bins <= MAX_DISP_BINS && sp.f_max > sp.f_min;
 }
 
@@ -182,7 +182,7 @@ export function streamConfig(req) {
   return out;
 }
 
-export function trackBpm(track) {
+function trackBpm(track) {
   const v = track?.bpm ?? track?.item?.bpm ?? track?.item?.meta?.bpm ?? track?.meta?.bpm;
   return Number.isFinite(v) && v >= 30 && v <= 300 ? v : null;
 }
@@ -273,7 +273,7 @@ function insertSorted(events, e) {
 }
 
 // Tempo (comb over the onset autocorrelation, log-Gaussian prior) and beat phase (comb, then a PLL) on the onset curve.
-export class BeatTracker {
+class BeatTracker {
   constructor(fps) {
     this.fps = fps;
     this.tauMin = 60 * fps / BPM_MAX;

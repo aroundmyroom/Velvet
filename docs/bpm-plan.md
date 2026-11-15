@@ -1,5 +1,7 @@
 # BPM Octave Correction — Implementation Plan
 
+> **Status:** Phase 2 (genre-matrix correction) and Phase 3 (estimates-based detection) are built. Phase 1 as written below (octave snap in `_bpmHistoryPush`) is **not** in the code; Auto-DJ now limits drift another way (see Phase 1). Numbers in "The Problem" are from a May 2026 snapshot of one library.
+
 ## The Problem
 
 Essentia's `RhythmExtractor2013` suffers from classic **octave ambiguity**: it detects the correct
@@ -20,7 +22,9 @@ Genre coverage: **78%** of all tracks have a genre ID3 tag (104K of 134K).
 
 ---
 
-## Root Cause: Auto-DJ Anchor Drift
+## Root Cause: Auto-DJ Anchor Drift (historical)
+
+This describes the Auto-DJ of that time, which used hard `matchDouble` / `matchHalf` BPM filters. Those filters are gone: Auto-DJ now scores BPM softly (see [bpm-harmonic.md](bpm-harmonic.md#auto-dj--bpm-continuity--harmonic-mixing)).
 
 The immediate user symptom is not just wrong BPM display — it's the Auto-DJ escalating toward
 faster and faster music. This is caused by anchor drift:
@@ -42,11 +46,11 @@ but the push to history was using the raw stored value, dragging the anchor.
 
 ## Three-Phase Fix
 
-### Phase 1 — Auto-DJ Anchor Drift ✅ DONE
+### Phase 1 — Auto-DJ Anchor Drift (superseded — octave snap not in the code)
 
-**File:** `webapp/app.js` — `_bpmHistoryPush()`
+**Current code:** `_bpmHistoryPush()` in `webapp/app.js` pushes the stored BPM unchanged into the rolling 8-song history; the anchor is the rounded average. Drift is limited because (a) Phase 3 halves most doubled tempos at analysis time, (b) the scoring reference is `60 % current BPM + 40 % anchor`, (c) a fixed **Base BPM** can be set, and (d) BPM only scores, it no longer accepts half/double tempos as a match. The snap below was the original plan:
 
-**What changes:** Before pushing a new BPM to the rolling 8-song history, snap it to the closest
+**Planned change:** Before pushing a new BPM to the rolling 8-song history, snap it to the closest
 octave relative to the existing anchor. If anchor=75 and incoming=150, push 75 instead.
 
 ```js
@@ -64,14 +68,21 @@ if (_bpmAnchor != null) {
 _bpmHistory.push(b);
 ```
 
-**What it fixes:** The session anchor stays stable even when doubled/halved BPMs are in the DB.
-**What it does NOT fix:** The stored BPM values themselves — `150` stays as `150` in the DB.
-
-**Risk:** Zero. Client-side only. No DB changes. No server restart needed beyond normal deploy.
+**What it would fix:** The session anchor stays stable even when doubled/halved BPMs are in the DB.
+**What it would NOT fix:** The stored BPM values themselves — `150` stays as `150` in the DB.
 
 ---
 
-### Phase 2 — Genre-Matrix DB Correction (PLANNED)
+### Phase 2 — Genre-Matrix DB Correction ✅ Built
+
+Code: `genreCorrectBpm()`, `genreCorrectBpmSelected()`, `genreCorrectBpmUndo()` in `src/db/sqlite-backend.js`; routes in `src/api/bpm-analysis.js`; UI in **Admin → BPM & Key Analysis → Step 3 — Genre-Based Octave Correction**. Differences from the plan below:
+
+- The `dubstep` / `grime` family was not built.
+- Families are checked in this order: DnB, Disco, Hip-Hop/Soul, Reggae, Electronic, Pop/Rock (first keyword match wins).
+- A row is only changed when the halved or doubled value lands **inside** the family window; results outside 40–300 BPM are skipped.
+- The dry run returns the list of proposed corrections; the admin can apply all of them (`genre-correct`) or only the ticked rows (`genre-correct-selected`).
+- Undo restores `bpm = bpm_raw`, sets `bpm_status = 'done'` and clears `bpm_raw`.
+- All three endpoints return 409 while the Essentia worker runs.
 
 **Goal:** Correct the ~19,000 wrongly-stored essentia BPM values in the DB using the genre tag.
 
@@ -83,7 +94,7 @@ _bpmHistory.push(b);
 | `reggae`, `dancehall`, `dub` | Reggae | 60–105 BPM | if stored >105: halve |
 | `house`, `euro house`, `euro-house`, `eurodance`, `dance`, `club`, `trance`, `techno`, `electronic`, `electro` | Electronic 4/4 | 115–145 BPM | if stored <115: double; if stored >145: halve |
 | `drum and bass`, `drum & bass`, `d&b`, `dnb`, `jungle` | DnB | 155–190 BPM | if stored <155: double |
-| `dubstep`, `grime` | Dubstep/Grime | 135–150 BPM | if stored <135: double; if stored >150: halve |
+| `dubstep`, `grime` | Dubstep/Grime | 135–150 BPM | *(not built)* |
 | `disco` | Disco | 95–135 BPM | if stored >135: halve; if stored <95: double |
 | `top 40`, `pop`, `pop rock`, `rock` | Pop/Rock fallback | **no correction** | too ambiguous |
 | no genre tag / unknown | Unknown | **no correction** | no genre data |
@@ -112,7 +123,7 @@ _bpmHistory.push(b);
    - Mark `bpm_status = 'genre-corrected'` for auditability
 4. **Dry-run mode** (`?dryRun=true`) — returns JSON counts of what would change per genre family, without writing anything.
 5. **Undo** — `POST /api/v1/admin/bpm/genre-correct-undo` — restores `bpm = bpm_raw` where `bpm_status = 'genre-corrected'`.
-6. **Admin UI** — button in the BPM/Audio Analysis card: "Correct BPM by Genre (dry run)" → "Apply".
+6. **Admin UI** — Step 3 in Admin → BPM & Key Analysis: "Dry Run (preview)" → "Apply N corrections" / "Apply selected", plus "Undo genre correction".
 
 #### Risk assessment
 
@@ -123,9 +134,9 @@ _bpmHistory.push(b);
 
 ---
 
-### Phase 3 — Essentia Worker: Estimates-Based Detection (PLANNED)
+### Phase 3 — Essentia Worker: Estimates-Based Detection ✅ Built
 
-**File:** `src/util/essentia-bpm-worker.mjs`
+**File:** `src/util/essentia-bpm-worker.mjs` — `analyseWithEssentia()`. Built as below (it also requires at least one estimate). Each halving is logged as `[bpm-octave] Halved X → Y BPM (estimates: full=…, half=…)`. The secondary genre-window check was **not** built.
 
 **Goal:** Detect octave errors at analysis time using the audio signal itself — no genre needed.
 
@@ -162,13 +173,11 @@ falls within the genre family window, confirm; if it would fall outside, keep or
 
 - Only affects newly analyzed tracks (files without a stored BPM yet).
 - After Phase 2 corrects existing data, Phase 3 ensures re-analyzed files don't regress.
-- The ~4,800 tracks reset for re-analysis after the May 19 backup incident benefit immediately.
 
 #### Threshold tuning
 
-The `0.75` ratio and `±5 BPM` tolerance window are starting estimates. These should be validated
-against a sample of known-wrong tracks before committing. Consider logging `countFull`,
-`countHalf`, and the final decision to the worker's debug output initially.
+The `0.75` ratio and `±5 BPM` tolerance window are starting estimates. Each decision is logged
+(`countFull`, `countHalf`), so they can be checked against known-wrong tracks.
 
 ---
 
@@ -176,6 +185,6 @@ against a sample of known-wrong tracks before committing. Consider logging `coun
 
 | Phase | Fixes | Scope | Risk | Status |
 |---|---|---|---|---|
-| 1 — Anchor drift | Auto-DJ no longer escalates tempo | Client-side only, 1 function | Zero | ✅ Done |
-| 2 — Genre matrix | Corrects ~19K wrong stored values | DB update, admin-triggered | Low–Medium | Planned |
-| 3 — Estimates | Prevents recurrence on new analysis | Essentia worker | Low | Planned |
+| 1 — Anchor drift | Auto-DJ no longer escalates tempo | Client-side only | Zero | Superseded — octave snap not built; drift limited by soft BPM scoring, blended reference and Base BPM |
+| 2 — Genre matrix | Corrects wrongly doubled/halved stored values | DB update, admin-triggered | Low–Medium | ✅ Built (no dubstep/grime family) |
+| 3 — Estimates | Prevents recurrence on new analysis | Essentia worker | Low | ✅ Built (no genre cross-check) |

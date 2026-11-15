@@ -75,7 +75,7 @@ document.addEventListener('DOMContentLoaded', function() {
         break;
       case 'logout':
         if (typeof adminConfirm === 'function') {
-          adminConfirm('Logout?', 'Music playing in the player tab will stop.', 'Logout', function() { API.logout(); });
+          adminConfirm(I18N.t('admin.logout.confirmTitle'), I18N.t('admin.logout.confirmBody'), I18N.t('admin.logout.confirmBtn'), function() { API.logout(); });
         }
         break;
       case 'toggle-sidemenu':

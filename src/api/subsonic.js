@@ -9,7 +9,7 @@
  *   openSubsonic: true, type: "velvet", serverVersion: <pkg version>
  */
 
-import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
+import { createHash, timingSafeEqual } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -27,11 +27,13 @@ import { ffmpegBin, ensureFfmpeg } from '../util/ffmpeg-bootstrap.js';
 import { resolveChildPath, resolvePathWithinRoot } from '../util/path-security.js';
 import * as transcode from './transcode.js';
 import { radioForUser } from '../autodj/library.js';
-import { resolveTrackGain } from './db.js';
+import { resolveTrackGain } from '../util/replaygain.js';
+import { rootVpathOf } from '../util/vpath.js';
 import { splitRaw } from '../util/genre-merge.js';
-import { songLyrics } from '../util/song-lyrics.js';
+import { songLyrics, lyricsCacheDir } from '../util/song-lyrics.js';
 import { runSavedSmartPlaylist, countSavedSmartPlaylist } from './smart-playlists.js';
 import { rankTopSongs } from '../util/top-songs.js';
+import { xmlEscape } from '../util/xml.js';
 
 const require = createRequire(import.meta.url);
 const packageJson = require('../../package.json');
@@ -234,14 +236,6 @@ function toXml(obj, tag = null, indent = '') {
   return `${indent}<${tag}${attrStr}>\n${inner}\n${indent}</${tag}>`;
 }
 
-// Strips characters XML 1.0 forbids, so a stray control char in a tag can't break client parsers
-const XML_INVALID = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\uFFFE\uFFFF]|[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g;
-
-function xmlEscape(s) {
-  return String(s).replaceAll(XML_INVALID, '')
-    .replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;').replaceAll("'", '&apos;');
-}
-
 /** Return the vpaths a user is allowed to access */
 function getUserVpaths(username) {
   if (Object.keys(config.program.users).length === 0) {
@@ -267,29 +261,18 @@ function parseDirId(id) {
 }
 
 /**
- * Build vpath metadata: detect child vpaths (sub-folders of another vpath).
- * Returns { [vpath]: { parentVpath, filepathPrefix } } where parentVpath/filepathPrefix
- * are non-null only when this vpath's root is inside another vpath's root.
+ * Build vpath metadata: { [vpath]: { parentVpath, filepathPrefix } }. For a child vpath
+ * whose ROOT vpath (the one the DB indexes) the user also has, parentVpath is that root
+ * and filepathPrefix the child's folder inside it; otherwise both are null.
  */
 function getVpathMeta(username) {
-  const allFolders = config.program.folders;
+  const folders = config.program.folders;
   const userVpaths = getUserVpaths(username);
   const meta = {};
   for (const vp of userVpaths) {
-    if (!allFolders[vp]) { meta[vp] = { parentVpath: null, filepathPrefix: null }; continue; }
-    const myRoot = allFolders[vp].root.replace(/\/?$/, '/');
-    const parentVpath = userVpaths.find(other =>
-      other !== vp &&
-      allFolders[other] &&
-      allFolders[other].root.replace(/\/?$/, '/') !== myRoot &&
-      myRoot.startsWith(allFolders[other].root.replace(/\/?$/, '/'))
-    );
-    meta[vp] = {
-      parentVpath: parentVpath || null,
-      filepathPrefix: parentVpath
-        ? myRoot.slice(allFolders[parentVpath].root.replace(/\/?$/, '/').length)
-        : null
-    };
+    const { vpath: root, prefix } = folders[vp] ? rootVpathOf(vp, folders) : { vpath: vp, prefix: '' };
+    const parentVpath = root !== vp && userVpaths.includes(root) ? root : null;
+    meta[vp] = { parentVpath, filepathPrefix: parentVpath ? prefix : null };
   }
   return meta;
 }
@@ -391,6 +374,15 @@ function isoOrNull(epochSec) {
 }
 
 // Format-based bitRate estimates (kbps) for uncompressed / lossless / lossy
+// Explicit IANA types: Express maps .flac/.wav to audio/x-flac / audio/x-wav, which iOS AVFoundation rejects.
+const AUDIO_MIME = Object.freeze({
+  mp3: 'audio/mpeg', flac: 'audio/flac', ogg: 'audio/ogg',
+  opus: 'audio/opus', aac: 'audio/aac', m4a: 'audio/mp4',
+  wav: 'audio/wav', wma: 'audio/x-ms-wma', aiff: 'audio/aiff',
+  aif: 'audio/aiff', ape: 'audio/ape', wv: 'audio/x-wavpack',
+  mpc: 'audio/musepack'
+});
+
 const FORMAT_BITRATE = {
   wav: 1411, aiff: 1411, aif: 1411,
   flac: 800, ape: 700, wv: 700,
@@ -544,7 +536,7 @@ function _expandDirFiles(files, parentId) {
 }
 
 // OpenSubsonic replayGain from the same priority chain the web player uses
-// (resolveTrackGain: rsgain measurement → R128 tag → ReplayGain tag). Gains in
+// (resolveTrackGain: rsgain measurement → ReplayGain tag). Gains in
 // dB against the ReplayGain 2.0 reference (-18 LUFS) — Music Assistant turns
 // them into loudness as -18 - gain. Peaks are linear amplitude, as the spec
 // and ReplayGain tags define them; Velvet stores true peak in dBFS.
@@ -594,14 +586,7 @@ function _openSubsonicSongFields(row, artist, artistId, albumArtist) {
 function buildSong(row, _vpaths) {
   // contentType heuristic from format
   const fmt = (row.format || 'mp3').toLowerCase();
-  const mimeMap = {
-    mp3: 'audio/mpeg', flac: 'audio/flac', ogg: 'audio/ogg',
-    opus: 'audio/opus', aac: 'audio/aac', m4a: 'audio/mp4',
-    wav: 'audio/wav', wma: 'audio/x-ms-wma', aiff: 'audio/aiff',
-    aif: 'audio/aiff', ape: 'audio/ape', wv: 'audio/x-wavpack',
-    mpc: 'audio/musepack'
-  };
-  const contentType = mimeMap[fmt] || 'audio/mpeg';
+  const contentType = AUDIO_MIME[fmt] || 'audio/mpeg';
 
   // Scanned bitrate (kbps) when known; else a format average — never fs.stat
   // (slow on network mounts).
@@ -648,7 +633,7 @@ function buildSong(row, _vpaths) {
       ? Math.floor(Date.now() / 1000) : row.starred) || new Date().toISOString().replaceAll('.000Z', 'Z');
   }
   if (row.lastPlayed || row.lp) {
-    song.played = isoOrNull(row.lastPlayed || row.lp);
+    song.played = isoOrNull((row.lastPlayed || row.lp) / 1000);
   }
   const replayGain = _replayGain(row);
   if (replayGain) song.replayGain = replayGain;
@@ -663,9 +648,8 @@ function buildSong(row, _vpaths) {
   const losslessFormats = new Set(['flac', 'wav', 'aiff', 'aif', 'ape', 'wv', 'dsf', 'dff', 'wma', 'alac']);
   if (transcode.isEnabled() && losslessFormats.has(fmt)) {
     const tc = config.program.transcode.defaultCodec ?? 'opus';
-    const tcMime = { opus: 'audio/opus', mp3: 'audio/mpeg', aac: 'audio/aac' };
     song.transcodedSuffix = tc;
-    song.transcodedContentType = tcMime[tc] ?? 'audio/opus';
+    song.transcodedContentType = transcode.codecContentType(tc);
   }
 
   return song;
@@ -811,12 +795,16 @@ function _buildRadioStation(s) {
 
 // ── Lyrics helpers ────────────────────────────────────────────────────────────
 
-const _lyricsCache = new Map();
+// t+s is enough to brute-force the password offline; apiKey is a full login.
+const _SECRET_PARAMS = new Set(['p', 't', 's', 'apikey', 'token', 'password']);
 
-function _lyricsCacheDir() {
-  const dbDir = config.program.storage?.dbDirectory;
-  return dbDir ? path.join(dbDir, '..', 'lyrics') : null;
+function _scrubSecrets(obj) {
+  const out = {};
+  for (const [k, v] of Object.entries(obj || {})) out[k] = _SECRET_PARAMS.has(k.toLowerCase()) ? '[scrubbed]' : v;
+  return out;
 }
+
+const _lyricsCache = new Map();
 
 async function _rowLyrics(row) {
   const cached = _cacheGet(_lyricsCache, row.hash);
@@ -829,7 +817,7 @@ async function _rowLyrics(row) {
     return [];
   }
   const found = await songLyrics({
-    fullPath, artist: row.artist, title: row.title, duration: row.duration, cacheDir: _lyricsCacheDir(),
+    fullPath, artist: row.artist, title: row.title, duration: row.duration, cacheDir: lyricsCacheDir(config.program.storage.dbDirectory),
   });
   _cacheSet(_lyricsCache, row.hash, found);
   return found;
@@ -851,18 +839,15 @@ const _folderArtCache = new Map();       // user+folder id -> aaFile|null
 export function setup(velvet) {
   // ── Debug request logger ────────────────────────────────────────────────────
   // Logs every incoming Subsonic request to the Velvet log files.
-  // Password param is scrubbed. Disable by removing/commenting this block.
+  // Credential params (p, t, s, apiKey, token) are scrubbed.
   velvet.use('/rest', (req, _res, next) => {
-    const q = { ...req.query };
-    if (q.p) q.p = '[scrubbed]';
+    const q = _scrubSecrets(req.query);
     const action = req.path.replace(/^\//, '').replace(/\.view$/, '');
     const qs = Object.entries(q).map(([k, v]) => `${k}=${v}`).join(' ');
     let msg = `[SUBSONIC] ${req.method} ${action}`;
     if (qs) msg += ` | ${qs}`;
     if (req.method === 'POST' && req.body && Object.keys(req.body).length) {
-      const b = { ...req.body };
-      if (b.p) b.p = '[scrubbed]';
-      msg += ` | body:${JSON.stringify(b)}`;
+      msg += ` | body:${JSON.stringify(_scrubSecrets(req.body))}`;
     }
     winston.info(msg);
     next();
@@ -1426,7 +1411,6 @@ export function setup(velvet) {
     } else {
       db.insertUserMetadata({ hash, user: req.subsonicUser, rating: velvetRating, pc: 0, lp: null });
     }
-    db.saveUserDB();
     sendResponse(req, res, makeResponse());
   });
 
@@ -1621,7 +1605,7 @@ export function setup(velvet) {
         const bitrate = reqMaxBitRate > 0
           ? _mapMaxBitrateKbps(reqMaxBitRate) : (config.program.transcode.defaultBitrate ?? '128k');
         winston.info(`[SUBSONIC] stream TRANSCODE ${fmt}→${codec}@${bitrate} offset=${reqTimeOffset} src="${row.artist} - ${row.title}" client=${req.query.c ?? req.body?.c ?? '?'}`);
-        transcode.pipeTranscodeToRes(res, fullPath, codec, bitrate, null, reqTimeOffset);
+        transcode.pipeTranscodeToRes(res, fullPath, codec, bitrate, reqTimeOffset);
         return;
       }
     }
@@ -1634,17 +1618,7 @@ export function setup(velvet) {
       winston.info(`[SUBSONIC] stream PASSTHROUGH (${reason}) format=${reqFormat ?? 'none'} maxBitRate=${reqMaxBitRate} src="${row.artist} - ${row.title}" client=${req.query.c ?? req.body?.c ?? '?'}`);
     }
 
-    // Set explicit Content-Type using the DB format field so iOS AVFoundation gets
-    // the correct IANA MIME type. Express's mime module maps .flac → audio/x-flac
-    // and .wav → audio/x-wav, both of which iOS rejects. We need audio/flac + audio/wav.
-    const streamMimeMap = {
-      mp3: 'audio/mpeg', flac: 'audio/flac', ogg: 'audio/ogg',
-      opus: 'audio/opus', aac: 'audio/aac', m4a: 'audio/mp4',
-      wav: 'audio/wav', wma: 'audio/x-ms-wma', aiff: 'audio/aiff',
-      aif: 'audio/aiff', ape: 'audio/ape', wv: 'audio/x-wavpack',
-      mpc: 'audio/musepack'
-    };
-    const mime = streamMimeMap[fmt];
+    const mime = AUDIO_MIME[fmt];
     if (mime) res.set('Content-Type', mime);
 
     res.sendFile(fullPath, err => {
@@ -1929,7 +1903,6 @@ export function setup(velvet) {
       db.rollbackTransactionStrict();
       throw err;
     }
-    db.saveUserDB();
 
     sendResponse(req, res, makeResponse('ok', {
       playlist: { id: name, name, owner: req.subsonicUser, public: false,
@@ -1984,7 +1957,6 @@ export function setup(velvet) {
       db.rollbackTransactionStrict();
       throw err;
     }
-    db.saveUserDB();
 
     sendResponse(req, res, makeResponse());
   });
@@ -1996,7 +1968,6 @@ export function setup(velvet) {
 
     if (_smartPlaylistId(id) != null) return sendResponse(req, res, makeError(ERRORS.UNAUTH.code, 'Smart playlists are read-only; edit them in Velvet.'));
     db.deletePlaylist(req.subsonicUser, id);
-    db.saveUserDB();
     sendResponse(req, res, makeResponse());
   });
 
@@ -2103,14 +2074,17 @@ export function setup(velvet) {
     sendResponse(req, res, makeResponse('ok', { bookmarks: { bookmark: bookmarkList } }));
   });
 
-  router('saveBookmark', (req, res) => {
+  // createBookmark is the Subsonic spec name; saveBookmark is kept for clients that use it
+  const saveBookmark = (req, res) => {
     const id       = req.query.id       || req.body?.id;
     const position = Number(req.query.position ?? req.body?.position ?? 0);
     const comment  = req.query.comment  || req.body?.comment || null;
     if (!id) return sendResponse(req, res, makeError(ERRORS.MISSING_PARAM.code, 'id required'));
     db.saveBookmark(req.subsonicUser, id, position, comment);
     sendResponse(req, res, makeResponse());
-  });
+  };
+  router('createBookmark', saveBookmark);
+  router('saveBookmark', saveBookmark);
 
   router('deleteBookmark', (req, res) => {
     const id = req.query.id || req.body?.id;
@@ -2422,7 +2396,7 @@ export function setup(velvet) {
       ? transcodeInfo.bitrate : (config.program.transcode.defaultBitrate ?? '128k');
 
     winston.info(`[SUBSONIC] getTranscodeStream ${codec}@${bitrate} offset=${offset} src="${row.artist} - ${row.title}" client=${req.query.c ?? req.body?.c ?? '?'}`);
-    transcode.pipeTranscodeToRes(res, fullPath, codec, bitrate, null, offset);
+    transcode.pipeTranscodeToRes(res, fullPath, codec, bitrate, offset);
   });
 
   // ── getOpenSubsonicExtensions ─────────────────────────────────────────────────
@@ -2563,10 +2537,6 @@ export function setup(velvet) {
     const raw = String(req.params.action || '').replace(/\.view$/i, '');
     sendResponse(req, res, makeError(ERRORS.NOT_FOUND.code, `Subsonic method "${raw}" not found`));
   });
-  velvet.all('/rest/:action.view', subsonicAuth, (req, res) => {
-    const raw = String(req.params.action || '').replace(/\.view$/i, '');
-    sendResponse(req, res, makeError(ERRORS.NOT_FOUND.code, `Subsonic method "${raw}" not found`));
-  });
 }
 
 // ── subsonic helpers ───────────────────────────────────────────────────────────
@@ -2676,7 +2646,7 @@ function _processScrobble(db, ids, username, nowPlayingStore) {
   db.savepoint('scrobble_sp');
   try {
     for (const id of ids) {
-      const now = Math.floor(Date.now() / 1000);
+      const now = Date.now();
 
     // CUE virtual track id ("cue:<baseHash>[@<rowid>]:<index>"): resolve to the
     // underlying base file row and use its hash for play-count / play-event
@@ -2723,7 +2693,6 @@ function _processScrobble(db, ids, username, nowPlayingStore) {
     db.rollbackToPoint('scrobble_sp');
     throw err;
   }
-  db.saveUserDB();
 }
 
 function _resolveFolderArt(db, req, filename, parsedInt, isDirId) {

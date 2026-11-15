@@ -45,7 +45,7 @@
   | Field | Type | Description |
   |---|---|---|
   | `code` | string | 8-character nanoid used as the Jukebox room identifier |
-  | `token` | string \| null | JWT the remote client uses to authenticate WebSocket/API calls. `null` on no-auth servers |
+  | `token` | string \| null | JWT the remote client uses to authenticate WebSocket/API calls |
   | `startTime` | number \| null | Unix epoch in **milliseconds** (`Date.now()`) when the WebSocket connection was accepted |
   | `url` | string | Relative path to the remote control page for this session |
 

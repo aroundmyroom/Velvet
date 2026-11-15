@@ -24,7 +24,7 @@ const S = {
 };
 
 /* ── Helpers ────────────────────────────────────────────────── */
-const _token = (typeof sharedPlaylist !== 'undefined') ? sharedPlaylist.token : '';
+const _token = sharedPlaylist?.token || '';
 
 function _encPath(p) {
   return p.split('/').map(encodeURIComponent).join('/');
@@ -56,6 +56,11 @@ function noArtHtml(sm) {
     '<span></span><span></span><span></span><span></span><span></span>' +
     '</div></div>';
 }
+
+// The CSP blocks inline onerror attributes; error events do not bubble, so listen in the capture phase.
+document.addEventListener('error', function (e) {
+  if (e.target.matches && e.target.matches('.row-art img')) e.target.parentNode.innerHTML = noArtHtml(true);
+}, true);
 
 /* ── Toast ──────────────────────────────────────────────────── */
 let _toastTmr = null;
@@ -97,8 +102,7 @@ function _makeRow(song, i) {
     '</div>' +
     '<div class="row-art">' +
       (meta && meta['album-art']
-        ? '<img src="' + artUrl(meta['album-art'], 's') + '" alt="" loading="lazy"' +
-            ' onerror="this.onerror=null;this.parentNode.innerHTML=noArtHtml(true)">'
+        ? '<img src="' + artUrl(meta['album-art'], 's') + '" alt="" loading="lazy">'
         : noArtHtml(true)) +
     '</div>' +
     '<div class="song-info">' +
@@ -106,7 +110,7 @@ function _makeRow(song, i) {
       (sub ? '<div class="song-sub">' + esc(sub) + '</div>' : '') +
     '</div>' +
     '<a href="' + esc(mediaUrl(song.path)) + '" download="' + esc(title) + '"' +
-      ' class="sh-row-dl" title="Download" onclick="event.stopPropagation()">' +
+      ' class="sh-row-dl" title="' + esc(t('shared-page.download')) + '">' +
       '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"' +
         ' stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' +
         '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>' +
@@ -115,6 +119,7 @@ function _makeRow(song, i) {
       '</svg>' +
     '</a>';
 
+  row.querySelector('.sh-row-dl').addEventListener('click', function (e) { e.stopPropagation(); });
   row.addEventListener('click', function () { playAt(i); });
   return row;
 }
@@ -126,7 +131,7 @@ function _rowSub(meta) {
 
 function _updatePlCount() {
   const n = S.queue.length;
-  document.getElementById('sh-pl-count').textContent = n + ' song' + (n !== 1 ? 's' : '');
+  document.getElementById('sh-pl-count').textContent = t('shared-page.songCount', { count: n });
 }
 
 function refreshRow(i) {
@@ -157,7 +162,7 @@ function updateNowPlaying() {
   document.getElementById('sh-album').textContent  = album;
   document.getElementById('sh-year').textContent   = year;
   document.getElementById('sh-count').textContent  =
-    S.idx >= 0 ? 'Track ' + (S.idx + 1) + ' of ' + S.queue.length : '';
+    S.idx >= 0 ? t('shared-page.trackOf', { n: S.idx + 1, total: S.queue.length }) : '';
   document.title = title + (artist ? ' · ' + artist : '') + ' — Velvet';
 
   const artWrap = document.getElementById('sh-art-wrap');
@@ -333,7 +338,7 @@ document.getElementById('sh-dl-all').addEventListener('click', function () {
       document.body.removeChild(a);
     }, i * 350);
   });
-  showToast('Downloading ' + S.queue.length + ' file' + (S.queue.length !== 1 ? 's' : '') + '…');
+  showToast(t('status.downloadingFiles', { count: S.queue.length }));
 });
 
 /* ── Metadata fetch ──────────────────────────────────────────── */
@@ -354,11 +359,14 @@ async function fetchMeta(filepath) {
 
 /* ── Boot ────────────────────────────────────────────────────── */
 async function boot() {
-  if (typeof sharedPlaylist === 'undefined' || !sharedPlaylist || !Array.isArray(sharedPlaylist.playlist)) {
+  await I18N.loadLanguage();
+  document.title = 'Velvet – ' + t('shared-page.title');
+  if (!Array.isArray(sharedPlaylist?.playlist)) {
+    const expired = sharedPlaylist?.error === 'expired';
     document.getElementById('sh-main').innerHTML =
       '<div class="sh-error">' +
-        '<strong>Playlist not found</strong>' +
-        'This shared link may have expired or is invalid.' +
+        '<strong>' + esc(t(expired ? 'shared-page.expired' : 'shared-page.notFound')) + '</strong>' +
+        esc(t(expired ? 'shared-page.expiredHint' : 'shared-page.notFoundHint')) +
       '</div>';
     return;
   }
@@ -379,7 +387,7 @@ async function boot() {
     updateNowPlaying();
     _highlightRows();
   } else {
-    document.getElementById('sh-count').textContent = 'Empty playlist';
+    document.getElementById('sh-count').textContent = t('shared-page.empty');
   }
 
   // Load metadata in the background, refreshing each row as it arrives

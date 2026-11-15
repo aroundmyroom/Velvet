@@ -1,35 +1,34 @@
 **Delete Playlist**
 ----
-  Delete a playlist
+  Delete one of the authenticated user's playlists.
 
 * **URL**
 
-  /playlist/delete
+  `/api/v1/playlist/delete`
 
 * **Method:**
 
   `POST`
 
+* **Auth required:** Yes — any logged-in user (only their own playlists)
+
 *  **JSON Params**
 
   **Required:**
 
-  `playlistname` - The name of the playlist<br />
-
-  **Optional:**
-
-  `hide` - Boolean Value -  If set the playlist will not be deleted but set to a status of 'hidden'.
+  `playlistname` - The name of the playlist
 
 * **JSON Example**
 
-  ```
-  {
-    'playlistname': 'Best of Bieber',
-    'hide': false
-  }
+  ```json
+  { "playlistname": "Best of Bieber" }
   ```
 
 * **Success Response:**
 
   * **Code:** 200 <br />
-    **Content:** `{success: true}`
+    **Content:** `{}`
+
+* **Notes:**
+
+  - Deleting a name that does not exist is a no-op and still returns `{}`.

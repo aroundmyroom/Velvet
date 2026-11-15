@@ -6,12 +6,12 @@ Velvet includes an optional anonymous ping that helps track how many instances a
 
 ## What is sent
 
-Once at startup (after a 60-second delay) and then once every 24 hours, Velvet sends this JSON payload to a Cloudflare Worker:
+Once at startup (after a 60-second delay) and then once every 24 hours, Velvet sends a JSON `POST` to a Cloudflare Worker at `https://velvet.aroundmyroom.com/ping`. Velvet sends four fields; the Worker adds `lastSeen` when it stores the ping:
 
 ```json
 {
   "id": "a3b4c5d6-e7f8-...",
-  "version": "5.16.29-velvet",
+  "version": "0.9.3",
   "platform": "linux",
   "runtime": "docker",
   "lastSeen": "2026-04-04T12:34:49.943Z"
@@ -20,7 +20,7 @@ Once at startup (after a 60-second delay) and then once every 24 hours, Velvet s
 
 | Field | Description |
 |---|---|
-| `id` | A random UUID generated once on first boot and stored in `save/conf/instance-id`. Not linked to any user or system identity. |
+| `id` | A random UUID generated on the first ping and stored in `save/conf/instance-id`. Not linked to any user or system identity. |
 | `version` | The Velvet version string from `package.json`. |
 | `platform` | The result of `os.platform()` — e.g. `linux`, `darwin`, `win32`. |
 | `runtime` | `"docker"` if running inside a Docker container (detected via `/.dockerenv`), otherwise `"node"`. |
@@ -51,7 +51,7 @@ Add `"telemetry": false` to your `save/conf/default.json` and restart Velvet:
 
 When opt-out is active, `telemetry.js` returns immediately at setup and no pings are ever sent. The instance-id file is not created.
 
-The About page in the admin panel also describes this setting.
+The **About** page in the admin panel shows the payload and describes this setting.
 
 ---
 

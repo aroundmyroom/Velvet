@@ -1740,7 +1740,7 @@ body.room-remote #vu-spec-row{opacity:.35;}
 .sleep-cancel-btn{flex-shrink:0;padding:6px 12px;border-radius:99px;font-size:12px;font-weight:600;border:1px solid var(--border2);color:var(--t2);background:var(--raised);cursor:pointer;}
 .sleep-cancel-btn:hover{background:var(--hover);}
 /* Sleep light in player bar */
-.sleep-light{font-size:10px;font-weight:700;letter-spacing:.3px;padding:3px 8px;border-radius:99px;background:rgba(99,102,241,.18);border:1px solid rgba(99,102,241,.4);color:var(--primary);white-space:nowrap;}
+.sleep-light{font-size:10px;font-weight:700;letter-spacing:.3px;padding:3px 8px;border-radius:99px;background:rgba(99,102,241,.18);border:1px solid rgba(99,102,241,.4);color:var(--primary);white-space:nowrap;cursor:pointer;}
 
 /* Radio record button */
 .radio-rec-btn{color:var(--err,#f38ba8);padding:2px 4px;line-height:1;}

@@ -4,25 +4,9 @@
 // fixtures so a change on one side without the other fails the suite.
 // The scoring is documented in docs/autodj-scoring.md.
 
-const CAMELOT = {
-  'Ab minor': '1A', 'G# minor': '1A', 'B major': '1B',
-  'Eb minor': '2A', 'D# minor': '2A', 'F# major': '2B', 'Gb major': '2B',
-  'Bb minor': '3A', 'A# minor': '3A', 'Db major': '3B', 'C# major': '3B',
-  'F minor': '4A', 'Ab major': '4B', 'G# major': '4B',
-  'C minor': '5A', 'Eb major': '5B', 'D# major': '5B',
-  'G minor': '6A', 'Bb major': '6B', 'A# major': '6B',
-  'D minor': '7A', 'F major': '7B',
-  'A minor': '8A', 'C major': '8B',
-  'E minor': '9A', 'G major': '9B',
-  'B minor': '10A', 'D major': '10B',
-  'F# minor': '11A', 'A major': '11B',
-  'C# minor': '12A', 'E major': '12B',
-};
+import { toCamelot } from '../util/camelot.js';
 
-export function toCamelot(musicalKey) {
-  if (!musicalKey) return null;
-  return CAMELOT[musicalKey] ?? null;
-}
+export { toCamelot };
 
 export function camelotNeighbours(code) {
   if (!code) return null;
@@ -65,7 +49,7 @@ const GENRE_CAT_COMPAT = {
   'soft→hard': 0.15,        'hard→soft': 0.15,
 };
 
-export function genreCatCompat(c1, c2) {
+function genreCatCompat(c1, c2) {
   if (c1 === c2) return 0.9;
   return GENRE_CAT_COMPAT[`${c1}→${c2}`] ?? 0.5;
 }
@@ -76,7 +60,7 @@ export function genreFamilyOf(song) {
   return song.genre ? genreCat(song.genre) : null;
 }
 
-export function genreCompatScore(cur, cand) {
+function genreCompatScore(cur, cand) {
   const cf = genreFamilyOf(cur), kf = genreFamilyOf(cand);
   if (!cf || !kf) return 0.6;
   if (cur.genre && cand.genre && cur.genre.toLowerCase() === cand.genre.toLowerCase()) return 1.0;
@@ -91,7 +75,7 @@ export function genreAnchor(seedFamily, familyHistory) {
   return Object.entries(freq).sort((a, b) => b[1] - a[1])[0][0];
 }
 
-export function genreContinuityScore(cur, cand, anchor) {
+function genreContinuityScore(cur, cand, anchor) {
   const curScore = genreCompatScore(cur, cand);
   const kf = genreFamilyOf(cand);
   if (!anchor || !kf) return curScore;
@@ -100,7 +84,7 @@ export function genreContinuityScore(cur, cand, anchor) {
 }
 
 // filter: null, or { mode: 'whitelist'|'blacklist', genres: [expanded names] }
-export function genreFilterScore(song, filter) {
+function genreFilterScore(song, filter) {
   if (!filter?.genres?.length) return null;
   const raw = (song.genre || '').toLowerCase();
   const inList = filter.genres.some(g => {
@@ -116,7 +100,7 @@ export const ARTIST_COOLDOWN = 15;
 const ARTIST_PART_MIN = 3;
 const ARTIST_PART_STOP = new Set(['the', 'and', 'of', 'de', 'la', 'le', 'les', 'los', 'las', 'van', 'von', 'fire', 'wind', 'earth']);
 
-export function artistKey(s) {
+function artistKey(s) {
   return (s || '').toLowerCase()
     .normalize('NFD')
     .replaceAll(/[\u0300-\u036f]/g, '')

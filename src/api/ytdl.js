@@ -1,5 +1,4 @@
 import fsp from 'node:fs/promises';
-import https from 'node:https';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -9,6 +8,10 @@ import winston from 'winston';
 import * as config from '../state/config.js';
 import { ensureFfmpeg, getFfmpegDir } from '../util/ffmpeg-bootstrap.js';
 import { getDirname } from '../util/esm-helpers.js';
+import { downloadToFile } from '../util/bootstrap-helpers.js';
+import { dbFilepath } from '../util/db-filepath.js';
+import { resolvesToPrivate } from '../util/ssrf-check.js';
+import { canEmbedCover, embedCover, writeAudioWithTags } from '../util/ffmpeg-tags.js';
 
 const __dirname = getDirname(import.meta.url);
 const binaryExt = process.platform === 'win32' ? '.exe' : '';
@@ -26,51 +29,6 @@ function _ytdlpReleaseAsset() {
   if (arch === 'arm64' || arch === 'aarch64') return 'yt-dlp_linux_aarch64';
   if (arch === 'arm')                          return 'yt-dlp_linux_armv7l';
   return 'yt-dlp_linux'; // x86_64 + musl (works on Alpine)
-}
-
-// Download a URL following redirects, save to destPath, make executable.
-function _downloadFile(url, destPath) {
-  return new Promise((resolve, reject) => {
-    const follow = (u, attempt = 1) => {
-      https.get(u, { headers: { 'User-Agent': 'velvet-ytdlp-installer' } }, res => {
-        if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
-          let next;
-          try {
-            next = new URL(res.headers.location, u).toString();
-          } catch (e) {
-            return reject(e);
-          }
-          return follow(next, attempt);
-        }
-        if (res.statusCode !== 200) {
-          const retryable = [408, 425, 429, 500, 502, 503, 504].includes(res.statusCode);
-          if (retryable && attempt < 4) {
-            const wait = (1000 * (2 ** (attempt - 1))) + Math.floor(Math.random() * 250);
-            return setTimeout(() => follow(u, attempt + 1), wait);
-          }
-          return reject(new Error(`HTTP ${res.statusCode} downloading yt-dlp`));
-        }
-        const tmp = destPath + '.tmp';
-        const out = fs.createWriteStream(tmp);
-        res.pipe(out);
-        out.on('finish', async () => {
-          try {
-            await fsp.chmod(tmp, 0o750);
-            await fsp.rename(tmp, destPath);
-            resolve();
-          } catch (e) { reject(e); }
-        });
-        out.on('error', reject);
-      }).on('error', err => {
-        if ((err?.code === 'ETIMEDOUT' || err?.code === 'ECONNRESET') && attempt < 4) {
-          const wait = (1000 * (2 ** (attempt - 1))) + Math.floor(Math.random() * 250);
-          return setTimeout(() => follow(u, attempt + 1), wait);
-        }
-        reject(err);
-      });
-    };
-    follow(url);
-  });
 }
 
 // Ensure yt-dlp binary is present, downloading it if needed.
@@ -99,7 +57,7 @@ async function _ensureYtdlp() {
     const url   = `https://github.com/yt-dlp/yt-dlp/releases/latest/download/${asset}`;
     winston.info(`yt-dlp not found or empty — downloading ${asset}…`);
     await fsp.mkdir(path.dirname(BUNDLED_YTDLP), { recursive: true });
-    await _downloadFile(url, BUNDLED_YTDLP);
+    await downloadToFile(url, BUNDLED_YTDLP, 'velvet-ytdlp-installer');
     await fsp.chmod(BUNDLED_YTDLP, 0o750);
     winston.info('yt-dlp downloaded successfully');
     return BUNDLED_YTDLP;
@@ -123,6 +81,15 @@ function _ffmpegDir() {
 
 function _ffmpegBin() {
   return path.join(_ffmpegDir(), `ffmpeg${binaryExt}`);
+}
+
+// yt-dlp's generic extractor fetches any page, so private hosts are refused up front
+async function _urlError(raw) {
+  let parsed;
+  try { parsed = new URL(raw); } catch { return 'Invalid URL'; }
+  if (!['https:', 'http:'].includes(parsed.protocol)) return 'Only http/https URLs are supported';
+  if (await resolvesToPrivate(parsed.hostname)) return 'That URL is not allowed';
+  return null;
 }
 
 function _getUserRecordingFolder(user) {
@@ -210,88 +177,19 @@ async function _ytdlpDownload(url, tmpDir, format, ffmpegDir, ytdlp) {
   });
 }
 
-// Build a METADATA_BLOCK_PICTURE binary block (FLAC/Vorbis spec) from a JPEG file.
-// Opus stores cover art as a base64-encoded version of this structure in a Vorbis
-// comment named METADATA_BLOCK_PICTURE — no video stream mapping needed or supported.
-async function _buildMetadataBlockPicture(jpegPath) {
-  const imageData = await fsp.readFile(jpegPath);
-  const mime = Buffer.from('image/jpeg', 'utf8');
-  const desc = Buffer.alloc(0);
-  const buf  = Buffer.allocUnsafe(4 + 4 + mime.length + 4 + desc.length + 4 + 4 + 4 + 4 + 4 + imageData.length);
-  let o = 0;
-  buf.writeUInt32BE(3, o);           o += 4; // picture type: 3 = front cover
-  buf.writeUInt32BE(mime.length, o); o += 4;
-  mime.copy(buf, o);                 o += mime.length;
-  buf.writeUInt32BE(desc.length, o); o += 4;
-  desc.copy(buf, o);                 o += desc.length;
-  buf.writeUInt32BE(0, o);           o += 4; // width  (0 = unknown)
-  buf.writeUInt32BE(0, o);           o += 4; // height (0 = unknown)
-  buf.writeUInt32BE(0, o);           o += 4; // colour depth (0 = unknown)
-  buf.writeUInt32BE(0, o);           o += 4; // colours used (0 = unknown)
-  buf.writeUInt32BE(imageData.length, o); o += 4;
-  imageData.copy(buf, o);
-  return buf.toString('base64');
-}
-
-// Re-tag audio file using ffmpeg codec-copy (no re-encode), write to outputFile.
-//   MP3      — art embedded as ID3 attached_pic via mjpeg re-encode
-//   M4A      — art embedded as video stream (copy, no re-encode)
-//   Opus/OGG — art as METADATA_BLOCK_PICTURE Vorbis comment (no stream mapping)
+// Re-tag the download (codec copy, no re-encode) into outputFile, with the
+// thumbnail as cover when there is one.
 async function _ffmpegTag(inputFile, outputFile, { title, artist, album, year, thumbFile }) {
-  const ffmpeg = _ffmpegBin();
-  try { await fsp.access(ffmpeg); } catch {
+  try { await fsp.access(_ffmpegBin()); } catch {
     await fsp.rename(inputFile, outputFile);
     return;
   }
-
-  const lc       = outputFile.toLowerCase();
-  const ismp3    = lc.endsWith('.mp3');
-  const ism4a    = lc.endsWith('.m4a');
-  const isVorbis = lc.endsWith('.opus') || lc.endsWith('.ogg');
-
-  // Build arg list
-  const args = ['-i', inputFile];
-
-  if (thumbFile && ismp3) {
-    // MP3: embed as video stream with mjpeg re-encode so the JPEG gets proper PTS
-    args.push('-i', thumbFile,
-      '-map', '0:a', '-map', '1:v',
-      '-c:a', 'copy', '-c:v', 'mjpeg',
-      '-id3v2_version', '3', '-disposition:v:0', 'attached_pic');
-  } else if (thumbFile && ism4a) {
-    // M4A: embed cover as video stream (stream copy, no re-encode)
-    args.push('-i', thumbFile,
-      '-map', '0:a', '-map', '1:v',
-      '-c:a', 'copy', '-c:v', 'copy',
-      '-disposition:v:0', 'attached_pic');
+  const metadata = { title: title || null, artist: artist || null, album: album || null, date: year || null };
+  if (thumbFile && canEmbedCover(outputFile)) {
+    await embedCover({ input: inputFile, output: outputFile, artPath: thumbFile, metadata });
   } else {
-    args.push('-map', '0:a', '-c:a', 'copy');
+    await writeAudioWithTags({ input: inputFile, output: outputFile, metadata });
   }
-
-  if (title)  args.push('-metadata', `title=${title}`);
-  if (artist) args.push('-metadata', `artist=${artist}`);
-  if (album)  args.push('-metadata', `album=${album}`);
-  if (year)   args.push('-metadata', `date=${year}`);
-
-  // Opus/OGG/FLAC: inject cover art as a Vorbis METADATA_BLOCK_PICTURE comment
-  // (base64-encoded binary block per FLAC/Vorbis spec — no video stream mapping).
-  if (thumbFile && isVorbis) {
-    const mbp = await _buildMetadataBlockPicture(thumbFile);
-    args.push('-metadata', `METADATA_BLOCK_PICTURE=${mbp}`);
-  }
-
-  args.push('-y', outputFile);
-
-  return new Promise((resolve, reject) => {
-    const proc = spawn(ffmpeg, args, { stdio: ['ignore', 'ignore', 'pipe'] });
-    let err = '';
-    proc.stderr.on('data', d => err += d);
-    proc.on('close', code => {
-      if (code === 0) resolve();
-      else reject(new Error(`ffmpeg tagging failed (code ${code}): ${err.slice(-300)}`));
-    });
-    proc.on('error', reject);
-  });
 }
 
 async function _updateYtdlp() {
@@ -313,7 +211,7 @@ async function _updateYtdlp() {
 }
 
 // ── Download tracker (module-scoped, survives multiple setup calls) ────────
-const downloadTracker = new Map(); // jobId → { status, url, title, started, filePath?, vpath?, error?, finished? }
+const downloadTracker = new Map(); // jobId → { status, url, title, started, filePath?, vpath?, filepath? (DB path), error?, finished? }
 let _jobCounter = 0;
 
 function _cleanTracker() {
@@ -354,7 +252,8 @@ async function _runDownloadJob(jobId, value, recFolder) {
 
     downloadTracker.set(jobId, {
       ...downloadTracker.get(jobId),
-      status: 'done', filePath: path.basename(finalFile), vpath: recFolder.vpath, finished: Date.now(),
+      status: 'done', filePath: path.basename(finalFile), vpath: recFolder.vpath,
+      filepath: dbFilepath(recFolder.vpath, path.basename(finalFile)), finished: Date.now(),
     });
   } catch (err) {
     downloadTracker.set(jobId, {
@@ -398,11 +297,8 @@ export function setup(velvet) {
     }
     const rawUrl = req.query.url;
     if (!rawUrl) return res.status(400).json({ error: 'url required' });
-    let parsed;
-    try { parsed = new URL(rawUrl); } catch { return res.status(400).json({ error: 'Invalid URL' }); }
-    if (!['https:', 'http:'].includes(parsed.protocol)) {
-      return res.status(400).json({ error: 'Only http/https URLs are supported' });
-    }
+    const urlError = await _urlError(rawUrl);
+    if (urlError) return res.status(400).json({ error: urlError });
     try {
       const ytdlp = await _ytdlpBin();
       const info  = await _ytdlpInfo(rawUrl, ytdlp, _ffmpegDir());
@@ -446,11 +342,8 @@ export function setup(velvet) {
     value.artist = flatMeta.artist || '';
     value.album  = flatMeta.album  || '';
     value.year   = flatMeta.year   || '';
-    let parsedUrl;
-    try { parsedUrl = new URL(value.url); } catch { return res.status(400).json({ error: 'Invalid URL' }); }
-    if (!['https:', 'http:'].includes(parsedUrl.protocol)) {
-      return res.status(400).json({ error: 'Only http/https URLs are supported' });
-    }
+    const urlError = await _urlError(value.url);
+    if (urlError) return res.status(400).json({ error: urlError });
     const recFolder = _getUserRecordingFolder(req.user);
     if (!recFolder) {
       return res.status(400).json({ error: 'No recordings folder configured and accessible. Set a folder type to "recordings" in Admin → Folders.' });
@@ -458,22 +351,24 @@ export function setup(velvet) {
 
     // Return job ID immediately — client polls GET /api/v1/ytdl/downloads
     const jobId = String(++_jobCounter);
-    downloadTracker.set(jobId, { status: 'running', url: value.url, title: value.title || value.url, started: Date.now() });
+    downloadTracker.set(jobId, { status: 'running', url: value.url, title: value.title || value.url, started: Date.now(), user: req.user.username });
     res.json({ jobId, message: 'Download started' });
     _runDownloadJob(jobId, value, recFolder);
   });
 
   // ── GET /api/v1/ytdl/downloads ─────────────────────────────────────────────
-  // Returns all tracked jobs (running + recently completed) keyed by jobId.
+  // Returns the caller's tracked jobs (running + recently completed) keyed by jobId; admins see every user's jobs.
   velvet.get('/api/v1/ytdl/downloads', (req, res) => {
     if (config.program.noUpload) {
       return res.status(403).json({ error: 'YouTube download is disabled on this server' });
     }
-    if (!req.user['allow-youtube-download']) {
+    if (!req.user['allow-youtube-download'] && req.user.admin !== true) {
       return res.status(403).json({ error: 'YouTube download not enabled for this user' });
     }
     const out = {};
-    for (const [id, job] of downloadTracker) out[id] = job;
+    for (const [id, job] of downloadTracker) {
+      if (req.user.admin === true || job.user === req.user.username) out[id] = job;
+    }
     res.json(out);
   });
 }

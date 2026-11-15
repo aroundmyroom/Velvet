@@ -34,14 +34,15 @@ The script (`scripts/release.cjs`) does, in order:
 4. Pins `docs/docker.md` to the new version.
 5. Release-note retention — keeps the newest 5 in `releases/`, `git mv`s older to
    `releases/earlier/`.
-6. Runs `npm test` (aborts on failure).
+6. Runs `npm test` (aborts on failure). This includes the architecture guard
+   tests (`test/arch-*.test.mjs`), see [architecture-guards.md](architecture-guards.md).
 7. `git add -A` → commit `vX.Y.Z: <title>`.
-8. `git push origin main`.
+8. `git pull --rebase origin main`, then `git push origin main`.
 9. `git tag vX.Y.Z` → `git push origin vX.Y.Z` (this triggers the multi-arch
    Docker build + publish to `ghcr.io/aroundmyroom/velvet`).
-10. `gh release create` with `releases/vX.Y.Z.md` as the body.
-11. **Tizen TV widget** — `npm run build:tizen:dist` (clean, credential-free) and
-    `gh release upload` the resulting `dist/velvet-tv-X.Y.Z.wgt` onto the release.
+10. **Tizen TV widget** — `npm run build:tizen:dist` (clean, credential-free).
+11. `gh release create` with `releases/vX.Y.Z.md` as the body, then
+    `gh release upload` of `dist/velvet-tv-X.Y.Z.wgt` onto the release.
 
 **Every release body ALWAYS ends with a "Downloads" footer** the script appends
 automatically — pointing to *both* artifacts no matter the version: the Samsung
@@ -62,8 +63,9 @@ version so they can't go stale.
 
 ## Notes
 
-- Only `main` is ever pushed. The `art-workshop` branch must never be pushed; the
-  script refuses to run anywhere but `main`.
+- The script refuses to run anywhere but `main`. Feature work reaches `main`
+  through a `feat/…`/`fix/…`/`chore/…` branch and a PR that passes CI
+  (`.github/workflows/ci.yml`). The `art-workshop` branch must never be pushed.
 - Commit messages never mention Claude/AI and carry no `Co-Authored-By` trailer.
 - After the run, check the Docker build: `gh run list --repo aroundmyroom/Velvet --limit 1`.
 
@@ -107,5 +109,5 @@ node -e "const s=require('fs').readFileSync('dist/velvet-tv-<version>.wgt','lati
 ```
 
 Release-note tip: the TV app has its own note file
-(`releases/velvet-tv-<major.minor>.md`) suitable for the `--notes-file` body when
+(for example `releases/earlier/velvet-tv-1.0.0.md`) suitable for the `--notes-file` body when
 you want a dedicated TV-app release; see [`docs/tizen-tv.md`](../tizen-tv.md).

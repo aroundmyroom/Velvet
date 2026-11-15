@@ -84,13 +84,13 @@ Generate a key in Admin UI → Users → Password button → "Subsonic API Keys"
 ```
 
 - No `u` (username) parameter needed — the key encodes the identity.
-- Passing `u` together with `apiKey` is a protocol error and returns error 43.
+- Passing `u`, `p`, `t` or `s` together with `apiKey` is a protocol error and returns error 43.
 - Keys do not expire; they can be revoked individually from the admin UI.
 - Supported by Feishin ≥ 0.12, Symfonium ≥ 7, and other modern clients.
 
 ### Method 2 — MD5 token auth
 
-Requires a **Subsonic password** (separate from Velvet login — set in Admin UI).
+Requires a **Subsonic password** (separate from Velvet login — set in Admin UI, or by the user in the player, see below).
 
 ```
 ?u=<username>&t=<MD5(password+salt)>&s=<salt>&v=1.16.1&c=<client-name>
@@ -113,10 +113,19 @@ Hex-encoded plaintext is also accepted: `?p=enc:<hex-encoded-password>`
 
 | Code | Meaning |
 |---|---|
-| 40 | Wrong username or password |
-| 41 | Token auth not supported (LDAP placeholder) |
-| 42 | Credentials not supported (future: API key only mode) |
+| 40 | Wrong username or password, unknown API key, or the user has no Subsonic password set |
 | 43 | Conflicting auth parameters — use exactly one method |
+
+If no users are configured at all, every request is accepted (`noAuth`); use `velvet-user` as the username.
+
+### Other error codes
+
+| Code | Meaning |
+|---|---|
+| 0 | Generic error |
+| 10 | Required parameter missing |
+| 50 | Not allowed (e.g. `startScan` as non-admin, changing a smart playlist, user management) |
+| 70 | Not found — also returned for an unknown method name |
 
 ---
 
@@ -140,7 +149,7 @@ Every response includes:
 {
   "openSubsonic": true,
   "type": "velvet",
-  "serverVersion": "0.3.4"
+  "serverVersion": "<version from package.json>"
 }
 ```
 
@@ -149,12 +158,15 @@ Supported extensions returned by `getOpenSubsonicExtensions`:
 - `noAuth` — server accepts requests with no authentication when no users are configured
 - `albumArtist` — `albumArtist` field on song/album objects
 - `apiKeyAuth` — API key authentication via `?apiKey=` parameter
-- `songLyrics` — structured lyrics via `getLyricsBySongId` (reads embedded file tags)
+- `songLyrics` — structured lyrics via `getLyricsBySongId` (sidecar file, embedded tags, LRCLIB cache)
+- `transcodeOffset` — `stream` accepts `timeOffset` (seconds) when transcoding
 
 Extensions **not** advertised: `playbackReport` (some clients prefer it over
 classic `scrobble` while setting `ignoreScrobble=true`, suppressing play counts
-and Last.fm/ListenBrainz forwarding), `transcoding` (extension flow not needed —
-`stream` handles `format`/`maxBitRate` natively), `indexBasedQueue`.
+and Last.fm/ListenBrainz forwarding), `transcoding` (clients that only half
+implement it fall back to `format=raw`; `stream` handles `format`/`maxBitRate`
+natively), `indexBasedQueue`. The `reportPlayback`, `getTranscodeDecision` and
+`getTranscodeStream` endpoints still work for clients that call them directly.
 
 ---
 
@@ -164,7 +176,7 @@ and Last.fm/ListenBrainz forwarding), `transcoding` (extension flow not needed �
 | Endpoint | Status | Notes |
 |---|---|---|
 | `ping` | ✅ | Always returns `status: ok` |
-| `getLicense` | ✅ | Returns `valid: true`, expires 2099 |
+| `getLicense` | ✅ | Returns `valid: true`, expires 2099-12-31 |
 | `getScanStatus` | ✅ | Live data from task queue — real `scanning` bool and scanned `count` |
 | `startScan` | ✅ | Admin only — triggers a full library rescan |
 | `getOpenSubsonicExtensions` | ✅ | Lists `formPost`, `noAuth`, `albumArtist`, `apiKeyAuth`, `songLyrics`, `transcodeOffset` |
@@ -197,10 +209,10 @@ Song results in `search2`/`search3` match the query against **title, artist, or 
 ### Album lists
 | Endpoint | Status | Notes |
 |---|---|---|
-| `getAlbumList` | ✅ | `newest`, `recent`, `frequent`, `highest`, `random`, `alphabeticalByName`, `alphabeticalByArtist`, `byGenre`, `byYear`, `starred`. `newest`/`recent`/`frequent`/`highest`/`byYear`/`byGenre` are album-level queries (paged with `size`/`offset`); `byYear` is sorted by year, descending when `fromYear` > `toYear` |
+| `getAlbumList` | ✅ | `size` default 10, max 500. `newest`, `recent`, `frequent`, `highest`, `random`, `alphabeticalByName`, `alphabeticalByArtist`, `byGenre`, `byYear`, `starred`. `newest`/`recent`/`frequent`/`highest`/`byYear`/`byGenre` are album-level queries (paged with `size`/`offset`); `byYear` is sorted by year, descending when `fromYear` > `toYear` |
 | `getAlbumList2` | ✅ | Same sort modes, ID3 mode |
 | `getRandomSongs` | ✅ | Optional genre/year/folder/size filter |
-| `getSongsByGenre` | ✅ | Filtered by exact genre string |
+| `getSongsByGenre` | ✅ | Filtered by exact genre string; `count` max 500 |
 | `getGenres` | ✅ | All genres with song and album counts |
 | `getNowPlaying` | ✅ | Updated by `scrobble` (submission=false) and `reportPlayback` |
 
@@ -215,14 +227,16 @@ Song results in `search2`/`search3` match the query against **title, artist, or 
 ### Playback
 | Endpoint | Status | Notes |
 |---|---|---|
-| `stream` | ✅ | Serves original file; CUE tracks sliced via ffmpeg with correct STREAMINFO |
+| `stream` | ✅ | Serves original file, or transcodes (see [Known Limitations](#known-limitations)); CUE tracks sliced via ffmpeg with correct STREAMINFO |
 | `download` | ✅ | Same as stream |
-| `getCoverArt` | ✅ | Serves from albumArtDirectory; supports arbitrary `?size=` parameter (snapped to cache-friendly tiers); artist IDs (`ar-<id>`); SVG folder icon fallback |
+| `getTranscodeDecision` | ✅ | OpenSubsonic transcoding v1 (not advertised): returns `canDirectPlay`, `canTranscode`, source/target stream info and a `transcodeParams` token. Songs only |
+| `getTranscodeStream` | ✅ | Streams the transcode described by `transcodeParams` (needs `mediaId`; optional `offset`); requires `transcode.enabled` |
+| `getCoverArt` | ✅ | Serves from albumArtDirectory; `?size=` makes a thumbnail (≤160 → 92 px, ≤320 → 256 px, larger → rounded up to a multiple of 32, max 1200 px; made in the background, the full image is served until it exists); artist IDs (`ar-<id>`); SVG folder icon fallback |
 | `getLyrics` | ✅ | Legacy v1: finds the song by `artist` + `title` and returns its lyrics as plain text |
 | `getLyricsBySongId` | ✅ | OpenSubsonic `songLyrics` extension — sidecar `.lrc`/`.txt`, then lyrics embedded in the file (SYLT, USLT, Vorbis `LYRICS`; LRC text is returned synced), then the web player's LRCLIB cache. Synced first; cached per content hash |
-| `scrobble` | ✅ | Updates play count + last played; forwards to Last.fm / ListenBrainz |
+| `scrobble` | ✅ | Updates play count + last played (stored in milliseconds, like plays from the web player, so Subsonic plays sort correctly in Recently Played) and records a play event for Your Stats; forwards to Last.fm / ListenBrainz |
 | `reportPlayback` | ✅ | Available to explicit callers but not advertised; updates timeline state and honours `ignoreScrobble`. Clients use classic `scrobble` for reliable play counts and Last.fm/ListenBrainz forwarding. |
-| `setRating` | ✅ | Stores 1–5 rating in user_metadata |
+| `setRating` | ✅ | 1–5 stars, stored as Velvet's 2–10 rating in user_metadata; `0` removes the rating |
 | `getAvatar` | ✅ | Returns 404 (no avatar storage) |
 
 ### Queue persistence
@@ -244,7 +258,8 @@ Song results in `search2`/`search3` match the query against **title, artist, or 
 | Endpoint | Status | Notes |
 |---|---|---|
 | `getBookmarks` | ✅ | All bookmarks for the user (with full nested song entry) |
-| `saveBookmark` | ✅ | Upsert bookmark at position (ms); `id` required |
+| `createBookmark` | ✅ | Upsert bookmark at position (ms), optional `comment`; `id` required (the Subsonic spec name) |
+| `saveBookmark` | ✅ | Same as `createBookmark`, kept for clients that use this name |
 | `deleteBookmark` | ✅ | Delete bookmark for a song ID |
 
 ### Artist/Album info
@@ -252,13 +267,13 @@ Song results in `search2`/`search3` match the query against **title, artist, or 
 |---|---|---|
 | `getArtistInfo` | ✅ | `biography` and `musicBrainzId` from Velvet's artist enrichment (empty biography when none); `smallImageUrl`/`mediumImageUrl`/`largeImageUrl` pointing to `getCoverArt?id=ar-<artist_id>` when an artist portrait exists in `image-cache/artists/` |
 | `getArtistInfo2` | ✅ | Same |
-| `getAlbumInfo` | ⚠️ | Returns empty notes/URL |
+| `getAlbumInfo` | ⚠️ | Returns empty `notes` |
 | `getAlbumInfo2` | ⚠️ | Same |
-| `getSimilarSongs` | ✅ | Radio chain by Velvet's Auto-DJ (`src/autodj/`), `count` tracks (max 100), seed excluded; `id` may be a song, album or artist id. Last.fm `track.getSimilar` is only the fallback when the chain finds nothing |
+| `getSimilarSongs` | ✅ | Radio chain by Velvet's Auto-DJ (`src/autodj/`), `count` tracks (default 50, max 100), seed excluded; `id` may be a song, album or artist id. Last.fm `track.getSimilar` is only the fallback when the chain finds nothing |
 | `getSimilarSongs2` | ✅ | Same |
-| `getTopSongs` | ✅ | The artist's songs ranked by Velvet play counts (all users) blended with Last.fm `artist.getTopTracks` when a key is set; one version per song |
+| `getTopSongs` | ✅ | `count` default 50, max 200. The artist's songs ranked by Velvet play counts (all users) blended with Last.fm `artist.getTopTracks` when a key is set; one version per song |
 
-### Users (admin only)
+### Users
 | Endpoint | Status | Notes |
 |---|---|---|
 | `getUser` | ✅ | Non-admin can only see own record |
@@ -266,21 +281,23 @@ Song results in `search2`/`search3` match the query against **title, artist, or 
 | `createUser` | ❌ | Not supported — returns error 50; use Velvet admin panel |
 | `updateUser` | ❌ | Not supported — returns error 50; use Velvet admin panel |
 | `deleteUser` | ❌ | Not supported — returns error 50; use Velvet admin panel |
-| `changePassword` | ✅ | Admin can change any user; user can change own |
-
-### Stubs (return empty/ok)
-| Endpoint | Notes |
-|---|---|
+| `changePassword` | ✅ | Sets the **Subsonic** password; admin can change any user, a user can change their own; `enc:` hex accepted |
 
 ### Internet radio stations
 | Endpoint | Status | Notes |
 |---|---|---|
-| `getInternetRadioStations` | ✅ | Returns all stations for the authenticated user; `streamUrl` = `link_a`; `coverArt` set to the local image filename when available (served via `getCoverArt`) |
-| `createInternetRadioStation` | ✅ | Creates a new station for the user; `streamUrl` stored as `link_a`, `name` required |
-| `updateInternetRadioStation` | ✅ | Updates `name` and `streamUrl`; all other fields (art, genre, country, link_b/c) are preserved |
-| `deleteInternetRadioStation` | ✅ | Deletes station owned by the user; returns 404 if not found |
+| `getInternetRadioStations` | ✅ | Returns the authenticated user's stations that have a stream URL; `streamUrl` = `link_a`; `coverArt` set to the local image filename when available (served via `getCoverArt`) |
+| `createInternetRadioStation` | ✅ | Creates a new station for the user; `streamUrl` stored as `link_a`; `streamUrl` and `name` required |
+| `updateInternetRadioStation` | ✅ | Updates `name` and `streamUrl` (`id`, `streamUrl`, `name` all required); all other fields (art, genre, country, link_b/c) are preserved |
+| `deleteInternetRadioStation` | ✅ | Deletes station owned by the user; error 70 if not found |
 
-| `getPodcasts`, `getNewestPodcasts` | Returns empty list |
+### Stubs
+| Endpoint | Notes |
+|---|---|
+| `getPodcasts`, `getNewestPodcasts` | Return an empty list |
+| `getAvatar` | HTTP 404 |
+
+Any other method name returns error 70 (`Subsonic method "<name>" not found`).
 
 ---
 
@@ -293,7 +310,10 @@ Song results in `search2`/`search3` match the query against **title, artist, or 
 | `"1"`, `"2"`, … `"N"` | Vpath root — index into `getMusicFolders` list |
 | `"d:<base64url>"` | Encoded sub-directory: `{v: "<vpath>", p: "<relPath>"}` |
 | `"<16-char hex>"` | album_id or artist_id (MD5 slug) |
-| `"<64-char hex>"` | song hash (SHA256) |
+| `"<32-char hex>[@<rowid>]"` | song: file hash (MD5 of the first 512 KB), plus the DB row id to tell duplicate files apart |
+| `"cue:<hash>[@<rowid>]:<index>"` | virtual CUE track |
+| `"ar-<artist_id>"` | artist image (for `getCoverArt`) |
+| `"smart:<n>"` | smart playlist |
 | `"<filename>.jpg"` etc. | Direct album art filename in albumArtDirectory |
 
 ### Folder art logic
@@ -319,16 +339,16 @@ Clients then navigate deeper using `getMusicDirectory?id=<dirId>`.
 
 | Field | Value |
 |---|---|
-| `id` | SHA256 hash of the filepath |
+| `id` | File hash plus `@<rowid>` (see [How IDs work](#how-ids-work)) |
 | `title`, `artist`, `album` | From file tags |
 | `track`, `discNumber`, `year`, `genre` | From file tags |
 | `duration` | Seconds (integer) |
 | `suffix`, `contentType` | e.g. `mp3`, `audio/mpeg` |
 | `coverArt` | `aaFile` filename if present |
-| `parent` | `album_id` |
+| `parent` | `album_id` (or `artist_id`, or `root`) |
 | `artistId`, `albumId` | 16-char hex MD5 slugs |
 | `starred` | ISO date string if starred, omitted otherwise |
-| `userRating` | 1–5 or omitted |
+| `userRating` | 1–5 (Velvet rating ÷ 2) or omitted |
 | `playCount`, `played` | From user_metadata |
 | `replayGain` | `trackGain`/`albumGain` (dB, −18 LUFS reference: rsgain measurement → R128 tag → ReplayGain tag) and `trackPeak`/`albumPeak` (linear) |
 | `bpm`, `genres`, `musicBrainzId` | BPM (rounded), genre tag split into `[{ name }]`, MusicBrainz recording id |
@@ -346,9 +366,13 @@ Clients then navigate deeper using `getMusicDirectory?id=<dirId>`.
 
 1. **Server URL**: `https://your-server:3000`
 2. **Username**: your Velvet username
-3. **Password**: your **Subsonic password** (set separately via Admin UI or the Subsonic API nav page)
+3. **Password**: your **Subsonic password** (set separately via Admin UI or the Subsonic API page in the player), or use an API key if the client supports it
 4. **Use HTTPS**: yes
 5. **API version**: leave at default (1.16.1 or auto-detect)
+
+### Your own password and scrobble switches
+
+A user does not need an admin for this. On the Subsonic API page in the player, a user sets their own Subsonic password and turns forwarding of Subsonic plays to Last.fm and ListenBrainz on or off. The player uses `POST /api/v1/user/subsonic-password` (`{ password }`) and `POST /api/v1/user/subsonic-scrobble` (`{ scrobbleLastfm?, scrobbleLb? }`). An admin can still set any user's Subsonic password (and manage their API keys) under Admin → Users; the scrobble switches are only set by the user.
 
 ---
 
@@ -356,11 +380,10 @@ Clients then navigate deeper using `getMusicDirectory?id=<dirId>`.
 
 | Area | Status |
 |---|---|
-| Transcoding | ✅ Supported — `stream` honours `format` (`mp3`/`opus`/`aac`) and `maxBitRate`; requires ffmpeg and `transcode.enabled: true` in config. `transcodedSuffix`/`transcodedContentType` are intentionally **not** set in song metadata to avoid extension-flow conflicts with clients such as Symfonium. |
-| `getCoverArt` `size` param | Accepted but not used — full-size image always returned |
-| `ifModifiedSince` on `getIndexes` | Accepted but ignored — always returns full response |
+| Transcoding | ✅ Supported — `stream` transcodes when `format` is `mp3`/`opus`/`aac` or `maxBitRate` is set (missing values fall back to `transcode.defaultCodec` / `transcode.defaultBitrate`); `format=raw` always sends the original; `timeOffset` starts mid-track. Requires `transcode.enabled: true` in config. When transcoding is enabled, songs in a lossless format (FLAC, WAV, AIFF, APE, WavPack, DSF/DFF, WMA, ALAC) carry `transcodedSuffix` (`transcode.defaultCodec`, default `opus`) and `transcodedContentType` so clients show the output format; other songs carry neither. |
+| `ifModifiedSince` on `getIndexes` | Honoured — returns an empty index when nothing was scanned since that time |
 | Album notes | `getAlbumInfo` returns empty notes |
-| `enc:` hex-encoded password | Accepted as auth but not extensively tested |
+| `enc:` hex-encoded password | Accepted for auth and `changePassword` |
 
 
 ---

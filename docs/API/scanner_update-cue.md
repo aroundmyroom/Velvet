@@ -1,17 +1,17 @@
-**Scanner — Update CUE Points** *(added by GitHub Copilot, 2026-03-02)*
+**Scanner — Update CUE Points**
 ----
-  Internal scanner endpoint. Writes CUE sheet chapter markers (cue points)
-  for an already-indexed file.
+  Internal scanner endpoint. Writes cue points (track markers) for an
+  already-indexed file.
 
-  Called by the scanner CUE-detection path: after a file has been inserted or
-  confirmed in the DB, the scanner inspects its embedded CUE sheet (if any)
-  and writes the resulting chapter array via this endpoint. Sending `'[]'`
-  is the sentinel value meaning "checked — no CUE found", which prevents the
-  file from being rechecked on every scan.
+  Called by the scanner's cue-detection path. The scanner looks for an
+  embedded cue sheet, then a sidecar `.cue` file, then (for `.m4b`) chapters,
+  and writes the result via this endpoint. Sending `'[]'` is the sentinel
+  meaning "checked — no cue found", which prevents the file from being
+  rechecked on every scan.
 
-> **Note:** This endpoint is protected by the scanner middleware
-> (`req.scanApproved === true`). It is not intended to be called by
-> external clients.
+> **Note:** All `/api/v1/scanner/*` routes need a scanner token (a JWT with
+> `scan: true`, created per scan job); any other caller gets
+> `403 { "error": "Access Denied" }`. Not intended for external clients.
 
 * **URL**
 
@@ -25,24 +25,27 @@
 
   | Header | Required | Description |
   |---|---|---|
-  | `x-access-token` | Yes | Internal scanner token (short-lived, generated per scan job). |
+  | `x-access-token` | Yes | Scanner token. |
   | `Content-Type` | Yes | `application/json` |
 
-* **JSON Body**
+* **JSON Body** (not validated)
 
-  | Field | Type | Required | Description |
-  |---|---|---|---|
-  | `filepath` | `string` | Yes | Relative filepath within the vpath root. |
-  | `vpath` | `string` | Yes | Virtual path the file belongs to. |
-  | `cuepoints` | `string` | Yes | JSON-serialised array of chapter objects, or `'[]'` meaning no CUE data found. |
+  | Field | Type | Description |
+  |---|---|---|
+  | `filepath` | `string` | Relative filepath within the vpath root. |
+  | `vpath` | `string` | Root vpath the file belongs to. |
+  | `cuepoints` | `string` | JSON-serialised array of cue points, or `'[]'` meaning none found. |
 
   ```json
   {
     "filepath": "Artist/Album/01 Track.flac",
     "vpath": "Music",
-    "cuepoints": "[{\"title\":\"Part 1\",\"time\":0},{\"title\":\"Part 2\",\"time\":183.5}]"
+    "cuepoints": "[{\"no\":1,\"title\":\"Part 1\",\"t\":0},{\"no\":2,\"title\":\"Part 2\",\"t\":183.5}]"
   }
   ```
+
+  Each embedded-cue entry is `{ no, title, t }` (`t` in seconds). An embedded
+  cue is only stored when it has more than one track.
 
 * **Success Response:**
 
@@ -51,6 +54,6 @@
 
 * **Error Response:**
 
-  * **Code:** 500 if DB write fails (logged server-side).
+  * **Code:** 500 if the DB write fails.
 
-See also: [/db/cuepoints](db_cuepoints.md) — read cue points for a file (public endpoint).
+See also: [/db/cuepoints](db_cuepoints.md) — read cue points for a file.

@@ -2,8 +2,6 @@
 
 Velvet uses a REST API. All `POST` requests must set `Content-Type: application/json` unless otherwise noted. All responses are JSON.
 
-Related: [Upstream OpenAPI comparison](API/upstream-openapi-comparison.md)
-
 ---
 
 ## Authentication
@@ -15,7 +13,8 @@ The token can be supplied in any of these ways (checked in order):
 1. Request body field: `{ "token": "…" }`
 2. Query parameter: `?token=…`
 3. HTTP header: `x-access-token: …`
-4. Cookie: `x-access-token=…`
+4. HTTP header: `Authorization: Bearer …`
+5. Cookie: `x-access-token=…`
 
 ### Public mode
 If no users are configured on the server, all requests are treated as authenticated as a public user with full library access — no token required (default for fresh installs).
@@ -24,9 +23,12 @@ If no users are configured on the server, all requests are treated as authentica
 | Token type | How obtained | Restrictions |
 |---|---|---|
 | **Admin** (`admin: true`) | Login with admin account | Required for all `/api/v1/admin/*` endpoints |
-| **Jukebox** (`jukebox: true`) | Created during session | Bound to one active remote-control session |
+| **Jukebox** (`scope: 'jukebox'`, `code`) | Created with a remote-control session (valid 12 h) | Only `POST /api/v1/jukebox/push-to-client` for its own session code, and `POST /api/v1/file-explorer` |
+| **Sonos stream** (`scope: 'stream'`, `fp`) | Minted per track when casting to Sonos (valid 8 h) | Only `/media/<fp>` and `/api/v1/sonos/transcode-stream?fp=<fp>` for that one file |
 | **Shared playlist** (`shareToken: true`) | `GET /api/v1/shared/{id}` | Can only stream tracks in that specific playlist |
-| **Federation invite** (`invite: true`) | `POST /api/v1/federation/invite/generate` | Can only call `POST /api/v1/federation/invite/exchange` |
+
+### Token revocation
+Every user has a `tokenVersion` (0 when absent). User tokens carry it as the `tv` claim, and a token whose `tv` does not match the user's current version is refused with `401`. A password change (self or by an admin) and `POST /api/v1/admin/users/revoke-tokens` raise the version, which logs the user out on every device; jukebox and Sonos stream tokens are revoked the same way. Shared-playlist tokens are not affected.
 
 ---
 
@@ -36,9 +38,9 @@ All errors return `{ "error": "<message>" }`.
 
 | Status | Meaning |
 |---|---|
-| 400 | Bad request (invalid input) |
+| 400 | Bad request (invalid input, including Joi validation errors) |
 | 401 | Unauthenticated or invalid token |
-| 403 | Forbidden (Joi validation error, insufficient permission) |
+| 403 | Forbidden (insufficient permission) |
 | 404 | Resource not found |
 | 405 | Admin API locked |
 | 500 | Server error |
@@ -49,6 +51,8 @@ All errors return `{ "error": "<message>" }`.
 ## Virtual Paths (vpaths)
 
 Libraries are mounted under named vpaths (e.g. `Music`, `AudioBooks`). Filepaths in all request/response bodies use the format `<vpath>/<relative/path>`. The server maps these to absolute disk paths and enforces per-user access on every request. The list of vpaths a user can access is returned by `/api/v1/ping` and `/api/v1/db/status`.
+
+A user who has only a child vpath (a sub-folder of a root vpath) is limited to that folder on the server: every library list (search, artists, albums, genres, recent, rated, most played, random songs, similar, Auto-DJ, and so on) is narrowed to the child's folder whatever the client sends, and a path with `..` cannot leave it.
 
 ---
 
@@ -66,9 +70,16 @@ GET /media/<vpath>/<path/to/song.mp3>?token=<jwt>
 | Method | Endpoint | Description |
 |---|---|---|
 | `GET` | `/` | Serves the main player webapp HTML |
-| `GET` | `/admin` | Serves the admin panel HTML |
+| `GET` | `/admin` | Serves the admin panel HTML (also `/admin/index.html`). Non-admins are sent to `/`; a locked admin API shows "Admin Page Disabled". |
+| `GET` | `/login` | Redirects (301) to `/` (also `/login/index.html`). |
+| `GET` | `/classic` | `410` — the classic UI was removed. |
+| `GET` | `/manifest.json` | Root-scoped PWA manifest, phones only (others fall through to 404). |
+| `GET` | `/sw.js` | Root-scoped service worker, phones only. |
+| `GET` | `/favicon.ico` | Redirects to `/assets/fav/favicon.ico`. |
+| `GET` | `/assets/fav/site.webmanifest` | Web app manifest for desktop browsers. |
+| `GET` | `/robots.txt` | `Disallow: /` for all crawlers. |
 | `GET` | `/api` | API version discovery — returns `{ server, apiVersions }` |
-| `GET` | `/api/v1/ping` | Bootstrap payload — vpaths, playlists, transcode config, vpath metadata. For admin users also includes `vpathWriteAccess: { [vpathName]: bool }` (filesystem write-access check). Auth required. |
+| `GET` | `/api/v1/ping` | Bootstrap payload: `{ vpaths, noUpload, supportedAudioFiles, transcode, vpathMetaData, allowRadioRecording, allowYoutubeDownload, allowUpload, allowServerRemote, allowMpvCast, version, defaultTheme }`. `transcode` is `{ defaultCodec, defaultBitrate, defaultAlgorithm }` when transcoding is enabled and ffmpeg is ready, else `false`. `vpathMetaData[vpath]` is `{ type, parentVpath, filepathPrefix, allowRecordDelete, albumsOnly }`. `allowMpvCast` is true when Server Audio is on and the user is an admin or has `allow-mpv-cast`. For admin users also includes `vpathWriteAccess: { [vpathName]: bool }` (filesystem write-access check). Auth required. |
 | `GET` | `/api/v1/ping/public` | Unauthenticated. Returns `{ status: 'ok', instanceId, hasUsers }` — used by the client to detect cross-instance localStorage contamination, and to decide whether to probe `/db/status` for no-auth-server detection without producing a spurious 401. *(Velvet)* |
 
 ---
@@ -77,9 +88,9 @@ GET /media/<vpath>/<path/to/song.mp3>?token=<jwt>
 
 | Method | Endpoint | Body | Description |
 |---|---|---|---|
-| `POST` | `/api/v1/auth/login` | `{ username, password }` | Authenticates. Returns `{ token, vpaths }` and sets an `x-access-token` cookie (5-year max-age). Brute-force protected (800ms delay on failure). |
+| `POST` | `/api/v1/auth/login` | `{ username, password }` | Authenticates. Returns `{ token, vpaths }` and sets an `x-access-token` cookie (30-day max-age). Brute-force protected (800ms delay on failure). |
 | `GET` | `/api/v1/auth/refresh` | — | Issues a freshly-signed JWT from the current valid session; refreshes the `x-access-token` cookie. Returns `{ token }` or `{ token: null }` on no-auth servers. *(Velvet)* |
-| `POST` | `/api/v1/auth/change-password` | `{ currentPassword, newPassword }` | Self-service password change for the logged-in user. Verifies the current password first (800ms delay on failure). Returns `{ ok: true }`. *(Velvet)* |
+| `POST` | `/api/v1/auth/change-password` | `{ currentPassword, newPassword }` | Self-service password change for the logged-in user. Verifies the current password first (800ms delay on failure). The change revokes every older token of the user (this session's too), so it returns `{ token }`, a fresh token that is also set as cookie. *(Velvet)* |
 
 ### Passkey (WebAuthn) — public endpoints (no token required)
 
@@ -107,9 +118,9 @@ A device with an awkward keyboard (Samsung TV remote, kiosk) shows a short code;
 
 | Method | Endpoint | Auth | Body / Params | Description |
 |---|---|---|---|---|
-| `POST` | `/api/v1/auth/pair/start` | none | — | Starts a pairing session. Returns `{ pairId, code, expiresInSec }`. |
+| `POST` | `/api/v1/auth/pair/start` | none | — | Starts a pairing session. Returns `{ pairId, code, expiresInSec }`. Limited to 10 starts per minute per IP and 1000 pending pairings in total; over either limit it answers `429`. |
 | `GET` | `/api/v1/auth/pair/status` | none | `?pairId=` | Poll for approval. Returns `{ status: 'pending' \| 'expired' }`, or once approved (once only — the pairing is consumed on this response) `{ status: 'approved', token, vpaths, username }` — same session shape as `/auth/login`. |
-| `POST` | `/api/v1/auth/pair/approve` | user | `{ code }` | Approves a pairing code as the calling (already-authenticated) user. 800ms delay on an invalid/expired/already-used code, same brute-force mitigation as `/auth/login`. |
+| `POST` | `/api/v1/auth/pair/approve` | user | `{ code }` | Approves a pairing code as the calling (already-authenticated) user. Spaces are ignored and the code is not case-sensitive. 800ms delay on an invalid/expired/already-used code, same brute-force mitigation as `/auth/login`. |
 
 ---
 
@@ -117,7 +128,7 @@ A device with an awkward keyboard (Samsung TV remote, kiosk) shows a short code;
 
 | Method | Endpoint | Body / Params | Description |
 |---|---|---|---|
-| `GET` | `/api/v1/db/status` | — | Total track count + scan lock state + vpaths. |
+| `GET` | `/api/v1/db/status` | — | `{ totalFileCount, locked, vpaths, scanningVpaths }`. `totalFileCount` counts only the tracks the caller can reach (a user with only a child folder gets the count of that folder). |
 | `POST` | `/api/v1/db/metadata` | `{ filepath }` | Full metadata for one track. Response includes `album-version`, `bit-depth`, and `album-artist` (ID3 TPE2; `artist` falls back to `album-artist` when blank). *(Velvet)* |
 | `POST` | `/api/v1/db/metadata/batch` | `["filepath1", …]` | Metadata for multiple tracks. Returns map of filepath → metadata. |
 | `GET` | `/api/v1/db/artists` | — | All artist names, case-insensitive sort. |
@@ -128,20 +139,20 @@ A device with an awkward keyboard (Samsung TV remote, kiosk) shows a short code;
 | `GET` | `/api/v1/db/albums` | — | All albums. |
 | `POST` | `/api/v1/db/albums` | `{ ignoreVPaths?, excludeFilepathPrefixes?, includeFilepathPrefixes? }` | Albums with optional vpath and path prefix filters. |
 | `POST` | `/api/v1/db/album-songs` | `{ album, artist?, year?, ignoreVPaths? }` | Tracks in an album. |
-| `GET` | `/api/v1/db/genres` | — | All genres. |
-| `POST` | `/api/v1/db/genres` | `{ ignoreVPaths? }` | Genres with optional vpath filter. |
-| `POST` | `/api/v1/db/genre-songs` | `{ genre, ignoreVPaths? }` | Tracks in a genre (legacy). |
-| `GET` | `/api/v1/db/genre-groups` | — | Genres with counts, grouped by admin-configured display groups. *(Velvet)* |
+| `GET` | `/api/v1/db/genres` | — | All genres. (integration API, no web UI caller) |
+| `POST` | `/api/v1/db/genres` | `{ ignoreVPaths? }` | Genres with optional vpath filter. (integration API, no web UI caller) |
+| `GET` | `/api/v1/db/genre-groups` | — | Genres with counts, grouped by the admin's display groups; while no groups are saved, the groups are made automatically. Genres in no group land in `Other`. Returns `{ groups: [{ name, genres: [{ genre, cnt }] }], genres }`. *(Velvet)* |
 | `POST` | `/api/v1/db/genre/albums` | `{ genre }` | Albums in a genre. *(Velvet)* |
 | `POST` | `/api/v1/db/genre/songs` | `{ genre }` | Tracks in a genre. *(Velvet)* |
-| `GET` | `/api/v1/db/decades` | — | Decades with track counts. *(Velvet)* |
+| `GET` | `/api/v1/db/decades` | — | Decades with track counts. Returns `{ decades }`. *(Velvet)* |
+| `POST` | `/api/v1/db/decades` | `{ ignoreVPaths? }` | Same, with optional vpath filter. *(Velvet)* |
 | `POST` | `/api/v1/db/decade/albums` | `{ decade }` | Albums released in a decade. *(Velvet)* |
 | `POST` | `/api/v1/db/decade/songs` | `{ decade }` | Tracks from a decade. *(Velvet)* |
 | `POST` | `/api/v1/db/songs-by-artists` | `{ artists[], limit? }` | Random tracks by the given artists. *(Velvet)* |
-| `GET` | `/api/v1/db/similar` | `?hash=&limit=` | Similar songs scored by BPM proximity + Camelot wheel key compatibility. *(Velvet)* |
-| `GET` | `/api/v1/db/audio-features/:hash` | — | Essentia audio features (BPM, key, MFCC, HPCP) for a track hash. *(Velvet)* |
+| `GET` | `/api/v1/db/similar` | `?hash=&limit=` | Similar songs scored by BPM proximity + Camelot wheel key compatibility. (integration API, no web UI caller) *(Velvet)* |
 | `POST` | `/api/v1/db/scan-errors/report-playback` | `{ filepath, errorMsg? }` | Report a file the browser could not decode (DEMUXER_ERROR / PTS undefined) to the Scan Error Workshop so an admin can remux it with ffmpeg. `filepath` includes the vpath prefix. *(Velvet)* |
-| `POST` | `/api/v1/db/random-songs` | `{ minRating?, ignoreList?, ignorePercentage?, ignoreVPaths?, genres?, genreMode?, minDuration?, maxDuration?, allowUnknownDuration?, returnAll? }` | One random track. `ignoreList` lets callers avoid repeats across calls. `genres` is an array of display genre names (from `/api/v1/db/genres`); `genreMode` is `"whitelist"` (default) or `"blacklist"`. `minDuration`/`maxDuration` (SECONDS) are an optional track-length window — a hard scope filter like `minRating`, never relaxed; `allowUnknownDuration` (default `false`) controls whether tracks with no scanned duration are included. `returnAll: true` switches to Auto-DJ batch mode: returns a broad candidate pool (scoped to collections/rating/artists/cooldown/duration only, no BPM/key/genre filtering) for client-side soft scoring instead of one server-picked track — see `docs/autodj-scoring.md`. |
+| `POST` | `/api/v1/db/random-songs` | `{ minRating?, ignoreList?, ignorePercentage?, ignoreVPaths?, filepathPrefix?, includeFilepathPrefixes?, genres?, genreMode?, minDuration?, maxDuration?, allowUnknownDuration?, returnAll? }` | One random track. `includeFilepathPrefixes: [{ vpath, prefix }]` whitelists folders inside a root vpath (used for several child vpaths at once); a root not named in the list is not narrowed. `ignoreList` lets callers avoid repeats across calls. `genres` is an array of display genre names (from `/api/v1/db/genres`); `genreMode` is `"whitelist"` (default) or `"blacklist"`. `minDuration`/`maxDuration` (SECONDS) are an optional track-length window — a hard scope filter like `minRating`, never relaxed, for the single pick and for `returnAll` alike (`400` when `minDuration > maxDuration`); `allowUnknownDuration` (default `false`) controls whether tracks with no scanned duration are included. `returnAll: true` switches to Auto-DJ batch mode: returns a broad candidate pool (scoped to collections/rating/artists/cooldown/duration only, no BPM/key/genre filtering) for client-side soft scoring instead of one server-picked track — see `docs/autodj-scoring.md`. |
+| `POST` | `/api/v1/autodj/next` | `{ seedFilepath?, recent?: string[] (≤200, oldest first), scope?: { ignoreVPaths?, filepathPrefix?, includeFilepathPrefixes?, excludeFilepathPrefixes?, minRating?, minDuration?, maxDuration?, allowUnknownDuration? } }` | The server's Auto-DJ picks the next song — the same picker a room's Auto-DJ uses, with the caller's saved Auto-DJ settings (minimum rating, similar artists, filter words). `seedFilepath` is the song playing now (without one it is a plain random pick); `recent` are the songs played before it, used for repeat and artist cooldown. Paths the caller cannot read are skipped, and a user limited to sub-folders stays inside them whatever `scope` says. Returns `{ song }` (same `{ filepath, metadata }` shape as one `random-songs` entry) or `{ song: null }`. Any logged-in user; used by the Samsung TV app and Server Remote. *(Velvet)* |
 | `POST` | `/api/v1/db/unplayed-gems` | `{ limit?, ignoreVPaths? }` | Songs with zero play count (limit 1–500, default 100) plus `count` of total unplayed songs in library. *(Velvet)* |
 | `GET` | `/api/v1/files/art` | `?fp=<vpath/file>` | Extract and cache embedded album art for a track. Returns `{ aaFile }`. |
 | `GET` | `/album-art/{file}` | `?compress=zl\|zs` | Serve a cached album-art file. `zl` = large thumbnail, `zs` = small. |
@@ -155,9 +166,9 @@ A device with an awkward keyboard (Samsung TV remote, kiosk) shows a short code;
 | Method | Endpoint | Description |
 |---|---|---|
 | `GET` | `/api/v1/albums/browse` | All albums grouped into albums + series. Returns `{ albums[], series[] }`. Each album object includes `album_version` (edition string) and `bit_depth`. |
-| `GET` | `/api/v1/albums/art-file` | Serve an on-disk `cover.jpg` by relative path. |
-| `GET` | `/api/v1/albums/detail` | Album detail: all tracks + metadata. Params: `?vpath=&album=&artist=`. |
-| `POST` | `/api/v1/albums/set-art` | Set album art from a URL. Body: `{ vpath, album, artist, url }`. Admin only. |
+| `GET` | `/api/v1/albums/art-file` | Serve an on-disk cover image by relative path. Params: `?p=<path>` (must end in `.jpg`/`.jpeg`/`.png`/`.webp`/`.gif`). |
+| `GET` | `/api/v1/albums/detail` | Album detail: discs, tracks + metadata for one album. Params: `?id=<albumId>` (the `id` from `/albums/browse`). `404` for an unknown id. |
+| `POST` | `/api/v1/albums/set-art` | Download a cover and write it as `cover.jpg` in the album folder. Body: `{ albumPath, releaseId? \| coverUrl? }` (one of the two; `albumPath` is the album's `path` from `/albums/browse`, `releaseId` a Discogs release). Returns `{ artFile }`. Admin only. |
 
 ---
 
@@ -168,15 +179,15 @@ A device with an awkward keyboard (Samsung TV remote, kiosk) shows a short code;
 | Method | Endpoint | Description |
 |---|---|---|
 | `GET` | `/api/v1/artists/home` | All artists with counts and thumbnail image URLs. |
-| `POST` | `/api/v1/artists/letter` | Artists starting with a letter. Body: `{ letter }`. |
-| `POST` | `/api/v1/artists/search` | Search artist names. Body: `{ query }`. |
-| `POST` | `/api/v1/artists/profile` | Full profile: albums, tracks, bio image. Body: `{ artist }`. |
-| `GET` | `/api/v1/artists/image` | Serve artist image. Params: `?artist=`. |
+| `GET` | `/api/v1/artists/letter` | Artists starting with a letter. Params: `?l=`. Returns `{ artists }`. |
+| `GET` | `/api/v1/artists/search` | Search artist names in the caller's own folders. Params: `?q=` (at least 2 characters, else `400`). Returns `{ artists }`. |
+| `GET` | `/api/v1/artists/profile` | Full profile: albums, tracks, bio image. Params: `?key=<artistKey>`. |
+| `GET` | `/api/v1/artists/image` | Look up an artist's image. Params: `?artist=`. Returns `{ imageFile }` or `{}`. |
 | `GET` | `/api/v1/artists/images/:filename` | Serve a cached artist image file directly. |
-| `POST` | `/api/v1/artists/fetch-info` | Fetch bio / social links for an artist from external sources. Body: `{ artist }`. |
-| `POST` | `/api/v1/artists/set-image` | Set artist image from a URL. Body: `{ artist, url }`. Admin only. |
-| `POST` | `/api/v1/artists/set-name` | Rename / alias an artist. Body: `{ oldName, newName }`. Admin only. |
-| `POST` | `/api/v1/artists/mark-image-wrong` | Flag current image as wrong (admin). Body: `{ artist }`. |
+| `GET` | `/api/v1/artists/placeholder` | The artist placeholder image: the custom one (`artist-placeholder.jpg` in the config folder, next to `default.json`) if set, else the built-in default. Public — no auth. |
+| `POST` | `/api/v1/artists/set-image` | Set artist image from a URL. Body: `{ artistKey, imageUrl }`. Returns `{ ok, imageFile }`. Admin only. |
+| `POST` | `/api/v1/artists/set-name` | Set the display name of an artist. Body: `{ artistKey, canonicalName }`. Returns `{ ok, canonicalName }`. Admin only. |
+| `POST` | `/api/v1/artists/mark-image-wrong` | Flag (or unflag) the current image as wrong. Body: `{ artistKey, wrong? }` (default `true`). Admin only. |
 
 ---
 
@@ -221,22 +232,22 @@ A device with an awkward keyboard (Samsung TV remote, kiosk) shows a short code;
 
 | Method | Endpoint | Body | Description |
 |---|---|---|---|
-| `POST` | `/api/v1/wrapped/play-start` | `{ filePath, sessionId?, source?, dj? }` | Log start of a play. Returns `{ eventId }`. `dj` (only with `source: 'autodj'`) is the Auto-DJ decision trace `{ cands, score, similar, escape?, dropArtist?, curBpm?, curKey?, curYear?, curGenre? }` — written to the server log as one bounded `[autodj] ▶` line, never stored. *(Velvet)* |
+| `POST` | `/api/v1/wrapped/play-start` | `{ filePath, sessionId?, source?, dj? }` | Log start of a play. Returns `{ ok, eventId }`. If the same song has an unfinished play from the last 10 minutes (a page reload), that event is reused and the answer also has `resumed: true`. `dj` (only with `source: 'autodj'`) is the Auto-DJ decision trace `{ cands, score, similar, escape?, dropArtist?, curBpm?, curKey?, curYear?, curGenre? }` — written to the server log as one bounded `[autodj] ▶` line, never stored. *(Velvet)* |
 | `POST` | `/api/v1/wrapped/play-end` | `{ eventId, playedMs }` | Log natural track completion. |
 | `POST` | `/api/v1/wrapped/play-stop` | `{ eventId, playedMs }` | Log a manual stop. |
 | `POST` | `/api/v1/wrapped/play-skip` | `{ eventId, playedMs }` | Log an explicit skip. |
 | `POST` | `/api/v1/wrapped/pause` | `{ eventId }` | Increment pause count. |
 | `POST` | `/api/v1/wrapped/session-end` | `{ sessionId }` | Close a listening session (called on page unload). |
-| `POST` | `/api/v1/wrapped/radio-start` | `{ stationName }` | Log radio listen start. |
-| `POST` | `/api/v1/wrapped/radio-stop` | `{ stationName, listenedMs }` | Log radio listen stop. |
-| `POST` | `/api/v1/wrapped/podcast-start` | `{ feedUrl, episodeTitle }` | Log podcast episode start. |
-| `POST` | `/api/v1/wrapped/podcast-end` | `{ feedUrl, episodeTitle, listenedMs }` | Log podcast episode end. |
+| `POST` | `/api/v1/wrapped/radio-start` | `{ stationName, stationId?, sessionId }` | Log radio listen start. Returns `{ ok, eventId }`. |
+| `POST` | `/api/v1/wrapped/radio-stop` | `{ eventId, listenedMs? }` | Log radio listen stop. |
+| `POST` | `/api/v1/wrapped/podcast-start` | `{ episodeId, feedId, sessionId }` | Log podcast episode start. Returns `{ ok, eventId }`. |
+| `POST` | `/api/v1/wrapped/podcast-end` | `{ eventId, playedMs?, completed? }` | Log podcast episode end. |
 
 **Stats queries**:
 
 | Method | Endpoint | Params | Description |
 |---|---|---|---|
-| `GET` | `/api/v1/user/wrapped` | `?period=monthly&offset=0` | Aggregated stats for a period. Periods: `weekly`, `monthly`, `quarterly`, `half-yearly`, `yearly`. `offset=0` = current, `1` = previous, etc. |
+| `GET` | `/api/v1/user/wrapped` | `?period=monthly&offset=0` | Aggregated stats for a period. Periods: `weekly`, `monthly`, `quarterly`, `half-yearly`, `yearly`. `offset=0` = current, `-1` = previous, down to `-260`. |
 | `GET` | `/api/v1/user/wrapped/periods` | — | List of available period labels. |
 | `GET` | `/api/v1/history` | `?fromMs=<unix-ms>&toMs=<unix-ms>` (optional) | Play events for the current user with title, artist, album, aaFile, filepath, started_at, played_ms. Without params: last 7 days. With both params: bounded range `started_at >= fromMs AND started_at < toMs`. Returns `{ events[] }` ordered newest first. |
 
@@ -245,7 +256,7 @@ A device with an awkward keyboard (Samsung TV remote, kiosk) shows a short code;
 | Method | Endpoint | Description |
 |---|---|---|
 | `GET` | `/api/v1/admin/wrapped/stats` | Server-wide listening statistics across all users. |
-| `POST` | `/api/v1/admin/wrapped/purge` | Delete all listening event history. Body: `{ confirm: true }`. |
+| `POST` | `/api/v1/admin/wrapped/purge` | Delete one user's listening events in a time range. Body: `{ userId, fromMs, toMs }` (`toMs >= fromMs`). Returns `{ ok, deleted }`. |
 | `POST` | `/api/v1/admin/wrapped/backfill-folder-metadata` | Backfill vpath/folder metadata for historical events. |
 | `GET` | `/api/v1/admin/wrapped/backfill-folder-metadata/preview` | Preview which events would be updated by the backfill (dry run). |
 
@@ -255,10 +266,10 @@ A device with an awkward keyboard (Samsung TV remote, kiosk) shows a short code;
 
 | Method | Endpoint | Body | Description |
 |---|---|---|---|
-| `GET` | `/api/v1/playlist/getall` | — | List the user's playlists (names). |
+| `GET` | `/api/v1/playlist/getall` | — | The user's playlists: `[{ name, created, songCount, totalDuration }]` (`totalDuration` in seconds). |
 | `POST` | `/api/v1/playlist/load` | `{ playlistname }` | Load tracks with full metadata. Each entry includes a stable row `id` for removal. |
 | `POST` | `/api/v1/playlist/new` | `{ title }` | Create an empty playlist. 400 if name already exists. |
-| `POST` | `/api/v1/playlist/save` | `{ title, songs[], live? }` | Create or overwrite a playlist. `live: true` marks it as a live-synced queue. |
+| `POST` | `/api/v1/playlist/save` | `{ title, songs[], live? }` | Create or overwrite a playlist. `songs` (file paths) is required (`400` without it). `live: true` marks it as a live-synced queue. |
 | `POST` | `/api/v1/playlist/add-song` | `{ song, playlist }` | Add a track to a playlist (creates it if missing). |
 | `POST` | `/api/v1/playlist/remove-song` | `{ id }` | Remove a track by its row `id` (from `/playlist/load`). |
 | `POST` | `/api/v1/playlist/delete` | `{ playlistname }` | Delete a playlist. |
@@ -303,8 +314,8 @@ A device with an awkward keyboard (Samsung TV remote, kiosk) shows a short code;
 | `POST` | `/api/v1/share` | `{ playlist[], time? }` | Create a shareable link. `time` = expiry in days; omit for eternal. Returns `{ playlistId, token, … }`. |
 | `GET` | `/api/v1/share/list` | — | List the user's shared playlists. *(Velvet)* |
 | `DELETE` | `/api/v1/share/:id` | — | Delete a shared playlist. *(Velvet)* |
-| `GET` | `/api/v1/shared/:playlistId` | — | Fetch playlist contents + a restricted token for playback. (Public — no auth required.) |
-| `GET` | `/shared/:playlistId` | — | Public HTML viewer page for a shared playlist. |
+| `GET` | `/api/v1/shared/:playlistId` | — | Fetch playlist contents + a restricted token for playback. (Public — no auth required.) `410` when the link has expired, `404` when it is unknown. |
+| `GET` | `/shared/:playlistId` | — | Public HTML viewer page for a shared playlist. An expired link answers `410` and an unknown one `404`, each with a short HTML error page. |
 | `GET` | `/api/v1/download/shared` | — | Download all files in a shared playlist as ZIP. Requires shared-playlist token. |
 
 ---
@@ -314,10 +325,9 @@ A device with an awkward keyboard (Samsung TV remote, kiosk) shows a short code;
 | Method | Endpoint | Body | Description |
 |---|---|---|---|
 | `POST` | `/api/v1/file-explorer` | `{ directory, sort?, pullMetadata? }` | Browse a directory. Pass `""` or `~` to list vpaths. Returns `{ path, directories[], files[] }`. |
-| `POST` | `/api/v1/file-explorer/recursive` | `{ directory }` | Recursively list all audio files. Returns array of virtual paths. |
-| `POST` | `/api/v1/file-explorer/mkdir` | `{ directory }` | Create a directory. Requires `allowMkdir` permission. |
+| `POST` | `/api/v1/file-explorer/recursive` | `{ directory }` | Recursively list all audio files. Returns array of virtual paths. (integration API, no web UI caller) |
 | `POST` | `/api/v1/file-explorer/upload` | Multipart form | Upload a file. Target dir in `data-location` header. Requires `allowUpload`. Filenames sanitized. |
-| `POST` | `/api/v1/file-explorer/m3u` | `{ path }` | Parse an M3U playlist file. Returns resolved entries. |
+| `POST` | `/api/v1/file-explorer/m3u` | `{ path }` | Parse an M3U playlist file. Returns resolved entries. (integration API, no web UI caller) |
 
 ---
 
@@ -326,7 +336,7 @@ A device with an awkward keyboard (Samsung TV remote, kiosk) shows a short code;
 | Method | Endpoint | Body | Description |
 |---|---|---|---|
 | `POST` | `/api/v1/download/m3u` | `{ path }` | Download an M3U playlist + all its tracks as a ZIP. |
-| `POST` | `/api/v1/download/directory` | `{ directory }` | Download a directory as a ZIP. |
+| `POST` | `/api/v1/download/directory` | `{ directory }` | Download the requested directory (only that folder) as a ZIP. Returns 413 `{ error, maxMb, sizeMb }` above `scanOptions.maxZipMb`. |
 | `POST` | `/api/v1/download/zip` | Form: `fileArray` (JSON-stringified array of paths) | Download an arbitrary list of files as a ZIP. |
 | `DELETE` | `/api/v1/files/recording` | `{ filepath }` | Delete a recording file. Requires `allowRecordDelete` on the vpath. *(Velvet)* |
 
@@ -344,7 +354,7 @@ A device with an awkward keyboard (Samsung TV remote, kiosk) shows a short code;
 
 | Method | Endpoint | Params | Description |
 |---|---|---|---|
-| `GET` | `/api/v1/db/waveform` | `?filepath=<vpath/file>` | 800-bar amplitude array (0–255) for the progress scrubber. Generated on demand, cached. |
+| `GET` | `/api/v1/db/waveform` | `?filepath=<vpath/file>` | `{ waveform }`: a 600-point amplitude array (0–255) for the progress scrubber. Generated on demand, cached. |
 
 ---
 
@@ -352,21 +362,13 @@ A device with an awkward keyboard (Samsung TV remote, kiosk) shows a short code;
 
 | Method | Endpoint | Body | Description |
 |---|---|---|---|
-| `GET` | `/api/v1/db/cuepoints` | `?fp=<vpath/file>` | List cue points for a track. |
-| `POST` | `/api/v1/db/cuepoints` | `{ filepath, position, label?, color? }` | Create a cue point. `position` = seconds. Returns `{ id }`. |
-| `PUT` | `/api/v1/db/cuepoints/:id` | `{ position?, label?, color? }` | Update a cue point. |
-| `DELETE` | `/api/v1/db/cuepoints/:id` | — | Delete a cue point. |
+| `GET` | `/api/v1/db/cuepoints` | `?fp=<vpath/file>` | Track markers from the file's cue sheet (embedded tag or sidecar `.cue`) or M4B chapters. Returns `{ cuepoints: [{ no, title, t }] }` (`[]` when there are none). When the track was never checked, the markers are read from the file on this request and stored in the database (a `[]` result is stored too, so the file is not parsed again; a sidecar `.cue` is still re-checked on every call). Markers always come from the file; the API cannot set them. See [docs/API/db_cuepoints.md](API/db_cuepoints.md). |
 
 ---
 
 ## Album Art
 
-| Method | Endpoint | Body / Params | Description |
-|---|---|---|---|
-| `POST` | `/api/v1/album-art/search` | `{ artist?, album? }` | Search MusicBrainz, iTunes, and Deezer for cover art. Returns `{ results[], ffmpegAvailable }`. |
-| `POST` | `/api/v1/album-art/set-from-url` | `{ filepath, url, writeToFolder?, writeToFile? }` | Download art from a URL and apply it. `writeToFile` embeds into the ID3 tag (requires ffmpeg + write permission). |
-| `POST` | `/api/v1/album-art/upload` | `{ filepath, image, writeToFolder?, writeToFile? }` | Upload cover art as base64. |
-| `GET` | `/api/v1/album-art/ffmpeg-status` | — | Whether ffmpeg is available. Returns `{ available }`. |
+Cached art is served by `GET /album-art/{file}` and extracted on demand by `GET /api/v1/files/art` (both in **Library** above). Searching and setting covers goes through **Discogs / iTunes** and the **Album-Art Workshop** below.
 
 ---
 
@@ -378,8 +380,8 @@ A device with an awkward keyboard (Samsung TV remote, kiosk) shows a short code;
 | `POST` | `/api/v1/discogs/embed` | `{ filepath, releaseId?, coverUrl? }` | Embed art from Discogs or a direct URL. Returns `{ ok, aaFile, cacheOnly }`; on rewrite paths, file mtime is synced in DB to avoid stale scan flags. |
 | `POST` | `/api/v1/discogs/save-folder-cover` | `{ filepath }` | Admin only. Writes the song's already-cached art as `cover.jpg` in its album folder (no re-download). Updates `cover_file` for all tracks in the album. Returns `{ ok, alreadyExists? }`. |
 | `GET` | `/api/v1/discogs/release-images` | `?id=&type=release\|master` | Admin only. Fetch thumbnail choices for a specific Discogs release/master ID. Returns `{ choices[] }`. *(Velvet)* |
-| `GET` | `/api/v1/deezer/search` | `?q=` | Search Deezer (part of the Discogs art-lookup flow). |
-| `GET` | `/api/v1/itunes/search` | `?artist=&album=` | Server-side proxy for the iTunes Search API. Returns structured results. *(Velvet)* |
+| `GET` | `/api/v1/deezer/search` | `?q=` or `?artist=&album=` | Admin only. Search Deezer (part of the Discogs art-lookup flow). |
+| `GET` | `/api/v1/itunes/search` | `?artist=&album=` | Admin only. Server-side proxy for the iTunes Search API. Returns structured results. *(Velvet)* |
 
 ---
 
@@ -413,6 +415,8 @@ Admin only. Finds albums (folders) with no cover art, fetches suggestions, and w
 |---|---|---|---|
 | `GET` | `/api/v1/user/settings` | — | Get the user's saved UI preferences and optional queue. Returns `{ prefs, queue? }`. |
 | `POST` | `/api/v1/user/settings` | `{ prefs?, queue? }` | Save UI preferences and/or queue state. |
+| `POST` | `/api/v1/user/subsonic-password` | `{ password }` | Set the caller's own Subsonic password. Returns `{}`. |
+| `POST` | `/api/v1/user/subsonic-scrobble` | `{ scrobbleLastfm?, scrobbleLb? }` | Turn the caller's own Subsonic scrobble forwarding on or off. Returns `{}`. |
 
 ---
 
@@ -437,11 +441,10 @@ small local window for instant boot, then lazy-loads the rest from here.
 | `GET` | `/api/v1/lastfm/status` | — | Returns `{ serverEnabled, hasApiKey, linkedUser }`. |
 | `POST` | `/api/v1/lastfm/connect` | `{ lastfmUser, lastfmPassword }` | Link the current user's Last.fm account. |
 | `POST` | `/api/v1/lastfm/disconnect` | — | Unlink Last.fm. |
-| `POST` | `/api/v1/lastfm/test-login` | `{ username, password }` | Validate Last.fm credentials without saving. |
-| `GET` | `/api/v1/lastfm/similar-artists` | `?artist=` | Get similar artists from Last.fm API. Returns `{ artists[] }`. |
-| `GET` | `/api/v1/lastfm/artist-info` | `?artist=` | Get artist bio, tags, and image from Last.fm API. Returns `{ bio, tags[], image }`. |
-| `POST` | `/api/v1/lastfm/scrobble-by-filepath` | `{ filePath }` | Scrobble a completed track. |
-| `POST` | `/api/v1/lastfm/scrobble-by-metadata` | `{ track, artist?, album? }` | Scrobble by metadata. |
+| `GET` | `/api/v1/lastfm/similar-artists` | `?artist=` | Last.fm similar artists (top 50), resolved to artist names in the library. Returns `{ artists[], displayArtists[], displayVariantMap, variantRankMap }`: `artists` = every matching library artist variant; `displayArtists` = Last.fm names that have albums in the caller's folders; `displayVariantMap` = Last.fm name → library variants; `variantRankMap` = variant → Last.fm rank (1 = most similar). Empty lists without an API key. |
+| `GET` | `/api/v1/lastfm/artist-info` | `?artist=` | Artist bio summary (HTML stripped), up to 5 tags and Last.fm counts. Returns `{ bio, tags[], listeners, plays }`, or `{}` without an API key or when Last.fm has no data. |
+| `POST` | `/api/v1/lastfm/scrobble-by-filepath` | `{ filePath }` | Scrobble a completed track. Returns `{ scrobbled: true }` when Last.fm accepted it, `false` when the file is unknown to the caller or Last.fm refused it, and `null` when Last.fm is off, has no API key or the user is not linked. |
+| `POST` | `/api/v1/lastfm/scrobble-by-metadata` | `{ track, artist?, album? }` | Scrobble by metadata. (integration API, no web UI caller) |
 
 ---
 
@@ -453,7 +456,7 @@ small local window for instant boot, then lazy-loads the rest from here.
 | `POST` | `/api/v1/listenbrainz/connect` | `{ lbToken }` | Link a ListenBrainz account. |
 | `POST` | `/api/v1/listenbrainz/disconnect` | — | Unlink ListenBrainz. |
 | `POST` | `/api/v1/listenbrainz/playing-now` | `{ filePath }` | Send a now-playing notification. |
-| `POST` | `/api/v1/listenbrainz/scrobble-by-filepath` | `{ filePath }` | Scrobble a completed track. |
+| `POST` | `/api/v1/listenbrainz/scrobble-by-filepath` | `{ filePath }` | Scrobble a completed track. Returns `{ scrobbled: true }` when ListenBrainz accepted it, `false` when the file is unknown to the caller or ListenBrainz refused it, and `null` when ListenBrainz is off or the user is not linked. |
 
 ---
 
@@ -471,13 +474,13 @@ small local window for instant boot, then lazy-loads the rest from here.
 
 ## Custom Webhooks *(Velvet)*
 
-> Per-user configurable webhook that POSTs a JSON payload to any URL on each track play. Users configure it in the Connectors sidebar.
+> The admin sets up to two webhook slots (name + URL); each user opts in per slot in the Connectors sidebar. On a play Velvet POSTs a JSON payload (`artist`, `album`, `track`, `username`, `timestamp`) to the slot URL. Each POST has a 10 s timeout. LAN targets (private IPs) are allowed on purpose, so a webhook can reach a home-automation box.
 
 | Method | Endpoint | Body | Description |
 |---|---|---|---|
-| `GET` | `/api/v1/custom-webhooks/status` | — | Returns `{ serverEnabled, webhookEnabled, url? }` for the current user. |
-| `POST` | `/api/v1/custom-webhooks/save` | `{ enabled, url?, headers? }` | Save per-user webhook config. |
-| `POST` | `/api/v1/custom-webhooks/scrobble-by-filepath` | `{ filePath }` | Manually fire the webhook for a track (used internally by the player). |
+| `GET` | `/api/v1/custom-webhooks/status` | — | Per-slot status for the current user: `{ webhooks: [{ name, serverEnabled, userEnabled, nick }] }`. |
+| `POST` | `/api/v1/custom-webhooks/save` | `{ slot, enabled, nick? }` | Save the user's opt-in (and display nick) for one slot. |
+| `POST` | `/api/v1/custom-webhooks/scrobble-by-filepath` | `{ filePath, slot }` | Fire one slot's webhook for a track (used by the player). Returns `{ sent }`. |
 
 ---
 
@@ -492,17 +495,16 @@ small local window for instant boot, then lazy-loads the rest from here.
 | `POST` | `/api/v1/radio/stations` | `{ name, url, logoUrl? }` | Add a station. |
 | `PUT` | `/api/v1/radio/stations/:id` | `{ name?, url?, logoUrl? }` | Update a station. |
 | `DELETE` | `/api/v1/radio/stations/:id` | — | Delete a station. |
-| `POST` | `/api/v1/radio/stations/reorder` | `{ ids[] }` | Reorder stations. |
+| `PUT` | `/api/v1/radio/stations/reorder` | `{ ids[] }` | Reorder stations. |
 | `GET` | `/api/v1/radio/stream` | `?id=` | Proxy the ICY stream for a station. |
 | `GET` | `/api/v1/radio/art` | `?id=` | Serve station logo image. |
 | `GET` | `/api/v1/radio/nowplaying` | `?id=` | Get ICY now-playing metadata for a station. Returns `{ title, artist, song }`. |
 | `GET` | `/api/v1/radio/schedules` | — | List recording schedules. |
 | `POST` | `/api/v1/radio/schedules` | `{ stationId, startTime, duration, … }` | Create a recording schedule. |
-| `PUT` | `/api/v1/radio/schedules/:id` | `{ stationId?, startTime?, duration?, enabled? }` | Update a schedule. |
 | `DELETE` | `/api/v1/radio/schedules/:id` | — | Delete a schedule. |
-| `POST` | `/api/v1/radio/schedules/:id/enable` | `{ enabled: bool }` | Enable or disable a schedule. |
+| `PATCH` | `/api/v1/radio/schedules/:id/enable` | `{ enabled: bool }` | Enable or disable a schedule. |
 | `GET` | `/api/v1/radio/schedules/active` | — | Get the currently active schedule (if any). |
-| `GET` | `/api/v1/radio/record/active` | — | Returns `{ recording: bool, stationId? }` — whether a live recording is in progress. |
+| `GET` | `/api/v1/radio/record/active` | — | Array of running recordings: `[{ id, stationName, filePath, vpath, filepath, startedAt, bytesWritten }]` (`[]` when idle). `filepath` is the DB path to play from. Needs `allow-radio-recording`. |
 | `POST` | `/api/v1/radio/record/start` | `{ stationId }` | Start a live recording. |
 | `POST` | `/api/v1/radio/record/stop` | — | Stop the recording. Returns `{ filePath, relPath, bytesWritten, durationMs, vpath, stationName, artFile }`. |
 
@@ -516,74 +518,72 @@ small local window for instant boot, then lazy-loads the rest from here.
 |---|---|---|---|
 | `GET` | `/api/v1/podcast/preview` | `?url=` | Preview a feed URL before subscribing: returns title, description, episode count. |
 | `GET` | `/api/v1/podcast/feeds` | — | List subscribed feeds. |
-| `POST` | `/api/v1/podcast/feeds` | `{ url }` | Subscribe to a feed. |
+| `POST` | `/api/v1/podcast/feeds` | `{ url, name? }` | Subscribe to a feed. `name` overrides the feed's own title. Returns the new feed. |
 | `DELETE` | `/api/v1/podcast/feeds/:id` | — | Unsubscribe. |
-| `PUT` | `/api/v1/podcast/feeds/:id` | `{ title? }` | Rename a feed. |
-| `POST` | `/api/v1/podcast/feeds/reorder` | `{ ids[] }` | Reorder feeds. |
+| `PATCH` | `/api/v1/podcast/feeds/:id` | `{ title?, url? }` (at least one) | Rename a feed or change its URL. Returns the updated feed. |
+| `PUT` | `/api/v1/podcast/feeds/reorder` | `{ ids[] }` | Reorder feeds. |
 | `POST` | `/api/v1/podcast/feeds/:id/refresh` | — | Force-refresh a feed's episodes. |
-| `GET` | `/api/v1/podcast/episodes/:feedId` | — | List episodes for a feed by feed ID. |
-| `POST` | `/api/v1/podcast/episode/progress` | `{ feedId, episodeGuid, positionMs }` | Save playback position for an episode. |
-| `POST` | `/api/v1/podcast/episode/save` | `{ feedId, episodeGuid }` | Mark an episode as saved/downloaded. |
+| `GET` | `/api/v1/podcast/episodes/:feedId` | — | List episodes for a feed by feed ID. Each row carries `play_position` (seconds) and `played`. |
+| `POST` | `/api/v1/podcast/episode/progress` | `{ episodeId, feedId, position, played? }` | Save playback position (seconds) for an episode. Leaving out `played` keeps the stored flag. |
+| `GET` | `/api/v1/podcast/episode/:id/progress` | — | `{ episodeId, feedId, play_position, played, duration_secs }` for one of the caller's episodes; `404` otherwise. Read-only status route for outside clients (Home Assistant, mobile); the web player does not call it. |
+| `POST` | `/api/v1/podcast/episode/save` | `{ feedId, episodeId }` | Download the episode audio into the caller's first audio-books folder (`<feed title>/<date> <episode title>.<ext>`). Returns `{ savedTo }` (vpath-relative path); `400` when the caller has no audio-books folder. |
 
 ---
 
 ## YouTube Download *(Velvet)*
 
-> Downloads YouTube audio into the library. See [docs/API/ytdl.md](API/ytdl.md).
+> Downloads YouTube audio into the library. See [docs/API/ytdl.md](API/ytdl.md). `metadata` and the download start refuse URLs that are not http(s) or whose host resolves to a private or loopback address (`400`, "That URL is not allowed").
 
 | Method | Endpoint | Body / Params | Description |
 |---|---|---|---|
 | `GET` | `/api/v1/ytdl/metadata` | `?url=` | Fetch video metadata — returns `{ title, artist, album, year, thumbnail }`. |
 | `POST` | `/api/v1/ytdl/` | `{ url, outputCodec?, metadata? }` | Start async download. Returns `{ jobId, message }` immediately. |
-| `GET` | `/api/v1/ytdl/downloads` | — | Poll job status. Returns object keyed by `jobId` → `{ status, title, filePath?, vpath?, error? }`. |
+| `GET` | `/api/v1/ytdl/downloads` | — | Poll job status. Returns the caller's own jobs (admins: every user's) keyed by `jobId` → `{ status, url, title, started, user, finished?, filePath?, vpath?, filepath?, error? }` (`filepath` = DB path to play from). |
 
 ---
 
 ## Server Playback (Cast to Server Speaker) *(Velvet)*
 
 > Controls the mpv-based server-side audio player. See [docs/server-audio.md](server-audio.md).
+>
+> **Access:** `available` is open to any logged-in user. `detect`, `audio-health`, `audio-health/fix` and `test-tone` are admin-only. Every other route needs admin, the `allow-mpv-cast` permission, or server-remote access; otherwise 403. Paths are resolved against the user's own folders; a bad, unreadable or forbidden path answers 404 `{ error: 'File not available' }`.
 
 | Method | Endpoint | Body | Description |
 |---|---|---|---|
-| `GET` | `/api/v1/server-playback/status` | — | `{ playing, filepath, position, duration, volume, looping }` |
-| `POST` | `/api/v1/server-playback/set-pause` | `{ pause: bool }` | Start or pause playback. |
-| `POST` | `/api/v1/server-playback/pause` | — | Pause (legacy alias). |
-| `POST` | `/api/v1/server-playback/resume` | — | Resume (legacy alias). |
-| `POST` | `/api/v1/server-playback/stop` | — | Stop and clear queue. |
+| `GET` | `/api/v1/server-playback/available` | — | Whether the player may offer the Server Speaker output. Returns `{ enabled, running, allowed }`; `allowed` is true for admins and users with `allow-mpv-cast`. Never 403. |
+| `GET` | `/api/v1/server-playback/status` | — | `{ running, playing, currentTime, duration, currentIndex, queueLength, volume, loopMode, shuffle, queue, currentGainDb }` (`currentGainDb` only while mpv is running). |
+| `POST` | `/api/v1/server-playback/set-pause` | `{ paused: bool }` | Start or pause playback. |
+| `POST` | `/api/v1/server-playback/pause` | — | Toggle pause (legacy). |
 | `POST` | `/api/v1/server-playback/seek` | `{ position }` | Seek to seconds. |
-| `POST` | `/api/v1/server-playback/volume` | `{ volume }` (0–130) | Set volume. |
+| `POST` | `/api/v1/server-playback/volume` | `{ volume }` (0–130) | Set volume. `400` when `volume` is not a number; other values are clamped to 0–130. |
 | `POST` | `/api/v1/server-playback/next` | — | Next track. |
 | `POST` | `/api/v1/server-playback/previous` | — | Previous track. |
-| `POST` | `/api/v1/server-playback/loop` | — | Toggle loop mode. |
-| `POST` | `/api/v1/server-playback/shuffle` | — | Shuffle the queue. |
-| `GET` | `/api/v1/server-playback/queue` | — | Get current queue (virtual paths). |
-| `POST` | `/api/v1/server-playback/play` | `{ file: { filepath, title?, artist?, album?, albumArt?, seekTo?, rgEnabled?, rgMode?, rgPreamp?, rgClip? } }` | Clear queue, add one file, start playback. |
+| `POST` | `/api/v1/server-playback/loop` | — | Cycle loop mode `none` → `one` → `all`. Returns `{ loop_mode }`. |
+| `POST` | `/api/v1/server-playback/play` | `{ file: { filepath, title?, artist?, album?, albumArt?, seekTo?, rgEnabled?, rgMode?, rgPreamp?, rgClip? } }` | Clear queue, add one file, start playback. (integration API, no web UI caller) |
 | `POST` | `/api/v1/server-playback/queue/add` | `{ filepath, title?, artist?, album?, albumArt?, seekTo?, rgEnabled?, rgMode?, rgPreamp?, rgClip? }` | Append a file to the queue. Returns `{ index }`. |
-| `POST` | `/api/v1/server-playback/queue/add-many` | `{ files: [{ filepath, title?, artist?, album?, albumArt?, seekTo?, rgEnabled?, rgMode?, rgPreamp?, rgClip? }] }` | Append multiple files. Returns `{ indices[] }`. |
+| `POST` | `/api/v1/server-playback/queue/add-many` | `{ files: [{ filepath, title?, artist?, album?, albumArt?, seekTo?, rgEnabled?, rgMode?, rgPreamp?, rgClip? }] }` | Append multiple files, all or nothing: every file is located and mpv is started before the first one is queued, so a bad path leaves the queue unchanged. Returns `{ indices[] }`. (integration API, no web UI caller) |
 | `POST` | `/api/v1/server-playback/queue/play-index` | `{ index }` | Jump to queue index. |
 | `POST` | `/api/v1/server-playback/queue/remove` | `{ index }` | Remove track at index. |
 | `POST` | `/api/v1/server-playback/queue/clear` | — | Clear the queue. |
-| `GET` | `/api/v1/server-playback/detect` | — | Detect mpv binary. Returns `{ found, path }`. |
-| `GET` | `/api/v1/server-playback/audio-health` | — | ALSA/audio health check. Returns `{ ok, details[] }`. |
+| `GET` | `/api/v1/server-playback/detect` | — | Detect mpv binary. Returns `{ found, version, path }`. |
+| `GET` | `/api/v1/server-playback/audio-health` | — | ALSA/audio health check. Returns `{ platform, mpv: { found, path, version, error }, alsa: { amixerFound, aplayFound, controls, inspected, mutedControls, cards }, healthy, issues[] }`. |
 | `POST` | `/api/v1/server-playback/audio-health/fix` | — | Attempt auto-fix (unmute ALSA master). |
-| `POST` | `/api/v1/server-playback/test-tone` | — | Play a 1 kHz test tone for 2 s. |
-| `POST` | `/api/v1/server-playback/heartbeat` | `{ sessionId }` | Keep-alive from the remote UI. Resets idle timeout. |
-| `POST` | `/api/v1/server-playback/reapply-gain` | — | Re-apply ReplayGain to the currently loaded track (after settings change). |
-| `GET` | `/server-remote` | — | Static HTML for the server-audio player UI. |
+| `POST` | `/api/v1/server-playback/test-tone` | — | Play a 3 s stereo test tone (440 Hz left, 880 Hz right). `409` when mpv is not running. |
+| `POST` | `/api/v1/server-playback/heartbeat` | — | Keep-alive from the remote UI. Resets idle timeout. |
+| `POST` | `/api/v1/server-playback/reapply-gain` | `{ gainDb?, volumePct?, balance? }` | Re-apply gain, volume and balance to the loaded track (after a settings change). `400` when a value is not a finite number; `gainDb` is clamped to −30…+20 dB (the same clamp applies to ReplayGain/preamp gain when a track is added). |
+| `GET` | `/server-remote` | — | Static HTML for the server-audio player UI (also `/server-remote/` and `/server-remote/index.html`). While Server Audio is off it shows a short "not enabled" page with a link to the admin panel. |
 
 ---
 
 ## Jukebox (Remote Control)
 
-> Remote-control mode: a separate device controls the player via a one-time code. See [docs/API/jukebox_sessions.md](API/jukebox_sessions.md).
+> Remote-control mode: a separate device controls the player via a one-time code. A session starts when the player opens a WebSocket to the server (`?token=<jwt>`); the server replies with `{ code, token }` and the session ends when the socket closes. See [docs/API/jukebox_sessions.md](API/jukebox_sessions.md).
 
 **Authenticated endpoints**:
 
 | Method | Endpoint | Body | Description |
 |---|---|---|---|
-| `POST` | `/api/v1/jukebox/open-jukebox` | — | Start a jukebox session. Returns `{ code }`. |
-| `POST` | `/api/v1/jukebox/close-jukebox` | — | Close the active session. |
-| `GET` | `/api/v1/jukebox/sessions` | — | List all active jukebox sessions. Returns `[{ code, since }]`. |
+| `GET` | `/api/v1/jukebox/sessions` | — | Admin only. List all active jukebox sessions. Returns `{ sessions: [{ code, token, startTime, url }] }`. (integration API, no web UI caller) |
 | `POST` | `/api/v1/jukebox/push-to-client` | `{ code, command, file? }` | Send a command to the player. Commands: `addSong`, `playPause`, `next`, `previous`, `removeSong`, `goToSong`, `getPlaylist`, `getNowPlaying`. |
 | `POST` | `/api/v1/jukebox/update-playlist` | `{ code, tracks[], idx }` | Player → server: write current queue to cache. |
 | `POST` | `/api/v1/jukebox/update-now-playing` | `{ code, nowPlaying: { title, artist, album, albumArt, filepath, currentTime, duration, playing } }` | Player → server: write now-playing to cache. |
@@ -606,9 +606,9 @@ small local window for instant boot, then lazy-loads the rest from here.
 | Method | Endpoint | Body | Description |
 |---|---|---|---|
 | `GET` | `/api/v1/acoustid/status` | — | Returns fingerprinting job status and queue length. |
-| `POST` | `/api/v1/acoustid/start` | `{ vpaths? }` | Start fingerprinting all unfingerprinted tracks. |
+| `POST` | `/api/v1/acoustid/start` | — | Start fingerprinting all unfingerprinted tracks. `400` while AcoustID is off or has no API key; answers `pending: true` while a file scan runs (the job starts after it). |
 | `POST` | `/api/v1/acoustid/stop` | — | Stop the running job. |
-| `POST` | `/api/v1/acoustid/scan-files` | `{ files: ["vpath/rel", …] }` | Queue specific files for fingerprinting. *(Velvet)* |
+| `POST` | `/api/v1/acoustid/scan-files` | `{ files: [{ filepath, vpath }] }` (first 500 used) | Queue specific files for fingerprinting (resets their status) and start the worker. Returns `{ ok, queued, workerStarted }`. *(Velvet)* |
 | `POST` | `/api/v1/acoustid/reset-errors` | — | Re-queue all errored files for fingerprinting. *(Velvet)* |
 | `POST` | `/api/v1/acoustid/reset-not-found` | — | Re-queue all `not_found` files for fingerprinting. Returns `{ reset, workerStarted }`. *(Velvet)* |
 
@@ -616,18 +616,19 @@ small local window for instant boot, then lazy-loads the rest from here.
 
 ## Tag Workshop *(Velvet)*
 
-> Batch metadata enrichment via AcoustID/MusicBrainz fingerprint lookup. See [docs/tageditor.md](tageditor.md).
+> Batch metadata enrichment via AcoustID/MusicBrainz fingerprint lookup. See [docs/tag-workshop.md](tag-workshop.md). All endpoints are admin only.
 
 | Method | Endpoint | Body / Params | Description |
 |---|---|---|---|
-| `GET` | `/api/v1/tagworkshop/status` | — | Returns combined status: `{ mb: {…}, textSearch: {…}, tags: {…}, enrich: { running, stopping }, textSearch: { running, stopping, … } }`. |}
+| `GET` | `/api/v1/tagworkshop/status` | — | Combined status, including `enrich: { running, stopping }` and `textSearch: { queued, found, not_found, skipped, errors, running, stopping }`. |
+| `GET` | `/api/v1/tagworkshop/folder` | `?path=<vpath/folder>` | Audio files directly in one folder, with their DB tags and any MusicBrainz data. Child vpaths are resolved to their parent. Returns `{ files }`. |
 | `POST` | `/api/v1/tagworkshop/enrich/start` | `{ vpaths? }` | Start the enrichment job. |
 | `POST` | `/api/v1/tagworkshop/enrich/stop` | — | Stop the running job. |
+| `POST` | `/api/v1/tagworkshop/enrich/files` | `{ files: [{ filepath, vpath }] }` (max 500) | Queue specific files for enrichment and start the worker. Returns `{ ok, queued, workerStarted }`. |
 | `GET` | `/api/v1/tagworkshop/enrich/errors` | — | List tracks where enrichment failed. |
 | `POST` | `/api/v1/tagworkshop/enrich/retry-errors` | — | Retry failed tracks. |
 | `GET` | `/api/v1/tagworkshop/albums` | — | Albums with pending tag suggestions. |
 | `GET` | `/api/v1/tagworkshop/album/:mb_release_id` | — | Full suggestion for one MusicBrainz release. |
-| `POST` | `/api/v1/tagworkshop/accept` | `{ mb_release_id }` | Accept all track tags for a release. |
 | `POST` | `/api/v1/tagworkshop/accept-track` | `{ filepath, … }` | Accept tags for a single track. |
 | `POST` | `/api/v1/tagworkshop/skip` | `{ mb_release_id }` | Shelve a release (skip for now). |
 | `POST` | `/api/v1/tagworkshop/unshelve` | `{ mb_release_id }` | Restore a shelved release. |
@@ -635,7 +636,6 @@ small local window for instant boot, then lazy-loads the rest from here.
 | `POST` | `/api/v1/tagworkshop/bulk-accept-casing` | `{ mb_release_id }` | Accept only casing/punctuation normalisation for a release. |
 | `POST` | `/api/v1/tagworkshop/text-search/start` | — | Start the MusicBrainz text-search fallback job (for `acoustid_status='not_found'` files). |
 | `POST` | `/api/v1/tagworkshop/text-search/stop` | — | Stop the running text-search job. |
-| `GET` | `/api/v1/tagworkshop/text-search/status` | — | Returns `{ queued, found, not_found, skipped, errors, running, stopping }`. |
 | `POST` | `/api/v1/tagworkshop/text-search/retry-notfound` | — | Reset all `not_found` rows so they are retried on next run. |
 | `GET` | `/api/v1/tagworkshop/text-search/errors` | — | Returns `{ errors: [{filepath, vpath, mb_text_search_ts, mb_text_search_error}], total }`. |
 | `POST` | `/api/v1/tagworkshop/text-search/retry-errors` | — | Reset all `error` rows so they are retried on next run. Returns `{ ok, reset }`. |
@@ -652,17 +652,6 @@ small local window for instant boot, then lazy-loads the rest from here.
 
 ---
 
-## Federation (Syncthing Mesh Sync)
-
-| Method | Endpoint | Body | Description |
-|---|---|---|---|
-| `GET` | `/api/v1/federation/stats` | — | Returns `{ deviceId, uiAddress }`. |
-| `POST` | `/api/v1/federation/invite/generate` | `{ vpaths?, url? }` | Generate a federation invite token. |
-| `POST` | `/api/v1/federation/invite/accept` | `{ url, vpaths, invite, accessAll }` | Accept a federation invite. |
-| `*` | `/api/v1/syncthing-proxy/:path` | — | Proxy any request to the bundled Syncthing UI. All HTTP methods accepted. |
-
----
-
 ## Admin — Configuration
 
 | Method | Endpoint | Body | Description |
@@ -673,11 +662,10 @@ small local window for instant boot, then lazy-loads the rest from here.
 | `POST` | `/api/v1/admin/config/address` | `{ address }` | Change listen address. |
 | `POST` | `/api/v1/admin/config/secret` | `{ strength }` | Regenerate JWT secret (invalidates all tokens). |
 | `POST` | `/api/v1/admin/config/noupload` | `{ noUpload: bool }` | Toggle uploads server-wide. |
-| `POST` | `/api/v1/admin/config/nomkdir` | `{ noMkdir: bool }` | Toggle directory creation server-wide. |
-| `POST` | `/api/v1/admin/config/nofilemodify` | `{ noFileModify: bool }` | Toggle file modification server-wide. |
 | `POST` | `/api/v1/admin/config/write-logs` | `{ writeLogs: bool }` | Toggle writing logs to disk. |
+| `POST` | `/api/v1/admin/config/log-retention` | `{ logRetention: "1d"\|"3d"\|"7d"\|"14d"\|"30d" }` | How long log files are kept. |
 | `POST` | `/api/v1/admin/config/max-request-size` | `{ maxRequestSize: "50MB" }` | Set max request body size. |
-| `POST` | `/api/v1/admin/config/ui` | `{ ui: "default"\|"velvet" }` | Switch UI mode. |
+| `POST` | `/api/v1/admin/config/theme` | `{ ui: "velvet"\|"velvet-dark"\|"velvet-light" }` | Set the default theme. |
 
 ---
 
@@ -686,9 +674,12 @@ small local window for instant boot, then lazy-loads the rest from here.
 | Method | Endpoint | Body | Description |
 |---|---|---|---|
 | `GET` | `/api/v1/admin/directories` | — | List all libraries. |
-| `PUT` | `/api/v1/admin/directory` | `{ directory, vpath, autoAccess?, isAudioBooks? }` | Add a library. |
+| `PUT` | `/api/v1/admin/directory` | `{ directory, vpath, autoAccess?, isAudioBooks?, isRecording?, isYoutube?, allowRecordDelete?, isExcluded?, artistsOn?, … }` | Add a library. |
 | `DELETE` | `/api/v1/admin/directory` | `{ vpath }` | Remove a library. |
-| `PATCH` | `/api/v1/admin/directory/flags` | `{ vpath, albumsOnly?, allowRecordDelete? }` | Update per-folder flags. *(Velvet)* |
+| `PATCH` | `/api/v1/admin/directory/flags` | `{ vpath, albumsOnly?, allowRecordDelete?, dlnaEnabled?, artistsOn? }` (at least one) | Update per-folder flags. `allowRecordDelete` is for recordings/YouTube folders, `albumsOnly`/`dlnaEnabled` for music/audio-book folders, `artistsOn` for any non-excluded folder (changing it rebuilds the artist index). Returns `{}`. *(Velvet)* |
+| `PATCH` | `/api/v1/admin/directory/type` | `{ vpath, type: "music"\|"audio-books"\|"recordings"\|"youtube"\|"excluded" }` | Change a folder's type. Setting `excluded` starts a scan of the parent so its rows are purged. *(Velvet)* |
+| `PATCH` | `/api/v1/admin/directory/root` | `{ vpath, root }` | Change a folder's disk path. Returns `{ restartRequired: true }`. *(Velvet)* |
+| `PATCH` | `/api/v1/admin/directory/users` | `{ vpath, users[] }` | Set which users can see a folder. *(Velvet)* |
 
 ---
 
@@ -697,13 +688,18 @@ small local window for instant boot, then lazy-loads the rest from here.
 | Method | Endpoint | Body | Description |
 |---|---|---|---|
 | `GET` | `/api/v1/admin/users` | — | List all users with their permissions. |
-| `PUT` | `/api/v1/admin/users` | `{ username, password, vpaths[], admin?, allowMkdir?, allowUpload? }` | Create a user. |
+| `PUT` | `/api/v1/admin/users` | `{ username, password, vpaths[], admin? }` | Create a user. |
 | `DELETE` | `/api/v1/admin/users` | `{ username }` | Delete a user. |
-| `POST` | `/api/v1/admin/users/password` | `{ username, password }` | Change a user's password. |
+| `POST` | `/api/v1/admin/users/password` | `{ username, password }` | Change a user's password. This logs that user out everywhere (their older tokens stop working). When the admin changes their own password the answer is `{ token }` (a fresh token, also set as cookie), otherwise `{}`. |
+| `POST` | `/api/v1/admin/users/revoke-tokens` | `{ username }` | "Log out everywhere" (Admin → Users → Password button → Sessions): every token issued to that user before now stops working. Same answer as the password route (`{ token }` when it is the admin's own account, else `{}`). *(Velvet)* |
+| `POST` | `/api/v1/admin/users/subsonic-password` | `{ username, password }` | Set a user's Subsonic password. *(Velvet)* |
 | `POST` | `/api/v1/admin/users/vpaths` | `{ username, vpaths[] }` | Update library access. |
-| `POST` | `/api/v1/admin/users/access` | `{ username, admin, allowMkdir, allowUpload, allowFileModify? }` | Update role and permissions. |
+| `POST` | `/api/v1/admin/users/access` | `{ username, admin }` | Set or clear the admin role. |
 | `POST` | `/api/v1/admin/users/allow-mpv-cast` | `{ username, allow: bool }` | Toggle server-playback (mpv cast) permission. *(Velvet)* |
-| `POST` | `/api/v1/admin/users/lastfm` | `{ username, lasftfmUser, lasftfmPassword }` | Set Last.fm credentials for a user (admin override). |
+| `POST` | `/api/v1/admin/users/allow-server-remote` | `{ username, allow: bool }` | Toggle access to the `/server-remote` page. *(Velvet)* |
+| `POST` | `/api/v1/admin/users/allow-radio-recording` | `{ username, allow: bool }` | Toggle radio recording permission. *(Velvet)* |
+| `POST` | `/api/v1/admin/users/allow-youtube-download` | `{ username, allow: bool }` | Toggle YouTube download permission. *(Velvet)* |
+| `POST` | `/api/v1/admin/users/allow-upload` | `{ username, allow: bool }` | Toggle upload permission. *(Velvet)* |
 
 ---
 
@@ -713,29 +709,30 @@ small local window for instant boot, then lazy-loads the rest from here.
 |---|---|---|---|
 | `GET` | `/api/v1/admin/db/params` | — | Get all scanner settings. |
 | `POST` | `/api/v1/admin/db/scan/all` | — | Scan all libraries. |
-| `POST` | `/api/v1/admin/db/scan/force-rescan` | — | Rescan all libraries ignoring mtimes. |
-| `GET` | `/api/v1/admin/db/scan/stats` | — | Total track count in DB. |
+| `POST` | `/api/v1/admin/db/scan/stop` | — | Stop the running scan. *(Velvet)* |
+| `GET` | `/api/v1/admin/db/scan/resume-state` | — | Libraries whose last scan can be resumed. Returns `{ resumable }`. *(Velvet)* |
+| `POST` | `/api/v1/admin/db/scan/clear-state` | — | Forget all saved scan-resume state. *(Velvet)* |
+| `GET` | `/api/v1/admin/db/scan/stats` | — | Library totals (tracks, albums, waveform count, …). |
 | `GET` | `/api/v1/admin/db/scan/progress` | — | Per-library scan progress. Returns `[{ vpath, pct, scanned, expected, currentFile }]`. *(Velvet)* |
 | `GET` | `/api/v1/admin/db/scan-errors` | — | List scan errors (files the scanner could not process). |
 | `DELETE` | `/api/v1/admin/db/scan-errors` | — | Clear all scan errors. |
 | `GET` | `/api/v1/admin/db/scan-errors/count` | — | Returns `{ count }` of current scan errors. |
 | `POST` | `/api/v1/admin/db/scan-errors/fix` | — | Attempt to re-process all scan-errored files. |
-| `POST` | `/api/v1/admin/db/params/scan-interval` | `{ scanInterval }` | Scheduled rescan interval in hours (0 = disabled). |
+| `POST` | `/api/v1/admin/db/params/scan-interval` | `{ scanInterval }` | Scheduled rescan interval in hours (0 = disabled). Returns `{ nextScanAt }`. |
+| `POST` | `/api/v1/admin/db/params/scan-start-time` | `{ scanStartTime: "HH:MM" \| null }` | Time of day the scheduled scan starts. Returns `{ nextScanAt }`. *(Velvet)* |
 | `POST` | `/api/v1/admin/db/params/skip-img` | `{ skipImg: bool }` | Skip album art extraction during scan. |
 | `POST` | `/api/v1/admin/db/params/boot-scan-delay` | `{ bootScanDelay }` | Seconds to wait before scanning on boot. |
+| `POST` | `/api/v1/admin/db/params/boot-scan-enabled` | `{ bootScanEnabled: bool }` | Scan on boot or not. *(Velvet)* |
 | `POST` | `/api/v1/admin/db/params/max-concurrent-scans` | `{ maxConcurrentTasks }` | Max parallel scan workers. |
 | `POST` | `/api/v1/admin/db/params/compress-image` | `{ compressImage: bool }` | Generate album art thumbnails. |
-| `POST` | `/api/v1/admin/db/params/scan-commit-interval` | `{ scanCommitInterval }` | Files between DB commits (lower = shorter write locks). |
-| `POST` | `/api/v1/admin/db/params/auto-album-art` | `{ autoAlbumArt: bool }` | Auto-fetch art from external services during scan. |
-| `POST` | `/api/v1/admin/db/params/album-art-write-to-folder` | `{ albumArtWriteToFolder: bool }` | Write fetched art as `cover.jpg` in album folder. |
-| `POST` | `/api/v1/admin/db/params/album-art-write-to-file` | `{ albumArtWriteToFile: bool }` | Embed fetched art in audio file ID3 tags. |
-| `POST` | `/api/v1/admin/db/params/album-art-services` | `{ albumArtServices: ["musicbrainz","itunes","deezer"] }` | Select which services to query for art. |
-| `POST` | `/api/v1/admin/db/force-compress-images` | — | Re-run thumbnail compressor over the whole library. |
-| `POST` | `/api/v1/admin/db/generate-waveforms` | — | Generate waveform data for every track. |
+| `POST` | `/api/v1/admin/db/params/allow-id3edit` | `{ allowId3Edit: bool }` | Allow tag editing from the player. *(Velvet)* |
+| `POST` | `/api/v1/admin/db/params/max-recording-minutes` | `{ maxRecordingMinutes }` | Longest allowed radio recording. *(Velvet)* |
+| `POST` | `/api/v1/admin/db/params/max-zip-mb` | `{ maxZipMb }` | Size cap for ZIP downloads. *(Velvet)* |
+| `POST` | `/api/v1/admin/db/params/album-category-folders` | `{ folders: string[] }` (max 50) | Folder names the Album Library treats as categories, not albums. *(Velvet)* |
+| `POST` | `/api/v1/admin/db/force-compress-images` | — | Re-run thumbnail compressor over the whole library. Returns `{ started }`. |
 | `GET` | `/api/v1/admin/db/album-version-inventory` | — | Count of files grouped by `album_version_source` (which tag or method produced the version value). Returns `[{ source, count }]`. *(Velvet)* |
 | `POST` | `/api/v1/admin/db/params/album-version-tags` | `{ tags: ["TIT3", "TXXX:EDITION", …] }` | Update the ordered list of tag fields the scanner uses to detect album version/edition. Max 20 entries. *(Velvet)* |
-| `POST` | `/api/v1/admin/db/purge-orphaned-vpaths` | `{ dryRun?: bool }` | Detect (and optionally delete) rows in the `files` table whose vpath no longer exists in config — left behind after a folder rename or removal. `dryRun: true` returns `{ orphaned, deleted: 0 }` without modifying the DB. *(Velvet)* |
-| `POST` | `/api/v1/admin/directory/reset-sentinel` | `{ vpath }` | Re-write the `.velvet.md` mount-guard sentinel file to the vpath root. Use when scanning is blocked after the sentinel was accidentally deleted. *(Velvet)* |
+| `POST` | `/api/v1/admin/db/purge-orphaned-vpaths` | `{ dryRun?: bool }` | Detect (and optionally delete) rows in the `files` table whose vpath no longer exists in config — left behind after a folder rename or removal. `dryRun: true` returns `{ orphaned, deleted: 0 }` without modifying the DB. Admin only; answers 405 while the admin API is locked. *(Velvet)* |
 | `POST` | `/api/v1/admin/db/params/scan-error-retention` | `{ days }` | Set how many days to keep scan errors before automatic pruning. *(Velvet)* |
 
 ---
@@ -753,8 +750,10 @@ small local window for instant boot, then lazy-loads the rest from here.
 | Method | Endpoint | Body | Description |
 |---|---|---|---|
 | `GET` | `/api/v1/admin/transcode` | — | Get transcode config + ffmpeg availability. |
+| `POST` | `/api/v1/admin/transcode/enable` | `{ enable: bool }` | Turn transcoding on or off. |
 | `POST` | `/api/v1/admin/transcode/default-codec` | `{ defaultCodec: "mp3"\|"opus"\|"aac" }` | Set default codec. |
 | `POST` | `/api/v1/admin/transcode/default-bitrate` | `{ defaultBitrate: "64k"\|"96k"\|"128k"\|"192k" }` | Set default bitrate. |
+| `POST` | `/api/v1/admin/transcode/default-algorithm` | `{ algorithm: "stream"\|"buffer" }` | Set default transcode method. |
 | `POST` | `/api/v1/admin/transcode/download` | — | Download the bundled ffmpeg binary. |
 
 ---
@@ -763,11 +762,20 @@ small local window for instant boot, then lazy-loads the rest from here.
 
 | Method | Endpoint | Body | Description |
 |---|---|---|---|
-| `GET` | `/api/v1/admin/dlna` | — | DLNA config: `{ mode, port, name, uuid, browse }`. |
-| `GET` | `/api/v1/admin/dlna/config` | — | Same as above. *(Velvet alias)* |
-| `POST` | `/api/v1/admin/dlna/config` | `{ enabled?, port?, name? }` | Update DLNA config. Starts/stops the server live. |
-| `POST` | `/api/v1/admin/dlna/mode` | `{ mode: "disabled"\|"same-port"\|"separate-port", port? }` | Enable/disable DLNA. |
-| `POST` | `/api/v1/admin/dlna/browse` | `{ browse: "flat"\|"dirs"\|"artist"\|"album"\|"genre" }` | Set DLNA browse structure. |
+| `GET` | `/api/v1/admin/dlna/config` | — | DLNA config: `{ enabled, port, name, running }`. |
+| `POST` | `/api/v1/admin/dlna/config` | `{ enabled?, port? (1024–65535), name? }` | Update DLNA config (at least one field; any other field, such as the old `browse`, answers `400`). Starts/stops the DLNA server live. Returns `{ running }`. |
+
+The DLNA server itself runs on its own port (default 10293) and answers UPnP requests, not JSON:
+
+| Method | Endpoint | Description |
+|---|---|---|
+| `GET` | `/dlna/description.xml` | UPnP device description. |
+| `GET` | `/dlna/scpd/content-directory.xml` | ContentDirectory service description. |
+| `GET` | `/dlna/scpd/connection-manager.xml` | ConnectionManager service description. |
+| `POST` | `/dlna/control/content-directory` | ContentDirectory SOAP control (Browse, Search, …). |
+| `POST` | `/dlna/control/connection-manager` | ConnectionManager SOAP control. |
+
+The DLNA port also serves the audio itself under `/media/<vpath>/<path>` and cached covers under `/album-art/`, without authentication (LAN only). Browse, BrowseMetadata, Search and `/media` only reach files inside folders with `dlnaEnabled` on. See [docs/dlna.md](dlna.md).
 
 ---
 
@@ -796,7 +804,16 @@ small local window for instant boot, then lazy-loads the rest from here.
 | Method | Endpoint | Body | Description |
 |---|---|---|---|
 | `GET` | `/api/v1/admin/discord-webhook/config` | — | Get webhook config: `{ enabled, url }`. |
-| `POST` | `/api/v1/admin/discord-webhook/config` | `{ enabled?, url? }` | Update config. URL must be a `discord.com` or `discordapp.com` webhook URL. |
+| `POST` | `/api/v1/admin/discord-webhook/config` | `{ enabled, url }` | Update config. URL must be a `discord.com` or `discordapp.com` webhook URL. |
+
+---
+
+## Admin — Custom Webhooks Config *(Velvet)*
+
+| Method | Endpoint | Body | Description |
+|---|---|---|---|
+| `GET` | `/api/v1/admin/custom-webhooks/config` | — | The two webhook slots: `{ webhooks: [{ name, url, enabled }] }`. |
+| `POST` | `/api/v1/admin/custom-webhooks/config` | `{ webhooks: [{ name, url, enabled }] }` (max 2) | Save the slots. `url` must be `http` or `https`. |
 
 ---
 
@@ -804,8 +821,8 @@ small local window for instant boot, then lazy-loads the rest from here.
 
 | Method | Endpoint | Body | Description |
 |---|---|---|---|
-| `GET` | `/api/v1/admin/genre-groups` | — | Get genre display groupings. |
-| `POST` | `/api/v1/admin/genre-groups` | `{ groups: { "Group Name": ["genre1","genre2"] } }` | Update groupings. |
+| `GET` | `/api/v1/admin/genre-groups` | — | Genre display groupings: `{ groups: [{ name, genres[] }], allGenres[], isDefault }`. `isDefault` is true while no groups are saved (the groups are then made automatically). |
+| `POST` | `/api/v1/admin/genre-groups` | `[{ name, genres[] }]` (a bare array) | Replace the groupings. Returns `{ ok }`. |
 
 ---
 
@@ -813,8 +830,8 @@ small local window for instant boot, then lazy-loads the rest from here.
 
 | Method | Endpoint | Body | Description |
 |---|---|---|---|
-| `GET` | `/api/v1/admin/server-audio` | — | Get Server Audio config: `{ mpvPath, enabled }`. |
-| `POST` | `/api/v1/admin/server-audio` | `{ mpvPath?, enabled? }` | Save config. |
+| `GET` | `/api/v1/admin/server-audio` | — | Get Server Audio config: `{ enabled, mpvBin, autoUnmute, running }`. |
+| `POST` | `/api/v1/admin/server-audio` | `{ enabled?, mpvBin?, autoUnmute? }` (at least one) | Save config; `enabled: true` starts mpv, `false` stops it. |
 | `POST` | `/api/v1/admin/server-audio/start` | — | Start the mpv process. |
 | `POST` | `/api/v1/admin/server-audio/stop` | — | Stop the mpv process. |
 
@@ -823,40 +840,42 @@ small local window for instant boot, then lazy-loads the rest from here.
 ## Sonos *(Velvet)*
 
 > Active cast to Sonos devices via UPnP/SOAP. See [docs/sonos.md](sonos.md).
+>
+> **Access:** every `/api/v1/sonos/*` route except the device callback `/event` needs an admin or a user with the `allow-mpv-cast` permission; anyone else gets `403 { error: 'Not allowed' }`. Routes marked **Admin** need an admin. Where a route takes `ip`, it falls back to the saved default room when left out.
 
 | Method | Endpoint | Body | Description |
 |---|---|---|---|
-| `GET` | `/api/v1/sonos/devices` | — | Cached room list + `enabled` flag; triggers discovery if empty. |
-| `POST` | `/api/v1/sonos/scan` | — | Force re-discovery using the configured seed IP. |
+| `GET` | `/api/v1/sonos/devices` | — | `{ rooms, lastScan, cached, defaultRoom, enabled, transcodeOpus, sleepEnabled }`. Re-discovers when the cached list is older than 5 minutes. |
+| `POST` | `/api/v1/sonos/scan` | `{ seedIp? }` | Force re-discovery (optionally starting from one speaker IP). |
 | `GET` | `/api/v1/sonos/probe?ip=` | — | Probe a single IP — returns room name, UUID, reachability. |
-| `POST` | `/api/v1/sonos/save-default` | `{ ip, name, uuid }` | Save a room as the default cast target. |
-| `POST` | `/api/v1/sonos/cast` | `{ deviceIp, track, seekTo?, paused? }` | Cast a track to a Sonos device. Requires `allow-mpv-cast`. |
-| `POST` | `/api/v1/sonos/set-pause` | `{ deviceIp, paused }` | Pause or resume. Requires `allow-mpv-cast`. |
-| `POST` | `/api/v1/sonos/seek` | `{ deviceIp, seconds }` | Seek to position. Requires `allow-mpv-cast`. |
-| `POST` | `/api/v1/sonos/set-volume` | `{ deviceIp, volume }` | Set volume (0–100). Requires `allow-mpv-cast`. |
+| `POST` | `/api/v1/sonos/save-default` | `{ ip, name, uuid? }` | **Admin.** Save a room as the default cast target. |
+| `POST` | `/api/v1/sonos/cast` | `{ ip?, filepath, title?, artist?, album?, aaFile?, seekTo?, paused? }` | Cast one track (`filepath` with vpath prefix). Returns `{ ok, ip, actualIp, title, artist, streamUrl, streamStartOffset, isTranscodeStream }`. |
+| `POST` | `/api/v1/sonos/set-pause` | `{ ip?, paused }` | Pause or resume. |
+| `POST` | `/api/v1/sonos/seek` | `{ ip?, position }` | Seek to `position` seconds. |
+| `POST` | `/api/v1/sonos/set-volume` | `{ ip?, volume, muted? }` | Set volume (0–100); `muted: true` sets 0. |
 | `GET` | `/api/v1/sonos/battery?ip=` | — | Battery status for portable devices (Roam, Roam 2, Move, Move 2). Returns `{ supported, level, powerSource, health, temperature }`. Mains-powered devices return `{ supported: false }`. |
 | `GET` | `/api/v1/sonos/device-info?ip=` | — | Device info from `/status/zp` + `/status/wireless`. Returns `{ zoneName, model, firmware, firmwareDate, ipAddress, macAddress, seriesId, wifi, wifiMode, sonosNetPeers }`. |
 | `GET` | `/api/v1/sonos/transport-status?ip=` | — | Poll playback state: `{ playing, paused, stopped, state, position, duration, track, nrTracks, trackUri, trackFp, trackTitle, trackArtist, trackAlbum, trackArt, serverAdvanced }`. `serverAdvanced` is `null`, or `{ fp, position }` when the server auto-advanced the speaker to the caller's next queued track while their player was asleep and that player has not caught up yet (see `docs/sonos.md`). The player's own background poll only reads `stopped`/`unreachable` from this (reachability + stopped-while-should-be-playing self-heal — see `docs/sonos.md`); it does not use `track`/`nrTracks`/`trackFp` to decide what should be playing. The `track*` metadata fields still drive now-playing display for external Sonos-Favourite content (Spotify, radio, etc. played from the Sonos app), which is a separate feature from queue casting. |
 | `POST` | `/api/v1/sonos/cast-queue` | `{ ip, tracks[], index, seekTo?, paused?, reason? }` | Cast track(s) to the Sonos queue, replacing its current contents. `reason` (≤160 chars, log only) is the client's note on why this cast happened — e.g. the speaker finished the previous track while the web player's clock was behind — and is appended to the `cast-queue ▶` server log line. Response `{ ok, actualIp, count, index, streamStartOffset, isTranscodeStream }` — or `{ ok, alreadyPlaying: true, position, actualIp }` when the server itself already started this exact track via auto-advance while the player was asleep (see `docs/sonos.md`): the player positions its mirror at `position` instead of restarting the speaker. One-shot. The player calls this with a single track: the web UI's queue is the source of truth for what plays, so every track change re-casts rather than relying on the device to advance through a pre-loaded window — see `docs/sonos.md`. Still accepts multiple tracks for other callers. |
-| `POST` | `/api/v1/sonos/queue/append` | `{ ip, tracks[] }` | Append tracks to the end of the Sonos queue **without wiping it**. Not currently called by the player (single-track casting has no window to keep fed); kept for other integrations. |
-| `POST` | `/api/v1/sonos/queue/trim` | `{ ip, currentTrack, keep? }` | Remove already-played tracks from the front of the device's queue (`RemoveTrackRangeFromQueue`), keeping `keep` (default 2) for history. Playback is undisturbed. Not currently called by the player — only relevant to a multi-track device queue, which single-track casting doesn't build up. Kept for other integrations. |
-| `GET` | `/api/v1/sonos/events/stream` | — | Server-sent events: transport changes the speaker pushes to Velvet (UPnP GENA) forwarded as `data:` frames. Not currently consumed by the player (it does not react to the device's own reported state); kept as passive infrastructure other tooling could use. |
+| `POST` | `/api/v1/sonos/queue/append` | `{ ip, tracks[] }` | Append tracks to the end of the Sonos queue **without wiping it**. (integration API, no web UI caller) |
+| `POST` | `/api/v1/sonos/queue/trim` | `{ ip, currentTrack, keep? }` | Remove already-played tracks from the front of the device's queue (`RemoveTrackRangeFromQueue`), keeping `keep` (default 2) for history. Playback is undisturbed. (integration API, no web UI caller) |
+| `GET` | `/api/v1/sonos/events/stream` | — | Server-sent events: transport changes the speaker pushes to Velvet (UPnP GENA) forwarded as `data:` frames. (integration API, no web UI caller) |
 | `NOTIFY` | `/api/v1/sonos/event` | UPnP `LastChange` XML | **Device callback — not for clients.** Registered before auth because the speaker cannot present a token; accepts only private-LAN peers presenting a subscription ID Velvet issued (`403` / `412` otherwise), with a 256 KB body cap. |
-| `POST` | `/api/v1/sonos/queue/jump` | `{ ip, track }` | Jump to a track already in the Sonos queue by 1-based position (`Seek TRACK_NR`). Not currently called by the player; kept for other integrations. `409` if `track` is beyond the queue length. |
+| `POST` | `/api/v1/sonos/queue/jump` | `{ ip, track }` | Jump to a track already in the Sonos queue by 1-based position (`Seek TRACK_NR`). (integration API, no web UI caller) `409` if `track` is beyond the queue length. |
 | `POST` | `/api/v1/sonos/queue/clear` | `{ ip }` | Wipe the Sonos queue **only if every track is Velvet's** (a user-built/foreign queue is left untouched). Called when casting stops. |
 | `GET` | `/api/v1/sonos/favorites?ip=` | — | Return **all** "My Favorites" (FV:2) — Sonos Radio, Spotify, Apple Music, TuneIn, etc. Each entry is tagged with `service`/`serviceKey` and carries the playable `res`/`resMD` plus `isContainer`. |
-| `GET` | `/api/v1/sonos/radio-favorites?ip=` | — | The Sonos Radio subset of favourites (directly playable from the local Sonos MusicServices bridge). |
+| `GET` | `/api/v1/sonos/radio-favorites?ip=` | — | The Sonos Radio subset of favourites (directly playable from the local Sonos MusicServices bridge). (integration API, no web UI caller) |
 | `POST` | `/api/v1/sonos/play-favorite` | `{ ip, favoriteId }` | Play any favourite by its FV:2 id, regardless of service. Replays the favourite's own stored `res`/`resMD` (which carries the device's service auth), so Spotify/Apple Music playlists work. Containers are enqueued; single streams set directly on the transport. |
 | `POST` | `/api/v1/sonos/favorite-visibility` | `{ key, hidden }` | **Admin.** Hide or show a favourite in Velvet's Sonos view. `key` is the favourite's stable content key (from `/favorites`). Persisted in config as `sonos.hiddenFavorites` (applies to all users). |
-| `GET` | `/api/v1/sonos/browse-content?ip=&id=` | — | Browse Sonos MusicServices content containers by object id. |
-| `POST` | `/api/v1/sonos/play-cloud-object` | `{ deviceIp, id, title? }` | Start a Sonos cloud object (for example a radio favourite) on the target device with resilient fallback behavior. Requires `allow-mpv-cast`. |
+| `GET` | `/api/v1/sonos/browse-content?ip=&objectId=` | — | Browse a Sonos ContentDirectory object (also `browseFlag=BrowseMetadata`, `startingIndex`, `requestedCount`, default 100). Returns `{ ok, objectId, items, totalMatches }`. |
+| `POST` | `/api/v1/sonos/play-cloud-object` | `{ ip?, cloudObjectId, title?, authToken? }` | Start a Sonos cloud object (for example a Sonos Radio station) on the speaker: tries a direct radio URI first, then SMAPI resolution, then a DIDL reference. Returns `{ ok, playing, via }` on the first two paths. |
 | `GET` | `/api/v1/sonos/transcode-stream?fp=&token=` | — | Stream a Sonos-incompatible file as MP3 (192 k @ 48 kHz) via ffmpeg. Used automatically when Auto-transcode is enabled and the file is Opus or hi-res (>48 kHz). |
-| `POST` | `/api/v1/sonos/test-play` | `{ deviceIp }` | Play a random song (admin test). |
+| `POST` | `/api/v1/sonos/test-play` | `{ ip }` | **Admin only.** Play a random MP3 from the library on the given speaker (test). |
 | `GET` | `/api/v1/sonos/sleep?ip=` | — | Read the speaker's native sleep timer. Returns `{ ok, active, remaining, generation, raw }` (`remaining` in seconds). |
 | `POST` | `/api/v1/sonos/sleep` | `{ ip, seconds?, minutes?, play? }` | Set or clear the native Sonos sleep timer (`ConfigureSleepTimer`). `seconds`/`minutes` ≤ 0 clears it; `play: true` also resumes playback on wake. Returns `{ ok, active, remaining, requested }`. |
 | `GET` | `/api/v1/sonos/led?ip=` | — | Read the status-LED state (`GetLEDState`). Returns `{ ok, state }` (`On`/`Off`). |
 | `POST` | `/api/v1/sonos/led` | `{ ip, state }` | Set the status-LED state (`SetLEDState`, `On`/`Off`). Used as the sleep-mode visual cue. Returns `{ ok, state }`. |
-| `POST` | `/api/v1/admin/sonos` | `{ enabled?, transcodeOpus?, sleepEnabled? }` | Save Sonos config (admin only). `transcodeOpus: true` enables auto-transcode for Opus and hi-res files. `sleepEnabled: true` turns on sleep mode — when casting, pausing drops the speaker's status LED (direct sleep) and resuming turns it back on. |
+| `POST` | `/api/v1/admin/sonos` | `{ enabled?, transcodeOpus?, sleepEnabled? }` (at least one, booleans) | Save Sonos config (admin only). Returns `{ ok, enabled, transcodeOpus, sleepEnabled }`. `transcodeOpus: true` enables auto-transcode for Opus and hi-res files. `sleepEnabled: true` turns on sleep mode — when casting, pausing drops the speaker's status LED (direct sleep) and resuming turns it back on. |
 
 ---
 
@@ -914,7 +933,7 @@ small local window for instant boot, then lazy-loads the rest from here.
 | `POST` | `/api/v1/rooms/:id/sonos` | `{ uuid, trimMs? }` | A Sonos follows the room (live stream; Velvet measures and corrects its lead). |
 | `PATCH` | `/api/v1/rooms/:id/sonos/:uuid` | `{ trimMs }` | Change its fine-tune (−1000 to 1000 ms). |
 | `DELETE` | `/api/v1/rooms/:id/sonos/:uuid` | — | It stops following (and is stopped if it still plays the room). |
-| `GET` | `/api/v1/rooms/sonos-stream/:token.mp3` | — | **No auth** — the live stream a following Sonos pulls; per-session token, LAN peers only. |
+| `GET` | `/api/v1/rooms/sonos-stream/:token.mp3` | — | **No auth** — the live stream a following Sonos pulls; per-session token, LAN peers only. The same path with `.jpg` gives the cover of the song the room plays now. |
 
 ---
 
@@ -953,17 +972,17 @@ small local window for instant boot, then lazy-loads the rest from here.
 |---|---|---|---|
 | `POST` | `/api/v1/admin/artists/rebuild-index` | — | Rebuild the artist name index. |
 | `GET` | `/api/v1/admin/artists/rebuild-status` | — | Progress of an in-progress index rebuild. |
-| `GET` | `/api/v1/admin/artists/image-audit` | — | List artists missing images. |
-| `GET` | `/api/v1/admin/artists/discogs-candidates` | `?artist=` | Search Discogs for artist image candidates. |
-| `GET` | `/api/v1/admin/artists/tadb-candidates` | `?artist=` | Search TheAudioDB for artist image candidates. |
-| `POST` | `/api/v1/admin/artists/apply-image` | `{ artist, url }` | Download and apply an artist image from a URL. |
-| `POST` | `/api/v1/admin/artists/enrich-tadb` | `{ artist }` | Fetch and store artist bio/social data from TheAudioDB. |
+| `GET` | `/api/v1/admin/artists/image-audit` | `?kind=missing\|no-image\|wrong\|with-image&limit=200` | Artists by image state. Returns `{ kind, counts, artists }`. |
+| `GET` | `/api/v1/admin/artists/discogs-candidates` | `?artistKey=` | Search Discogs for artist image candidates. |
+| `GET` | `/api/v1/admin/artists/tadb-candidates` | `?artistKey=` | Search TheAudioDB for artist image candidates. |
+| `POST` | `/api/v1/admin/artists/apply-image` | `{ artistKey, imageUrl, source? }` | Download and apply an artist image from a URL. Returns `{ ok, imageFile, imageSource }`. |
+| `POST` | `/api/v1/admin/artists/enrich-tadb` | — | Queue TheAudioDB enrichment (bio, fanart, genre) for all artists that lack it, and re-queue artists with no image and no data. Returns `{ ok, reset, enqueued, message }`. |
 | `GET` | `/api/v1/admin/artists/hydration-status` | — | Status of the background artist-image hydration job. |
-| `POST` | `/api/v1/admin/artists/hydration-seed` | — | Seed artist images for all artists without one. |
-| `POST` | `/api/v1/admin/artists/hydrate-tadb-noimage` | — | Run TheAudioDB hydration for artists still missing an image. |
-| `POST` | `/api/v1/admin/artists/placeholder` | `{ url }` | Set a custom placeholder image for artists with no image. |
+| `POST` | `/api/v1/admin/artists/hydration-seed` | `{ limit? }` (default 500) | Queue image fetches for artists without one. |
+| `POST` | `/api/v1/admin/artists/hydrate-tadb-noimage` | `{ limit? }` (default 500) | Run TheAudioDB hydration for artists still missing an image. |
+| `POST` | `/api/v1/admin/artists/placeholder` | Multipart form, one image file (max 10 MB) | Upload a custom placeholder image for artists with no image. Resized to a square JPEG. Returns `{ ok: true }`. |
 | `DELETE` | `/api/v1/admin/artists/placeholder` | — | Remove the custom placeholder image (reverts to default). |
-| `GET` | `/api/v1/admin/artists/placeholder-info` | — | Returns `{ hasCustomPlaceholder, url? }`. |
+| `GET` | `/api/v1/admin/artists/placeholder-info` | — | Returns `{ hasCustom }`. |
 
 ---
 
@@ -1011,11 +1030,11 @@ Export is built in the background; poll for status before downloading.
 
 | Method | Endpoint | Body / Params | Description |
 |---|---|---|---|
-| `POST` | `/api/v1/admin/migrate/export/start` | `{ includeWaveforms?, includeArtistImages? }` | Start background ZIP build. Returns `{ id }`. |
+| `POST` | `/api/v1/admin/migrate/export/start` | `{ includeWaveforms?, includeArtistImages? }` | Start background ZIP build. Returns `{ id }`. The ZIP holds the config (secret, password hashes, API keys), so it is built in an owner-only folder next to the database (`<dbDirectory>/../migrate`, mode `0700`, ZIP `0600`), never in the system temp folder. An export not downloaded within 1 hour is deleted; leftovers from an earlier run are removed at boot. |
 | `GET` | `/api/v1/admin/migrate/export/status/:id` | — | Poll build status. Returns `{ status: 'building'\|'ready'\|'error', filename?, sizeBytes?, error? }`. |
 | `GET` | `/api/v1/admin/migrate/export/download/:id` | — | Stream the finished ZIP (authenticated). Deletes file after download. |
-| `POST` | `/api/v1/admin/migrate/upload` | multipart `file` | Upload import ZIP. **Not available yet**: ZIP extraction is unimplemented, so this answers `500 { error: 'Import is not available yet' }` and stores nothing. |
-| `POST` | `/api/v1/admin/migrate/apply` | `{ id, keepUsers? }` | Apply an uploaded import. |
+| `POST` | `/api/v1/admin/migrate/upload` | multipart `file` | Upload import ZIP. **Not available yet**: ZIP extraction is unimplemented, so this answers `501 { error: 'Import is not available yet' }` without reading the body, and stores nothing. |
+| `POST` | `/api/v1/admin/migrate/apply` | `{ id, keepUsers = true }` | Apply an extracted import: replaces the config (keeping the current `users` unless `keepUsers: false`), copies in the database and re-opens it (the server keeps working), then restores waveforms and artist images when present. Returns `{ success, message, manifest }`. Since `upload` stores nothing yet, there is no import to apply today. |
 | `GET` | `/api/v1/admin/migrate/status/:id` | — | Read manifest of an uploaded import. `id` must look like `velvet-import-<digits>`, else `400`. |
 | `POST` | `/api/v1/admin/migrate/cleanup/:id` | — | Delete temp files for an import job. `id` must look like `velvet-import-<digits>`, else `400`. |
 
@@ -1027,14 +1046,6 @@ Export is built in the background; poll for status before downloading.
 |---|---|---|
 | `GET` | `/api/v1/admin/logs/download` | Download all server logs as a ZIP. |
 | `POST` | `/api/v1/admin/logs/prune` | Delete log files older than the configured retention period. |
-
----
-
-## Admin — Federation
-
-| Method | Endpoint | Body | Description |
-|---|---|---|---|
-| `POST` | `/api/v1/admin/federation/enable` | `{ enable: bool }` | Enable/disable federation. Rebuilds Syncthing config (5s debounce). |
 
 ---
 
@@ -1059,14 +1070,23 @@ Export is built in the background; poll for status before downloading.
 
 ## Internal Scanner Endpoints
 
-> These endpoints are protected by scanner middleware and are **not intended for external use**.
+> Used only by the scanner child process, which signs its requests with a scan token. Any other caller gets `403`. **Not intended for external use.**
 
 | Method | Endpoint | Description |
 |---|---|---|
+| `POST` | `/api/v1/scanner/set-expected` | Set the expected file count of a scan (`{ scanId, expected }`) for the progress bar. |
+| `POST` | `/api/v1/scanner/get-files-batch` | Look up a batch of files (`{ items, vpath, scanId }`) so the scanner can skip unchanged ones. |
+| `POST` | `/api/v1/scanner/add-files` | Insert or replace a batch of scanned rows (`{ files: [...] }`). The batch is written in one short transaction inside the request (a failing row is skipped, the rest still commit), so no transaction stays open between requests. Returns `{ failed: [{ filepath, error }] }`. |
 | `POST` | `/api/v1/scanner/update-art` | Write album art cache reference for a file. |
 | `POST` | `/api/v1/scanner/update-cue` | Write cue point data for a file. |
-| `POST` | `/api/v1/scanner/update-tech-meta` | Write `bitrate`, `sample_rate`, `channels` for a file. |
+| `POST` | `/api/v1/scanner/update-tech-meta` | Write `bitrate`, `sample_rate`, `channels`, `bit_depth` for a file. |
 | `POST` | `/api/v1/scanner/update-duration` | Write `duration` for a file. |
+| `POST` | `/api/v1/scanner/update-album-version` | Write `album_version` and its source for a file. |
+| `POST` | `/api/v1/scanner/report-error` | Record a scan error for a file (Scan Error Workshop). |
+| `POST` | `/api/v1/scanner/confirm-ok` | Clear the scan error of a file that now scans fine. |
+| `POST` | `/api/v1/scanner/prune-errors` | Drop scan errors older than the retention setting. |
+| `POST` | `/api/v1/scanner/abort-scan` | Stop a scan early, e.g. on a likely mount failure (`{ scanId, vpath, reason }`). No rows are removed (batches already written by `add-files` stay), and the resume checkpoint is deleted, so the next scan of that vpath starts from the beginning. |
+| `POST` | `/api/v1/scanner/finish-scan` | Close a scan: remove stale rows (with a safety guard), clear resolved errors, record the scan. |
 
 ---
 
@@ -1089,8 +1109,8 @@ Export is built in the background; poll for status before downloading.
 
 | Method | Endpoint | Body | Description |
 |---|---|---|---|
-| `GET` | `/api/v1/admin/acoustid/config` | — | Get AcoustID API key config. |
-| `POST` | `/api/v1/admin/acoustid/config` | `{ apiKey }` | Set AcoustID API key. |
+| `GET` | `/api/v1/admin/acoustid/config` | — | `{ enabled, apiKey, hasKey }`; `apiKey` is masked (first 6 characters + asterisks). |
+| `POST` | `/api/v1/admin/acoustid/config` | `{ enabled, apiKey }` | Save the config. Sending back the masked key keeps the stored one; `""` clears it. |
 
 ---
 
@@ -1112,11 +1132,10 @@ All endpoints require admin token.
 | Method | Endpoint | Body | Description |
 |---|---|---|---|
 | `GET` | `/api/v1/admin/rg/status` | — | Worker status + library stats + undo info. Returns `{ running, stopping, startedAt, currentFile, processedCount, stats, tool, undo }`. |
-| `GET` | `/api/v1/admin/rg/tool` | — | Active measurement tool: `{ tool: 'rsgain'|'ffmpeg', available: bool }`. |
 | `GET` | `/api/v1/admin/rg/failed` | — | List all failed files: `{ files: [{ id, filepath, vpath, reason, error, duration, bitrate }] }`. |
 | `POST` | `/api/v1/admin/rg/start` | — | Start measurement worker. |
 | `POST` | `/api/v1/admin/rg/stop` | — | Stop worker gracefully after current file. |
-| `POST` | `/api/v1/admin/rg/reset-failed` | — | Smart reset: checks each failed file on disk. Purges DB rows for missing files, re-queues rows where the file still exists. Returns `{ reset, purged }`. |
+| `POST` | `/api/v1/admin/rg/reset-failed` | — | Re-queue every failed row for another try. Library rows are never deleted here (a file that looks missing may be on an offline mount; only the scanner removes gone files). Returns `{ reset }`. |
 | `POST` | `/api/v1/admin/rg/shelve` | `{ ids: [rowid, …] }` | Permanently exclude files from RG analysis (`rg_measured_ts = -2`). Shelved files stay in the library but are never touched by the worker. Returns `{ shelved }`. |
 | `POST` | `/api/v1/admin/rg/reset-all` | — | Clear all RG measurements and back up current data for potential undo. Returns 409 if worker is running. Returns `{ reset, backedUp }`. |
 | `POST` | `/api/v1/admin/rg/undo-reset-all` | — | Restore the most recent Reset All backup. Returns 409 if worker is running. Returns `{ restored }`. |
@@ -1170,9 +1189,9 @@ All endpoints require admin token.
 | `POST` | `/api/v1/admin/bpm/essentia/stop` | — | Stop Essentia worker after current file. |
 | `POST` | `/api/v1/admin/bpm/essentia/reset-failed` | — | Reset `bpm_status='error'` rows. |
 | `POST` | `/api/v1/admin/bpm/reset-all` | — | Clear all BPM/key data. Returns 409 if workers running. |
-| `POST` | `/api/v1/admin/bpm/genre-correct` | `?dryRun=true` | Genre-matrix octave correction on Essentia rows. `dryRun=true` returns preview stats + full `corrections[]` list without writing. Returns `{dryRun, changed, skipped, noGenre, noFamily, alreadyOk, byFamily, corrections}`. Returns 409 if workers running. *(Velvet)* |
-| `POST` | `/api/v1/admin/bpm/genre-correct-undo` | — | Restore `bpm_raw` → `bpm` for all `bpm_status='genre-corrected'` rows. Returns `{ok, restored}`. *(Velvet)* |
-| `POST` | `/api/v1/admin/bpm/genre-correct-selected` | — | Apply a user-selected subset of dry-run corrections. Body: `{corrections: [{filepath, vpath, bpm, corrected}]}`. Returns `{ok, applied}`. Returns 409 if workers running. *(Velvet)* |
+| `POST` | `/api/v1/admin/bpm/genre-correct` | `?dryRun=true` | Genre-matrix octave correction on Essentia rows. `dryRun=true` returns preview stats + full `corrections[]` list without writing. Returns `{dryRun, changed, skipped, noGenre, noFamily, alreadyOk, byFamily, corrections}`. Returns 409 while the Essentia worker runs. *(Velvet)* |
+| `POST` | `/api/v1/admin/bpm/genre-correct-undo` | — | Restore `bpm_raw` → `bpm` for all `bpm_status='genre-corrected'` rows. Returns `{ok, restored}`; 409 while the Essentia worker runs. *(Velvet)* |
+| `POST` | `/api/v1/admin/bpm/genre-correct-selected` | — | Apply a user-selected subset of dry-run corrections. Body: `{corrections: [{filepath, vpath, bpm, corrected}]}`. Returns `{ok, applied}`. Returns 409 while the Essentia worker runs. *(Velvet)* |
 
 ---
 
@@ -1187,12 +1206,12 @@ All endpoints require admin token. The Genre Enricher worker queries Last.fm, Mu
 | `GET`  | `/api/v1/admin/genre-enricher/status` | — | Live worker status + stats (`enriched`, `applied`, per-source `ok`/`nf`/`error`/`queued`, current artist, current phase). |
 | `POST` | `/api/v1/admin/genre-enricher/start` | — | Start the background worker. |
 | `POST` | `/api/v1/admin/genre-enricher/stop` | — | Stop the worker after the current artist. |
-| `POST` | `/api/v1/admin/genre-enricher/reset-errors` | — | Reset rows with `genre_enrich_* = 'error'` to NULL for retry. |
-| `POST` | `/api/v1/admin/genre-enricher/reset-not-found` | — | Reset rows with `genre_enrich_* = 'nf'` to NULL. |
+| `POST` | `/api/v1/admin/genre-enricher/reset-errors` | `{ source? }` | Reset rows with `genre_enrich_* = 'error'` to NULL for retry (one source, or all). A `source` other than `lastfm`/`mb`/`discogs` → `400`. |
+| `POST` | `/api/v1/admin/genre-enricher/reset-not-found` | `{ source? }` | Reset rows with `genre_enrich_* = 'nf'` to NULL (one source, or all). A bad `source` → `400`. |
 | `POST` | `/api/v1/admin/genre-enricher/reset-source` | `{ source: 'lastfm'\|'mb'\|'discogs' }` | Reset one source's enrichment status + value to NULL. |
-| `POST` | `/api/v1/admin/genre-enricher/reset-all` | — | Wipe all enrichment data (status + suggestions + `genre_user_reviewed`). |
+| `POST` | `/api/v1/admin/genre-enricher/reset-all` | — | Wipe all enrichment data (per-source status + suggestions). `genre_user_reviewed` and the current genre are kept. `400` while the worker runs. |
 | `GET`  | `/api/v1/admin/genre-enricher/compare` | `?filter=enriched\|empty\|applied&search=<text>&limit&offset` | Paginated comparison rows. `enriched` = all 3 sources processed, not yet reviewed. `empty` = same as `enriched` but only artists with no current genre tag. `applied` = user has acted. `search` does a case-insensitive `%text%` LIKE match on artist over the ENTIRE result set. |
-| `POST` | `/api/v1/admin/genre-enricher/apply` | `{ items: [{ artist, source: 'lastfm'\|'mb'\|'discogs'\|'keep'\|'custom', custom? }] }` | Apply user decisions in bulk. `keep` marks the artist as reviewed without changing the genre. `custom` writes an arbitrary lowercase string. Returns `{ updated }`. |
+| `POST` | `/api/v1/admin/genre-enricher/apply` | `{ items: [{ artist, source: 'lastfm'\|'mb'\|'discogs'\|'keep' }] }` | Apply user decisions in bulk. `keep` marks the artist as reviewed without changing the genre; items with another `source` are ignored (`400` when none is left). To write an own genre use `set-genre`. Returns `{ ok, updated }`. |
 | `POST` | `/api/v1/admin/genre-enricher/apply-all-empty` | `{ source: 'preferred'\|'mb'\|'discogs'\|'lastfm' }` | Bulk-apply suggestions to every artist that currently has no genre. |
 | `POST` | `/api/v1/admin/genre-enricher/apply-all-consensus` | — | Apply the agreed genre for every unreviewed artist where all 3 sources returned the same non-empty value. Returns `{ updated }`. |
 | `POST` | `/api/v1/admin/genre-enricher/apply-all-majority` | — | Apply the majority genre for every unreviewed artist where exactly 2 of 3 sources agree and the third has no data yet. Returns `{ updated }`. |
@@ -1256,10 +1275,10 @@ All endpoints require admin token.
 | Method | Endpoint | Body / Query | Description |
 |---|---|---|---|
 | `GET`  | `/api/v1/admin/dup-workshop/status` | — | Current state (`idle`\|`scanning`\|`done`), summary (`groups`, `files`), `lastScan` timestamp, active `threshold`. |
-| `POST` | `/api/v1/admin/dup-workshop/scan` | `{ threshold?: 50–100 }` | Start an async scan. Returns 202 immediately. Poll `/status` until `state=done`. |
-| `POST` | `/api/v1/admin/dup-workshop/cancel` | — | Abort an in-progress scan. |
+| `POST` | `/api/v1/admin/dup-workshop/scan` | `{ threshold?: 50–100 }` (default 90) | Start a scan in the background (run in small chunks by the background-task broker). Returns `202 { started: true }` at once, `409` when a scan is already running. Poll `/status` until `state=done`. |
+| `POST` | `/api/v1/admin/dup-workshop/cancel` | — | Stop the running scan before its next chunk; the results of the previous finished scan stay. `400` when no scan is running. Returns `{ cancelling: true }`. |
 | `GET`  | `/api/v1/admin/dup-workshop/songs` | `?match=exact\|audio\|similar&limit&offset` | Paginated song duplicate groups. Each group has `paths[]`, `formats[]`, `similarity`, `artist`, `title`, `album`, `duration`. |
-| `GET`  | `/api/v1/admin/dup-workshop/folders` | `?limit&offset` | Paginated folder-duplicate groups (same artist+album under multiple directory paths). |
+| `GET`  | `/api/v1/admin/dup-workshop/folders` | `?limit&offset` | Paginated folder-duplicate groups: folders whose tracks have exactly the same set of content hashes (audio hash, else file hash), whatever their names or tags. |
 | `POST` | `/api/v1/admin/dup-workshop/delete` | `{ filepaths: ['vpath/rel/path', …] }` | Permanently delete files from disk and remove DB rows. Returns `{ deleted, failed }`. |
 
 ---
@@ -1275,10 +1294,9 @@ Base URL: `/rest/`
 | Method | Endpoint | Body | Description |
 |---|---|---|---|
 | `GET` | `/api/v1/subsonic/scrobble-settings` | — | Get the user's Subsonic scrobble settings. |
-| `POST` | `/api/v1/admin/users/subsonic-scrobble` | `{ username, scrobbleLastfm?, scrobbleLb? }` | Enable/disable scrobble forwarding per-user for Subsonic clients. |
-| `GET` | `/api/v1/admin/users/subsonic-apikeys` | — | List API keys for the caller (or `?username=` for admins). |
-| `POST` | `/api/v1/admin/users/subsonic-apikeys` | `{ username?, label? }` | Generate a new Subsonic API key. Returns `{ apiKey, label, created }`. |
-| `DELETE` | `/api/v1/admin/users/subsonic-apikeys/:id` | — | Revoke an API key by ID (`?username=` for admins). |
+| `GET` | `/api/v1/admin/users/subsonic-apikeys` | `?username=` | **Admin.** List the API keys of a user (default: the admin's own). |
+| `POST` | `/api/v1/admin/users/subsonic-apikeys` | `{ username?, label? }` | **Admin.** Generate a new Subsonic API key for a user. Returns `{ apiKey, label, created }`. |
+| `DELETE` | `/api/v1/admin/users/subsonic-apikeys/:id` | `?username=` | **Admin.** Revoke an API key by ID. |
 
 **Subsonic server-side play queue persistence**:
 

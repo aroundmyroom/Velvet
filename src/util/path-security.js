@@ -33,7 +33,9 @@ export function resolveExistingFileWithinRoots(candidatePath, allowedRoots) {
   const realPath = fs.realpathSync(resolved);
   for (const root of allowedRoots || []) {
     if (!root) continue;
-    const resolvedRoot = path.resolve(root);
+    // realPath has symlinks resolved, so the root must be compared in resolved form too.
+    let resolvedRoot = path.resolve(root);
+    try { resolvedRoot = fs.realpathSync(resolvedRoot); } catch { continue; }
     const normalizedRoot = resolvedRoot.endsWith(path.sep) ? resolvedRoot : resolvedRoot + path.sep;
     if (realPath === resolvedRoot || realPath.startsWith(normalizedRoot)) {
       return realPath;

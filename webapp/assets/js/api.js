@@ -30,6 +30,12 @@ const API = (() => {
     document.location.assign(window.location.origin + '/');
   }
 
+  try {
+    new BroadcastChannel('velvet').addEventListener('message', e => {
+      if (e.data?.type === 'logout') document.location.assign(window.location.origin + '/');
+    });
+  } catch (e) {}
+
   module.goToPlayer = () => {
     window.location.assign(window.location.origin + '/');
   }

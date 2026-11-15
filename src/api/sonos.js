@@ -1,7 +1,7 @@
 /**
  * src/api/sonos.js — Sonos integration
  *
- * Endpoints (all require JWT auth):
+ * Endpoints (JWT auth plus canCastToServer: admin or allow-mpv-cast):
  *   GET  /api/v1/sonos/devices              — return cached room list (triggers discovery if empty)
  *   POST /api/v1/sonos/scan                 — force re-scan
  *   GET  /api/v1/sonos/probe                — probe a single IP for Sonos info
@@ -23,7 +23,7 @@
  *   POST /api/v1/sonos/favorite-visibility  — hide/show a favorite (admin; persisted in config)
  *
  * Admin endpoints:
- *   POST /api/v1/admin/sonos                — update enabled + transcodeOpus + sleepEnabled + pauseSleepMinutes
+ *   POST /api/v1/admin/sonos                — update enabled + transcodeOpus + sleepEnabled
  *
  * Sonos UPnP/SOAP protocol is a public standard; all interaction is via direct
  * HTTP on port 1400. We do not use @svrooij/sonos because its internal
@@ -34,37 +34,20 @@ import http from 'node:http';
 import https from 'node:https';
 import dgram from 'node:dgram';
 import os from 'node:os';
-import path from 'node:path';
-import jwt from 'jsonwebtoken';
+import { signUserToken } from './auth.js';
 import * as config from '../state/config.js';
 import * as db from '../db/manager.js';
 import { spawn } from 'node:child_process';
-import { loadFile, saveFile } from '../util/admin.js';
 import { ffmpegBin } from '../util/ffmpeg-bootstrap.js';
 import * as vpath from '../util/vpath.js';
-import { DatabaseSync } from 'node:sqlite';
+import { canCastToServer } from '../util/permissions.js';
+import { sonosSoapRequest, sonosHttpGet, isPrivateLan } from '../sendspin/sonos.js';
+import { xmlEscape } from '../util/xml.js';
 
 // ── Shared helpers ────────────────────────────────────────────────────────────
 
 const SONOS_DP_SVC = 'urn:schemas-upnp-org:service:DeviceProperties:1';
 
-/** XML-escape a string for embedding in SOAP/DIDL XML. */
-// Also strips characters XML 1.0 (§2.2) forbids outright: C0 controls other than
-// tab/LF/CR, lone UTF-16 surrogate halves, and U+FFFE/U+FFFF. Escaping alone is
-// not enough — a mojibake-ridden tag (seen live: an album tag holding \x17, \x05
-// and \x13 where "×" and "⅓" used to be) makes the whole DIDL invalid XML, and
-// the speaker answers AddURIToQueue with UPnP 402 for every cast of that track,
-// with nothing in the fault body saying why. Same rule dlna.js applies.
-// eslint-disable-next-line no-control-regex
-const XML_INVALID_CTRL = /[\x00-\x08\x0B\x0C\x0E-\x1F]/g;
-const XML_INVALID_SURR = /[\uD800-\uDFFF￾￿]/g;
-const xmlEsc = s => String(s)
-  .replaceAll(XML_INVALID_CTRL, '')
-  .replaceAll(XML_INVALID_SURR, '')
-  .replaceAll('&', '&amp;')
-  .replaceAll('<', '&lt;')
-  .replaceAll('>', '&gt;')
-  .replaceAll('"', '&quot;');
 
 /**
  * Build the base URL Velvet uses for audio streams sent to Sonos.
@@ -75,14 +58,7 @@ const xmlEsc = s => String(s)
 export function buildBaseUrl(req) {
   if (config.program.localHttpPort) {
     // Prefer plain HTTP on LAN IP — works even when domain uses HTTPS
-    const nets = os.networkInterfaces();
-    let lanIp = '127.0.0.1';
-    outer: for (const iface of Object.values(nets)) {
-      for (const net of iface) {
-        if (net.family === 'IPv4' && !net.internal) { lanIp = net.address; break outer; }
-      }
-    }
-    return `http://${lanIp}:${config.program.localHttpPort}`;
+    return `http://${_lanIpv4() ?? '127.0.0.1'}:${config.program.localHttpPort}`;
   }
   // Fall back to the main server endpoint (works when hostname resolves to LAN IP)
   const proto = (config.program.ssl?.cert) ? 'https' : 'http';
@@ -98,7 +74,7 @@ export function buildBaseUrl(req) {
  * blocked silently. Art must come from an HTTPS endpoint so iOS can load it.
  * Sonos hardware can also load HTTPS art without issues.
  */
-export function buildArtBaseUrl(req) {
+function buildArtBaseUrl(req) {
   const proto = (config.program.ssl?.cert) ? 'https' : 'http';
   const host  = (config.program.address && config.program.address !== '::' && config.program.address !== '0.0.0.0')
     ? `${config.program.address}:${config.program.port}`
@@ -132,13 +108,13 @@ export function buildDidl({ title, artist, album, duration }, streamUrl, artUrl 
   // dlna: namespace MUST be declared on the root element, not inline on the child tag.
   // No dlna:profileID attribute — many iOS/Android DLNA stacks silently skip
   // the image when dlna:profileID is present but not negotiated via DLNA headers.
-  const artTag = artUrl ? `<upnp:albumArtURI>${xmlEsc(artUrl)}</upnp:albumArtURI>` : '';
+  const artTag = artUrl ? `<upnp:albumArtURI>${xmlEscape(artUrl)}</upnp:albumArtURI>` : '';
   // <res> element: ties the stream URI to the metadata item so Sonos uses our DIDL
   // for both the mini-bar and full-screen "Now Playing" view.
   // duration attribute tells Sonos this is a finite track (not a live stream) —
   // without it, TrackDuration=0 and S2 app switches to radio-stream display mode.
   const durAttr = duration ? ` duration="${secsToTime(duration)}"` : '';
-  const resTag = streamUrl ? `<res protocolInfo="http-get:*:${mime}:*"${durAttr}>${xmlEsc(streamUrl)}</res>` : '';
+  const resTag = streamUrl ? `<res protocolInfo="http-get:*:${mime}:*"${durAttr}>${xmlEscape(streamUrl)}</res>` : '';
   return [
     '<DIDL-Lite xmlns:dc="http://purl.org/dc/elements/1.1/"',
     ' xmlns:upnp="urn:schemas-upnp-org:metadata-1-0/upnp/"',
@@ -148,11 +124,11 @@ export function buildDidl({ title, artist, album, duration }, streamUrl, artUrl 
     // id must be a positive integer AND unique per queue item — Sonos ignores the
     // metadata of items that share an id (all-same-id => only the first renders
     // title/art/duration). Multi-track queues therefore pass a distinct itemId.
-    `<item id="${xmlEsc(itemId)}" restricted="1" parentID="A:TRACKS">`,
-    `<dc:title>${xmlEsc(title || 'Unknown')}</dc:title>`,
-    `<dc:creator>${xmlEsc(artist || '')}</dc:creator>`,
-    `<upnp:artist>${xmlEsc(artist || '')}</upnp:artist>`,
-    `<upnp:album>${xmlEsc(album || '')}</upnp:album>`,
+    `<item id="${xmlEscape(itemId)}" restricted="1" parentID="A:TRACKS">`,
+    `<dc:title>${xmlEscape(title || 'Unknown')}</dc:title>`,
+    `<dc:creator>${xmlEscape(artist || '')}</dc:creator>`,
+    `<upnp:artist>${xmlEscape(artist || '')}</upnp:artist>`,
+    `<upnp:album>${xmlEscape(album || '')}</upnp:album>`,
     artTag,
     '<upnp:class>object.item.audioItem.musicTrack</upnp:class>',
     resTag,
@@ -193,62 +169,21 @@ function _soapLogParams(action, extraBody) {
   }
 }
 function soapCall(ip, action, extraBody) {
-  return new Promise((resolve, reject) => {
-    if (_SOAP_LOGGED_ACTIONS.has(action)) {
-      const params = _soapLogParams(action, extraBody);
-      console.log(`[sonos] → ${ip} ${action}${params ? ' ' + params : ''}`);
-    }
-    const svcType = 'urn:schemas-upnp-org:service:AVTransport:1';
-    const body = [
-      '<?xml version="1.0" encoding="utf-8"?>',
-      '<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/"',
-      ' s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/">',
-      '<s:Body>',
-      `<u:${action} xmlns:u="${svcType}">`,
-      '<InstanceID>0</InstanceID>',
-      extraBody,
-      `</u:${action}>`,
-      '</s:Body></s:Envelope>',
-    ].join('');
-    const reqOpts = {
-      hostname: ip, port: 1400,
-      path: '/MediaRenderer/AVTransport/Control',
-      method: 'POST',
-      headers: {
-        'Content-Type': 'text/xml; charset="utf-8"',
-        'Content-Length': Buffer.byteLength(body),
-        'soapaction': `"${svcType}#${action}"`,
-      },
-    };
-    const hreq = http.request(reqOpts, hres => {
-      let data = '';
-      hres.on('data', c => data += c);
-      hres.on('end', () => {
-        if (hres.statusCode >= 400) {
-          const code = (data.match(/<errorCode>(\d+)<\/errorCode>/i) || [])[1] || null;
-          const desc = (data.match(/<errorDescription>([^<]+)<\/errorDescription>/i) || [])[1] || '';
-          const err = new Error(`Sonos SOAP ${action} HTTP ${hres.statusCode}${code ? ` code=${code}` : ''}: ${desc || data.slice(0, 800)}`);
-          if (code) err.code = code;
-          // Many callers fire-and-forget with .catch(() => {}) (LED, gentle-resume Play,
-          // best-effort commands) — without this, a real UPnP failure on those was
-          // completely invisible in the log, another part of the same debugging gap.
-          if (_SOAP_LOGGED_ACTIONS.has(action)) console.warn(`[sonos] ✗ ${ip} ${action} failed: ${err.message}`);
-          reject(err);
-        } else {
-          resolve(data);
-        }
-      });
-    });
-    hreq.on('error', e => {
-      if (_SOAP_LOGGED_ACTIONS.has(action)) console.warn(`[sonos] ✗ ${ip} ${action} failed: ${e.message}`);
-      reject(e);
-    });
-    // Sonos can briefly stay busy during rapid track switches (especially when
-    // the previous cast used a live transcode stream). A slightly longer
-    // timeout reduces false negatives while still failing fast enough for retry.
-    hreq.setTimeout(9000, () => { hreq.destroy(new Error(`Sonos timeout on ${action}`)); });
-    hreq.write(body);
-    hreq.end();
+  const logged = _SOAP_LOGGED_ACTIONS.has(action);
+  if (logged) {
+    const params = _soapLogParams(action, extraBody);
+    console.log(`[sonos] → ${ip} ${action}${params ? ' ' + params : ''}`);
+  }
+  // Sonos can briefly stay busy during rapid track switches (especially when
+  // the previous cast used a live transcode stream). A slightly longer
+  // timeout reduces false negatives while still failing fast enough for retry.
+  return sonosSoapRequest({
+    ip, path: '/MediaRenderer/AVTransport/Control', serviceType: 'urn:schemas-upnp-org:service:AVTransport:1',
+    action, inner: extraBody, timeoutMs: 9000,
+  }).catch((e) => {
+    // Many callers fire-and-forget with .catch(() => {}) — without this a real UPnP failure there is invisible in the log.
+    if (logged) console.warn(`[sonos] ✗ ${ip} ${action} failed: ${e.message}`);
+    throw e;
   });
 }
 
@@ -257,91 +192,15 @@ function soapCall(ip, action, extraBody) {
  * Used for volume/mute — different service path + type than AVTransport.
  */
 function rcSoapCall(ip, action, extraBody) {
-  return new Promise((resolve, reject) => {
-    const svcType = 'urn:schemas-upnp-org:service:RenderingControl:1';
-    const body = [
-      '<?xml version="1.0" encoding="utf-8"?>',
-      '<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/"',
-      ' s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/">',
-      '<s:Body>',
-      `<u:${action} xmlns:u="${svcType}">`,
-      '<InstanceID>0</InstanceID>',
-      extraBody,
-      `</u:${action}>`,
-      '</s:Body></s:Envelope>',
-    ].join('');
-    const reqOpts = {
-      hostname: ip, port: 1400,
-      path: '/MediaRenderer/RenderingControl/Control',
-      method: 'POST',
-      headers: {
-        'Content-Type': 'text/xml; charset="utf-8"',
-        'Content-Length': Buffer.byteLength(body),
-        'soapaction': `"${svcType}#${action}"`,
-      },
-    };
-    const hreq = http.request(reqOpts, hres => {
-      let data = '';
-      hres.on('data', c => data += c);
-      hres.on('end', () => {
-        if (hres.statusCode >= 400) {
-          reject(new Error(`Sonos RC ${action} HTTP ${hres.statusCode}: ${data.slice(0,200)}`));
-        } else {
-          resolve(data);
-        }
-      });
-    });
-    hreq.on('error', reject);
-    hreq.setTimeout(6000, () => { hreq.destroy(new Error(`Sonos RC timeout on ${action}`)); });
-    hreq.write(body);
-    hreq.end();
+  return sonosSoapRequest({
+    ip, path: '/MediaRenderer/RenderingControl/Control', serviceType: 'urn:schemas-upnp-org:service:RenderingControl:1',
+    action, inner: extraBody, timeoutMs: 6000,
   });
 }
 
 /** Generic SOAP request helper for local Sonos services (port 1400). */
-function localSoapCall(ip, pathName, serviceType, action, actionBody = '') {
-  return new Promise((resolve, reject) => {
-    const body = [
-      '<?xml version="1.0" encoding="utf-8"?>',
-      '<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/"',
-      ' s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/">',
-      '<s:Body>',
-      `<u:${action} xmlns:u="${serviceType}">`,
-      actionBody,
-      `</u:${action}>`,
-      '</s:Body></s:Envelope>',
-    ].join('');
-    const reqOpts = {
-      hostname: ip,
-      port: 1400,
-      path: pathName,
-      method: 'POST',
-      headers: {
-        'Content-Type': 'text/xml; charset="utf-8"',
-        'Content-Length': Buffer.byteLength(body),
-        'soapaction': `"${serviceType}#${action}"`,
-      },
-    };
-    const hreq = http.request(reqOpts, hres => {
-      let data = '';
-      hres.on('data', c => data += c);
-      hres.on('end', () => {
-        if (hres.statusCode >= 400) {
-          const code = (data.match(/<errorCode>(\d+)<\/errorCode>/i) || [])[1] || null;
-          const desc = (data.match(/<errorDescription>([^<]+)<\/errorDescription>/i) || [])[1] || '';
-          const err = new Error(`Sonos SOAP ${action} HTTP ${hres.statusCode}${code ? ` code=${code}` : ''}: ${desc || data.slice(0, 800)}`);
-          if (code) err.code = code;
-          reject(err);
-        } else {
-          resolve(data);
-        }
-      });
-    });
-    hreq.on('error', reject);
-    hreq.setTimeout(7000, () => { hreq.destroy(new Error(`Sonos timeout on ${action}`)); });
-    hreq.write(body);
-    hreq.end();
-  });
+function localSoapCall(ip, pathName, serviceType, action, actionBody = '', { timeoutMs = 7000, maxBytes } = {}) {
+  return sonosSoapRequest({ ip, path: pathName, serviceType, action, inner: actionBody, instanceId: false, timeoutMs, maxBytes });
 }
 
 function _decodeXmlEntitiesSimple(value) {
@@ -353,6 +212,205 @@ function _decodeXmlEntitiesSimple(value) {
     .replace(/&amp;/g, '&');
 }
 
+const CD_PATH = '/MediaServer/ContentDirectory/Control';
+const CD_SVC = 'urn:schemas-upnp-org:service:ContentDirectory:1';
+// Queue and favourites listings can run well past the 256 KB default cap.
+const CD_MAX_BYTES = 2 * 1024 * 1024;
+
+// ── Helper: Browse Sonos ContentDirectory ──────────────────────────────
+/**
+ * Browse a Sonos device's ContentDirectory service.
+ * Returns array of items/containers with parsed metadata.
+ */
+// Browse the local queue (Q:0) and return the list of <res> stream URIs.
+// Used to decide whether a queue belongs to Velvet before wiping it.
+async function _sonosQueueResUris(ip) {
+  const data = await localSoapCall(ip, CD_PATH, CD_SVC, 'Browse',
+    '<ObjectID>Q:0</ObjectID><BrowseFlag>BrowseDirectChildren</BrowseFlag>'
+    + '<Filter>*</Filter><StartingIndex>0</StartingIndex><RequestedCount>200</RequestedCount><SortCriteria></SortCriteria>',
+    { timeoutMs: 6000, maxBytes: CD_MAX_BYTES });
+  const m = data.match(/<Result>(.*?)<\/Result>/s);
+  if (!m) return [];
+  const didl = m[1].replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&amp;/g, '&');
+  const uris = [];
+  const rx = /<res[^>]*>([^<]+)<\/res>/g;
+  let r; while ((r = rx.exec(didl)) !== null) uris.push(r[1].trim());
+  return uris;
+}
+
+// Browse FV:2 and return every "My Favorites" entry, enriched with a service
+// tag and the playable <res>/<resMD> needed by /play-favorite. resMD is filled
+// in via a per-item BrowseMetadata only when the list browse omitted it.
+async function _listSonosFavorites(ip) {
+  const items = await _browseSonosContentDirectory(ip, 'FV:2', 'BrowseDirectChildren', 0, 100);
+  const hiddenSet = new Set(config.program?.sonos?.hiddenFavorites || []);
+  const out = [];
+  for (const item of items) {
+    let full = item;
+    if (!full.res || !full.resMD) {
+      const meta = await _browseSonosContentDirectory(ip, item.id, 'BrowseMetadata', 0, 1);
+      full = meta[0] || item;
+    }
+    const description = full.description || item.description || '';
+    const serviceKey = String(description).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'unknown';
+    const upnpClass = full.contentClass || full.upnpClass || null;
+    const isContainer = String(upnpClass || '').includes('container') || !!full.isContainer;
+    const cloudObjectId = full.cloudObjectId || null;
+    // Stable across favourite reordering — FV:2/N ids shift when favourites
+    // are added/removed, so hide preferences key off the content id instead.
+    const key = cloudObjectId || full.res || item.res || full.contentTitle || _decodeXmlEntitiesSimple(full.title || item.title || '') || (full.id || item.id);
+    out.push({
+      id: full.id || item.id,
+      localId: String(full.id || item.id || '').split('/').pop(),
+      key,
+      title: full.contentTitle || _decodeXmlEntitiesSimple(full.title || item.title || ''),
+      description,
+      service: description || 'Unknown',
+      serviceKey,
+      type: full.type || item.type || null,
+      upnpClass,
+      isContainer,
+      cloudObjectId,
+      authToken: full.authToken || null,
+      artUri: full.artUri || item.artUri || null,
+      res: full.res || item.res || null,
+      resMD: full.resMD || item.resMD || null,
+      parentId: full.parentID || item.parentID || null,
+      hidden: hiddenSet.has(key),
+    });
+  }
+  return out;
+}
+
+async function _browseSonosContentDirectory(ip, objectId, browseFlag, startingIndex, requestedCount) {
+  const resp = await localSoapCall(ip, CD_PATH, CD_SVC, 'Browse',
+    `<ObjectID>${xmlEscape(objectId)}</ObjectID><BrowseFlag>${browseFlag}</BrowseFlag><Filter>*</Filter>`
+    + `<StartingIndex>${startingIndex}</StartingIndex><RequestedCount>${requestedCount}</RequestedCount><SortCriteria></SortCriteria>`,
+    { timeoutMs: 6000, maxBytes: CD_MAX_BYTES });
+
+  // Parse the DIDL-Lite from the Result
+  const resultMatch = resp.match(/<Result>(.*?)<\/Result>/s);
+  if (!resultMatch) return [];
+  
+  const didl = resultMatch[1]
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&amp;/g, '&');
+  
+  // Parse items from DIDL-Lite
+  const items = [];
+  const itemRegex = /<item[^>]*id="([^"]+)"[^>]*>(.*?)<\/item>/gs;
+  const containerRegex = /<container[^>]*id="([^"]+)"[^>]*>(.*?)<\/container>/gs;
+  
+  let match;
+  while ((match = itemRegex.exec(didl)) !== null) {
+    const id = match[1];
+    const inner = match[2];
+    const item = _parseDidlItem(id, inner, 'item');
+    if (item) items.push(item);
+  }
+  
+  while ((match = containerRegex.exec(didl)) !== null) {
+    const id = match[1];
+    const inner = match[2];
+    const item = _parseDidlItem(id, inner, 'container');
+    if (item) items.push(item);
+  }
+  
+  return items;
+}
+
+/**
+ * Parse a DIDL-Lite item or container element.
+ */
+export function _parseDidlItem(id, innerXml, type) {
+  const titleMatch = innerXml.match(/<dc:title>([^<]+)<\/dc:title>/);
+  const classMatch = innerXml.match(/<upnp:class>([^<]+)<\/upnp:class>/);
+  const parentMatch = innerXml.match(/parentID="([^"]+)"/);
+  const restrictedMatch = innerXml.match(/restricted="([^"]+)"/);
+  const artMatch = innerXml.match(/<upnp:albumArtURI[^>]*>([^<]+)<\/upnp:albumArtURI>/i);
+  const resMatch = innerXml.match(/<res[^>]*>([^<]+)<\/res>/i);
+  
+  // Extract Sonos-specific fields
+  const sonosTypeMatch = innerXml.match(/<r:type>([^<]+)<\/r:type>/);
+  const descriptionMatch = innerXml.match(/<r:description>([^<]+)<\/r:description>/);
+  
+  // Extract resMD if present
+  const resMDMatch = innerXml.match(/<r:resMD>(.*?)<\/r:resMD>/s);
+  
+  if (!titleMatch) return null;
+  
+  const resMD = resMDMatch ? resMDMatch[1] : null;
+  const resMDDecoded = _decodeXmlEntitiesSimple(resMD || '');
+  const cloudIdMatch = resMDDecoded.match(/\bid="([^"]+)"/i);
+  const tokenMatch = resMDDecoded.match(/<desc[^>]*>([^<]+)<\/desc>/i);
+  const innerClassMatch = resMDDecoded.match(/<upnp:class>([^<]+)<\/upnp:class>/i);
+  const innerTitleMatch = resMDDecoded.match(/<dc:title>([^<]+)<\/dc:title>/i);
+  const innerArtMatch = resMDDecoded.match(/<upnp:albumArtURI[^>]*>([^<]+)<\/upnp:albumArtURI>/i);
+
+  let cloudObjectId = null;
+  if (cloudIdMatch?.[1]) {
+    try { cloudObjectId = decodeURIComponent(cloudIdMatch[1]); }
+    catch { cloudObjectId = cloudIdMatch[1]; }
+  }
+
+  return {
+    id,
+    parentID: parentMatch ? parentMatch[1] : null,
+    title: _decodeXmlEntitiesSimple(titleMatch[1]),
+    upnpClass: classMatch ? classMatch[1] : `object.${type}`,
+    restricted: restrictedMatch ? restrictedMatch[1] === 'true' : false,
+    type: sonosTypeMatch ? sonosTypeMatch[1] : null,
+    description: descriptionMatch ? _decodeXmlEntitiesSimple(descriptionMatch[1]) : null,
+    res: resMatch ? _decodeXmlEntitiesSimple(resMatch[1]) : null,
+    resMD,
+    cloudObjectId,
+    authToken: tokenMatch ? _decodeXmlEntitiesSimple(tokenMatch[1]) : null,
+    artUri: innerArtMatch?.[1] ? _decodeXmlEntitiesSimple(innerArtMatch[1]) : (artMatch?.[1] ? _decodeXmlEntitiesSimple(artMatch[1]) : null),
+    contentClass: innerClassMatch?.[1] ? _decodeXmlEntitiesSimple(innerClassMatch[1]) : null,
+    contentTitle: innerTitleMatch?.[1] ? _decodeXmlEntitiesSimple(innerTitleMatch[1]) : null,
+    isContainer: type === 'container' || (classMatch && classMatch[1].includes('container')),
+  };
+}
+
+/**
+ * Build DIDL-Lite for a Sonos Radio cloud object.
+ */
+function buildSonosCloudDidl(objectId, title, authToken) {
+  const tokenTag = authToken ? `<desc id="cdudn" nameSpace="urn:schemas-rinconnetworks-com:metadata-1-0/">${xmlEscape(authToken)}</desc>` : '';
+  return [
+    '<DIDL-Lite xmlns:dc="http://purl.org/dc/elements/1.1/"',
+    ' xmlns:upnp="urn:schemas-upnp-org:metadata-1-0/upnp/"',
+    ' xmlns:r="urn:schemas-rinconnetworks-com:metadata-1-0/"',
+    ' xmlns:dlna="urn:schemas-dlna-org:metadata-1-0/"',
+    ' xmlns="urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/">',
+    '<item id="1" restricted="1" parentID="0">',
+    `<dc:title>${xmlEscape(title)}</dc:title>`,
+    '<upnp:class>object.item.audioItem.musicTrack</upnp:class>',
+    `<res protocolInfo="x-rincon-queue:#${xmlEscape(objectId)}">${xmlEscape(objectId)}</res>`,
+    tokenTag,
+    '</item></DIDL-Lite>',
+  ].join('');
+}
+
+function buildSonosRadioDirectDidl(objectId, title, authToken) {
+  const tokenTag = authToken
+    ? `<desc id="cdudn" nameSpace="urn:schemas-rinconnetworks-com:metadata-1-0/">${xmlEscape(authToken)}</desc>`
+    : '';
+  return [
+    '<DIDL-Lite xmlns:dc="http://purl.org/dc/elements/1.1/"',
+    ' xmlns:upnp="urn:schemas-upnp-org:metadata-1-0/upnp/"',
+    ' xmlns:r="urn:schemas-rinconnetworks-com:metadata-1-0/"',
+    ' xmlns="urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/">',
+    `<item id="${xmlEscape(objectId)}" parentID="${xmlEscape(objectId)}" restricted="1">`,
+    `<dc:title>${xmlEscape(title || 'Sonos Radio')}</dc:title>`,
+    '<upnp:class>object.item.audioItem.audioBroadcast</upnp:class>',
+    tokenTag,
+    '</item></DIDL-Lite>',
+  ].join('');
+}
+
 async function _sonosGetString(ip, variableName) {
   const svcType = 'urn:schemas-upnp-org:service:SystemProperties:1';
   const resp = await localSoapCall(
@@ -360,7 +418,7 @@ async function _sonosGetString(ip, variableName) {
     '/SystemProperties/Control',
     svcType,
     'GetString',
-    `<VariableName>${xmlEsc(variableName)}</VariableName>`
+    `<VariableName>${xmlEscape(variableName)}</VariableName>`
   );
   const value = (resp.match(/<StringValue[^>]*>([\s\S]*?)<\/StringValue>/i) || [])[1];
   return _decodeXmlEntitiesSimple(value || '').trim();
@@ -441,11 +499,11 @@ async function _smapiCall(endpoint, action, actionBody, credentials) {
       '<soap:Header>',
       '<s:context><s:timezone>+00:00</s:timezone></s:context>',
       '<s:credentials>',
-      `<s:deviceId>${xmlEsc(credentials.deviceId)}</s:deviceId>`,
+      `<s:deviceId>${xmlEscape(credentials.deviceId)}</s:deviceId>`,
       '<s:loginToken>',
-      `<s:token>${xmlEsc(credentials.token)}</s:token>`,
-      `<s:key>${xmlEsc(credentials.key)}</s:key>`,
-      `<s:householdId>${xmlEsc(credentials.householdId)}</s:householdId>`,
+      `<s:token>${xmlEscape(credentials.token)}</s:token>`,
+      `<s:key>${xmlEscape(credentials.key)}</s:key>`,
+      `<s:householdId>${xmlEscape(credentials.householdId)}</s:householdId>`,
       '</s:loginToken>',
       '</s:credentials>',
       '</soap:Header>',
@@ -507,7 +565,7 @@ async function _resolveCloudPlayableUriViaSmapi(ip, cloudObjectId, authTokenHint
   for (const attempt of attempts) {
     if (!attempt.deviceId || !attempt.householdId || !attempt.token) continue;
     try {
-      const mediaResp = await _smapiCall(endpoint, 'getMediaURI', `<id>${xmlEsc(cloudObjectId)}</id>`, attempt);
+      const mediaResp = await _smapiCall(endpoint, 'getMediaURI', `<id>${xmlEscape(cloudObjectId)}</id>`, attempt);
       const mediaUri = (mediaResp.match(/<getMediaURIResult[^>]*>([^<]+)<\/getMediaURIResult>/i) || [])[1] || '';
       const resolved = _decodeXmlEntitiesSimple(mediaUri).trim();
       if (resolved) return resolved;
@@ -536,8 +594,8 @@ export function timeToSecs(t) {
 }
 
 /** Validate that an IP is RFC-1918 (SSRF guard). */
-function assertPrivateIp(ip) {
-  if (!/^(10\.|172\.(1[6-9]|2\d|3[01])\.|192\.168\.)/.test(ip)) {
+export function assertPrivateIp(ip) {
+  if (!isPrivateLan(ip)) {
     throw new Error(`IP ${ip} is not a private LAN address`);
   }
 }
@@ -551,8 +609,7 @@ function assertPrivateIp(ip) {
  */
 async function castTrackToSonos({ track, ip, username, req, seekTo = 0, paused = false }) {
   assertPrivateIp(ip);
-  const streamToken = jwt.sign({ username }, config.program.secret, { expiresIn: '8h' });
-  const streamUrl   = _resolveStreamUrl(track, buildBaseUrl(req), streamToken, seekTo);
+  const streamUrl   = _resolveStreamUrl(track, buildBaseUrl(req), username, seekTo);
 
   const seekLabel  = seekTo > 1 ? ` @${secsToTime(seekTo)}` : '';
   const pauseLabel = paused ? ' (paused)' : '';
@@ -578,7 +635,15 @@ async function castTrackToSonos({ track, ip, username, req, seekTo = 0, paused =
   return { streamUrl, didl, streamStartOffset, isTranscodeStream };
 }
 
-function _resolveStreamUrl(track, baseUrl, streamToken, seekTo = 0) {
+// The URL ends up in the speaker's queue, which anyone on the LAN can read over UPnP:
+// the token in it opens this one file and nothing else (auth.js enforces scope 'stream').
+const STREAM_TOKEN_TTL = '8h';
+function _streamToken(username, fp) {
+  return signUserToken(username, { scope: 'stream', fp }, { expiresIn: STREAM_TOKEN_TTL });
+}
+
+export function _resolveStreamUrl(track, baseUrl, username, seekTo = 0) {
+  const streamToken = _streamToken(username, `${track.vpath}/${track.filepath}`);
   const encodedPath = track.filepath.split('/').map(encodeURIComponent).join('/');
   const lc         = track.filepath.toLowerCase();
   const isOpus     = lc.endsWith('.opus');
@@ -729,7 +794,7 @@ const _tagOf = (xml, t) => {
 // Build the DIDL/stream items for a batch of player-queue tracks. Shared by
 // /cast-queue (which wipes and replays) and /queue/append (which only tops up).
 // Only the track at seekIndex gets seekTo applied; -1 seeks nothing.
-function _buildQueueItems(rawTracks, baseUrl, artBase, streamToken, seekIndex = -1, seekTo = 0) {
+function _buildQueueItems(rawTracks, baseUrl, artBase, username, seekIndex = -1, seekTo = 0) {
   const items = [];
   for (let i = 0; i < rawTracks.length; i++) {
     const raw = rawTracks[i];
@@ -744,7 +809,7 @@ function _buildQueueItems(rawTracks, baseUrl, artBase, streamToken, seekIndex = 
       if (row?.sample_rate != null) track.sample_rate = row.sample_rate;
     } catch (e) { console.debug('[velvet]', e?.message ?? e); }
     const trackSeek = i === seekIndex ? seekTo : 0;
-    const streamUrl = _resolveStreamUrl(track, baseUrl, streamToken, trackSeek);
+    const streamUrl = _resolveStreamUrl(track, baseUrl, username, trackSeek);
     // Per-row art: controllers (CLIC, Sonos app) only render queue-row art that the
     // speaker serves via its own /getaa proxy — not external URLs. /getaa?u=<stream>
     // makes the speaker extract the embedded cover from our stream (relative URL, so
@@ -792,19 +857,10 @@ export function _streamUriToFp(rawUri) {
 // every ROOT vpath whose root is a prefix. Without this, sample_rate is unknown for
 // child-vpath files and hi-res (>48 kHz) FLAC streams directly instead of being
 // transcoded — Sonos can't decode it and plays silence.
-function _findRowWithVpathFallback(vpath, relPath) {
-  const row = db.findFileByPath(relPath, vpath);
-  if (row) return row;
-  const sentRoot = config.program?.folders?.[vpath]?.root;
-  if (!sentRoot) return null;
-  const fullPath = path.join(sentRoot, relPath);
-  for (const [dbVpath, dbCfg] of Object.entries(config.program?.folders ?? {})) {
-    if (dbVpath === vpath || !dbCfg?.root) continue;
-    const base = dbCfg.root.endsWith(path.sep) ? dbCfg.root : dbCfg.root + path.sep;
-    if (fullPath === dbCfg.root || fullPath.startsWith(base)) {
-      const r = db.findFileByPath(fullPath.slice(base.length), dbVpath);
-      if (r) return r;
-    }
+function _findRowWithVpathFallback(vpathName, relPath) {
+  for (const c of vpath.dbLocationCandidates({ vpath: vpathName, relativePath: relPath }, null)) {
+    const row = db.findFileByPath(c.relPath, c.vpath);
+    if (row) return row;
   }
   return null;
 }
@@ -812,8 +868,8 @@ function _findRowWithVpathFallback(vpath, relPath) {
 async function _queueAndPlay(ip, streamUrl, didl, seekTo, paused) {
   await soapCall(ip, 'RemoveAllTracksFromQueue', '');
   await soapCall(ip, 'AddURIToQueue', [
-    `<EnqueuedURI>${xmlEsc(streamUrl)}</EnqueuedURI>`,
-    `<EnqueuedURIMetaData>${xmlEsc(didl)}</EnqueuedURIMetaData>`,
+    `<EnqueuedURI>${xmlEscape(streamUrl)}</EnqueuedURI>`,
+    `<EnqueuedURIMetaData>${xmlEscape(didl)}</EnqueuedURIMetaData>`,
     '<DesiredFirstTrackNumberEnqueued>1</DesiredFirstTrackNumberEnqueued>',
     '<EnqueueAsNext>1</EnqueueAsNext>',
   ].join(''));
@@ -825,8 +881,8 @@ async function _queueAndPlay(ip, streamUrl, didl, seekTo, paused) {
   const queueUri  = uuid ? `x-rincon-queue:${uuid}#0` : streamUrl;
   const queueMeta = uuid ? '' : didl;
   await soapCall(ip, 'SetAVTransportURI', [
-    `<CurrentURI>${xmlEsc(queueUri)}</CurrentURI>`,
-    `<CurrentURIMetaData>${xmlEsc(queueMeta)}</CurrentURIMetaData>`,
+    `<CurrentURI>${xmlEscape(queueUri)}</CurrentURI>`,
+    `<CurrentURIMetaData>${xmlEscape(queueMeta)}</CurrentURIMetaData>`,
   ].join(''));
   await soapCall(ip, 'Seek', '<Unit>TRACK_NR</Unit><Target>1</Target>');
   if (seekTo > 1) await soapCall(ip, 'Seek', `<Unit>REL_TIME</Unit><Target>${secsToTime(seekTo)}</Target>`);
@@ -1065,8 +1121,7 @@ function _pickFallbackTrack(username) {
 async function castQueue({ username, ip, rawTracks, index = 0, seekTo = 0, paused = false, reason = '', baseUrl, artBase }) {
   const resolvedIp = _resolveIp(ip);
   assertPrivateIp(resolvedIp);
-  const streamToken = jwt.sign({ username }, config.program.secret, { expiresIn: '8h' });
-  const items = _buildQueueItems(rawTracks, baseUrl, artBase, streamToken, index, seekTo);
+  const items = _buildQueueItems(rawTracks, baseUrl, artBase, username, index, seekTo);
   if (!items.length) throw Object.assign(new Error('no valid tracks'), { status: 400 });
   // The currently-playing track is sent first (items[0]); upcoming tracks follow.
   // We add the current track, start playback immediately, then append the rest in
@@ -1075,8 +1130,8 @@ async function castQueue({ username, ip, rawTracks, index = 0, seekTo = 0, pause
   const soapSeekTo = curIsTranscode ? 0 : seekTo;
   const streamStartOffset = curIsTranscode && seekTo > 0.5 ? Math.floor(seekTo) : 0;
   const addUri = it => soapCall(resolvedIp, 'AddURIToQueue', [
-    `<EnqueuedURI>${xmlEsc(it.streamUrl)}</EnqueuedURI>`,
-    `<EnqueuedURIMetaData>${xmlEsc(it.didl)}</EnqueuedURIMetaData>`,
+    `<EnqueuedURI>${xmlEscape(it.streamUrl)}</EnqueuedURI>`,
+    `<EnqueuedURIMetaData>${xmlEscape(it.didl)}</EnqueuedURIMetaData>`,
     '<DesiredFirstTrackNumberEnqueued>0</DesiredFirstTrackNumberEnqueued>',
     '<EnqueueAsNext>0</EnqueueAsNext>',
   ].join(''));
@@ -1090,8 +1145,8 @@ async function castQueue({ username, ip, rawTracks, index = 0, seekTo = 0, pause
   if (!uuid) { try { const room = await _fetchDeviceDescription(resolvedIp, 3000); if (room?.uuid) uuid = room.uuid; } catch (e) { console.debug('[velvet]', e?.message ?? e); } }
   const queueUri = uuid ? `x-rincon-queue:${uuid}#0` : items[0].streamUrl;
   await soapCall(resolvedIp, 'SetAVTransportURI', [
-    `<CurrentURI>${xmlEsc(queueUri)}</CurrentURI>`,
-    `<CurrentURIMetaData>${uuid ? '' : xmlEsc(items[0].didl)}</CurrentURIMetaData>`,
+    `<CurrentURI>${xmlEscape(queueUri)}</CurrentURI>`,
+    `<CurrentURIMetaData>${uuid ? '' : xmlEscape(items[0].didl)}</CurrentURIMetaData>`,
   ].join(''));
   // Force NORMAL play mode on every fresh cast. Repeat/shuffle left on from the
   // Sonos app (or any earlier session) would let reaching the end of what we've
@@ -1188,11 +1243,9 @@ async function _healDefaultRoomIp(newRoom) {
   const matches = (dr.uuid && newRoom.uuid && dr.uuid === newRoom.uuid) || dr.ip === newRoom.ip;
   if (!matches || dr.ip === newRoom.ip) return;
   try {
-    const loadedCfg = await loadFile(config.configFile);
-    if (!loadedCfg.sonos) loadedCfg.sonos = {};
-    loadedCfg.sonos.defaultRoom = { ...dr, ip: newRoom.ip, uuid: newRoom.uuid || dr.uuid };
-    await saveFile(loadedCfg, config.configFile);
-    config.program.sonos.defaultRoom = loadedCfg.sonos.defaultRoom;
+    const healed = { ...dr, ip: newRoom.ip, uuid: newRoom.uuid || dr.uuid };
+    await config.updateConfigFile((cfg) => { cfg.sonos = { ...(cfg.sonos ?? {}), defaultRoom: healed }; });
+    config.program.sonos.defaultRoom = healed;
     console.info(`[sonos] default room IP healed: ${dr.ip} → ${newRoom.ip} (${newRoom.name})`);
   } catch (e) {
     console.warn('[sonos] failed to persist healed default room IP:', e.message || e);
@@ -1205,37 +1258,26 @@ async function _healDefaultRoomIp(newRoom) {
  * This avoids SonosManager which starts an event-listener HTTP server on port 6329
  * and crashes on EADDRINUSE when the server restarts.
  */
-function _fetchDeviceDescription(ip, timeoutMs = 4000) {
-  return new Promise((resolve) => {
-    const hreq = http.request(
-      { hostname: ip, port: 1400, path: '/xml/device_description.xml', method: 'GET' },
-      hres => {
-        let data = '';
-        hres.on('data', c => data += c);
-        hres.on('end', () => {
-          if (hres.statusCode !== 200) return resolve(null);
-          // Extract fields via simple regex — no XML parser dependency needed.
-          const tag = (t, fallback = '') => {
-            const m = new RegExp(`<${t}[^>]*>([^<]+)</${t}>`, 'i').exec(data);
-            return m ? m[1].trim() : fallback;
-          };
-          const rawUdn = tag('UDN', '');
-          resolve({
-            name:        tag('roomName') || tag('friendlyName', 'Unknown').replace(/^\S+\s+-\s+/, '').replace(/\s+-\s+RINCON_\S+$/, ''),
-            ip,
-            port:        1400,
-            uuid:        rawUdn.replace(/^uuid:/i, ''),
-            model:       tag('modelName', ''),
-            coordinator: true, // single-device fetch always coordinator
-            groupName:   '',
-          });
-        });
-      }
-    );
-    hreq.on('error', () => resolve(null));
-    hreq.setTimeout(timeoutMs, () => { hreq.destroy(); resolve(null); });
-    hreq.end();
-  });
+async function _fetchDeviceDescription(ip, timeoutMs = 4000) {
+  let res;
+  try { res = await sonosHttpGet({ ip, path: '/xml/device_description.xml', timeoutMs }); } catch { return null; }
+  if (res.status !== 200) return null;
+  const data = res.body;
+  // Extract fields via simple regex — no XML parser dependency needed.
+  const tag = (t, fallback = '') => {
+    const m = new RegExp(`<${t}[^>]*>([^<]+)</${t}>`, 'i').exec(data);
+    return m ? m[1].trim() : fallback;
+  };
+  const rawUdn = tag('UDN', '');
+  return {
+    name:        tag('roomName') || tag('friendlyName', 'Unknown').replace(/^\S+\s+-\s+/, '').replace(/\s+-\s+RINCON_\S+$/, ''),
+    ip,
+    port:        1400,
+    uuid:        rawUdn.replace(/^uuid:/i, ''),
+    model:       tag('modelName', ''),
+    coordinator: true, // single-device fetch always coordinator
+    groupName:   '',
+  };
 }
 
 /**
@@ -1373,6 +1415,11 @@ export function setupPublic(velvet) {
 }
 
 export function setup(velvet) {
+  velvet.all('/api/v1/sonos/{*path}', (req, res, next) => {
+    if (!canCastToServer(req.user)) return res.status(403).json({ error: 'Not allowed' });
+    next();
+  });
+
   // ── GET /api/v1/sonos/devices ─────────────────────────────────────────
   // Returns cached room list. If cache is stale (>5 min) or empty, triggers a fresh scan.
   velvet.get('/api/v1/sonos/devices', async (req, res) => {
@@ -1395,7 +1442,6 @@ export function setup(velvet) {
         enabled:            config.program?.sonos?.enabled !== false,
         transcodeOpus:      config.program?.sonos?.transcodeOpus === true,
         sleepEnabled:       config.program?.sonos?.sleepEnabled === true,
-        pauseSleepMinutes:  Number(config.program?.sonos?.pauseSleepMinutes) || 5,
       });
     } catch (e) {
       console.error('[sonos] /devices error:', e);
@@ -1413,10 +1459,7 @@ export function setup(velvet) {
     try {
       const defaultRoom = { ip: String(ip), name: String(name), uuid: String(uuid || '') };
       // Persist to config file
-      const loadedCfg = await loadFile(config.configFile);
-      if (!loadedCfg.sonos) loadedCfg.sonos = {};
-      loadedCfg.sonos.defaultRoom = defaultRoom;
-      await saveFile(loadedCfg, config.configFile);
+      await config.updateConfigFile((cfg) => { cfg.sonos = { ...(cfg.sonos ?? {}), defaultRoom }; });
       // Update in-memory config
       if (!config.program.sonos) config.program.sonos = {};
       config.program.sonos.defaultRoom = defaultRoom;
@@ -1428,12 +1471,12 @@ export function setup(velvet) {
   });
 
   // ── POST /api/v1/admin/sonos — update Sonos config
-  // Body: { enabled?: boolean, transcodeOpus?: boolean, sleepEnabled?: boolean, pauseSleepMinutes?: number }
+  // Body: { enabled?: boolean, transcodeOpus?: boolean, sleepEnabled?: boolean }
   velvet.post('/api/v1/admin/sonos', async (req, res) => {
     if (!req.user?.admin) return res.status(403).json({ error: 'Admin only' });
-    const { enabled, transcodeOpus, sleepEnabled, pauseSleepMinutes } = req.body || {};
-    if (enabled === undefined && transcodeOpus === undefined && sleepEnabled === undefined && pauseSleepMinutes === undefined) {
-      return res.status(400).json({ error: 'enabled, transcodeOpus, sleepEnabled or pauseSleepMinutes required' });
+    const { enabled, transcodeOpus, sleepEnabled } = req.body || {};
+    if (enabled === undefined && transcodeOpus === undefined && sleepEnabled === undefined) {
+      return res.status(400).json({ error: 'enabled, transcodeOpus or sleepEnabled required' });
     }
     if (enabled !== undefined && typeof enabled !== 'boolean') {
       return res.status(400).json({ error: 'enabled must be boolean' });
@@ -1444,36 +1487,15 @@ export function setup(velvet) {
     if (sleepEnabled !== undefined && typeof sleepEnabled !== 'boolean') {
       return res.status(400).json({ error: 'sleepEnabled must be boolean' });
     }
-    if (pauseSleepMinutes !== undefined && (!Number.isFinite(pauseSleepMinutes) || pauseSleepMinutes < 1 || pauseSleepMinutes > 120)) {
-      return res.status(400).json({ error: 'pauseSleepMinutes must be a number between 1 and 120' });
-    }
     try {
-      const loadedCfg = await loadFile(config.configFile);
-      if (!loadedCfg.sonos) loadedCfg.sonos = {};
-      if (!config.program.sonos) config.program.sonos = {};
-      if (enabled !== undefined) {
-        loadedCfg.sonos.enabled = enabled;
-        config.program.sonos.enabled = enabled;
-      }
-      if (transcodeOpus !== undefined) {
-        loadedCfg.sonos.transcodeOpus = transcodeOpus;
-        config.program.sonos.transcodeOpus = transcodeOpus;
-      }
-      if (sleepEnabled !== undefined) {
-        loadedCfg.sonos.sleepEnabled = sleepEnabled;
-        config.program.sonos.sleepEnabled = sleepEnabled;
-      }
-      if (pauseSleepMinutes !== undefined) {
-        loadedCfg.sonos.pauseSleepMinutes = pauseSleepMinutes;
-        config.program.sonos.pauseSleepMinutes = pauseSleepMinutes;
-      }
-      await saveFile(loadedCfg, config.configFile);
+      const changes = Object.fromEntries(Object.entries({ enabled, transcodeOpus, sleepEnabled }).filter(([, v]) => v !== undefined));
+      await config.updateConfigFile((cfg) => { cfg.sonos = { ...(cfg.sonos ?? {}), ...changes }; });
+      config.program.sonos = { ...(config.program.sonos ?? {}), ...changes };
       res.json({
         ok: true,
         enabled: config.program.sonos.enabled !== false,
         transcodeOpus: config.program.sonos.transcodeOpus === true,
         sleepEnabled: config.program.sonos.sleepEnabled === true,
-        pauseSleepMinutes: Number(config.program.sonos.pauseSleepMinutes) || 5,
       });
     } catch (e) {
       console.error('[sonos] /admin/sonos error:', e);
@@ -1612,36 +1634,10 @@ export function setup(velvet) {
 
     // Look up aaFile, duration and sample_rate from DB if not provided by client
     try {
-      const row = db.findFileByPath(relPath, vpath);
+      const row = _findRowWithVpathFallback(vpath, relPath);
       if (row?.aaFile && !track.aaFile) track.aaFile = row.aaFile;
-      if (row?.duration && !track.duration) track.duration = row.duration;
-      if (row?.sample_rate) track.sample_rate = row.sample_rate;
-
-      // Fallback: the sent vpath might not be the DB-indexed root vpath.
-      // Example: vpath "12-inches" (root /media/music/12 inches A-Z) is a
-      // sub-directory of "Music" (root /media/music) and its files are only
-      // indexed in the DB under vpath="Music". Resolve the full filesystem path
-      // and try every configured folder whose root is a prefix of that path.
-      if (track.sample_rate == null) {
-        const sentRoot = config.program?.folders?.[vpath]?.root;
-        if (sentRoot) {
-          const fullPath = path.join(sentRoot, relPath);
-          for (const [dbVpath, dbCfg] of Object.entries(config.program?.folders ?? {})) {
-            if (dbVpath === vpath) continue;
-            const base = dbCfg.root.endsWith(path.sep) ? dbCfg.root : dbCfg.root + path.sep;
-            if (fullPath === dbCfg.root || fullPath.startsWith(base)) {
-              const dbRelPath = fullPath.slice(base.length);
-              const fbRow = db.findFileByPath(dbRelPath, dbVpath);
-              if (fbRow != null) {
-                if (fbRow.aaFile && !track.aaFile) track.aaFile = fbRow.aaFile;
-                if (fbRow.duration && !track.duration) track.duration = fbRow.duration;
-                if (fbRow.sample_rate != null) track.sample_rate = fbRow.sample_rate;
-                break;
-              }
-            }
-          }
-        }
-      }
+      if (row?.duration) track.duration = row.duration;
+      if (row?.sample_rate != null) track.sample_rate = row.sample_rate;
     } catch (e) { console.debug('[velvet]', e?.message ?? e); }
     const seekTo = Number(req.body?.seekTo) || 0;
     const paused = !!req.body?.paused;
@@ -1727,14 +1723,13 @@ export function setup(velvet) {
     try {
       const resolvedIp = _resolveIp(ip);
       assertPrivateIp(resolvedIp);
-      const streamToken = jwt.sign({ username: req.user.username }, config.program.secret, { expiresIn: '8h' });
-      const items = _buildQueueItems(rawTracks, buildBaseUrl(req), buildArtBaseUrl(req), streamToken);
+      const items = _buildQueueItems(rawTracks, buildBaseUrl(req), buildArtBaseUrl(req), req.user.username);
       if (!items.length) return res.status(400).json({ error: 'no valid tracks' });
       let added = 0;
       for (const it of items) {
         await soapCall(resolvedIp, 'AddURIToQueue', [
-          `<EnqueuedURI>${xmlEsc(it.streamUrl)}</EnqueuedURI>`,
-          `<EnqueuedURIMetaData>${xmlEsc(it.didl)}</EnqueuedURIMetaData>`,
+          `<EnqueuedURI>${xmlEscape(it.streamUrl)}</EnqueuedURI>`,
+          `<EnqueuedURIMetaData>${xmlEscape(it.didl)}</EnqueuedURIMetaData>`,
           '<DesiredFirstTrackNumberEnqueued>0</DesiredFirstTrackNumberEnqueued>',
           '<EnqueueAsNext>0</EnqueueAsNext>',
         ].join(''));
@@ -1926,7 +1921,7 @@ export function setup(velvet) {
       }
       // Timeout = device waking up/busy — expected, log concisely without stack trace
       if (msg.includes('timeout')) {
-        console.info(`[sonos] /seek: device busy (${resolvedIp}) — ${msg}`);
+        console.info(`[sonos] /seek: device busy (${ip}) — ${msg}`);
         return res.status(503).json({ ok: false, error: msg });
       }
       console.error('[sonos] /seek error:', e);
@@ -1963,21 +1958,7 @@ export function setup(velvet) {
     if (!ip) return res.status(400).json({ error: 'ip required' });
     try {
       assertPrivateIp(ip);
-      const data = await new Promise((resolve, reject) => {
-        const reqOpts = {
-          hostname: ip, port: 1400,
-          path: '/status/batterystatus',
-          method: 'GET',
-        };
-        const hreq = http.request(reqOpts, hres => {
-          let body = '';
-          hres.on('data', c => body += c);
-          hres.on('end', () => resolve({ status: hres.statusCode, body }));
-        });
-        hreq.on('error', reject);
-        hreq.setTimeout(5000, () => hreq.destroy(new Error('timeout')));
-        hreq.end();
-      });
+      const data = await sonosHttpGet({ ip, path: '/status/batterystatus' });
 
       if (data.status === 404 || !data.body.includes('LocalBatteryStatus')) {
         return res.json({ supported: false });
@@ -2010,16 +1991,7 @@ export function setup(velvet) {
     if (!ip) return res.status(400).json({ error: 'ip required' });
     try {
       assertPrivateIp(ip);
-      const fetchPath = (path) => new Promise((resolve, reject) => {
-        const reqOpts = { hostname: ip, port: 1400, path, method: 'GET' };
-        const hreq = http.request(reqOpts, hres => {
-          let body = ''; hres.on('data', c => body += c);
-          hres.on('end', () => resolve(body));
-        });
-        hreq.on('error', reject);
-        hreq.setTimeout(5000, () => hreq.destroy(new Error('timeout')));
-        hreq.end();
-      });
+      const fetchPath = async (path) => (await sonosHttpGet({ ip, path })).body;
       const [zpBody, wifiBody] = await Promise.all([
         fetchPath('/status/zp'),
         fetchPath('/status/wireless'),
@@ -2068,8 +2040,8 @@ export function setup(velvet) {
       // Spotify, radio, …) that isn't in Velvet's own queue.
       const trackUri = tag(posXml, 'TrackURI');
       const metaRaw = (posXml.match(/<TrackMetaData[^>]*>([\s\S]*?)<\/TrackMetaData>/i) || [])[1] || '';
-      const didl = _decodeXmlEntities(metaRaw);
-      const didlTag = t => { const m = didl.match(new RegExp(`<${t}[^>]*>([^<]+)</${t}>`, 'i')); return m ? _decodeXmlEntities(m[1].trim()) : ''; };
+      const didl = _decodeXmlEntitiesSimple(metaRaw);
+      const didlTag = t => { const m = didl.match(new RegExp(`<${t}[^>]*>([^<]+)</${t}>`, 'i')); return m ? _decodeXmlEntitiesSimple(m[1].trim()) : ''; };
       const streamContent = didlTag('r:streamContent');
       res.json({
         playing:  state === 'PLAYING',
@@ -2219,19 +2191,13 @@ export function setup(velvet) {
   // TEST ONLY — picks a random MP3 from the library and plays it on the given Sonos device.
   // Body: { ip: '192.168.x.x' }
   velvet.post('/api/v1/sonos/test-play', async (req, res) => {
+    if (req.user?.admin !== true) return res.status(403).json({ error: 'Admin only' });
     const ip = req.body?.ip;
     if (!ip) return res.status(400).json({ error: 'ip required' });
 
     try {
-      // Pick a random MP3 from the DB
-      const dbPath = path.join(config.program.storage.dbDirectory, 'velvet.sqlite');
-      const db = new DatabaseSync(dbPath);
-      const row = db.prepare(
-        `SELECT vpath, filepath, title, artist, album FROM files
-         WHERE format = 'mp3'
-         ORDER BY RANDOM() LIMIT 1`
-      ).get();
-      db.close();
+      const row = db.getRandomSongs(req.user.vpaths, req.user.username, { size: 25 })
+        .find(s => s.format === 'mp3' || s.filepath.toLowerCase().endsWith('.mp3'));
 
       if (!row) return res.status(404).json({ error: 'No MP3 files in library' });
 
@@ -2304,12 +2270,12 @@ export function setup(velvet) {
       if (!fav) return res.status(404).json({ ok: false, error: 'favorite not found' });
       if (!fav.res) return res.status(422).json({ ok: false, error: 'favorite has no playable resource' });
 
-      const resMD = fav.resMD ? _decodeXmlEntities(fav.resMD) : '';
+      const resMD = fav.resMD ? _decodeXmlEntitiesSimple(fav.resMD) : '';
       if (fav.isContainer) {
         await soapCall(resolvedIp, 'RemoveAllTracksFromQueue', '');
         await soapCall(resolvedIp, 'AddURIToQueue', [
-          `<EnqueuedURI>${xmlEsc(fav.res)}</EnqueuedURI>`,
-          `<EnqueuedURIMetaData>${xmlEsc(resMD)}</EnqueuedURIMetaData>`,
+          `<EnqueuedURI>${xmlEscape(fav.res)}</EnqueuedURI>`,
+          `<EnqueuedURIMetaData>${xmlEscape(resMD)}</EnqueuedURIMetaData>`,
           '<DesiredFirstTrackNumberEnqueued>0</DesiredFirstTrackNumberEnqueued>',
           '<EnqueueAsNext>0</EnqueueAsNext>',
         ].join(''));
@@ -2319,14 +2285,14 @@ export function setup(velvet) {
         if (!uuid) uuid = (await _fetchDeviceDescription(resolvedIp))?.uuid;
         if (!uuid) return res.status(500).json({ ok: false, error: 'could not resolve device uuid' });
         await soapCall(resolvedIp, 'SetAVTransportURI', [
-          `<CurrentURI>${xmlEsc(`x-rincon-queue:${uuid}#0`)}</CurrentURI>`,
+          `<CurrentURI>${xmlEscape(`x-rincon-queue:${uuid}#0`)}</CurrentURI>`,
           '<CurrentURIMetaData></CurrentURIMetaData>',
         ].join(''));
         await soapCall(resolvedIp, 'Seek', '<Unit>TRACK_NR</Unit><Target>1</Target>');
       } else {
         await soapCall(resolvedIp, 'SetAVTransportURI', [
-          `<CurrentURI>${xmlEsc(fav.res)}</CurrentURI>`,
-          `<CurrentURIMetaData>${xmlEsc(resMD)}</CurrentURIMetaData>`,
+          `<CurrentURI>${xmlEscape(fav.res)}</CurrentURI>`,
+          `<CurrentURIMetaData>${xmlEscape(resMD)}</CurrentURIMetaData>`,
         ].join(''));
       }
       await soapCall(resolvedIp, 'Play', '<Speed>1</Speed>');
@@ -2347,15 +2313,15 @@ export function setup(velvet) {
     const { key, hidden } = req.body || {};
     if (!key || typeof hidden !== 'boolean') return res.status(400).json({ error: 'key and hidden (boolean) required' });
     try {
-      const loadedCfg = await loadFile(config.configFile);
-      if (!loadedCfg.sonos) loadedCfg.sonos = {};
-      const set = new Set(loadedCfg.sonos.hiddenFavorites || []);
-      if (hidden) set.add(key); else set.delete(key);
-      loadedCfg.sonos.hiddenFavorites = [...set];
-      await saveFile(loadedCfg, config.configFile);
+      const hiddenFavorites = await config.updateConfigFile((cfg) => {
+        const set = new Set(cfg.sonos?.hiddenFavorites || []);
+        if (hidden) set.add(key); else set.delete(key);
+        cfg.sonos = { ...(cfg.sonos ?? {}), hiddenFavorites: [...set] };
+        return cfg.sonos.hiddenFavorites;
+      });
       if (!config.program.sonos) config.program.sonos = {};
-      config.program.sonos.hiddenFavorites = loadedCfg.sonos.hiddenFavorites;
-      res.json({ ok: true, hiddenFavorites: loadedCfg.sonos.hiddenFavorites });
+      config.program.sonos.hiddenFavorites = hiddenFavorites;
+      res.json({ ok: true, hiddenFavorites });
     } catch (e) {
       console.error('[sonos] /favorite-visibility error:', e);
       res.status(500).json({ error: String(e.message || e) });
@@ -2420,8 +2386,8 @@ export function setup(velvet) {
                   const directUri = `x-sonosapi-radio:${cloudVal}?sid=${sid}&flags=${flags}&sn=${sn}`;
                   try {
                     await soapCall(resolvedIp, 'SetAVTransportURI', [
-                      `<CurrentURI>${xmlEsc(directUri)}</CurrentURI>`,
-                      `<CurrentURIMetaData>${xmlEsc(radioDidl)}</CurrentURIMetaData>`,
+                      `<CurrentURI>${xmlEscape(directUri)}</CurrentURI>`,
+                      `<CurrentURIMetaData>${xmlEscape(radioDidl)}</CurrentURIMetaData>`,
                     ].join(''));
                     await soapCall(resolvedIp, 'Play', '<Speed>1</Speed>');
                     return directUri;
@@ -2456,7 +2422,7 @@ export function setup(velvet) {
         if (playableUri) {
           try {
             await soapCall(resolvedIp, 'SetAVTransportURI', [
-              `<CurrentURI>${xmlEsc(playableUri)}</CurrentURI>`,
+              `<CurrentURI>${xmlEscape(playableUri)}</CurrentURI>`,
               '<CurrentURIMetaData></CurrentURIMetaData>',
             ].join(''));
             await soapCall(resolvedIp, 'Play', '<Speed>1</Speed>');
@@ -2478,15 +2444,15 @@ export function setup(velvet) {
       
       await soapCall(resolvedIp, 'RemoveAllTracksFromQueue', '');
       await soapCall(resolvedIp, 'AddURIToQueue', [
-        `<EnqueuedURI>${xmlEsc(cloudObjectId)}</EnqueuedURI>`,
-        `<EnqueuedURIMetaData>${xmlEsc(didl)}</EnqueuedURIMetaData>`,
+        `<EnqueuedURI>${xmlEscape(cloudObjectId)}</EnqueuedURI>`,
+        `<EnqueuedURIMetaData>${xmlEscape(didl)}</EnqueuedURIMetaData>`,
         '<DesiredFirstTrackNumberEnqueued>1</DesiredFirstTrackNumberEnqueued>',
         '<EnqueueAsNext>1</EnqueueAsNext>',
       ].join(''));
       
       await soapCall(resolvedIp, 'SetAVTransportURI', [
-        `<CurrentURI>${xmlEsc(cloudObjectId)}</CurrentURI>`,
-        `<CurrentURIMetaData>${xmlEsc(didl)}</CurrentURIMetaData>`,
+        `<CurrentURI>${xmlEscape(cloudObjectId)}</CurrentURI>`,
+        `<CurrentURIMetaData>${xmlEscape(didl)}</CurrentURIMetaData>`,
       ].join(''));
       await soapCall(resolvedIp, 'Seek', '<Unit>TRACK_NR</Unit><Target>1</Target>');
       await soapCall(resolvedIp, 'Play', '<Speed>1</Speed>');
@@ -2513,267 +2479,4 @@ export function setup(velvet) {
       res.status(500).json({ ok: false, error: msg });
     }
   });
-
-  // ── Helper: Browse Sonos ContentDirectory ──────────────────────────────
-  /**
-   * Browse a Sonos device's ContentDirectory service.
-   * Returns array of items/containers with parsed metadata.
-   */
-  // Browse the local queue (Q:0) and return the list of <res> stream URIs.
-  // Used to decide whether a queue belongs to Velvet before wiping it.
-  async function _sonosQueueResUris(ip) {
-    const body = [
-      '<?xml version="1.0" encoding="utf-8"?>',
-      '<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/"',
-      ' s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/">',
-      '<s:Body>',
-      '<u:Browse xmlns:u="urn:schemas-upnp-org:service:ContentDirectory:1">',
-      '<ObjectID>Q:0</ObjectID><BrowseFlag>BrowseDirectChildren</BrowseFlag>',
-      '<Filter>*</Filter><StartingIndex>0</StartingIndex><RequestedCount>200</RequestedCount>',
-      '<SortCriteria></SortCriteria>',
-      '</u:Browse></s:Body></s:Envelope>',
-    ].join('');
-    const data = await new Promise((resolve, reject) => {
-      const hreq = http.request({
-        hostname: ip, port: 1400, path: '/MediaServer/ContentDirectory/Control', method: 'POST',
-        headers: { 'Content-Type': 'text/xml; charset="utf-8"', 'Content-Length': Buffer.byteLength(body), soapaction: '"urn:schemas-upnp-org:service:ContentDirectory:1#Browse"' },
-      }, hres => {
-        let d = ''; hres.on('data', c => d += c);
-        hres.on('end', () => hres.statusCode >= 400
-          ? reject(Object.assign(new Error('Sonos Browse HTTP ' + hres.statusCode), { code: hres.statusCode }))
-          : resolve(d));
-      });
-      hreq.on('error', reject);
-      hreq.setTimeout(6000, () => hreq.destroy(new Error('Sonos Browse timeout')));
-      hreq.write(body); hreq.end();
-    });
-    const m = data.match(/<Result>(.*?)<\/Result>/s);
-    if (!m) return [];
-    const didl = m[1].replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&amp;/g, '&');
-    const uris = [];
-    const rx = /<res[^>]*>([^<]+)<\/res>/g;
-    let r; while ((r = rx.exec(didl)) !== null) uris.push(r[1].trim());
-    return uris;
-  }
-
-  // Browse FV:2 and return every "My Favorites" entry, enriched with a service
-  // tag and the playable <res>/<resMD> needed by /play-favorite. resMD is filled
-  // in via a per-item BrowseMetadata only when the list browse omitted it.
-  async function _listSonosFavorites(ip) {
-    const items = await _browseSonosContentDirectory(ip, 'FV:2', 'BrowseDirectChildren', 0, 100);
-    const hiddenSet = new Set(config.program?.sonos?.hiddenFavorites || []);
-    const out = [];
-    for (const item of items) {
-      let full = item;
-      if (!full.res || !full.resMD) {
-        const meta = await _browseSonosContentDirectory(ip, item.id, 'BrowseMetadata', 0, 1);
-        full = meta[0] || item;
-      }
-      const description = full.description || item.description || '';
-      const serviceKey = String(description).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'unknown';
-      const upnpClass = full.contentClass || full.upnpClass || null;
-      const isContainer = String(upnpClass || '').includes('container') || !!full.isContainer;
-      const cloudObjectId = full.cloudObjectId || null;
-      // Stable across favourite reordering — FV:2/N ids shift when favourites
-      // are added/removed, so hide preferences key off the content id instead.
-      const key = cloudObjectId || full.res || item.res || full.contentTitle || _decodeXmlEntities(full.title || item.title || '') || (full.id || item.id);
-      out.push({
-        id: full.id || item.id,
-        localId: String(full.id || item.id || '').split('/').pop(),
-        key,
-        title: full.contentTitle || _decodeXmlEntities(full.title || item.title || ''),
-        description,
-        service: description || 'Unknown',
-        serviceKey,
-        type: full.type || item.type || null,
-        upnpClass,
-        isContainer,
-        cloudObjectId,
-        authToken: full.authToken || null,
-        artUri: full.artUri || item.artUri || null,
-        res: full.res || item.res || null,
-        resMD: full.resMD || item.resMD || null,
-        parentId: full.parentID || item.parentID || null,
-        hidden: hiddenSet.has(key),
-      });
-    }
-    return out;
-  }
-
-  async function _browseSonosContentDirectory(ip, objectId, browseFlag, startingIndex, requestedCount) {
-    const body = [
-      '<?xml version="1.0" encoding="utf-8"?>',
-      '<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/"',
-      ' s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/">',
-      '<s:Body>',
-      `<u:Browse xmlns:u="urn:schemas-upnp-org:service:ContentDirectory:1">`,
-      `<ObjectID>${xmlEsc(objectId)}</ObjectID>`,
-      `<BrowseFlag>${browseFlag}</BrowseFlag>`,
-      '<Filter>*</Filter>',
-      `<StartingIndex>${startingIndex}</StartingIndex>`,
-      `<RequestedCount>${requestedCount}</RequestedCount>`,
-      '<SortCriteria></SortCriteria>',
-      '</u:Browse>',
-      '</s:Body></s:Envelope>',
-    ].join('');
-    
-    const resp = await new Promise((resolve, reject) => {
-      const reqOpts = {
-        hostname: ip, port: 1400,
-        path: '/MediaServer/ContentDirectory/Control',
-        method: 'POST',
-        headers: {
-          'Content-Type': 'text/xml; charset="utf-8"',
-          'Content-Length': Buffer.byteLength(body),
-          'soapaction': '"urn:schemas-upnp-org:service:ContentDirectory:1#Browse"',
-        },
-      };
-      const hreq = http.request(reqOpts, hres => {
-        let data = '';
-        hres.on('data', c => data += c);
-        hres.on('end', () => {
-          if (hres.statusCode >= 400) {
-            reject(new Error(`Sonos Browse HTTP ${hres.statusCode}: ${data.slice(0, 200)}`));
-          } else {
-            resolve(data);
-          }
-        });
-      });
-      hreq.on('error', reject);
-      hreq.setTimeout(6000, () => { hreq.destroy(new Error('Sonos Browse timeout')); });
-      hreq.write(body);
-      hreq.end();
-    });
-    
-    // Parse the DIDL-Lite from the Result
-    const resultMatch = resp.match(/<Result>(.*?)<\/Result>/s);
-    if (!resultMatch) return [];
-    
-    const didl = resultMatch[1]
-      .replace(/&lt;/g, '<')
-      .replace(/&gt;/g, '>')
-      .replace(/&quot;/g, '"')
-      .replace(/&amp;/g, '&');
-    
-    // Parse items from DIDL-Lite
-    const items = [];
-    const itemRegex = /<item[^>]*id="([^"]+)"[^>]*>(.*?)<\/item>/gs;
-    const containerRegex = /<container[^>]*id="([^"]+)"[^>]*>(.*?)<\/container>/gs;
-    
-    let match;
-    while ((match = itemRegex.exec(didl)) !== null) {
-      const id = match[1];
-      const inner = match[2];
-      const item = _parseDidlItem(id, inner, 'item');
-      if (item) items.push(item);
-    }
-    
-    while ((match = containerRegex.exec(didl)) !== null) {
-      const id = match[1];
-      const inner = match[2];
-      const item = _parseDidlItem(id, inner, 'container');
-      if (item) items.push(item);
-    }
-    
-    return items;
-  }
-
-  /**
-   * Parse a DIDL-Lite item or container element.
-   */
-  function _parseDidlItem(id, innerXml, type) {
-    const titleMatch = innerXml.match(/<dc:title>([^<]+)<\/dc:title>/);
-    const classMatch = innerXml.match(/<upnp:class>([^<]+)<\/upnp:class>/);
-    const parentMatch = innerXml.match(/parentID="([^"]+)"/);
-    const restrictedMatch = innerXml.match(/restricted="([^"]+)"/);
-    const artMatch = innerXml.match(/<upnp:albumArtURI[^>]*>([^<]+)<\/upnp:albumArtURI>/i);
-    const resMatch = innerXml.match(/<res[^>]*>([^<]+)<\/res>/i);
-    
-    // Extract Sonos-specific fields
-    const sonosTypeMatch = innerXml.match(/<r:type>([^<]+)<\/r:type>/);
-    const descriptionMatch = innerXml.match(/<r:description>([^<]+)<\/r:description>/);
-    
-    // Extract resMD if present
-    const resMDMatch = innerXml.match(/<r:resMD>(.*?)<\/r:resMD>/s);
-    
-    if (!titleMatch) return null;
-    
-    const resMD = resMDMatch ? resMDMatch[1] : null;
-    const resMDDecoded = _decodeXmlEntities(resMD || '');
-    const cloudIdMatch = resMDDecoded.match(/\bid="([^"]+)"/i);
-    const tokenMatch = resMDDecoded.match(/<desc[^>]*>([^<]+)<\/desc>/i);
-    const innerClassMatch = resMDDecoded.match(/<upnp:class>([^<]+)<\/upnp:class>/i);
-    const innerTitleMatch = resMDDecoded.match(/<dc:title>([^<]+)<\/dc:title>/i);
-    const innerArtMatch = resMDDecoded.match(/<upnp:albumArtURI[^>]*>([^<]+)<\/upnp:albumArtURI>/i);
-
-    let cloudObjectId = null;
-    if (cloudIdMatch?.[1]) {
-      try { cloudObjectId = decodeURIComponent(cloudIdMatch[1]); }
-      catch { cloudObjectId = cloudIdMatch[1]; }
-    }
-
-    return {
-      id,
-      parentID: parentMatch ? parentMatch[1] : null,
-      title: _decodeXmlEntities(titleMatch[1]),
-      upnpClass: classMatch ? classMatch[1] : `object.${type}`,
-      restricted: restrictedMatch ? restrictedMatch[1] === 'true' : false,
-      type: sonosTypeMatch ? sonosTypeMatch[1] : null,
-      description: descriptionMatch ? _decodeXmlEntities(descriptionMatch[1]) : null,
-      res: resMatch ? _decodeXmlEntities(resMatch[1]) : null,
-      resMD,
-      cloudObjectId,
-      authToken: tokenMatch ? _decodeXmlEntities(tokenMatch[1]) : null,
-      artUri: innerArtMatch?.[1] ? _decodeXmlEntities(innerArtMatch[1]) : (artMatch?.[1] ? _decodeXmlEntities(artMatch[1]) : null),
-      contentClass: innerClassMatch?.[1] ? _decodeXmlEntities(innerClassMatch[1]) : null,
-      contentTitle: innerTitleMatch?.[1] ? _decodeXmlEntities(innerTitleMatch[1]) : null,
-      isContainer: type === 'container' || (classMatch && classMatch[1].includes('container')),
-    };
-  }
-
-  function _decodeXmlEntities(value) {
-    return String(value || '')
-      .replace(/&lt;/g, '<')
-      .replace(/&gt;/g, '>')
-      .replace(/&quot;/g, '"')
-      .replace(/&apos;/g, "'")
-      .replace(/&amp;/g, '&');
-  }
-
-  /**
-   * Build DIDL-Lite for a Sonos Radio cloud object.
-   */
-  function buildSonosCloudDidl(objectId, title, authToken) {
-    const tokenTag = authToken ? `<desc id="cdudn" nameSpace="urn:schemas-rinconnetworks-com:metadata-1-0/">${xmlEsc(authToken)}</desc>` : '';
-    return [
-      '<DIDL-Lite xmlns:dc="http://purl.org/dc/elements/1.1/"',
-      ' xmlns:upnp="urn:schemas-upnp-org:metadata-1-0/upnp/"',
-      ' xmlns:r="urn:schemas-rinconnetworks-com:metadata-1-0/"',
-      ' xmlns:dlna="urn:schemas-dlna-org:metadata-1-0/"',
-      ' xmlns="urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/">',
-      '<item id="1" restricted="1" parentID="0">',
-      `<dc:title>${xmlEsc(title)}</dc:title>`,
-      '<upnp:class>object.item.audioItem.musicTrack</upnp:class>',
-      `<res protocolInfo="x-rincon-queue:#${xmlEsc(objectId)}">${xmlEsc(objectId)}</res>`,
-      tokenTag,
-      '</item></DIDL-Lite>',
-    ].join('');
-  }
-
-  function buildSonosRadioDirectDidl(objectId, title, authToken) {
-    const tokenTag = authToken
-      ? `<desc id="cdudn" nameSpace="urn:schemas-rinconnetworks-com:metadata-1-0/">${xmlEsc(authToken)}</desc>`
-      : '';
-    return [
-      '<DIDL-Lite xmlns:dc="http://purl.org/dc/elements/1.1/"',
-      ' xmlns:upnp="urn:schemas-upnp-org:metadata-1-0/upnp/"',
-      ' xmlns:r="urn:schemas-rinconnetworks-com:metadata-1-0/"',
-      ' xmlns="urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/">',
-      `<item id="${xmlEsc(objectId)}" parentID="${xmlEsc(objectId)}" restricted="1">`,
-      `<dc:title>${xmlEsc(title || 'Sonos Radio')}</dc:title>`,
-      '<upnp:class>object.item.audioItem.audioBroadcast</upnp:class>',
-      tokenTag,
-      '</item></DIDL-Lite>',
-    ].join('');
-  }
 }

@@ -2,16 +2,234 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <title>Velvet — Server Audio</title>
+  <title data-i18n="server-remote.pageTitle">Velvet — Server Audio</title>
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <script>
-    (function(){
-      var svg = '<img src="/assets/img/velvet-logo.svg" alt="Velvet" width="48" height="48" style="">''">
+  <link rel="icon" type="image/svg+xml" href="/assets/img/velvet-logo.svg">
+  <style>
+    :root{--bg:#1a1a2e;--surface:#16213e;--raised:#0f3460;--card:#1e2d4a;--border:#2a3a5e;--r:7px;--primary:#8b5cf6;--primary-h:#7c3aed;--primary-d:rgba(139,92,246,.15);--primary-g:rgba(139,92,246,.4);--accent:#60a5fa;--red:#f87171;--green:#4ade80;--t1:#eeeeff;--t2:#8888b0;--t3:#7e8ec0}
+    :root.dark{--bg:#000;--surface:#0d0d0d;--raised:#1c1c1e;--card:#141414;--border:rgba(255,255,255,.09);--primary:#a78bfa;--primary-h:#9061f9;--primary-d:rgba(167,139,250,.14);--primary-g:rgba(167,139,250,.38);--accent:#60a5fa;--red:#f87171;--green:#4ade80;--t1:#f1f1f1;--t2:#8a8a9a;--t3:#707082}
+    :root.light{--bg:#e8e8f2;--surface:#f2f2fa;--raised:#e4e4ef;--card:#dcdcec;--border:rgba(0,0,0,.10);--primary:#6d3ce6;--primary-h:#5b28d4;--primary-d:rgba(109,60,230,.12);--primary-g:rgba(109,60,230,.35);--accent:#2563eb;--red:#dc2626;--green:#16a34a;--t1:#0c0c1a;--t2:#42425e;--t3:#7878a0}
+    *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+    body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:var(--bg);color:var(--t1);height:100dvh;display:flex;flex-direction:column;overflow:hidden}
+    /* ── topbar ── */
+    .topbar{display:flex;align-items:center;justify-content:space-between;padding:10px 16px;background:var(--surface);border-bottom:1px solid var(--border);flex-shrink:0;gap:10px}
+    .topbar-brand{display:flex;align-items:center;gap:8px;font-weight:700;font-size:15px}
+    .topbar-badge{font-size:11px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;background:var(--primary-d);color:var(--primary);border:1px solid var(--primary-d);border-radius:4px;padding:2px 6px;margin-left:2px}
+    .topbar-status{font-size:12px;font-weight:600;display:flex;align-items:center;gap:5px}
+    .dot{width:7px;height:7px;border-radius:50%;flex-shrink:0}
+    .dot-on{background:var(--green)}
+    .dot-off{background:var(--t3)}
+    .topbar-right{display:flex;align-items:center;gap:8px}
+    .theme-btn{background:none;border:1px solid var(--border);border-radius:20px;padding:6px 11px;color:var(--t2);font-size:12px;cursor:pointer;display:flex;align-items:center;gap:4px;min-height:34px}
+    /* ── screens ── */
+    #login-screen{flex:1;display:flex;align-items:center;justify-content:center;padding:24px;overflow-y:auto;background:radial-gradient(ellipse 80% 50% at 50% -10%,rgba(139,92,246,.18),transparent)}
+    :root.light #login-screen{background:radial-gradient(ellipse 80% 50% at 50% -10%,rgba(109,60,230,.10),transparent)}
+    :root.dark  #login-screen{background:radial-gradient(ellipse 80% 50% at 50% -10%,rgba(167,139,250,.12),transparent)}
+    .login-card{background:var(--surface);border:1px solid var(--border);border-radius:22px;padding:36px 28px;width:100%;max-width:360px;box-shadow:0 28px 70px rgba(0,0,0,.55),0 0 100px rgba(139,92,246,.08)}
+    :root.light .login-card{box-shadow:0 12px 48px rgba(0,0,0,.13)}
+    :root.dark  .login-card{box-shadow:0 28px 70px rgba(0,0,0,.85)}
+    .login-brand{text-align:center;margin-bottom:28px}
+    .login-brand h2{font-size:20px;font-weight:700;letter-spacing:-.3px;margin-bottom:4px}
+    .login-brand p{color:var(--t2);font-size:13px}
+    .field-label{font-size:12px;color:var(--t2);margin-bottom:5px;display:block}
+    .field-input{display:block;width:100%;padding:11px 14px;background:var(--raised);color:var(--t1);border:1px solid var(--border);border-radius:var(--r);font-size:16px;margin-bottom:14px;outline:none;transition:border-color .18s,box-shadow .18s}
+    .field-input:focus{border-color:var(--primary);box-shadow:0 0 0 3px var(--primary-d)}
+    .field-input::placeholder{color:var(--t3)}
+    .btn-primary{width:100%;padding:11px;background:var(--primary);color:#fff;border:none;border-radius:var(--r);font-size:14px;font-weight:600;cursor:pointer;transition:background .18s,box-shadow .18s,transform .1s}
+    .btn-primary:hover{background:var(--primary-h);box-shadow:0 4px 22px var(--primary-g)}
+    .btn-primary:active{transform:scale(.97)}
+    .btn-primary:disabled{opacity:.5;cursor:default}
+    .error-msg{color:var(--red);font-size:13px;margin-top:12px;text-align:center;min-height:18px}
+    /* ── main screen ── */
+    #main-screen{flex:1;display:flex;flex-direction:column;overflow:hidden}
+    /* ── now playing ── */
+    .np-bar{background:var(--surface);border-bottom:1px solid var(--border);padding:14px 16px;display:flex;align-items:center;gap:14px;flex-shrink:0}
+    .np-art{width:72px;height:72px;border-radius:8px;object-fit:cover;background:var(--raised);flex-shrink:0}
+    .np-info{flex:1;min-width:0}
+    .np-title{font-weight:600;font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--t1);margin-bottom:2px}
+    .np-artist{font-size:12px;color:var(--t2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-bottom:2px}
+    .np-tech{font-size:10.5px;color:var(--t3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-bottom:4px;letter-spacing:.01em}
+    .np-prog-track{height:3px;background:var(--raised);border-radius:2px;cursor:pointer;position:relative}
+    .np-prog-fill{height:100%;background:var(--accent);border-radius:2px;transition:width .9s linear;pointer-events:none}
+    .np-time{font-size:11px;color:var(--t3);margin-top:3px;display:flex;justify-content:space-between}
+    /* ── controls ── */
+    .controls{padding:14px 16px;display:flex;flex-direction:column;align-items:center;gap:12px;flex-shrink:0;background:var(--surface);border-bottom:1px solid var(--border)}
+    .ctrl-row{display:flex;align-items:center;justify-content:center;gap:18px;width:100%}
+    .ctrl-btn{display:flex;align-items:center;justify-content:center;border-radius:50%;color:var(--t1);background:none;border:none;cursor:pointer;-webkit-tap-highlight-color:transparent;transition:background .15s,color .15s,transform .1s;flex-shrink:0}
+    .ctrl-btn:active{transform:scale(.88)}
+    .ctrl-nav{width:42px;height:42px}
+    .ctrl-nav:hover{background:rgba(255,255,255,.08)}
+    :root.light .ctrl-nav:hover{background:rgba(0,0,0,.06)}
+    .play-btn{width:54px;height:54px;background:var(--primary)!important;color:#fff!important;box-shadow:0 0 0 0 var(--primary-g);transition:background .15s,box-shadow .2s,transform .1s}
+    .play-btn:hover{background:var(--primary-h)!important;box-shadow:0 0 0 8px var(--primary-d),0 4px 18px rgba(139,92,246,.45)}
+    .play-btn:active{transform:scale(.9)}
+    .transport-row{display:flex;align-items:center;gap:10px}
+    .transport-btn{background:none;border:1px solid var(--border);border-radius:6px;color:var(--t2);font-size:13px;padding:8px 13px;cursor:pointer;display:flex;align-items:center;gap:5px;transition:background .15s,color .15s,border-color .15s;-webkit-tap-highlight-color:transparent;min-height:38px}
+    .transport-btn:active{background:var(--raised)}
+    .transport-btn.active{background:var(--primary-d);color:var(--primary);border-color:var(--primary)}
+    .vol-row{display:flex;align-items:center;gap:10px;width:100%;max-width:320px}
+    .vol-label{font-size:11px;color:var(--t3);flex-shrink:0;width:28px;text-align:right}
+    input[type=range].vol-slider{flex:1;height:4px;accent-color:var(--primary);cursor:pointer}
+    /* ── tabs ── */
+    .tabs{display:flex;border-bottom:1px solid var(--border);flex-shrink:0;background:var(--surface)}
+    .tab{flex:1;padding:12px 0;font-size:12px;font-weight:600;letter-spacing:.04em;text-align:center;color:var(--t3);cursor:pointer;border-bottom:2px solid transparent;transition:color .15s,border-color .15s;-webkit-tap-highlight-color:transparent;user-select:none}
+    .tab.active{color:var(--primary);border-bottom-color:var(--primary)}
+    /* ── tab panels ── */
+    .tab-panel{display:none;flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch}
+    .tab-panel.active{display:flex;flex-direction:column}
+    /* ── Queue tab ── */
+    .queue-item{display:flex;align-items:center;gap:10px;padding:10px 16px;border-bottom:1px solid var(--border);cursor:pointer;-webkit-tap-highlight-color:transparent}
+    .queue-item:active{background:var(--raised)}
+    .queue-item.playing{background:var(--primary-d)}
+    .queue-item-num{font-size:12px;color:var(--t3);width:22px;text-align:right;flex-shrink:0}
+    .queue-item-info{flex:1;min-width:0}
+    .queue-item-title{font-size:13px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--t1)}
+    .queue-item.playing .queue-item-title{color:var(--accent)}
+    .queue-item-sub{font-size:12px;color:var(--t3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    .queue-item-del{background:none;border:none;color:var(--t3);cursor:pointer;padding:4px 6px;font-size:18px;line-height:1;flex-shrink:0;-webkit-tap-highlight-color:transparent}
+    .queue-item-del:active{color:var(--red)}
+    .queue-empty{padding:36px 20px;text-align:center;color:var(--t3);font-size:13px}
+    /* ── DJ tab ── */
+    .dj-panel{padding:16px}
+    .dj-toggle-row{display:flex;align-items:center;justify-content:space-between;padding:14px 0;border-bottom:1px solid var(--border)}
+    .dj-toggle-label{font-size:14px;font-weight:600;color:var(--t1)}
+    .dj-toggle-sub{font-size:12px;color:var(--t2);margin-top:2px}
+    .toggle-switch{position:relative;width:44px;height:24px;flex-shrink:0}
+    .toggle-switch input{opacity:0;width:0;height:0}
+    .toggle-slider{position:absolute;inset:0;background:var(--raised);border-radius:12px;cursor:pointer;transition:background .2s}
+    .toggle-slider::before{content:'';position:absolute;width:18px;height:18px;left:3px;top:3px;background:#fff;border-radius:50%;transition:transform .2s}
+    .toggle-switch input:checked + .toggle-slider{background:var(--primary)}
+    .toggle-switch input:checked + .toggle-slider::before{transform:translateX(20px)}
+    .dj-option{padding:12px 0;border-bottom:1px solid var(--border)}
+    .dj-option-label{font-size:12px;color:var(--t2);margin-bottom:8px;font-weight:600;letter-spacing:.05em;text-transform:uppercase}
+    .mode-btns{display:flex;gap:8px}
+    .mode-btn{flex:1;padding:8px 0;background:var(--raised);border:1px solid var(--border);color:var(--t2);border-radius:var(--r);font-size:13px;font-weight:500;cursor:pointer;transition:background .15s,color .15s,border-color .15s;-webkit-tap-highlight-color:transparent}
+    .mode-btn.active{background:var(--primary-d);color:var(--primary);border-color:var(--primary)}
+    .dj-status-bar{margin-top:12px;padding:10px 14px;background:var(--raised);border-radius:var(--r);font-size:12px;color:var(--t2)}
+    .dj-status-bar.on{color:var(--green)}
+    /* ── Audio normalisation tab ── */
+    .norm-panel{padding:16px}
+    .norm-header{font-size:12px;color:var(--t2);font-weight:600;letter-spacing:.05em;text-transform:uppercase;margin-bottom:4px}
+    .norm-hint{font-size:12px;color:var(--t3);margin-bottom:16px;line-height:1.5}
+    .norm-btns{display:flex;flex-direction:column;gap:10px}
+    .norm-btn{display:flex;align-items:flex-start;gap:12px;padding:13px 14px;background:var(--raised);border:1px solid var(--border);border-radius:var(--r);cursor:pointer;text-align:left;-webkit-tap-highlight-color:transparent;transition:background .15s,border-color .15s}
+    .norm-btn.active{background:var(--primary-d);border-color:var(--primary)}
+    .norm-btn-dot{width:10px;height:10px;border-radius:50%;background:var(--border);flex-shrink:0;margin-top:4px;transition:background .15s}
+    .norm-btn.active .norm-btn-dot{background:var(--primary)}
+    .norm-btn-body{flex:1;min-width:0}
+    .norm-btn-title{font-size:14px;font-weight:600;color:var(--t1)}
+    .norm-btn.active .norm-btn-title{color:var(--primary)}
+    .norm-btn-sub{font-size:11px;color:var(--t3);margin-top:2px;line-height:1.4}
+    .norm-btn-code{font-family:monospace;font-size:10px;color:var(--t3);margin-top:4px;opacity:.7}
+    .norm-off-btn{margin-top:16px;width:100%;padding:10px;background:none;border:1px solid var(--border);border-radius:var(--r);color:var(--t2);font-size:13px;cursor:pointer;-webkit-tap-highlight-color:transparent;transition:background .15s}
+    .norm-off-btn:active,.norm-off-btn:hover{background:var(--raised)}
+    /* ── Browse tab ── */
+    .browser-header{display:flex;align-items:center;gap:8px;padding:10px 14px;border-bottom:1px solid var(--border);background:var(--surface);flex-shrink:0}
+    .back-btn{background:none;border:none;color:var(--accent);cursor:pointer;padding:4px 6px;display:flex;align-items:center;border-radius:5px;-webkit-tap-highlight-color:transparent}
+    .back-btn:disabled{opacity:.3;cursor:default}
+    .breadcrumb{font-size:13px;color:var(--t3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:1}
+    .browser-item{display:flex;align-items:center;gap:10px;padding:12px 14px;border-bottom:1px solid var(--border);cursor:pointer;-webkit-tap-highlight-color:transparent}
+    .browser-item:active{background:var(--raised)}
+    .browser-item-icon{color:var(--t3);flex-shrink:0}
+    .browser-item-name{font-size:14px;color:var(--t1);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:1}
+    .browser-item-add{background:var(--raised);border:1px solid var(--border);color:var(--accent);font-size:12px;border-radius:5px;padding:7px 11px;cursor:pointer;flex-shrink:0;-webkit-tap-highlight-color:transparent;min-height:36px}
+    .browser-item-add:active{background:var(--accent);color:#fff}
+    .browser-empty{padding:32px 20px;text-align:center;color:var(--t3);font-size:13px}
+    .spinner-wrap{padding:32px;display:flex;justify-content:center}
+    .spinner{width:32px;height:32px;border:3px solid var(--border);border-top-color:var(--accent);border-radius:50%;animation:spin .7s linear infinite}
+    @keyframes spin{to{transform:rotate(360deg)}}
+    /* ── toast ── */
+    #toast{position:fixed;bottom:24px;left:50%;transform:translateX(-50%) translateY(80px);background:var(--raised);color:var(--t1);border:1px solid var(--border);border-radius:20px;padding:9px 20px;font-size:13px;transition:transform .25s ease;pointer-events:none;white-space:normal;max-width:calc(100vw - 40px);text-align:center;z-index:200}
+    #toast.show{transform:translateX(-50%) translateY(0)}
+    /* ── Search panel ── */
+    .search-input-wrap{display:flex;align-items:center;gap:8px;background:var(--raised);border:1px solid var(--border);border-radius:var(--r);padding:8px 12px;transition:border-color .18s}
+    .search-input-wrap:focus-within{border-color:var(--primary)}
+    .search-input{flex:1;background:none;border:none;outline:none;color:var(--t1);font-size:15px;-webkit-appearance:none}
+    .search-input::placeholder{color:var(--t3)}
+    .search-clear{background:none;border:none;color:var(--t3);cursor:pointer;padding:2px;line-height:1;font-size:16px;flex-shrink:0;display:none}
+    .search-input:not(:placeholder-shown) ~ .search-clear{display:block}
+    .search-results-list{overflow-y:auto;max-height:200px;margin-top:6px}
+    .search-item{display:flex;align-items:center;gap:10px;padding:9px 0;border-bottom:1px solid var(--border)}
+    .search-item:last-child{border-bottom:none}
+    .search-item-info{flex:1;min-width:0}
+    .search-item-title{font-size:13px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--t1)}
+    .search-item-artist{font-size:11px;color:var(--t3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:1px}
+    .search-item-add{background:var(--raised);border:1px solid var(--border);color:var(--accent);font-size:18px;border-radius:5px;padding:4px 10px;cursor:pointer;flex-shrink:0;min-height:36px;line-height:1;-webkit-tap-highlight-color:transparent;transition:background .15s,color .15s}
+    .search-item-add:active{background:var(--accent);color:#fff}
+    .search-msg{font-size:12px;color:var(--t3);padding:10px 0;text-align:center}
+    /* ── Output picker ── */
+    .output-row{display:flex;gap:0;width:100%;justify-content:center;flex-wrap:nowrap}
+    .output-btn{flex:1;max-width:80px;padding:6px 4px;background:var(--raised);border:1px solid var(--border);color:var(--t2);font-size:11px;font-weight:600;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:4px;transition:background .15s,color .15s,border-color .15s,z-index 0s;-webkit-tap-highlight-color:transparent;min-height:34px;position:relative;z-index:0}
+    .output-btn:first-child{border-radius:var(--r) 0 0 var(--r)}
+    .output-btn:last-child{border-radius:0 var(--r) var(--r) 0}
+    .output-btn:not(:first-child){margin-left:-1px}
+    .output-btn.active{background:var(--primary-d);color:var(--primary);border-color:var(--primary);z-index:1}
+    .sonos-room-pill{padding:5px 12px;background:var(--raised);border:1px solid var(--border);color:var(--t2);border-radius:20px;font-size:12px;font-weight:600;cursor:pointer;white-space:nowrap;-webkit-tap-highlight-color:transparent;transition:background .15s,color .15s,border-color .15s;min-height:32px}
+    .sonos-room-pill.active{background:var(--primary-d);color:var(--primary);border-color:var(--primary)}
+    .sonos-scan-btn{background:none;border:none;color:var(--accent);font-size:13px;cursor:pointer;padding:2px 6px;-webkit-tap-highlight-color:transparent}
+    /* ── small-phone adjustments (iPhone SE, narrow screens) ── */
+    @media (max-width: 390px) {
+      .login-card{padding:24px 18px}
+      .np-bar{padding:10px 12px;gap:10px}
+      .np-art{width:60px;height:60px}
+      .controls{padding:10px 12px;gap:10px}
+      .ctrl-nav{width:38px;height:38px}
+      .play-btn{width:50px;height:50px}
+      .transport-btn{font-size:12px;padding:7px 11px}
+      .browser-item{padding:11px 12px}
+      .queue-item{padding:9px 12px}
+      .topbar{padding:8px 12px}
+    }
+  </style>
+</head>
+<body>
+
+  <!-- ── Top bar ── -->
+  <div class="topbar">
+    <div class="topbar-brand">
+      <img src="/assets/img/velvet-logo.svg" alt="Velvet" width="20" height="20">
+      Velvet <span class="topbar-badge" id="output-badge">Server</span>
+    </div>
+    <div class="topbar-right">
+      <div class="topbar-status" id="mpv-status">
+        <div class="dot dot-off" id="status-dot"></div>
+        <span id="status-text">—</span>
+      </div>
+      <button id="theme-btn" class="theme-btn">
+        <svg id="theme-icon" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+        <span id="theme-label">Velvet</span>
+      </button>
+    </div>
+  </div>
+
+  <!-- ── Login screen ── -->
+  <div id="login-screen">
+    <div class="login-card">
+      <div class="login-brand">
+        <img src="/assets/img/velvet-logo.svg" alt="Velvet" width="36" height="36" style="display:block;margin:0 auto 12px">
+        <h2 data-i18n="server-remote.login.heading">Server Audio</h2>
+        <p data-i18n="server-remote.login.sub">Sign in to control server-side playback</p>
+      </div>
+      <label class="field-label" for="u-input" data-i18n="server-remote.login.username">Username</label>
+      <input class="field-input" id="u-input" type="text" autocomplete="username" autocorrect="off" autocapitalize="off" spellcheck="false" placeholder="username" data-i18n="server-remote.login.usernamePlaceholder" data-i18n-attr="placeholder">
+      <label class="field-label" for="p-input" data-i18n="server-remote.login.password">Password</label>
+      <input class="field-input" id="p-input" type="password" autocomplete="current-password" placeholder="password" data-i18n="server-remote.login.passwordPlaceholder" data-i18n-attr="placeholder">
+      <button class="btn-primary" id="login-btn" data-i18n="server-remote.login.signIn">Sign in</button>
+      <div class="error-msg" id="login-err"></div>
+    </div>
+  </div>
+
+  <!-- ── Main screen ── -->
+  <div id="main-screen" style="display:none">
+
+    <!-- Now Playing -->
+    <div class="np-bar" id="np-bar">
+      <img class="np-art" id="np-art" src="" alt="">
       <div class="np-info">
-        <div class="np-title" id="np-title">Nothing playing</div>
+        <div class="np-title" id="np-title" data-i18n="server-remote.np.nothing">Nothing playing</div>
         <div class="np-artist" id="np-artist"></div>
         <div class="np-tech" id="np-tech"></div>
-        <div class="np-prog-track" id="prog-track" onclick="seekClick(event)">
+        <div class="np-prog-track" id="prog-track">
           <div class="np-prog-fill" id="prog-fill" style="width:0%"></div>
         </div>
         <div class="np-time"><span id="np-cur">0:00</span><span id="np-dur">0:00</span></div>
@@ -21,46 +239,46 @@
     <!-- Controls -->
     <div class="controls">
       <div class="ctrl-row">
-        <button class="ctrl-btn ctrl-nav" title="Previous" onclick="doPrev()">
+        <button id="prev-btn" class="ctrl-btn ctrl-nav" title="Previous" data-i18n="server-remote.ctrl.previous" data-i18n-attr="title">
           <svg width="26" height="26" viewBox="0 0 24 24" fill="currentColor"><path d="M6 6h2v12H6zm3.5 6 8.5 6V6z"/></svg>
         </button>
-        <button class="ctrl-btn play-btn" id="play-btn" title="Play / Pause" onclick="doPausePlay()">
+        <button class="ctrl-btn play-btn" id="play-btn" title="Play / Pause" data-i18n="server-remote.ctrl.playPause" data-i18n-attr="title">
           <svg id="play-icon" width="26" height="26" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
           <svg id="pause-icon" width="26" height="26" viewBox="0 0 24 24" fill="currentColor" style="display:none"><rect x="5" y="4" width="4" height="16" rx="1.5"/><rect x="15" y="4" width="4" height="16" rx="1.5"/></svg>
         </button>
-        <button class="ctrl-btn ctrl-nav" title="Next" onclick="doNext()">
+        <button id="next-btn" class="ctrl-btn ctrl-nav" title="Next" data-i18n="server-remote.ctrl.next" data-i18n-attr="title">
           <svg width="26" height="26" viewBox="0 0 24 24" fill="currentColor"><path d="M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z"/></svg>
         </button>
       </div>
       <div class="transport-row">
-        <button class="transport-btn" id="loop-btn" onclick="doLoop()" title="Loop mode">
+        <button class="transport-btn" id="loop-btn" title="Loop mode" data-i18n="server-remote.ctrl.loopMode" data-i18n-attr="title">
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></svg>
-          <span id="loop-label">Off</span>
+          <span id="loop-label" data-i18n="server-remote.loop.off">Off</span>
         </button>
-        <button class="transport-btn" id="dj-transport-btn" onclick="setTab('dj')" title="Auto-DJ">
+        <button class="transport-btn" id="dj-transport-btn" title="Auto-DJ" data-i18n="server-remote.ctrl.autoDj" data-i18n-attr="title">
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="m10 8 6 4-6 4V8z"/></svg>
-          <span id="dj-transport-label">DJ</span>
+          <span id="dj-transport-label" data-i18n="server-remote.dj.label">DJ</span>
         </button>
-        <button class="transport-btn" onclick="clearAndRefill()" title="Clear queue">
+        <button id="clear-btn" class="transport-btn" title="Clear queue" data-i18n="server-remote.ctrl.clearQueue" data-i18n-attr="title">
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/></svg>
-          Clear
+          <span data-i18n="server-remote.ctrl.clear">Clear</span>
         </button>
       </div>
       <div class="vol-row">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="color:var(--t3);flex-shrink:0"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/></svg>
-        <input type="range" class="vol-slider" id="vol-slider" min="0" max="130" value="100" oninput="setVol(this.value)">
+        <input type="range" class="vol-slider" id="vol-slider" min="0" max="130" value="100">
         <span class="vol-label" id="vol-val">100</span>
       </div>
       <div class="output-row">
-        <button class="output-btn" id="out-web" onclick="setOutput('web')">
+        <button class="output-btn" id="out-web">
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
-          Browser
+          <span data-i18n="server-remote.output.browser">Browser</span>
         </button>
-        <button class="output-btn active" id="out-mpv" onclick="setOutput('mpv')">
+        <button class="output-btn active" id="out-mpv">
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
-          Server
+          <span data-i18n="server-remote.output.server">Server</span>
         </button>
-        <button class="output-btn" id="out-sonos" onclick="setOutput('sonos')">
+        <button class="output-btn" id="out-sonos">
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/></svg>
           Sonos
         </button>
@@ -72,11 +290,11 @@
 
     <!-- Tabs -->
     <div class="tabs">
-      <div class="tab active" id="tab-queue" onclick="setTab('queue')">Queue</div>
-      <div class="tab" id="tab-search"  onclick="setTab('search')">Search</div>
-      <div class="tab" id="tab-dj"      onclick="setTab('dj')">Auto-DJ</div>
-      <div class="tab" id="tab-audio"   onclick="setTab('audio')">Audio</div>
-      <div class="tab" id="tab-browse"  onclick="setTab('browse')">Browse</div>
+      <div class="tab active" id="tab-queue" data-i18n="server-remote.tab.queue">Queue</div>
+      <div class="tab" id="tab-search" data-i18n="server-remote.tab.search">Search</div>
+      <div class="tab" id="tab-dj" data-i18n="server-remote.tab.autoDj">Auto-DJ</div>
+      <div class="tab" id="tab-audio" data-i18n="server-remote.tab.audio">Audio</div>
+      <div class="tab" id="tab-browse" data-i18n="server-remote.tab.browse">Browse</div>
     </div>
 
     <!-- Queue panel -->
@@ -89,8 +307,8 @@
       <div class="dj-panel">
         <div class="search-input-wrap" style="margin-bottom:8px">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="color:var(--t3);flex-shrink:0"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
-          <input class="search-input" id="search-input" type="search" placeholder="Search songs…" oninput="onSearchInput()" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">
-          <button class="search-clear" id="search-clear" onclick="clearSearch()" tabindex="-1">✕</button>
+          <input class="search-input" id="search-input" type="search" placeholder="Search songs…" data-i18n="server-remote.search.placeholder" data-i18n-attr="placeholder" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">
+          <button class="search-clear" id="search-clear" tabindex="-1">✕</button>
         </div>
         <div id="search-results-list" class="search-results-list" style="max-height:none"></div>
       </div>
@@ -101,41 +319,39 @@
       <div class="dj-panel">
         <div class="dj-toggle-row">
           <div>
-            <div class="dj-toggle-label">Auto-DJ</div>
-            <div class="dj-toggle-sub">Automatically queue the next song</div>
+            <div class="dj-toggle-label" data-i18n="server-remote.djPanel.title">Auto-DJ</div>
+            <div class="dj-toggle-sub" data-i18n="server-remote.djPanel.sub">Automatically queue the next song</div>
           </div>
           <label class="toggle-switch">
-            <input type="checkbox" id="dj-toggle" onchange="onDjToggle(this.checked)">
+            <input type="checkbox" id="dj-toggle">
             <span class="toggle-slider"></span>
           </label>
         </div>
         <div class="dj-option">
-          <div class="dj-option-label">Mode</div>
+          <div class="dj-option-label" data-i18n="server-remote.djPanel.mode">Mode</div>
           <div class="mode-btns">
-            <button class="mode-btn active" id="mode-random" onclick="setDjMode('random')">Random</button>
-            <button class="mode-btn" id="mode-similar" onclick="setDjMode('similar')">Similar Artists <small style="opacity:.7">(Last.fm)</small></button>
+            <button class="mode-btn active" id="mode-random" data-i18n="server-remote.djPanel.random">Random</button>
+            <button class="mode-btn" id="mode-similar"><span data-i18n="server-remote.djPanel.similar">Similar Artists</span> <small style="opacity:.7">(Last.fm)</small></button>
           </div>
         </div>
-        <div class="dj-status-bar" id="dj-status-bar">Auto-DJ is off</div>
+        <div class="dj-status-bar" id="dj-status-bar" data-i18n="server-remote.djStatus.off">Auto-DJ is off</div>
       </div>
     </div>
 
     <!-- Audio / Loudness Normalisation status panel -->
     <div class="tab-panel" id="panel-audio">
       <div class="norm-panel">
-        <div class="norm-header">Loudness Normalisation</div>
-        <div class="norm-hint">These settings are controlled from the browser's Audio Settings panel. MPV uses the same settings automatically when casting.</div>
+        <div class="norm-header" data-i18n="server-remote.audio.normalisation">Loudness Normalisation</div>
+        <div class="norm-hint" data-i18n="server-remote.audio.hint">These settings are controlled from the browser's Audio Settings panel. MPV uses the same settings automatically when casting.</div>
         <div id="rg-status-rows" style="margin-top:12px"></div>
-        <div class="norm-hint" style="margin-top:16px;padding:10px 12px;background:var(--raised);border-radius:var(--r);border:1px solid var(--border)">
-          To change normalisation settings, open <strong>Audio Settings</strong> in the browser player (gear icon → Audio).
-        </div>
+        <div class="norm-hint" style="margin-top:16px;padding:10px 12px;background:var(--raised);border-radius:var(--r);border:1px solid var(--border)" data-i18n="server-remote.audio.howToChange">To change normalisation settings, open Audio Settings in the browser player (gear icon → Audio).</div>
       </div>
     </div>
 
     <!-- Browse panel -->
     <div class="tab-panel" id="panel-browse">
       <div class="browser-header">
-        <button class="back-btn" id="bk-btn" onclick="browseBack()" disabled>
+        <button class="back-btn" id="bk-btn" disabled>
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="15 18 9 12 15 6"/></svg>
         </button>
         <span class="breadcrumb" id="breadcrumb">/</span>
@@ -148,948 +364,7 @@
   <div id="toast"></div>
   <audio id="sr-audio" preload="none"></audio>
 
-  <script>
-  'use strict';
-  // ── State ──────────────────────────────────────────────────────────────────
-  var _token      = '';
-  var _vpaths     = [];
-  var _noAuth     = false;   // true = server has no users configured
-  var _pollTimer  = null;
-  var _volTimer   = null;
-  var _toastTimer = null;
-  var _lastStatus = null;
-  var _pathStack  = [];
-  var _tab        = 'queue';
-
-  var _djOn       = false;
-  var _djMode     = 'random';  // 'random' | 'similar'
-  var _djIgnore   = [];        // random ignore list
-  var _djFetching = false;
-
-  var _searchTimer   = null;
-  var _searchResults = [];
-  var _metaCache     = {};   // filepath -> tech string from DB
-
-  // ── Output routing state ─────────────────────────────────────────────────
-  var _output        = localStorage.getItem('sr_output') || 'mpv'; // 'mpv'|'sonos'|'web'
-  var _sonosRoom     = JSON.parse(localStorage.getItem('sr_sonos_room') || 'null');
-  var _sonosRooms    = [];
-  var _sonosSt       = { playing:false, paused:false, stopped:true, position:0, duration:0 };
-  var _sonosPrevPlay    = false; // for end-of-track detection
-  var _sonosTimeoutCount = 0;    // consecutive SOAP-timeout responses (network down to Sonos)
-  var _webAudio      = null;
-  var _webCurPath    = '';
-  var _SONOS_MAX_VOL = 50;
-  var _allowCast     = false; // true when user has allow-mpv-cast (gates Server + Sonos buttons)
-
-  // ── Helpers ────────────────────────────────────────────────────────────────
-  function esc(s){ return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
-  function fmt(s){ s=Math.floor(s||0); return Math.floor(s/60)+':'+(s%60<10?'0':'')+(s%60); }
-  function buildStreamUrl(relPath){ return '/media/'+relPath.split('/').map(encodeURIComponent).join('/')+'?token='+encodeURIComponent(_token); }
-
-  function toast(msg, ms){
-    var el = document.getElementById('toast');
-    el.textContent = msg; el.classList.add('show');
-    clearTimeout(_toastTimer);
-    _toastTimer = setTimeout(function(){ el.classList.remove('show'); }, ms||2000);
-  }
-
-  function api(method, path, data){
-    var opts = { method: method, headers: { 'Content-Type':'application/json', 'x-access-token': _token } };
-    if (data) opts.body = JSON.stringify(data);
-    return fetch('/' + path, opts).then(function(r){
-      if (!r.ok) return r.json().then(function(j){ throw new Error(j.error||r.status); });
-      return r.json();
-    });
-  }
-
-  // ── Theme ──────────────────────────────────────────────────────────────────
-  function applyTheme(t){
-    document.documentElement.classList.remove('dark','light');
-    if (t==='dark')  document.documentElement.classList.add('dark');
-    if (t==='light') document.documentElement.classList.add('light');
-    var labels = { velvet:'Velvet', dark:'Dark', light:'Light' };
-    document.getElementById('theme-label').textContent = labels[t]||'Velvet';
-    localStorage.setItem('ms2_theme', t);
-  }
-  function cycleTheme(){
-    var t = localStorage.getItem('ms2_theme')||'velvet';
-    applyTheme(t==='velvet'?'dark':t==='dark'?'light':'velvet');
-  }
-  applyTheme(localStorage.getItem('ms2_theme')||'velvet');
-
-  // ── Auth ───────────────────────────────────────────────────────────────────
-  function doLogin(){
-    var btn = document.getElementById('login-btn');
-    var err = document.getElementById('login-err');
-    var u   = document.getElementById('u-input').value.trim();
-    var p   = document.getElementById('p-input').value;
-    btn.disabled = true; btn.textContent = 'Signing in…'; err.textContent = '';
-    fetch('/api/v1/auth/login', {
-      method: 'POST', headers: { 'Content-Type':'application/json' },
-      body: JSON.stringify({ username: u, password: p })
-    }).then(function(r){ return r.json().then(function(j){ if (!r.ok) throw new Error(j.error||'Login failed'); return j; }); })
-    .then(function(data){
-      _token  = data.token || '';
-      _vpaths = data.vpaths || [];
-      startApp();
-    }).catch(function(e){
-      err.textContent = e.message || 'Login failed';
-      btn.disabled = false; btn.textContent = 'Sign in';
-    });
-  }
-
-  function tryNoAuthLogin(){
-    // If the server has no users, auth middleware auto-grants access
-    // Probe with a protected endpoint using no token
-    fetch('/api/v1/server-playback/status', { headers: { 'x-access-token': '' } })
-      .then(function(r){
-        if (r.ok) {
-          _noAuth = true; _token = '';
-          return r.json().then(function(s){
-            // Get vpaths from playlist API
-            return fetch('/api/v1/ping', { headers: { 'x-access-token':'' } })
-              .then(function(r2){ return r2.ok ? r2.json() : {}; })
-              .then(function(d){ _vpaths = d.vpaths || []; startApp(); })
-              .catch(function(){ _vpaths = []; startApp(); });
-          });
-        }
-        // 401 = need login
-        showLogin();
-      }).catch(function(){ showLogin(); });
-  }
-
-  function showLogin(){
-    document.getElementById('login-screen').style.display = 'flex';
-  }
-
-  ['u-input','p-input'].forEach(function(id){
-    document.getElementById(id).addEventListener('keydown', function(e){ if(e.key==='Enter') doLogin(); });
-  });
-
-  // ── App start ──────────────────────────────────────────────────────────────
-  function startApp(){
-    // Check if this user has permission to use server-remote
-    fetch('/api/v1/ping', { headers: { 'Content-Type':'application/json', 'x-access-token': _token } })
-      .then(function(r){ return r.ok ? r.json() : {}; })
-      .then(function(d){
-        if (d.allowServerRemote === false) {
-          document.getElementById('login-screen').style.display = 'none';
-          document.getElementById('main-screen').style.display  = 'none';
-          document.body.innerHTML = '<div style="font-family:system-ui,sans-serif;background:#1a1a2e;color:#e4e4e4;min-height:100vh;display:flex;align-items:center;justify-content:center;margin:0">'
-            + '<div style="max-width:420px;padding:40px;text-align:center">'
-            + '<h1 style="color:#a78bfa;margin-bottom:12px">Access Denied</h1>'
-            + '<p style="color:#8888b0;line-height:1.6;margin-bottom:24px">Your account does not have permission to use the Server Remote, or MPV (Casting) is not enabled.<br>Contact your administrator.</p>'
-            + '<a href="/" style="color:#a78bfa;text-decoration:none">← Back to Player</a></div></div>';
-          return;
-        }
-        _allowCast = d.allowMpvCast === true;
-        // If stored output mode requires cast permission but user lacks it, fall back to Web
-        if (!_allowCast && (_output === 'mpv' || _output === 'sonos')) {
-          _output = 'web';
-      localStorage.setItem('sr_output', 'web');
-        }
-        document.getElementById('login-screen').style.display = 'none';
-        document.getElementById('main-screen').style.display  = 'flex';
-        renderQueue([]);
-        loadBrowse();
-        initOutput();
-        startPolling();
-      }).catch(function(){
-        // Fallback: if ping fails just proceed (no-auth mode or network error)
-        document.getElementById('login-screen').style.display = 'none';
-        document.getElementById('main-screen').style.display  = 'flex';
-        renderQueue([]);
-        loadBrowse();
-        initOutput();
-        startPolling();
-      });
-  }
-
-  // ── Output ─────────────────────────────────────────────────────────────────
-  function initOutput(){
-    applyOutputUI(_output);
-    api('GET','api/v1/sonos/devices').then(function(d){
-      _sonosRooms = d.rooms||[];
-      if (!_sonosRoom && d.defaultRoom) _sonosRoom = d.defaultRoom;
-      // If Sonos has been disabled in admin, fall back to Web output silently
-      if (d.enabled === false && _output === 'sonos') {
-        _output = 'web';
-        localStorage.setItem('sr_output', 'web');
-        applyOutputUI('web');
-        webInitAudio();
-      }
-      renderSonosRooms();
-    }).catch(function(){});
-    if (_output==='web') webInitAudio();
-  }
-
-  function setOutput(mode){
-    if (mode===_output) return;
-    if (!_allowCast && (mode==='mpv' || mode==='sonos')){ toast('No cast permission'); return; }
-    if (_output==='sonos' && _sonosRoom)
-      api('POST','api/v1/sonos/set-pause',{ip:_sonosRoom.ip,paused:true}).catch(function(){});
-    else if (_output==='web' && _webAudio)
-      _webAudio.pause();
-    _output = mode;
-    localStorage.setItem('sr_output', mode);
-    applyOutputUI(mode);
-    if (mode==='sonos'){
-      if (!_sonosRoom && _sonosRooms.length){ _sonosRoom=_sonosRooms[0]; localStorage.setItem('sr_sonos_room',JSON.stringify(_sonosRoom)); renderSonosRooms(); }
-      api('POST','api/v1/server-playback/set-pause',{paused:true}).catch(function(){});
-      toast('Output: Sonos'+(_sonosRoom?' — '+_sonosRoom.name:''));
-    } else if (mode==='web'){
-      webInitAudio();
-      api('POST','api/v1/server-playback/set-pause',{paused:true}).catch(function(){});
-      toast('Output: Browser (this device)');
-    } else {
-      toast('Output: Server Speaker');
-    }
-  }
-
-  function applyOutputUI(mode){
-    ['mpv','sonos','web'].forEach(function(m){
-      var btn=document.getElementById('out-'+m);
-      if (btn) btn.classList.toggle('active',m===mode);
-    });
-    var badge=document.getElementById('output-badge');
-    if (badge) badge.textContent=mode==='mpv'?'Server':mode==='sonos'?'Sonos':'Browser';
-    var sr=document.getElementById('sonos-room-row');
-    if (sr) sr.style.display=mode==='sonos'?'':'none';
-    // Hide Server + Sonos buttons for users without cast permission
-    var mpvBtn=document.getElementById('out-mpv');
-    var sonosBtn=document.getElementById('out-sonos');
-    if (mpvBtn)   mpvBtn.style.display   = _allowCast ? '' : 'none';
-    if (sonosBtn) sonosBtn.style.display = _allowCast ? '' : 'none';
-  }
-
-  function loadSonosRooms(){
-    api('POST','api/v1/sonos/scan').then(function(d){
-      _sonosRooms=d.rooms||[];
-      if (!_sonosRoom && _sonosRooms.length){ _sonosRoom=_sonosRooms[0]; localStorage.setItem('sr_sonos_room',JSON.stringify(_sonosRoom)); }
-      renderSonosRooms();
-      toast('Found '+_sonosRooms.length+' room'+(_sonosRooms.length!==1?'s':''));
-    }).catch(function(){ toast('Scan failed'); });
-  }
-
-  function selectSonosRoom(room){
-    _sonosRoom=room;
-    localStorage.setItem('sr_sonos_room',JSON.stringify(room));
-    renderSonosRooms();
-    toast('Room: '+room.name);
-  }
-
-  function renderSonosRooms(){
-    var el=document.getElementById('sonos-rooms-pills'); if (!el) return;
-    el.textContent = '';
-    if (!_sonosRooms.length){
-      var wrap = document.createElement('span');
-      wrap.style.fontSize = '12px';
-      wrap.style.color = 'var(--t3)';
-      wrap.appendChild(document.createTextNode('No rooms. '));
-      var scanBtn = document.createElement('button');
-      scanBtn.className = 'sonos-scan-btn';
-      scanBtn.textContent = 'Scan';
-      scanBtn.onclick = function(){ loadSonosRooms(); };
-      wrap.appendChild(scanBtn);
-      el.appendChild(wrap);
-      return;
-    }
-    _sonosRooms.forEach(function(r){
-      var act=_sonosRoom&&_sonosRoom.ip===r.ip;
-      var btn = document.createElement('button');
-      btn.className = 'sonos-room-pill' + (act ? ' active' : '');
-      btn.title = r.model || r.ip;
-      btn.textContent = r.name;
-      btn.onclick = function(){ selectSonosRoom(r); };
-      el.appendChild(btn);
-    });
-    var rescan = document.createElement('button');
-    rescan.className = 'sonos-scan-btn';
-    rescan.title = 'Re-scan';
-    rescan.textContent = '↻';
-    rescan.onclick = function(){ loadSonosRooms(); };
-    el.appendChild(rescan);
-  }
-
-  // ── Polling ────────────────────────────────────────────────────────────────
-  function startPolling(){
-    poll();
-    if (_pollTimer) clearInterval(_pollTimer);
-    _pollTimer = setInterval(poll, 2000);
-  }
-
-  function poll(){
-    api('GET','api/v1/server-playback/status').then(function(s){
-      _lastStatus = s;
-      renderQueue(s.queue||[], s.currentIndex);
-      maybeAutoDJ(s);
-      if (_tab === 'audio') renderAudioStatus(s);
-      if (_output==='mpv')   updateUIMpv(s);
-      else if (_output==='sonos') pollSonos(s);
-      else if (_output==='web')  updateUIWeb();
-    }).catch(function(){});
-  }
-
-  function pollSonos(srv){
-    if (!_sonosRoom){ setDot(false,false,'No room'); return; }
-    api('GET','api/v1/sonos/transport-status?ip='+encodeURIComponent(_sonosRoom.ip)).then(function(st){
-      var wasPlaying = _sonosPrevPlay;
-      // The /transport-status endpoint returns {stopped:true, position:0, duration:0}
-      // when the SOAP call to Sonos times out (network outage). Distinguish this
-      // from a real STOPPED state (track ended) which has duration > 0.
-      var isNetTimeout = (st.stopped && st.duration === 0 && st.position === 0 && !st.playing && !st.paused);
-      var prevTimeoutCount = _sonosTimeoutCount;
-      _sonosTimeoutCount = isNetTimeout ? prevTimeoutCount + 1 : 0;
-      _sonosSt=st; _sonosPrevPlay=st.playing;
-      setDot(true,st.playing,st.playing?'Playing':st.paused?'Paused':'Stopped');
-      document.getElementById('play-icon').style.display=st.playing?'none':'';
-      document.getElementById('pause-icon').style.display=st.playing?'':'none';
-      setNpInfo(srv&&srv.queue&&srv.currentIndex>=0?srv.queue[srv.currentIndex]:null);
-      setProgress(st.position,st.duration);
-      // Auto-advance when track finishes (PLAYING → STOPPED)
-      // Guard: skip if this is a network-timeout response (duration=0) to avoid
-      // spuriously advancing the queue during a switch firmware update / outage.
-      if (wasPlaying && st.stopped && !isNetTimeout && srv && srv.queue && srv.queue.length > 1){
-        var ni=(srv.currentIndex||0)+1;
-        if (ni<srv.queue.length) sonosAdvanceTo(ni,srv.queue);
-      }
-      // Auto-recovery: after network comes back (≥3 consecutive timeouts followed
-      // by a real response), Sonos has dropped the stream → re-cast current track.
-      if (prevTimeoutCount >= 3 && !isNetTimeout && st.stopped && srv && srv.queue && srv.currentIndex >= 0){
-        var cur = srv.queue[srv.currentIndex];
-        if (cur) setTimeout(function(){ sonosCastCurrent(cur); }, 500);
-      }
-    }).catch(function(){ setDot(false,false,'Sonos?'); });
-  }
-
-  function sonosCastCurrent(cur){
-    if (!_sonosRoom||!cur||!cur.relPath) return;
-    var fp = cur.relPath.replace(/^\/+/,''); // defensive strip in case server returns leading slash
-    api('POST','api/v1/sonos/cast',{ip:_sonosRoom.ip,filepath:fp,title:cur.title||'',artist:cur.artist||'',album:cur.album||'',aaFile:cur.albumArt||null}).catch(function(e){ toast('Cast error: '+(e.message||'')); });
-  }
-
-  function sonosAdvanceTo(idx,queue){
-    api('POST','api/v1/server-playback/queue/play-index',{index:idx}).then(function(){
-      api('POST','api/v1/server-playback/set-pause',{paused:true}).catch(function(){});
-      var cur=queue[idx]; if (cur) sonosCastCurrent(cur);
-    }).catch(function(){});
-  }
-
-  function updateUIWeb(){
-    if (!_webAudio) return;
-    var srv=_lastStatus;
-    var cur=srv&&srv.queue&&srv.currentIndex>=0?srv.queue[srv.currentIndex]:null;
-    var playing=!_webAudio.paused&&!_webAudio.ended&&!!_webAudio.src&&_webAudio.src!==window.location.href;
-    setDot(true,playing,playing?'Playing':(_webAudio.src&&_webAudio.src!==window.location.href)?'Paused':'Stopped');
-    document.getElementById('play-icon').style.display=playing?'none':'';
-    document.getElementById('pause-icon').style.display=playing?'':'none';
-    setNpInfo(cur);
-    setProgress(_webAudio.currentTime||0,_webAudio.duration||0);
-  }
-
-  function setDot(running,playing,text){
-    document.getElementById('status-dot').className='dot '+(running?(playing?'dot-on':'dot-off'):'dot-off');
-    document.getElementById('status-text').textContent=text||'—';
-  }
-
-  function setNpInfo(cur){
-    document.getElementById('np-title').textContent=cur?(cur.title||(cur.relPath||'').split('/').pop()):'Nothing playing';
-    document.getElementById('np-artist').textContent=cur?(cur.artist||''):'';
-    if (cur&&cur.relPath){
-      var techEl=document.getElementById('np-tech');
-      if (_metaCache[cur.relPath]){ techEl.textContent=_metaCache[cur.relPath]; }
-      else {
-        techEl.textContent='';
-        api('POST','api/v1/db/metadata',{filepath:cur.relPath}).then(function(meta){
-          var m=meta.metadata||{},parts=[],f=(meta.filepath||cur.relPath).split('.').pop().toUpperCase();
-          if(f)parts.push(f);
-          if(m.bitrate)parts.push(Math.round(m.bitrate>=20000?m.bitrate/1000:m.bitrate)+' kbps');
-          if(m['sample-rate'])parts.push((m['sample-rate']/1000).toFixed(1).replace('.0','')+'kHz');
-          if(m.channels)parts.push(m.channels===2?'Stereo':m.channels===1?'Mono':m.channels+'ch');
-          var str=parts.join(' · '); _metaCache[cur.relPath]=str;
-          var nc=_lastStatus&&_lastStatus.queue&&_lastStatus.currentIndex>=0?_lastStatus.queue[_lastStatus.currentIndex]:null;
-          if(nc&&nc.relPath===cur.relPath) techEl.textContent=str;
-        }).catch(function(){});
-      }
-    } else { document.getElementById('np-tech').textContent=''; }
-    var art=document.getElementById('np-art');
-    if (cur&&cur.albumArt){art.src='/album-art/'+cur.albumArt;art.style.opacity='1';}
-    else{art.src='';art.style.opacity='0';}
-  }
-
-  function setProgress(pos,dur){
-    var pct=dur>0?(pos/dur*100).toFixed(2):0;
-    document.getElementById('prog-fill').style.width=pct+'%';
-    document.getElementById('np-cur').textContent=fmt(pos);
-    document.getElementById('np-dur').textContent=fmt(dur);
-  }
-
-  function updateUIMpv(s){
-    setDot(s.running, s.playing, s.playing?'Playing':s.running?'Paused':'Stopped');
-    document.getElementById('play-icon').style.display  = s.playing ? 'none' : '';
-    document.getElementById('pause-icon').style.display = s.playing ? '' : 'none';
-    var lb=document.getElementById('loop-btn'), ll=document.getElementById('loop-label');
-    if (s.loopMode==='one'){lb.classList.add('active');ll.textContent='One';}
-    else if (s.loopMode==='all'){lb.classList.add('active');ll.textContent='All';}
-    else{lb.classList.remove('active');ll.textContent='Off';}
-    setNpInfo(s.queue&&s.currentIndex>=0?s.queue[s.currentIndex]:null);
-    setProgress(s.currentTime, s.duration);
-  }
-
-  // ── Seek click ─────────────────────────────────────────────────────────────
-  function seekClick(e){
-    var rect = document.getElementById('prog-track').getBoundingClientRect();
-    var pct  = (e.clientX - rect.left) / rect.width;
-    if (_output==='mpv'){
-      if (!_lastStatus||!_lastStatus.duration) return;
-      api('POST','api/v1/server-playback/seek',{ position: Math.max(0,pct*_lastStatus.duration) });
-    } else if (_output==='sonos'){
-      if (!_sonosRoom||!_sonosSt.duration) return;
-      api('POST','api/v1/sonos/seek',{ip:_sonosRoom.ip,position:Math.max(0,pct*_sonosSt.duration)}).catch(function(){});
-    } else if (_output==='web'){
-      if (_webAudio&&_webAudio.duration) _webAudio.currentTime=pct*_webAudio.duration;
-    }
-  }
-
-  // ── Volume ─────────────────────────────────────────────────────────────────
-  function setVol(v){
-    document.getElementById('vol-val').textContent = v;
-    clearTimeout(_volTimer);
-    _volTimer = setTimeout(function(){
-      var n=Number(v);
-      if (_output==='mpv'){
-        api('POST','api/v1/server-playback/volume',{volume:n});
-      } else if (_output==='sonos'){
-        if (!_sonosRoom) return;
-        api('POST','api/v1/sonos/set-volume',{ip:_sonosRoom.ip,volume:Math.round(Math.min(100,n)*_SONOS_MAX_VOL/100),muted:false}).catch(function(){});
-      } else if (_output==='web'){
-        if (_webAudio) _webAudio.volume=Math.max(0,Math.min(1,n/100));
-      }
-    }, 200);
-  }
-
-  // ── Playback controls (output-routed) ────────────────────────────────────
-  function doPausePlay(){
-    if (_output==='mpv'){
-      api('POST','api/v1/server-playback/pause');
-    } else if (_output==='sonos'){
-      if (!_sonosRoom){ toast('No Sonos room selected'); return; }
-      if (_sonosSt.playing){
-        api('POST','api/v1/sonos/set-pause',{ip:_sonosRoom.ip,paused:true}).catch(function(){});
-      } else {
-        var cur=_lastStatus&&_lastStatus.queue&&_lastStatus.currentIndex>=0?_lastStatus.queue[_lastStatus.currentIndex]:null;
-        if (cur&&!_sonosSt.paused){ sonosCastCurrent(cur); }
-        else { api('POST','api/v1/sonos/set-pause',{ip:_sonosRoom.ip,paused:false}).catch(function(){}); }
-      }
-    } else if (_output==='web'){
-      if (!_webAudio){ webInitAudio(); return; }
-      if (_webAudio.paused||!_webAudio.src||_webAudio.src===window.location.href){
-        var cur=_lastStatus&&_lastStatus.queue&&_lastStatus.currentIndex>=0?_lastStatus.queue[_lastStatus.currentIndex]:null;
-        if (cur){ var url=buildStreamUrl(cur.relPath||''); if (_webAudio.src!==url){ webLoadSong(cur); } else { _webAudio.play().catch(function(){}); } }
-      } else { _webAudio.pause(); }
-    }
-  }
-
-  function doNext(){
-    if (_output==='mpv'){
-      api('POST','api/v1/server-playback/next');
-    } else {
-      api('POST','api/v1/server-playback/next').then(function(){
-        api('POST','api/v1/server-playback/set-pause',{paused:true}).catch(function(){});
-        return api('GET','api/v1/server-playback/status');
-      }).then(function(s){
-        _lastStatus=s; var cur=s.queue&&s.currentIndex>=0?s.queue[s.currentIndex]:null; if (!cur) return;
-        if (_output==='sonos') sonosCastCurrent(cur); else if (_output==='web') webLoadSong(cur);
-      }).catch(function(){});
-    }
-  }
-
-  function doPrev(){
-    if (_output==='mpv'){
-      api('POST','api/v1/server-playback/previous');
-    } else {
-      api('POST','api/v1/server-playback/previous').then(function(){
-        api('POST','api/v1/server-playback/set-pause',{paused:true}).catch(function(){});
-        return api('GET','api/v1/server-playback/status');
-      }).then(function(s){
-        _lastStatus=s; var cur=s.queue&&s.currentIndex>=0?s.queue[s.currentIndex]:null; if (!cur) return;
-        if (_output==='sonos') sonosCastCurrent(cur); else if (_output==='web') webLoadSong(cur);
-      }).catch(function(){});
-    }
-  }
-
-  // ── Web audio ──────────────────────────────────────────────────────────────
-  var _webAudioCtx  = null;
-  var _webGainNode  = null;  // ReplayGain normalization node
-
-  function webInitAudio(){
-    if (_webAudio) return;
-    _webAudio=document.getElementById('sr-audio');
-    if (!_webAudio){ _webAudio=document.createElement('audio'); document.body.appendChild(_webAudio); }
-    // Wire through Web Audio for normalization
-    try {
-      _webAudioCtx = new (window.AudioContext||window.webkitAudioContext)();
-      var src = _webAudioCtx.createMediaElementSource(_webAudio);
-      _webGainNode = _webAudioCtx.createGain();
-      _webGainNode.gain.value = 1.0;
-      src.connect(_webGainNode);
-      _webGainNode.connect(_webAudioCtx.destination);
-    } catch(e) { _webGainNode = null; }
-    _webAudio.addEventListener('ended', webAutoNext);
-    _webAudio.addEventListener('timeupdate',function(){ if (_output==='web') updateUIWeb(); });
-    _webAudio.addEventListener('error',function(){ toast('Playback error'); });
-  }
-
-  function _webApplyRGGain(rg, replaygain){
-    if (!_webGainNode) return;
-    // rg = { trackGain, albumGain, truePeak } from metadata; replaygain = legacy tag dB
-    var db = null;
-    if (rg && rg.trackGain != null) db = rg.trackGain;
-    else if (replaygain != null)    db = Number(replaygain);
-    if (db == null) { _webGainNode.gain.value = 1.0; return; }
-    // Clip prevention: ensure true peak stays ≤ 0 dBTP
-    var peakDbtp = (rg && rg.truePeak != null) ? rg.truePeak : null;
-    if (peakDbtp != null){ var headroom = -peakDbtp; if (db > headroom) db = headroom; }
-    _webGainNode.gain.value = Math.pow(10, db / 20);
-  }
-
-  function webLoadSong(cur){
-    if (!_webAudio) webInitAudio();
-    var url=buildStreamUrl(cur.relPath||cur.filepath||''); if (!url) return;
-    _webCurPath=cur.relPath||'';
-    // Resume AudioContext if suspended (browser autoplay policy)
-    if (_webAudioCtx && _webAudioCtx.state==='suspended') _webAudioCtx.resume();
-    // Fetch RG metadata then play
-    var fp=cur.relPath||cur.filepath||'';
-    api('POST','api/v1/db/metadata',{filepath:fp}).then(function(meta){
-      var m=meta.metadata||{};
-      var rg=meta.rg||null;
-      var legacy=m['replaygain-track']!=null?m['replaygain-track']:(m['replaygain-track-db']!=null?m['replaygain-track-db']:null);
-      _webApplyRGGain(rg, legacy);
-    }).catch(function(){ if (_webGainNode) _webGainNode.gain.value=1.0; });
-    _webAudio.src=url;
-    _webAudio.play().catch(function(){ toast('Play blocked — tap play to start'); });
-  }
-
-  function webAutoNext(){
-    var s=_lastStatus; if (!s||!s.queue||!s.queue.length) return;
-    var ni=(s.currentIndex||0)+1; if (ni>=s.queue.length) return;
-    api('POST','api/v1/server-playback/queue/play-index',{index:ni}).then(function(){
-      api('POST','api/v1/server-playback/set-pause',{paused:true}).catch(function(){});
-      return api('GET','api/v1/server-playback/status');
-    }).then(function(s2){ _lastStatus=s2; var cur=s2.queue&&s2.currentIndex>=0?s2.queue[s2.currentIndex]:null; if (cur) webLoadSong(cur); }).catch(function(){});
-  }
-
-  // ── Loop ───────────────────────────────────────────────────────────────────
-  function doLoop(){
-    api('POST','api/v1/server-playback/loop').then(function(d){
-      toast(d.loop_mode === 'one' ? '🔂 Repeat One' : d.loop_mode === 'all' ? '🔁 Repeat All' : '🔁 Repeat Off');
-    });
-  }
-
-  // ── Queue ──────────────────────────────────────────────────────────────────
-  var _lastQueueJson = '';
-  function renderQueue(q, curIdx){
-    var json = JSON.stringify(q) + '|' + curIdx;
-    if (json === _lastQueueJson) return; // avoid flicker if unchanged
-    _lastQueueJson = json;
-    var list = document.getElementById('queue-list');
-    if (!q || !q.length){
-      list.textContent = '';
-      var empty = document.createElement('div');
-      empty.className = 'queue-empty';
-      empty.textContent = 'Queue is empty. Browse to add songs or enable Auto-DJ.';
-      list.appendChild(empty);
-      return;
-    }
-
-    list.textContent = '';
-    q.forEach(function(item, i){
-      var title = item.title || item.relPath.split('/').pop();
-      var sub   = [item.artist, item.album].filter(Boolean).join(' · ');
-      var act   = i === curIdx;
-
-      var row = document.createElement('div');
-      row.className = 'queue-item' + (act ? ' playing' : '');
-      row.onclick = function(){ playIdx(i); };
-
-      var num = document.createElement('div');
-      num.className = 'queue-item-num';
-      num.textContent = act ? '▶' : String(i + 1);
-
-      var info = document.createElement('div');
-      info.className = 'queue-item-info';
-      var titleEl = document.createElement('div');
-      titleEl.className = 'queue-item-title';
-      titleEl.textContent = title;
-      info.appendChild(titleEl);
-
-      if (sub) {
-        var subEl = document.createElement('div');
-        subEl.className = 'queue-item-sub';
-        subEl.textContent = sub;
-        info.appendChild(subEl);
-      }
-
-      var del = document.createElement('button');
-      del.className = 'queue-item-del';
-      del.title = 'Remove';
-      del.textContent = '×';
-      del.onclick = function(event){ event.stopPropagation(); removeIdx(i); };
-
-      row.appendChild(num);
-      row.appendChild(info);
-      row.appendChild(del);
-      list.appendChild(row);
-    });
-  }
-
-  function playIdx(i){
-    if (_output==='mpv'){
-      api('POST','api/v1/server-playback/queue/play-index',{index:i});
-    } else {
-      api('POST','api/v1/server-playback/queue/play-index',{index:i}).then(function(){
-        api('POST','api/v1/server-playback/set-pause',{paused:true}).catch(function(){});
-        return api('GET','api/v1/server-playback/status');
-      }).then(function(s){ _lastStatus=s; var cur=s.queue&&s.currentIndex>=0?s.queue[s.currentIndex]:null; if (!cur) return; if (_output==='sonos') sonosCastCurrent(cur); else if (_output==='web') webLoadSong(cur); }).catch(function(){});
-    }
-  }
-  function removeIdx(i){ api('POST','api/v1/server-playback/queue/remove',{ index: i }).then(poll); }
-
-  function clearAndRefill(){
-    if (!confirm('Clear the queue?')) return;
-    api('POST','api/v1/server-playback/queue/clear').then(function(){ poll(); toast('Queue cleared'); });
-  }
-
-  function addToQueue(filepath,title,artist,album,albumArt){
-    return api('POST','api/v1/server-playback/queue/add',{filepath:filepath,title:title||'',artist:artist||'',album:album||'',albumArt:albumArt||''}).then(function(){
-      toast('Added: '+(title||filepath.split('/').pop())); poll();
-      // If Sonos/Web is idle, auto-start the first song
-      if (_output==='sonos'&&_sonosRoom&&!_sonosSt.playing&&!_sonosSt.paused){
-        setTimeout(function(){ api('GET','api/v1/server-playback/status').then(function(s){ var cur=s.queue&&s.currentIndex>=0?s.queue[s.currentIndex]:null; if(cur) sonosCastCurrent(cur); }).catch(function(){}); },300);
-      } else if (_output==='web'&&_webAudio&&(_webAudio.paused||!_webAudio.src||_webAudio.src===window.location.href)){
-        setTimeout(function(){ api('GET','api/v1/server-playback/status').then(function(s){ _lastStatus=s; var cur=s.queue&&s.currentIndex>=0?s.queue[s.currentIndex]:null; if(cur) webLoadSong(cur); }).catch(function(){}); },300);
-      }
-    });
-  }
-
-  // ── Tabs ───────────────────────────────────────────────────────────────────
-  function setTab(t){
-    _tab = t;
-    ['queue','search','dj','audio','browse'].forEach(function(n){
-      document.getElementById('tab-'+n).classList.toggle('active', n===t);
-      document.getElementById('panel-'+n).classList.toggle('active', n===t);
-    });
-    if (t==='browse' && !document.getElementById('browse-list').innerHTML) loadBrowse();
-    if (t==='search') setTimeout(function(){ document.getElementById('search-input').focus(); }, 80);
-    if (t==='audio') renderAudioStatus(_lastStatus);
-  }
-
-  // ── Auto-DJ ────────────────────────────────────────────────────────────────
-  function onDjToggle(on){
-    _djOn = on;
-    _djIgnore = [];
-    var btn = document.getElementById('dj-transport-btn');
-    btn.classList.toggle('active', on);
-    document.getElementById('dj-transport-label').textContent = on ? 'DJ ●' : 'DJ';
-    updateDjStatus(on ? 'Ready — will queue next song automatically.' : 'Auto-DJ is off');
-    if (on) maybeAutoDJ(_lastStatus);
-  }
-
-  function setDjMode(m){
-    _djMode = m;
-    document.getElementById('mode-random').classList.toggle('active', m==='random');
-    document.getElementById('mode-similar').classList.toggle('active', m==='similar');
-  }
-
-  function updateDjStatus(msg, isOn){
-    var el = document.getElementById('dj-status-bar');
-    el.textContent = msg;
-    el.className   = 'dj-status-bar' + (isOn ? ' on' : '');
-  }
-
-  function maybeAutoDJ(s){
-    if (!_djOn || _djFetching || !s) return;
-    // Fetch next song when queue is running low (fewer than 2 songs ahead of current)
-    var ahead = s.queueLength - (s.currentIndex + 1);
-    var nearEnd = s.duration > 0 && s.currentTime > s.duration - 25;
-    if (ahead < 2 || nearEnd) {
-      fetchDjSong(s);
-    }
-  }
-
-  function fetchDjSong(s){
-    if (_djFetching) return;
-    _djFetching = true;
-    updateDjStatus('Fetching next song…', true);
-
-    var p;
-    if (_djMode === 'similar' && s && s.queue && s.currentIndex >= 0 && s.queue[s.currentIndex] && s.queue[s.currentIndex].artist) {
-      var artist = s.queue[s.currentIndex].artist;
-      p = api('GET', 'api/v1/lastfm/similar-artists?artist=' + encodeURIComponent(artist))
-        .then(function(artists){
-          return api('POST','api/v1/db/random-songs',{
-            ignoreList: _djIgnore,
-            artists: artists && artists.length ? artists : undefined,
-          });
-        }).catch(function(){
-          // Fallback to random if Last.fm fails
-          return api('POST','api/v1/db/random-songs',{ ignoreList: _djIgnore });
-        });
-    } else {
-      p = api('POST','api/v1/db/random-songs',{ ignoreList: _djIgnore });
-    }
-
-    p.then(function(data){
-      if (!data || !data.songs || !data.songs.length) throw new Error('No songs');
-      _djIgnore = data.ignoreList || _djIgnore;
-      var song = data.songs[0];
-      var meta = song.metadata || {};
-      return api('POST','api/v1/server-playback/queue/add',{
-        filepath: song.filepath,
-        title:    meta.title              || '',
-        artist:   meta.artist             || '',
-        album:    meta.album              || '',
-        albumArt: meta['album-art']       || '',
-      });
-    }).then(function(){
-      _djFetching = false;
-      updateDjStatus('Auto-DJ active — next song queued.', true);
-    }).catch(function(e){
-      _djFetching = false;
-      updateDjStatus('Auto-DJ: could not find a song (' + (e.message||'error') + ')', false);
-    });
-  }
-
-  // ── Search ────────────────────────────────────────────────────────────────
-  function onSearchInput(){
-    clearTimeout(_searchTimer);
-    var q = document.getElementById('search-input').value.trim();
-    var cl = document.getElementById('search-clear');
-    cl.style.display = q ? 'block' : 'none';
-    if (!q || q.length < 2) { document.getElementById('search-results-list').innerHTML = ''; _searchResults = []; return; }
-    document.getElementById('search-results-list').innerHTML = '<div class="search-msg">Searching…</div>';
-    _searchTimer = setTimeout(function(){ doSearch(q); }, 350);
-  }
-
-  function clearSearch(){
-    document.getElementById('search-input').value = '';
-    document.getElementById('search-clear').style.display = 'none';
-    document.getElementById('search-results-list').innerHTML = '';
-    _searchResults = [];
-  }
-
-  function doSearch(q){
-    api('POST','api/v1/db/search',{ search: q, noArtists:true, noFolders:true, noAlbums:true, noFiles:true })
-      .then(function(data){
-        _searchResults = (data.title || []).slice(0, 25);
-        var el = document.getElementById('search-results-list');
-        el.textContent = '';
-        if (!_searchResults.length){
-          var msg = document.createElement('div');
-          msg.className = 'search-msg';
-          msg.textContent = 'No results for "' + q + '"';
-          el.appendChild(msg);
-          return;
-        }
-        _searchResults.forEach(function(item, i){
-          var raw    = item.name || '';
-          var dash   = raw.indexOf(' - ');
-          var artist = dash > -1 ? raw.slice(0, dash) : '';
-          var title  = dash > -1 ? raw.slice(dash + 3) : raw;
-          var row = document.createElement('div');
-          row.className = 'search-item';
-          var info = document.createElement('div');
-          info.className = 'search-item-info';
-          var titleEl = document.createElement('div');
-          titleEl.className = 'search-item-title';
-          titleEl.textContent = title;
-          info.appendChild(titleEl);
-          if (artist) {
-            var artistEl = document.createElement('div');
-            artistEl.className = 'search-item-artist';
-            artistEl.textContent = artist;
-            info.appendChild(artistEl);
-          }
-          var addBtn = document.createElement('button');
-          addBtn.className = 'search-item-add';
-          addBtn.title = 'Add to queue';
-          addBtn.textContent = '+';
-          addBtn.onclick = function(){ addSearchResult(i); };
-          row.appendChild(info);
-          row.appendChild(addBtn);
-          el.appendChild(row);
-        });
-      }).catch(function(){
-        var el = document.getElementById('search-results-list');
-        el.textContent = '';
-        var msg = document.createElement('div');
-        msg.className = 'search-msg';
-        msg.textContent = 'Search failed';
-        el.appendChild(msg);
-      });
-  }
-
-  function addSearchResult(i){
-    var item = _searchResults[i]; if (!item) return;
-    var raw=item.name||'', dash=raw.indexOf(' - ');
-    var artist=dash>-1?raw.slice(0,dash):'', title=dash>-1?raw.slice(dash+3):raw;
-    addToQueue(item.filepath,title,artist,'','').catch(function(){ toast('Could not add song'); });
-  }
-
-  // ── Audio tab — Loudness Normalisation status ──────────────────────────────
-  function renderAudioStatus(st) {
-    var el = document.getElementById('rg-status-rows');
-    if (!el) return;
-    if (!st || !st.running) {
-      el.textContent = '';
-      var stopped = document.createElement('div');
-      stopped.className = 'dj-status-bar';
-      stopped.textContent = 'MPV is not running — start playback first.';
-      el.appendChild(stopped);
-      return;
-    }
-    var gainDb = st.currentGainDb;
-    var rows = [];
-
-    // Normalisation enabled row
-    rows.push(_rgRow('Loudness Normalisation', gainDb != null ? '✓ Active' : '✗ Off (no RG tags on this track)',
-      gainDb != null ? 'var(--green)' : 'var(--t3)'));
-
-    // Current gain row
-    if (gainDb != null) {
-      var sign = gainDb >= 0 ? '+' : '';
-      rows.push(_rgRow('Current gain', sign + gainDb.toFixed(1) + ' dB applied via mpv af', 'var(--accent)'));
-    }
-
-    // Info row
-    rows.push(_rgRow('Mode & settings', 'Controlled in browser Audio Settings', 'var(--t3)'));
-
-    el.textContent = '';
-    rows.forEach(function(row){ el.appendChild(row); });
-  }
-
-  function _rgRow(label, value, color) {
-    var row = document.createElement('div');
-    row.className = 'dj-toggle-row';
-    row.style.padding = '10px 0';
-
-    var labelEl = document.createElement('div');
-    labelEl.className = 'dj-toggle-label';
-    labelEl.style.fontSize = '13px';
-    labelEl.textContent = label;
-
-    var valueEl = document.createElement('div');
-    valueEl.style.fontSize = '12px';
-    valueEl.style.color = color || 'var(--t2)';
-    valueEl.style.fontWeight = '600';
-    valueEl.style.textAlign = 'right';
-    valueEl.style.maxWidth = '55%';
-    valueEl.textContent = value;
-
-    row.appendChild(labelEl);
-    row.appendChild(valueEl);
-    return row;
-  }
-
-  function createBrowserIcon(type) {
-    var ns = 'http://www.w3.org/2000/svg';
-    var svg = document.createElementNS(ns, 'svg');
-    svg.setAttribute('width', '18');
-    svg.setAttribute('height', '18');
-    svg.setAttribute('viewBox', '0 0 24 24');
-    svg.setAttribute('fill', 'none');
-    svg.setAttribute('stroke', 'currentColor');
-    svg.setAttribute('stroke-width', '2');
-    if (type === 'dir') {
-      var p = document.createElementNS(ns, 'path');
-      p.setAttribute('d', 'M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z');
-      svg.appendChild(p);
-    } else {
-      var p2 = document.createElementNS(ns, 'path');
-      p2.setAttribute('d', 'M9 18V5l12-2v13');
-      var c1 = document.createElementNS(ns, 'circle');
-      c1.setAttribute('cx', '6');
-      c1.setAttribute('cy', '18');
-      c1.setAttribute('r', '3');
-      var c2 = document.createElementNS(ns, 'circle');
-      c2.setAttribute('cx', '18');
-      c2.setAttribute('cy', '16');
-      c2.setAttribute('r', '3');
-      svg.appendChild(p2);
-      svg.appendChild(c1);
-      svg.appendChild(c2);
-    }
-    return svg;
-  }
-
-  // ── File browser ───────────────────────────────────────────────────────────
-  function loadBrowse(){
-    var list = document.getElementById('browse-list');
-    list.innerHTML = '<div class="spinner-wrap"><div class="spinner"></div></div>';
-    document.getElementById('breadcrumb').textContent = '/' + _pathStack.join('/');
-    document.getElementById('bk-btn').disabled = _pathStack.length === 0;
-    var dirStr = _pathStack.length ? _pathStack.join('/') + '/' : '';
-    api('POST','api/v1/file-explorer',{ directory: dirStr })
-      .then(function(data){
-        var items = [];
-        (data.directories||[]).forEach(function(d){ items.push({ type:'dir',  name: d.name }); });
-        (data.files||[]).forEach(function(f){ items.push({ type:'file', name: f.name, path: data.path + f.name }); });
-        if (!items.length){ list.innerHTML = '<div class="browser-empty">No files here</div>'; return; }
-        list.innerHTML = '';
-        items.forEach(function(item){
-          var row  = document.createElement('div'); row.className = 'browser-item';
-          var icon = document.createElement('span'); icon.className = 'browser-item-icon';
-          icon.appendChild(createBrowserIcon(item.type));
-          var name = document.createElement('span'); name.className = 'browser-item-name'; name.textContent = item.name;
-          row.appendChild(icon); row.appendChild(name);
-          if (item.type === 'file') {
-            var addBtn = document.createElement('button'); addBtn.className = 'browser-item-add'; addBtn.textContent = '+ Queue';
-            (function(fp, nm){
-              addBtn.onclick = function(e){
-                e.stopPropagation();
-                api('POST','api/v1/db/metadata',{ filepath: fp })
-                  .then(function(meta){
-                    var m = meta.metadata || {};
-                    return addToQueue(meta.filepath||fp, m.title||nm, m.artist||'', m.album||'', m['album-art']||'');
-                  }).catch(function(){
-                    return addToQueue(fp, nm, '', '', '');
-                  });
-              };
-              row.onclick = addBtn.onclick;
-            }(item.path, item.name));
-            row.appendChild(addBtn);
-          } else {
-            (function(n){ row.onclick = function(){ _pathStack.push(n); loadBrowse(); }; }(item.name));
-          }
-          list.appendChild(row);
-        });
-      }).catch(function(){ list.innerHTML = '<div class="browser-empty">Failed to load</div>'; });
-  }
-
-  function browseBack(){ if (_pathStack.length){ _pathStack.pop(); loadBrowse(); } }
-
-  // ── Boot ───────────────────────────────────────────────────────────────────
-  // Probe for no-auth mode first, then show login if needed
-  tryNoAuthLogin();
-
-  // ── Auto-pause on close/navigate-away ──────────────────────────────────────
-  var _pauseSent = false;
-  function sendPause(){
-    if (_pauseSent) return;
-    _pauseSent = true;
-    if (_pollTimer) clearInterval(_pollTimer);
-    if (_output==='mpv' && _token){
-      try{ var x=new XMLHttpRequest(); x.open('POST','api/v1/server-playback/set-pause',false); x.setRequestHeader('Content-Type','application/json'); x.setRequestHeader('x-access-token',_token); x.send(JSON.stringify({paused:true})); }catch(e){}
-    } else if (_output==='sonos' && _sonosRoom && _token){
-      try{ var x=new XMLHttpRequest(); x.open('POST','api/v1/sonos/set-pause',false); x.setRequestHeader('Content-Type','application/json'); x.setRequestHeader('x-access-token',_token); x.send(JSON.stringify({ip:_sonosRoom.ip,paused:true})); }catch(e){}
-    } else if (_output==='web' && _webAudio){
-      _webAudio.pause();
-    }
-  }
-  window.addEventListener('pagehide',     function(){ sendPause(); });
-  window.addEventListener('beforeunload', function(){ sendPause(); });
-  </script>
+  <script src="/assets/js/i18n.js"></script>
+  <script src="/server-remote/app.js"></script>
 </body>
 </html>

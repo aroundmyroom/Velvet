@@ -9,8 +9,9 @@
 - [ ] Approve the genre and folder proposals on the production library; then
   compare a week of Auto-DJ sessions against the keyword-only families.
 - [ ] AI DJ ideas after a week of use: let the listener edit the brief chips
-  before rebuilding, "more like this set" from the current queue, a server-side
-  similar-artist cache so the Last.fm expansion is instant.
+  before rebuilding, "more like this set" from the current queue. (A server-side
+  similar-artist cache exists: in memory, 2,000 artists, `src/api/scrobbler.js`;
+  it is lost on restart.)
 - [ ] **AI DJ feedback loop** (decided 2026-10-28: the engine covers the
   reported cases; what is missing is turning a listener's complaint into a
   lasting fix without a developer in between). In this order:
@@ -43,17 +44,7 @@
   6,553 files longer than 15 minutes. A "mix" flag per folder would let Auto-DJ
   skip them without the duration window.
 
-### Artist and Album Identity Improvements
-
-- [x] Fold diacritics in the existing artist grouping key so accented and
-  unaccented tags share one identity while display names and raw variants stay
-  unchanged.
-- [x] Make canonical artist display-name selection deterministic and
-  non-mutating; preserve admin overrides.
-- [x] Add a separate artist sort-name field/election for navigation without
-  changing the displayed canonical name.
-
-### Scheduled Backup — Velvet Data (Admin → Directories)
+### Scheduled Backup — Velvet Data (Admin → Directories) — NOT BUILT
 
 Automated daily backup of all Velvet cache and data to a user-chosen folder (NAS, external drive, etc.), with independently-extractable zip snapshots and configurable retention.
 
@@ -97,7 +88,7 @@ Automated daily backup of all Velvet cache and data to a user-chosen folder (NAS
   Strategy: sort files by size descending, fill current ZIP until adding the next file would exceed 1024 MB, then start a new ZIP. Any single file larger than 1024 MB (unlikely here) gets its own zip.
 - **Live sync**: `rsync --checksum --delete` semantics — adds new files, updates changed files, removes deleted files. Runs as the live mirror refresh.
 - **Daily snapshot**: after live sync completes, walk `live/` and re-zip into today's date folder. Existing today-folder is overwritten (only one zip set per day).
-- **DB hot-copy**: always use SQLite `VACUUM INTO '/tmp/velvet-backup-YYYYMMDD.sqlite'` before zipping to get a clean consistent snapshot with no WAL journal.
+- **DB hot-copy**: always use SQLite `VACUUM INTO` a uniquely named file inside the owner-only backup folder (as `src/api/backup.js` does today, never the shared `/tmp`) before zipping to get a clean consistent snapshot with no WAL journal.
 - **Retention**: delete date folders older than N days (default 7, user range 1–21). Enforced after each daily run.
 - **One job at a time**: share the existing `task-queue` mutex — no concurrent scan + backup.
 
@@ -141,12 +132,11 @@ All on the user's chosen drive — not on the 47 GB system disk.
 
 #### Work breakdown
 
-> **Warning:** `src/api/backup.js` already exists as an unrelated legacy feature (weekly zip of DB+config into `save/backups/`, keeps 4 — `:143`, `:152`, `:161`, scheduler `:134`). This work must EXTEND it and keep those routes, not replace the module.
+> **Warning:** `src/api/backup.js` already exists as a smaller feature (weekly zip of the DB snapshot, config and `save/sendspin/` into `save/backups/`, keeps 4; routes `POST /api/v1/admin/backup`, `GET /api/v1/admin/backups`, `GET /api/v1/admin/backup/download/:filename`). This work must EXTEND it and keep those routes, not replace the module.
 
 - [ ] **Config schema**: add `backup` block to the `src/state/config.js` validator; expose via `GET /api/v1/admin/config`
-- [ ] **`src/api/backup.js`**: new module — 4 endpoints above + scheduled job bootstrap
+- [ ] **`src/api/backup.js`**: extend — 4 endpoints above + scheduled job bootstrap
 - [ ] **`src/util/backup-worker.mjs`** (or inline): live-sync logic (walk + compare mtime/size), zip-partition logic (sort by size, fill to 1024 MB, use `archiver`), DB VACUUM INTO, retention cleanup
-- [ ] **Register** in `server.js`
 - [ ] **Admin UI** (`webapp/admin/index.js`): backup settings card in Directories view — folder input with writable check, retention spinner, schedule picker, run/stop buttons, status card
 - [ ] **i18n**: add keys to all 12 `webapp/locales/*.json` — `admin.backup.*`
 - [ ] **`docs/backup.md`**: update (file exists at `docs/backup.md`) with full feature spec
@@ -165,25 +155,20 @@ All on the user's chosen drive — not on the 47 GB system disk.
 
 ### Migration — Export & Import (Admin → Database menu) — MOSTLY BUILT
 
-> **Status:** export is fully working; the import backend is written but the **UI is
-> deliberately disabled** and **vpath remapping is still a stub**. Only those two
-> things remain. Do not rebuild the module.
+> **Status:** export is fully working; the import backend is half written, the **UI is
+> deliberately disabled** and **there is no vpath remapping**. Do not rebuild the module.
 >
-> Shipped: `src/api/migrate.js` (7 endpoints: export/start `:287`, export/status `:317`,
-> export/download `:333`, upload `:348`, apply `:364`, status `:386`, cleanup `:404`),
-> registered at `src/server.js:42`, `:333`. Admin UI `migrate-view` at
-> `webapp/admin/index.js:3821`, nav at `webapp/admin/index.html:207`. 42 `admin.migrate.*`
-> i18n keys already exist in all 12 locales. All 7 endpoints documented at `docs/API.md:912-918`.
+> Shipped: `src/api/migrate.js` (7 endpoints: `export/start`, `export/status/:id`,
+> `export/download/:id`, `upload`, `apply`, `status/:id`, `cleanup/:id`, all in `docs/API.md`).
+> Admin UI `migrate-view` in `webapp/admin/index.js`. `admin.migrate.*` i18n keys exist in all 12 locales.
 >
 > Remaining work:
-> - [ ] **ZIP extraction in the upload step** — the old code called a non-existent
->   `fs.Extract` through `require()` in an ES module and crashed the server. Since v0.7.0
->   `POST /migrate/upload` stores nothing and answers "Import is not available yet". Needs
->   a real unzip with an entry-count/byte budget and zip-slip protection (every entry must
->   stay inside the extract dir).
-> - [ ] **vpath remapping** — `src/api/migrate.js:211-213` is a stub: *"this would need UI interaction / For now, just restore config as-is"*
-> - [ ] **Re-enable the import UI** — `webapp/admin/index.js:3907-3915` wraps the section in `opacity:.4;pointer-events:none` with the button `disabled`
-> - [ ] **"Keep this system's user accounts" checkbox** — the `keepUsers` param exists in the API (`docs/API.md:916`) but has no UI control
+> - [ ] **ZIP extraction in the upload step** — `POST /migrate/upload` stores nothing and
+>   answers "Import is not available yet". Needs a real unzip with an entry-count/byte
+>   budget and zip-slip protection (every entry must stay inside the extract dir).
+> - [ ] **vpath remapping** — `applyImportData()` copies the config as-is; nothing remaps paths.
+> - [ ] **Re-enable the import UI** — the import section in `migrate-view` is wrapped in `opacity:.4;pointer-events:none` with the button `disabled`
+> - [ ] **"Keep this system's user accounts"** — `apply` honours `keepUsers` (default `true`: the current users are kept), but there is no UI control for it
 >
 > Note the spec below describes a one-shot `GET /migrate/export`; the built reality is a
 > 3-call async start/status/download flow.
@@ -197,7 +182,7 @@ Export the full Velvet state as a ZIP and import it on a new instance (Docker, V
 - Streams the ZIP directly to the browser
 
 **Import — Step 1: Upload** (`POST /api/v1/admin/migrate/upload`)
-- Upload ZIP → extract to `/tmp/velvet-migrate-<id>/`, read manifest
+- Upload ZIP → extract to the owner-only staging folder `<dbDirectory>/../migrate/<id>/` (never the shared system temp folder: the archive holds credentials), read manifest
 - Return: export date, source version, list of old vpath roots
 
 **Import — Step 2: Remap & Apply** (`POST /api/v1/admin/migrate/apply`)
@@ -206,61 +191,39 @@ Export the full Velvet state as a ZIP and import it on a new instance (Docker, V
 - On Apply: write DB, rewrite config with remapped paths, copy caches, restart server
 - Security warning shown: *"This archive contains credentials — keep it secure."*
 
-**Files to create/modify:**
-- `src/api/migrate.js` — new module
-- Register in `server.js`
-- `webapp/admin/index.js` — `migrate-view` component
-- `webapp/admin/index.html` — nav item (under Database section) + view
-- All 12 `webapp/locales/*.json` — i18n keys
-
 ### Artist Image Moderation — Follow-ups
 
 - [ ] Admin Artists: add bulk actions (apply first Discogs candidate to selected rows)
 - [ ] Admin Artists: add pagination/filter by minimum song count for very large libraries
-- [x] Admin Artists: image dimensions in the manual URL preview — DONE (`webapp/admin/index.js` `onCustomPreviewLoad`, key `admin.artists.previewDims`)
 - [ ] Admin Artists: add bulk Yes/No validation actions in the With image review list
 - [ ] Admin Directories: add bulk Artists On/Off actions by folder type (music/audio-books/recordings)
-- [ ] Admin Directories: parent/child inheritance badges for Albums Only and Artists On/Off — PARTIAL: the folder tree already computes parent/child (`webapp/admin/index.js:1897-1934`); only the badge render is missing (toggles at `:1765`, `:1777`)
+- [ ] Admin Directories: parent/child inheritance badges for Albums Only and Artists On/Off — PARTIAL: the folder tree already computes parent/child; only the badge render is missing
 - [ ] Player Artist Library: optional badge for already-flagged wrong artists (admin-only)
 - [ ] Add global media-enrichment budget (shared limiter between artist-image hydration and album-art background tasks)
 
 
 ### Subsonic / OpenSubsonic API — compliance audit & further testing
 
-- [x] **`getMusicDirectory`**: DSub + Ultrasonic confirmed working (`docs/subsonic.md:13`, `:15`, `:163`)
 - [ ] **`getMusicDirectory`**: still untested with Jamstash
-- [x] **`search2` / `search3`**: empty-query pagination verified against py-opensonic; per-category FTS5 column semantics documented (`docs/subsonic.md:42`, `:180`)
 - [ ] Run through the full [OpenSubsonic conformance checklist](https://opensubsonic.netlify.app/)
 
 ---
 
-### 📱 Mobile / PWA — DONE, shipped as a dedicated PWA
+### 📱 Mobile / PWA
 
-The 2026-03-26 audit proposed **Option A — a separate `mobile.css`** overlay. That
-strategy was abandoned. Phones now get a **dedicated PWA at `/mobile/`** with
-server-side UA routing, so `webapp/mobile.css` does not exist and must not be created.
+Phones get a dedicated PWA at `/mobile/` (`webapp/mobile/`) with server-side UA routing in `src/server.js`
+(`?ui=desktop|mobile` override, sticky `ms2_ui` cookie). Do not create a `webapp/mobile.css` overlay.
 
-Shipped: `webapp/mobile/` — `index.html`, `app.js` (2001 lines), `app.css` (528 lines),
-`sw.js`, `manifest.json`, `icons/`. Routing in `src/server.js:157` with a `?ui=desktop|mobile`
-override and a sticky `ms2_ui` cookie (`:179-186`).
-
-- [x] Phone/tablet layout — `webapp/mobile/app.css` (replaces the `mobile.css` overlay idea)
-- [x] UA routing instead of a media-query stylesheet — `src/server.js:157`, `:179-186`
-- [x] iOS PWA meta tags — `webapp/mobile/index.html:6-10`
-- [x] `-webkit-tap-highlight-color: transparent` — `webapp/mobile/app.css:46`
-- [x] Manifest `orientation` / `scope` / `id` — `webapp/mobile/manifest.json` (a static file now, not an inline Blob)
-- [x] Service worker for offline caching — `webapp/mobile/sw.js` (album-art cache-first, 500-entry cap), registered at `webapp/mobile/app.js:13-16`
 - [ ] Library sync manifest — `POST /api/v1/sync/manifest`: server returns a library manifest (hashes, paths, mtimes) so a client can diff and sync offline content. **The only genuinely open item here.** Idea from upstream mStream branch `claude/sync-manifest` (Sep 2026); pairs with the service worker above (see `docs/mobile-app-plan.md`).
 
 ### Sonos — reliable seeking into unbuffered audio — PLANNED (approved, not started)
 
-Seeking into a part of a track Sonos hasn't buffered yet stalls the speaker for a long time and sometimes restarts the song from 0. Root cause: Velvet sends `Seek REL_TIME` and relies on Sonos to seek the live HTTP `/media` stream itself (the AVTransport API confirms `REL_TIME` is the only in-track seek unit; Seek returns `701` when the content "does not support seek"). The fix is to stop asking Sonos to seek a live stream and instead **re-cast a fresh stream that begins at the seek point** — the same pattern already used for transcoded streams (`?start=N`), generalised to native FLAC/MP3/WAV via a cheap ffmpeg **remux** (`-ss N -c copy`, no re-encode). Builds on v0.2.6's lead-in (the re-cast re-arms it, so the UI locks to the new position). Full design: `/root/.claude/plans/analyze-my-existing-project-cosmic-map.md`.
+Seeking into a part of a track Sonos hasn't buffered yet stalls the speaker for a long time and sometimes restarts the song from 0. Root cause: Velvet sends `Seek REL_TIME` and relies on Sonos to seek the live HTTP `/media` stream itself (the AVTransport API confirms `REL_TIME` is the only in-track seek unit; Seek returns `701` when the content "does not support seek"). The fix is to stop asking Sonos to seek a live stream and instead **re-cast a fresh stream that begins at the seek point** — the same pattern already used for transcoded streams (`?start=N`), generalised to native FLAC/MP3/WAV via a cheap ffmpeg **remux** (`-ss N -c copy`, no re-encode). Builds on v0.2.6's lead-in (the re-cast re-arms it, so the UI locks to the new position). (Already in place: cast tracks carry `duration`, and `buildDidl` gets a per-format MIME type via `mimeForPath()` in `src/api/sonos.js`. Sonos is now only ever told about the current track, so there is no queue window to rebuild.)
 
 - [ ] New `GET /api/v1/sonos/stream-at?fp=&token=&start=N` — `ffmpeg -ss N -i <file> -vn -c:a copy -f <container> -`, modelled on `transcode-stream` (`src/api/sonos.js`)
 - [ ] `_resolveStreamUrl`: native + `seekTo>0.5` → `stream-at`; `seekTo==0` → `/media` (unchanged); transcode path unchanged
 - [ ] Treat the offset stream like the transcoded live-pipe: `soapSeekTo=0`, `streamStartOffset=N`, DIDL `res@duration` = remaining (`duration−N`)
-- [x] Cheap wins — DONE: `_sonosBuildWindow` (and the top-up + activate paths) now send `duration`, and `buildDidl` takes a real per-format `protocolInfo` via `mimeForPath()` (`src/api/sonos.js`)
-- [ ] Client `_onAudioSeeked` Sonos branch → debounced `_sonosPushWindow(newPos)` instead of `POST /api/v1/sonos/seek`
+- [ ] Client `_onAudioSeeked` Sonos branch → debounced re-cast at the new position instead of `POST /api/v1/sonos/seek`
 - [ ] Verify on real Sonos: FLAC mid-file remux plays; WAV piping (else fall back to lossless `-c:a flac`); seek into unbuffered region never restarts from 0; FLAC/MP3/WAV all OK
 - [ ] Separate PR off `main`, hardware-verified before merge (no stacked PRs)
 
@@ -278,7 +241,7 @@ after:   image-cache/27/2780b157fbe88da69809f187f9cae009.jpg
 256 buckets → ~430 files/dir at current scale.
 
 **Work:**
-- [ ] **There is no path helper today — it has to be created first.** `src/api/files.js` does not exist; art paths are built ad hoc from `config.program.storage.albumArtDirectory` at 15+ call sites (`radio-recorder.js:121`, `discogs.js:409,440`, `podcasts.js:28,104`, `server.js:388`, `scanner.js:466`, `db/task-queue.js:291,356`, `download.js:159`, `dlna.js:1170`, `migrate.js:79,249`, `album-art-workshop.js:428`, `subsonic.js:1473,1581,1605,1630`, `radio.js:26`). Create `src/util/art-path.js`, retrofit every site, then add the 2-char prefix. `dlna.js:1170` also mounts `/album-art` as flat static and needs a rewrite middleware. Re-scoped: **LARGE**, not a one-liner. Precedent for the back-compat shim: artist images already use a subfolder with a legacy fallback (`artists-browse.js:36`, `:87-88`)
+- [ ] **There is no single path helper today — it has to be created first.** `src/util/art-cache.js` (`writeArtWithThumbs`, `artFileName`) covers writing, but art paths are still built from `config.program.storage.albumArtDirectory` at many call sites (`grep -rn albumArtDirectory src`). Create one helper, retrofit every site, then add the 2-char prefix. `src/api/dlna.js` also serves `/album-art` as a flat static mount and needs a rewrite. Re-scoped: **LARGE**, not a one-liner. Precedent for the back-compat shim: artist images already use a subfolder with a legacy fallback (`src/api/artists-browse.js`)
 - [ ] One-time migration script: `find image-cache -maxdepth 1 -type f | for each file → mkdir -p image-cache/${md5:0:2}/ && mv`
 - [ ] Update the backup worker (when built) to walk the new structure
 - [ ] Verify album-art serving, on-demand art endpoint, and artist-image serving all use the helper (not hardcoded paths)
@@ -290,7 +253,7 @@ after:   image-cache/27/2780b157fbe88da69809f187f9cae009.jpg
 
 ## FUTURE — Music Library Backup (file mirror)
 
-Port the upstream music-file mirroring system from Velvet
+Port the music-file mirroring system from upstream mStream. Not built.
 **This is separate from our existing DB+config ZIP backup** — it mirrors the actual music files to a local destination (rsync-style), protecting against drive failure or accidental deletes.
 
 Key upstream design (worth keeping):
@@ -372,7 +335,7 @@ The tag mode is **server-wide** (not per-user), stored in a new `server_settings
 
 - [ ] **i18n keys** — add `admin.tagMode.*` keys to all 12 locale files
 
-- [ ] **Docs** — update `docs/API.md` with new endpoint; note in `docs/tageditor.md` or new `docs/tag-display-mode.md`
+- [ ] **Docs** — update `docs/API.md` with new endpoint; note in `docs/tag-workshop.md` or new `docs/tag-display-mode.md`
 
 **Risk / complexity note:** The DB query audit (step 2) is the bulk of the work — ~10 functions to check. Many already use `f.*` so the actual add is small. The `renderMetadataObj` change is a single function. Admin UI and API are straightforward.
 
@@ -403,41 +366,43 @@ The tag mode is **server-wide** (not per-user), stored in a new `server_settings
 - [ ] On theme change → write `localStorage` immediately + debounce PUT to `user_settings`
 - [ ] Audit `_updateBadgeFg` and `_applyAlbumArtTheme` — add `lockAccent` flag guard
 
+### Player UX — left over from the player UX plan (see [history/player-ux-plan.md](history/player-ux-plan.md))
+- [ ] Up-next peek: hovering the Next button previews the upcoming track (title + art)
+- [ ] Move the remaining old px values in `webapp/style.css` onto the Wave 5 design tokens
+
 ---
 
 ## FUTURE — Home, Analytics & Discovery
 
 ### Album-Art Workshop — follow-ups
-- [x] Add MusicBrainz / Cover Art Archive as additional cover suggestion sources — DONE, and CAA is the first-priority source (`src/api/album-art-workshop.js:16`, `:287`; `coverArtArchive` toggle at `:32`)
 - [ ] Optional multi-art gallery model (multiple covers per album, user picks the default) — larger schema change
-- [ ] Wire the album-art suggestion pass into the shared media-enrichment budget limiter (see Performance section)
+- [ ] Wire the album-art suggestion pass into the shared media-enrichment budget limiter (see Artist Image Moderation above; the limiter does not exist yet)
 
 ### Smart Auto-DJ — Personal Weights
 - [ ] Re-rank candidates by `completion_rate × recency_decay`
 - [ ] Penalise songs skipped >2× in the last 30 days
 
-### 🎵 Acoustic Similarity & Audio Analysis — Phase 1 DONE
+### 🎵 Acoustic Similarity & Audio Analysis
 
-> Full design document: [`docs/audio-analysis.md`](docs/audio-analysis.md)
+> Full design document: [`docs/audio-analysis.md`](../audio-analysis.md)
 
-Phase 1 complete (v6.14.17): `audio_features` table, `essentia-bpm-worker.mjs`, `getSimilarSongs()`, `GET /api/v1/db/similar`, `GET /api/v1/db/audio-features/:hash`, Essentia start/stop endpoints.
+Built: `essentia-bpm-worker.mjs` (BPM/key into `files.bpm` / `files.musical_key`), Essentia start/stop endpoints,
+`getSimilarSongs()` and `GET /api/v1/db/similar` (BPM proximity + Camelot key, from the `files` table). The
+`audio_features` table was dropped in DB migration v5 (nothing ever wrote to it) and
+`GET /api/v1/db/audio-features/:hash` is removed. There is no acoustic (timbre/embedding) similarity.
 
 **AudioMuse-AI sidecar — investigate before building native analysis:**
-- [x] **Subsonic compatibility test** — DONE; the bridge works and Velvet carries AudioMuse-AI-specific fixes (playlist-name sanitising for the `Path: ` prefix and `_instant` suffix at `src/api/subsonic.js:679`, `:1794`, `:1805`). The two follow-ups below are still open.
-- [ ] **If Subsonic bridge works**: use AudioMuse-AI as the sonic intelligence engine (clustering, text search, song paths, similar-song playlists) without building any native analysis — Velvet just becomes the player + library, AudioMuse-AI adds AI on top.
+The Subsonic bridge works; Velvet carries AudioMuse-AI-specific fixes (playlist-name sanitising for the `Path: `
+prefix and `_instant` suffix in `src/api/subsonic.js`).
+- [ ] Use AudioMuse-AI as the sonic intelligence engine (clustering, text search, song paths, similar-song playlists) without building any native analysis — Velvet just becomes the player + library, AudioMuse-AI adds AI on top.
 - [ ] **Phase 2 option (deeper integration)**: add an Velvet admin toggle for an AudioMuse-AI REST URL; Auto-DJ calls AudioMuse-AI's similarity API for the next track in "Acoustic" mode instead of Last.fm. Real-time sonic similarity rather than batch playlist generation.
 
-**Phase 2 — Admin UI:**
-- [x] "Audio Analysis" card — DONE, lives inside BPM Workshop (`webapp/admin/index.js:7384`; start/stop/reset at `:7485`-`:7515`; per-source coverage at `:7621`; backend `src/api/bpm-analysis.js:12-14`)
-  - [ ] Throttle setting — the one remaining gap; delays are hardcoded (`src/api/bpm-analysis.js:199,225,228`)
+**Admin UI:** the "Audio Analysis" card lives inside the BPM Workshop.
+- [ ] Throttle setting — delays are hardcoded in the workers
 
-**Phase 3 — Player UI:**
+**Player UI:**
 - [ ] "≈ Build Similar Playlist" button in Now Playing modal
-  - [ ] BPM / key in Now Playing modal when features exist
 - [ ] Auto-DJ: "Acoustic" mode
-
-### Your Stats enhancements
-- [x] Extend stats history beyond the 60-period limit — DONE, limit is 260 both ends (`src/api/wrapped.js:205`, `webapp/app.js:15735`)
 
 ---
 

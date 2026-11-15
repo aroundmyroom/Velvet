@@ -11,14 +11,14 @@ import {
 } from './sonos.js';
 
 export const ROOMS_FILE = 'rooms.json';
-export const IDLE_GRACE_MS = 10_000;
+const IDLE_GRACE_MS = 10_000;
 // The reference daemon reports available:false before its clock is synced, then true.
-export const INITIAL_UNAVAILABLE_GRACE_MS = 5_000;
-export const SCHEDULE_AHEAD_MS = 20_000;
-export const PREVIOUS_RESTART_MS = 3_000;
-export const ARTWORK_PART_GAP_MS = 2;
-export const MAX_ROOM_NAME_BYTES = 64;
-export const REPEAT_MODES = Object.freeze(['off', 'one', 'all']);
+const INITIAL_UNAVAILABLE_GRACE_MS = 5_000;
+const SCHEDULE_AHEAD_MS = 20_000;
+const PREVIOUS_RESTART_MS = 3_000;
+const ARTWORK_PART_GAP_MS = 2;
+const MAX_ROOM_NAME_BYTES = 64;
+const REPEAT_MODES = Object.freeze(['off', 'one', 'all']);
 
 const BASE_COMMANDS = Object.freeze([
   'play', 'pause', 'stop', 'next', 'previous', 'repeat_off', 'repeat_one', 'repeat_all', 'shuffle', 'unshuffle', 'switch',
@@ -26,9 +26,9 @@ const BASE_COMMANDS = Object.freeze([
 const TEXT_FIELDS = ['title', 'artist', 'album_artist', 'album'];
 const LIVE_COMMANDS = Object.freeze(['play', 'pause', 'stop', 'switch']);
 
-export const AUTO_DJ_RETRY_MS = 30_000;
+const AUTO_DJ_RETRY_MS = 30_000;
 // The web player scrobbles a song 30 s after it starts (webapp/app.js _scheduleScrobble).
-export const SCROBBLE_AFTER_MS = 30_000;
+const SCROBBLE_AFTER_MS = 30_000;
 const validTrim = (ms) => Number.isInteger(ms) && Math.abs(ms) <= MAX_SONOS_TRIM_MS;
 
 export class RoomError extends Error {
@@ -218,7 +218,6 @@ export class RoomManager extends EventEmitter {
     this.#sendAllState(c, room);
     if (member.state) this.#onState(c, member.state, null);
     this.#save();
-    this.#changed(room);
     return room.id;
   }
 
@@ -237,7 +236,6 @@ export class RoomManager extends EventEmitter {
     c.sent = null;
     if (room) {
       this.#pushController(room);
-      this.#changed(room);
     }
   }
 
@@ -276,7 +274,6 @@ export class RoomManager extends EventEmitter {
     const room = this.#newRoom({ name: this.#checkName(name) });
     this.setMembers(room.id, clientIds);
     this.#save();
-    this.#changed(room);
     return room.id;
   }
 
@@ -285,7 +282,6 @@ export class RoomManager extends EventEmitter {
     room.name = this.#checkName(name);
     for (const cid of room.members) this.#sendGroup(this.#clients.get(cid));
     this.#save();
-    this.#changed(room);
   }
 
   setMembers(id, clientIds) {
@@ -302,7 +298,6 @@ export class RoomManager extends EventEmitter {
       this.#moveTo(c, room);
     }
     this.#save();
-    this.#changed(room);
   }
 
   deleteRoom(id) {
@@ -329,7 +324,6 @@ export class RoomManager extends EventEmitter {
     clearTimeout(room.idleTimer);
     this.#rooms.delete(room.id);
     for (const c of this.#clients.values()) if (c.previousRoomId === room.id) c.previousRoomId = null;
-    this.emit('change', room.id);
   }
 
   play(id, { items, index = 0, positionMs = 0, paused = false } = {}) {
@@ -361,7 +355,6 @@ export class RoomManager extends EventEmitter {
     room.queueVersion++;
     this.#pushController(room);
     this.#save();
-    this.#changed(room);
     return room.queue.length;
   }
 
@@ -384,7 +377,6 @@ export class RoomManager extends EventEmitter {
     for (const cid of room.members) this.#join(room, this.#clients.get(cid));
     stream.play({ live: feed({ item, startMs: 0, live: true, get index() { return room.index; } }) });
     for (const cid of room.members) this.#sendGroup(this.#clients.get(cid));
-    this.#changed(room);
     return this.getRoom(id);
   }
 
@@ -448,7 +440,6 @@ export class RoomManager extends EventEmitter {
       from.vis?.removeMember(clientId);
       if (!from.members.length && from.state === 'playing') this.#halt(from, 'paused');
       this.#pushController(from);
-      this.#changed(from);
     }
     this.#clients.delete(clientId);
     this.#releaseSoloRooms(c);
@@ -568,7 +559,6 @@ export class RoomManager extends EventEmitter {
     });
     this.#pushController(room);
     this.#save();
-    this.#changed(room);
   }
 
   // One EQ per room, for whatever plays from its queue (a line-in stays unequalised). A change while playing
@@ -584,7 +574,6 @@ export class RoomManager extends EventEmitter {
       if (!done) this.#start(room, this.#currentIndex(room), this.#currentPosition(room));
     }
     this.#save();
-    this.#changed(room);
     return { ...room.eq, gains: room.eq.gains.slice() };
   }
 
@@ -599,7 +588,6 @@ export class RoomManager extends EventEmitter {
     room.queueVersion++;
     this.#pushController(room);
     this.#save();
-    this.#changed(room);
   }
 
   // Sonos followers (sonos.js): a Sonos is in at most one room; adding it elsewhere moves it.
@@ -679,7 +667,6 @@ export class RoomManager extends EventEmitter {
     if (!this.#rooms.has(room.id)) return;
     this.#pushController(room);
     this.#save();
-    this.#changed(room);
   }
 
   #client(id, name = null) {
@@ -748,7 +735,6 @@ export class RoomManager extends EventEmitter {
       }
       if (!from.members.length && from.state === 'playing') this.#halt(from, 'paused');
       this.#pushController(from);
-      this.#changed(from);
     }
     target.members.push(c.id);
     c.roomId = target.id;
@@ -759,7 +745,6 @@ export class RoomManager extends EventEmitter {
     if (target.state === 'playing') this.#join(target, c);
     else this.#idleLater(target);
     this.#pushController(target);
-    this.#changed(target);
   }
 
   #park(c, why) {
@@ -838,7 +823,6 @@ export class RoomManager extends EventEmitter {
       if (!prev) this.#parkLater(c);
       else if (prev.available !== false) this.#park(c, 'unavailable');
       this.#pushController(room);
-      this.#changed(room);
       return;
     }
     if (room.state === 'playing') {
@@ -849,7 +833,6 @@ export class RoomManager extends EventEmitter {
     const before = prev ? JSON.stringify(prev.roles?.artwork ?? null) : null;
     if (before !== JSON.stringify(next.roles?.artwork ?? null) || prev?.available === false) this.#syncArtwork(c, room);
     this.#pushController(room);
-    this.#changed(room);
   }
 
   #onCommand(c, { controller: cmd }) {
@@ -939,7 +922,6 @@ export class RoomManager extends EventEmitter {
     stream.play(this.#tracksFrom(room, index, positionMs));
     for (const cid of room.members) this.#sendGroup(this.#clients.get(cid));
     this.#save();
-    this.#changed(room);
   }
 
   #jump(room, index, positionMs) {
@@ -952,7 +934,6 @@ export class RoomManager extends EventEmitter {
     this.#pushTrackState(room, this.#now());
     this.#pushController(room);
     this.#save();
-    this.#changed(room);
     return undefined;
   }
 
@@ -1044,7 +1025,6 @@ export class RoomManager extends EventEmitter {
     room.queueVersion++;
     this.#pushController(room);
     this.#save();
-    this.#changed(room);
   }
 
   #dropCurrent(room, cur, keep, nextQueue) {
@@ -1121,7 +1101,6 @@ export class RoomManager extends EventEmitter {
     this.#pushController(room);
     this.#idleLater(room);
     this.#save();
-    this.#changed(room);
   }
 
   #idleLater(room) {
@@ -1253,14 +1232,23 @@ export class RoomManager extends EventEmitter {
     if (announce) this.#pushTrackState(room, entry.timestampUs, entry);
     this.#pushController(room);
     this.#save();
-    this.#changed(room);
     this.#autoDjCheck(room);
   }
 
   // Who listens: the user who last controlled the room from Velvet; Auto-DJ's user when no one did.
+  // Returns the previous listener when it changed (null when there was none), undefined when nothing changed.
   setListener(id, username) {
     const room = this.#rooms.get(id);
-    if (!room || !username || room.listener === username) return;
+    if (!room || !username || room.listener === username) return undefined;
+    const prev = room.listener;
+    room.listener = username;
+    this.#save();
+    return prev;
+  }
+
+  restoreListener(id, username) {
+    const room = this.#rooms.get(id);
+    if (!room || room.listener === username) return;
     room.listener = username;
     this.#save();
   }
@@ -1290,7 +1278,6 @@ export class RoomManager extends EventEmitter {
       Promise.resolve(this.#hook('scrobble', ctx)).then((done) => {
         if (room.listen !== listen || !done) return;
         listen.scrobble = done;
-        this.#changed(room);
       });
     }, wait);
     listen.timer.unref?.();
@@ -1337,7 +1324,6 @@ export class RoomManager extends EventEmitter {
     room.autoDj = on && user ? { on: true, user, rg, settings, state: state === undefined ? (was?.state ?? null) : state } : null;
     if (Boolean(was) !== Boolean(room.autoDj) || was?.user !== room.autoDj?.user) this.#note(room, `Auto-DJ ${room.autoDj ? `on (${user})` : 'off'}`);
     this.#save();
-    this.#changed(room);
     this.#autoDjCheck(room);
     return this.getRoom(id);
   }
@@ -1686,10 +1672,6 @@ export class RoomManager extends EventEmitter {
       this.#log?.debug?.(`[sendspin] ${c.id.slice(0, 8)}: ${err.message}`);
       return undefined;
     }
-  }
-
-  #changed(room) {
-    if (room) this.emit('change', room.id);
   }
 
   #view(room, { queue }) {

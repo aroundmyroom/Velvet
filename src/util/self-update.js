@@ -5,7 +5,7 @@
 
 const SEMVER = /^v?(\d+)\.(\d+)\.(\d+)$/;
 
-export function parseVersion(v) {
+function parseVersion(v) {
   const m = SEMVER.exec(String(v || '').trim());
   return m ? [Number(m[1]), Number(m[2]), Number(m[3])] : null;
 }
@@ -43,7 +43,7 @@ export function parseGitHubRelease(json) {
 // Files the server rewrites on every boot (version cache-busters). A diff in only
 // these is not "local changes" — they are regenerated anyway, so the updater may
 // discard them rather than refuse.
-export const AUTO_STAMPED_FILES = new Set([
+const AUTO_STAMPED_FILES = new Set([
   'webapp/index.html', 'webapp/mobile/index.html', 'webapp/shared/index.html',
   'webapp/admin/index.html', 'webapp/package.json', 'webapp/app.js',
 ]);

@@ -15,7 +15,7 @@ from .const import DOMAIN, SCAN_INTERVAL_ACTIVE, SCAN_INTERVAL_IDLE
 
 _LOGGER = logging.getLogger(__name__)
 
-ACTIVE_STATES = {"playing", "buffering"}
+ACTIVE_STATES = {"playing"}
 
 type Rooms = dict[str, dict[str, Any]]
 

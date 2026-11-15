@@ -37,15 +37,24 @@ async function eventOf(ctx) {
   return (await ctx.started)?.eventId ?? null;
 }
 
+// roomId → the room's last end hook, resolving to the event it closed. The next song's start waits for it: with
+// repeat-one the same song follows itself, and the Wrapped dedupe would otherwise resume the play that just ended.
+const lastEnd = new Map();
+
 export const roomListen = {
   start(ctx) {
     const user = userFor(ctx.user);
     if (!user) return null;
     const fp = ctx.item.filepath;
-    // A song taken over mid-way was counted where it started.
-    if (ctx.startMs === 0) logPlay(user, fp).catch((e) => console.debug('[velvet]', e?.message ?? e));
-    ctx.started = wrapped.playStart(user, { filePath: fp, sessionId: `room-${ctx.roomId.slice(0, 16)}-${BOOT}`, source: ctx.source })
+    const sessionId = `room-${ctx.roomId.slice(0, 16)}-${BOOT}`;
+    ctx.started = Promise.resolve(lastEnd.get(ctx.roomId))
+      .then((ended) => wrapped.playStart(user, { filePath: fp, sessionId, source: ctx.source, notEventId: ended }))
       .catch((e) => console.debug('[velvet]', e?.message ?? e));
+    // A song taken over mid-way, or at 0 while the web player or another room still had it open (it resumes that
+    // play), was counted where it started.
+    ctx.started.then((s) => {
+      if (ctx.startMs === 0 && !s?.resumed) return logPlay(user, fp);
+    }).catch((e) => console.debug('[velvet]', e?.message ?? e));
     const lb = lbActive(user);
     if (lb) safe(() => lbPlayingNow(user, fp));
     return { lastfm: lastfmActive(user) ? 'pending' : 'off', listenbrainz: lb ? 'pending' : 'off' };
@@ -71,12 +80,18 @@ export const roomListen = {
     if (user && eventId) wrapped.playPause(user, { eventId });
   },
 
-  async end(ctx, { how, playedMs }) {
-    const user = userFor(ctx.user);
-    const eventId = await eventOf(ctx);
-    if (!user || !eventId) return;
-    if (how === 'end') wrapped.playEnd(user, { eventId, playedMs });
-    else if (how === 'skip') wrapped.playSkip(user, { eventId, playedMs });
-    else wrapped.playStop(user, { eventId, playedMs });
+  end(ctx, { how, playedMs }) {
+    const done = (async () => {
+      const user = userFor(ctx.user);
+      const eventId = await eventOf(ctx);
+      if (!user || !eventId) return null;
+      if (how === 'end') wrapped.playEnd(user, { eventId, playedMs });
+      else if (how === 'skip') wrapped.playSkip(user, { eventId, playedMs });
+      else wrapped.playStop(user, { eventId, playedMs });
+      return eventId;
+    })();
+    const kept = done.catch(() => null);
+    lastEnd.set(ctx.roomId, kept);
+    return done;
   },
 };

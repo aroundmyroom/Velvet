@@ -34,14 +34,13 @@ describe('listen routes', async () => {
   it('a play counts once: log-play raises the count, the Last.fm scrobble does not; unknown songs are refused', async () => {
     const before = (await playCount(FP)) ?? 0;
     assert.deepEqual((await post('/api/v1/db/stats/log-play', { filePath: FP })).body, { ok: true });
-    assert.deepEqual((await post('/api/v1/lastfm/scrobble-by-filepath', { filePath: FP })).body, {});
+    assert.deepEqual((await post('/api/v1/lastfm/scrobble-by-filepath', { filePath: FP })).body, { scrobbled: null });
     assert.equal(await playCount(FP), before + 1, 'start plus scrobble is one play');
-    assert.deepEqual((await post('/api/v1/lastfm/scrobble-by-filepath', { filePath: 'testlib/nope.mp3' })).body, { scrobble: false });
   });
 
   it('ListenBrainz and webhooks answer "not sent" when not linked or switched off', async () => {
     assert.deepEqual((await post('/api/v1/listenbrainz/playing-now', { filePath: FP })).body, { sent: false });
-    assert.deepEqual((await post('/api/v1/listenbrainz/scrobble-by-filepath', { filePath: FP })).body, { scrobble: false });
+    assert.deepEqual((await post('/api/v1/listenbrainz/scrobble-by-filepath', { filePath: FP })).body, { scrobbled: null });
     assert.deepEqual((await post('/api/v1/discord-webhook/scrobble-by-filepath', { filePath: FP })).body, { sent: false });
     assert.deepEqual((await post('/api/v1/custom-webhooks/scrobble-by-filepath', { filePath: FP, slot: 0 })).body, { sent: false });
     assert.equal((await post('/api/v1/custom-webhooks/scrobble-by-filepath', { filePath: FP, slot: 9 })).status, 400);

@@ -1,10 +1,10 @@
 **DB Status**
 ----
-  Checks if a scan is in progress. 
+  Checks if a scan is in progress.
 
 * **URL**
 
-  /db/status
+  `/api/v1/db/status`
 
 * **Method:**
 
@@ -15,11 +15,16 @@
   * **Code:** 200 <br />
     **Content:**
 
-    ```
+    ```json
     {
-      locked: false,
-      totalFileCount: 150
+      "totalFileCount": 150,
+      "locked": false,
+      "vpaths": ["Music"],
+      "scanningVpaths": []
     }
     ```
 
-    `locked` will be true if a scan is in progress.  
+    - `totalFileCount` — number of files in the user's vpaths
+    - `locked` — `true` while a scan is in progress
+    - `vpaths` — the user's vpaths
+    - `scanningVpaths` — the scans in progress for the user's vpaths

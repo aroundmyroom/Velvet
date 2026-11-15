@@ -3,6 +3,13 @@
 > Refined: player queue clarified · scope locked to albumsOnly=true · MusicBrainz API confirmed · Subsonic extension mapped.  
 > Rescan is acceptable and included where it adds value.
 
+> **Status: built.** All 8 items in §10 are in the code. Differences from the plan:
+> - `albums-browse.js` per-track artist is `album_artist || artist` (album artist
+>   **first**), not the planned `artist || album_artist` fallback.
+> - Subsonic `albumArtist` is not gated on albumsOnly; it is sent whenever it is set and
+>   differs from the track artist. `buildSong` also sends `displayAlbumArtist`.
+> - Line numbers quoted below are from planning time and no longer match.
+
 ---
 
 ## 1. The rule — one sentence
@@ -28,7 +35,7 @@ Enhanced attribution is only meaningful in the **albumsOnly = true** context. Re
 | Scanner reads ALBUMARTIST tag | `music-metadata` exposes `common.albumartist`; scanner stores it in `files.album_artist` |
 | DB column exists | `files.album_artist` added via migration — present on all live instances |
 
-### Gaps to fix
+### Gaps to fix (all fixed now — see §10)
 
 | # | Where | Problem |
 |---|-------|---------|
@@ -72,6 +79,8 @@ Also expose the raw field for card-level use:
 "album-artist": row.album_artist || null,
 ```
 
+**Built:** both lines are in `renderMetadataObj()`.
+
 ---
 
 ## 4. albumsOnly scope — what it means in practice
@@ -84,7 +93,7 @@ The **enhanced display** (album card attribution, Subsonic `albumArtist`, explic
 
 In practice **albums-browse.js is inherently albumsOnly-only** — so all display code in that file is automatically scoped correctly.
 
-For Subsonic: gate `albumArtist` on whether the song's vpath is albumsOnly (§7 below).  
+For Subsonic: gate `albumArtist` on whether the song's vpath is albumsOnly (§7 below). (Not built: no gate.)  
 For `renderMetadataObj`: the fallback fires universally but is harmless — it only triggers when `artist` is NULL, which in a Recordings/YouTube vpath would simply stay NULL anyway.
 
 ---
@@ -112,7 +121,7 @@ For joint-credit releases:
 → build string: `credits.map(c => (c.name || c.artist?.name || '') + (c.joinphrase || '')).join('')`
 → result: `"Giorgio Moroder & Donna Summer"`
 
-### Current code (`src/util/mb-enrich-worker.mjs` line 208)
+### Code at planning time (`src/util/mb-enrich-worker.mjs`)
 
 ```js
 const mbArtist = apiData['artist-credit']?.[0]?.artist?.name ?? null;   // recording artist — already used
@@ -121,7 +130,10 @@ const mbArtist = apiData['artist-credit']?.[0]?.artist?.name ?? null;   // recor
 
 ### Fix — extract release artist
 
-Add after line 208:
+**Built:** `mbAlbumArtist` is built from `best['artist-credit']` (with `??` instead of
+`||`) and saved to `files.mb_album_artist`.
+
+Add after the `mbArtist` line:
 ```js
 const mbAlbumArtist = best['artist-credit']
   ?.map(c => (c.name || c.artist?.name || '') + (c.joinphrase || ''))
@@ -162,8 +174,13 @@ if (tags.album_artist != null) args.push('-metadata', `album_artist=${tags.album
 ```
 (ffmpeg uses the key `album_artist` for ALBUMARTIST/TPE2 across all formats — MP3, FLAC, OGG, M4A.)
 
+**Built:** `_buildFinalTags()` sets `album_artist: t.mb_album_artist ?? t.album_artist ?? null`.
+`writeTagsToFile()` passes `album_artist` to `writeTags()` in `src/util/ffmpeg-tags.js`
+(the shared ffmpeg tag writer) instead of building args itself.
+
 `db.updateFileTags()` in `src/db/sqlite-backend.js`:
-Add `album_artist` to the UPDATE SET list and bind parameter.
+Add `album_artist` to the UPDATE SET list and bind parameter. (Built; it also refreshes
+the FTS row.)
 
 **Effect:** After Tag Workshop accepts an album, ALBUMARTIST is written to every file in the release. The `album_artist` column in the DB is updated immediately — no rescan needed for those files.
 
@@ -226,17 +243,25 @@ Add to `getOpenSubsonicExtensions`:
 
 This signals to OpenSubsonic-aware clients that `albumArtist` and (optionally) `albumArtistId` are present.
 
+**Built:** `buildSong()` adds `albumArtist` (when different from the artist) and
+`displayAlbumArtist`; `buildAlbum()` uses `album_artist || artist`; `albumArtist` v1 is
+in `getOpenSubsonicExtensions`. `albumArtistId` is not sent.
+
 ---
 
 ## 8. albums-browse.js — per-track artist fallback
 
-In `src/api/albums-browse.js` line 269:
+In `src/api/albums-browse.js` (track list builder):
 ```js
 // Before:
 artist: e.row.artist || null,
 // After:
 artist: e.row.artist || e.row.album_artist || null,
 ```
+
+**Built differently:** the code is `artist: e.row.album_artist || e.row.artist || null`,
+so on album pages the album artist wins over the track artist (a VA compilation track
+shows the album artist when the `ALBUMARTIST` tag is set).
 
 Also verify that `getFilesForAlbumsBrowse()` in `src/db/sqlite-backend.js` includes `f.album_artist` in the SELECT — add it if not already present.
 
@@ -254,9 +279,15 @@ When the main FTS search returns no artist matches, run a secondary `LIKE` query
 
 **Recommendation:** Option A — add `album_artist` to fts_files. The "Various Artists" noise is manageable because search UI de-duplicates results. The real benefit is that tracks with `artist=NULL` (CUE albums, some classical) become searchable by their album artist name.
 
+**Built (Option A):** `fts_files` now has `title, artist, album_artist, album, album_version, filepath`.
+At startup, if the table lacks `album_artist` or `album_version`, it is dropped,
+recreated and rebuilt.
+
 ---
 
 ## 10. Full implementation map — ordered by priority
+
+All 8 rows are built (row 2 with album artist first, see §8).
 
 | # | File(s) | Change | Impact | Effort |
 |---|---------|--------|--------|--------|
@@ -276,5 +307,5 @@ When the main FTS search returns no artist matches, run a secondary `LIKE` query
 - **Artists browse**: already correct with `COALESCE(album_artist, artist)` throughout
 - **Artist rebuild worker**: correct
 - **ReplayGain grouping**: correct
-- **Album grid card artist label in albums-browse**: comes from **folder path structure** for albumsOnly content, not from tags — intentional and correct
+- **Album grid card artist label in albums-browse**: comes from **folder path structure** for albumsOnly content, not from tags — intentional and correct (still true: "Artist - Album" folder name, then the parent folder. Albums also carry majority `album_artist || artist` tags, used to match albums to artist profiles)
 - **Tag display in recently-added view**: the `album-artist` field added to `renderMetadataObj` (item 1 above) is available; the client can decide when to show it on album cards in that view

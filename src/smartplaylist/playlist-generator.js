@@ -16,10 +16,11 @@
  */
 
 import winston from 'winston';
-import * as db from '../db/sqlite-backend.js';
+import * as db from '../db/manager.js';
 import * as config from '../state/config.js';
 import { extractVector, cosineSimilarity, emaUpdate } from './feature-extractor.js';
 import * as broker from '../state/bg-task-broker.js';
+import { rootVpathOf } from '../util/vpath.js';
 
 const SLOTS             = ['morning', 'afternoon', 'evening', 'night'];
 const PLAYLIST_SIZE     = 50;
@@ -29,7 +30,7 @@ const MIN_PLAYS_TO_GEN   = 3;      // minimum plays before generating
 const NEUTRAL_PROFILE    = Object.freeze([0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5]);
 
 /** Map a 0–23 hour to a slot name. */
-export function hourToSlot(hour) {
+function hourToSlot(hour) {
   if (hour >= 6  && hour < 11) return 'morning';
   if (hour >= 11 && hour < 17) return 'afternoon';
   if (hour >= 17 && hour < 22) return 'evening';
@@ -93,16 +94,27 @@ function processEventsForUser(userId) {
   }
 }
 
+// DB rows carry ROOT vpaths only: a user who has a child folder (and not its
+// root) reads the root's rows below the child's prefix.
+function userTrackScope(userCfg, folders = config.program.folders ?? {}) {
+  const names = (userCfg.vpaths?.length ? userCfg.vpaths : Object.keys(folders)).filter(v => folders[v]?.root);
+  const located = names.map(n => rootVpathOf(n, folders));
+  const whole = new Set(located.filter(l => !l.prefix).map(l => l.vpath));
+  const prefixes = located.filter(l => l.prefix && !whole.has(l.vpath));
+  return {
+    dbVpaths: [...new Set(located.map(l => l.vpath))],
+    inScope: t => whole.has(t.vpath) || prefixes.some(p => p.vpath === t.vpath && t.filepath.startsWith(p.prefix)),
+  };
+}
+
 /** Generate and cache playlists for one user. */
 function generatePlaylistsForUser(userId) {
   const userCfg = config.program.users?.[userId];
   if (!userCfg) return;
-  const vpaths = Array.isArray(userCfg.vpaths) && userCfg.vpaths.length > 0
-    ? userCfg.vpaths
-    : Object.keys(config.program.folders ?? {});
-  if (vpaths.length === 0) return;
+  const { dbVpaths, inScope } = userTrackScope(userCfg);
+  if (dbVpaths.length === 0) return;
 
-  const tracks = db.spGetAllTracksWithFeatures(vpaths);
+  const tracks = db.spGetAllTracksWithFeatures(dbVpaths).filter(inScope);
   if (tracks.length === 0) return;
 
   for (const slot of SLOTS) {
@@ -111,8 +123,8 @@ function generatePlaylistsForUser(userId) {
 
     const profile = JSON.parse(row.profile);
     const scored  = tracks.map(t => {
-      const nullCount = [t.genre, t.bpm, t.musical_key, t.danceability, t.loudness].filter(v => v == null).length;
-      const quality   = 1 - (nullCount / 5) * 0.5;
+      const nullCount = [t.genre, t.bpm, t.musical_key].filter(v => v == null).length;
+      const quality   = 1 - (nullCount / 3) * 0.5;
       return { fullpath: t.vpath + '/' + t.filepath, artist: (t.artist || '').trim().toLowerCase(), score: cosineSimilarity(profile, extractVector(t)) * quality };
     });
     scored.sort((a, b) => b.score - a.score);
@@ -161,7 +173,7 @@ async function _doGeneration() {
  * Deduplicated — multiple calls before the previous cycle starts collapse
  * into one execution.  Automatically deferred if a scan is in progress.
  */
-export function runGeneration() {
+function runGeneration() {
   broker.submit('smart-playlist', 'ML generation', _doGeneration);
 }
 
@@ -170,8 +182,11 @@ export function triggerGeneration() {
   setImmediate(() => runGeneration());
 }
 
-/** Start the hourly cron. Called once at server boot (from routes.js setup). */
+let _cronStarted = false;
+
 export function startCron() {
+  if (_cronStarted) return;
+  _cronStarted = true;
   // Initial run 2 minutes after boot (let the server finish starting)
   setTimeout(() => triggerGeneration(), 2 * 60 * 1000);
   // Then every hour

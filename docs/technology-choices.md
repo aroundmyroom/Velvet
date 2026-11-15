@@ -9,7 +9,7 @@ Every external service, library, and binary used in Velvet was a deliberate choi
 **What it does in Velvet:** Four distinct jobs:
 
 1. **Transcoding** — Re-encodes any audio file on-the-fly to MP3, Opus, or AAC at the bitrate the client requests. This is how a FLAC file on your server plays on a phone with limited bandwidth: the server decodes FLAC and pipes compressed audio directly to the browser.
-2. **Waveform generation** — Decodes audio to raw PCM (32-bit floilat, 8000 Hz mono) via a pipe. Server-side JavaScript then computes 600 RMS values with a γ=0.7 perceptual curve and caches the result. This gives the seek bar its waveform display.
+2. **Waveform generation** — Decodes audio to raw PCM (32-bit float, 4000 Hz mono) via a pipe. Server-side JavaScript then computes 600 RMS values with a γ=0.7 perceptual curve and caches the result. This gives the seek bar its waveform display.
 3. **Scan error repair** — Re-muxes corrupt FLAC, MP3, and WAV files in-place (stream-copy first, then a full re-encode fallback). Strips broken APEv2 tags and corrupt embedded images. Available from the Admin → Scan Errors panel.
 4. **Tag writing** — Rewrites ID3/Vorbis tags (title, artist, album, year, genre) without re-encoding the audio, using FFmpeg's `-metadata` flag with `-c copy`.
 
@@ -24,9 +24,9 @@ FFmpeg is the most complete open-source media processing toolkit that exists. Th
 | GStreamer | Complex pipeline setup; no easy Node.js bindings for streaming |
 | sox | No codec coverage for modern formats (Opus, AAC) |
 
-FFmpeg handles every format in the supported list (FLAC, MP3, AAC, Opus, OGG, WAV, AIFF, W64…) with a single statically linked binary, and the `fluent-ffmpeg` wrapper makes it straightforward to pipe from FFmpeg into an HTTP response stream.
+FFmpeg handles every format in the supported list (FLAC, MP3, AAC, Opus, OGG, WAV, AIFF, W64…) with a single statically linked binary. Velvet spawns it directly (`node:child_process`) and pipes its output into the HTTP response stream; there is no wrapper library.
 
-The binary is bundled in `bin/ffmpeg/` so users do not need to install it separately.
+`src/util/ffmpeg-bootstrap.js` downloads a static build (BtbN) into `bin/ffmpeg/` on first start, or when the binary there is older than v6, so users do not need to install it separately.
 
 ---
 
@@ -46,15 +46,15 @@ The binary is bundled in `bin/ffmpeg/` so users do not need to install it separa
 
 LRCLIB is the only service that is completely free, requires no API key or account, and provides synced LRC lyrics for western music. It is also open-source — anyone can run their own instance or contribute lyrics.
 
-**How the matching works:** A single exact-match call is made to lrclib's `/api/get` endpoint with artist, title, and the track's duration (in seconds). The duration comes from the database (populated at scan time), not the audio element, which may report an imprecise or zero value for freshly-loaded tracks. If the API returns no match, the lookup is simply skipped — no fallback, no fuzzy search. A wrong version of the lyrics (e.g. the 12-inch remix timestamps applied to the radio edit) plays out of sync and is actively misleading, so no result is always preferred over a wrong result.
+**How the matching works:** Velvet calls lrclib's `/api/get` endpoint with artist, title and the track's duration (in seconds). The duration comes from the database (populated at scan time) when it has one, otherwise from the client. If that exact-duration call finds nothing (or the track has no duration), a second call is made without a duration, matching on artist and title only.
 
-Results are cached in `save/lyrics/` so each track is only fetched once. Tracks with no duration in the database return `notFound` immediately without making a network request.
+Successful results are cached in `save/lyrics/` so each track is only fetched once. "Not found" is never cached, so a later lookup tries again.
 
 ---
 
 ## Discogs — Album Art
 
-**What it does:** Fetches cover art for tracks that have no embedded album art. It searches the Discogs database by artist + album name, downloads the cover image, and saves it to `image-cache/` along with two thumbnail sizes.
+**What it does:** Fetches cover art for tracks that have no embedded album art. It searches the Discogs database by artist + album name, downloads the cover image, and saves it to `image-cache/` along with three thumbnail sizes (`zs-` 92 px, `zl-` 256 px, `zm-` 512 px).
 
 **Why Discogs and not MusicBrainz, Spotify, or others?**
 
@@ -97,24 +97,6 @@ Last.fm's artist similarity data is mature, well-populated, and requires only a 
 
 ---
 
-## Syncthing — Library Sync (Federation)
-
-**What it does:** The Federation feature lets you sync your music library between two Velvet instances — for example, keeping a home server and a travel laptop in sync. Velvet bundles the Syncthing binary, spawns it as a background process, and exposes a simplified setup UI in the admin panel. The Syncthing web UI is proxied through Velvet so you do not need to open a separate port.
-
-**Why Syncthing and not Dropbox, rsync, or others?**
-
-| Tool | Self-hosted | No cloud | Platform-independent | Notes |
-|---|---|---|---|---|
-| **Syncthing** | Yes | Yes — peer-to-peer | Yes | Open-source, no accounts, encrypted, battle-tested |
-| Dropbox / Google Drive | No | No — cloud middleman | Yes | Files pass through a third-party server; storage costs money; not suitable for multi-hundred-GB libraries |
-| rsync | Yes | Yes | Linux/macOS only | No GUI; one-directional; no continuous sync |
-| Nextcloud | Yes | Yes | Yes | Heavy; requires a full web stack installation |
-| rclone | Yes | Yes | Yes | CLI-only; complex setup for non-technical users |
-
-Syncthing is the only option that is entirely self-hosted, encrypted, peer-to-peer (no files go through any external server), cross-platform, and bundleable as a single binary. The Velvet Federation system automates the Syncthing configuration so users do not need to understand Syncthing at all — it just works from the admin panel.
-
----
-
 ## Butterchurn / Milkdrop Visualizer
 
 **What it does:** Renders the Milkdrop full-screen music visualizer using WebGL. Milkdrop is a shader-based visualizer with hundreds of community presets that animate in sync with the audio. Butterchurn is a JavaScript port of Winamp's Milkdrop 2 plugin.
@@ -123,7 +105,7 @@ Syncthing is the only option that is entirely self-hosted, encrypted, peer-to-pe
 
 Milkdrop has one of the largest and most creative preset libraries of any music visualizer ever made — most of it created by the community over 20+ years. Butterchurn makes this entire history available in a browser tab via WebGL with no plugin required. It is also open-source.
 
-Alternatives like [Leva](https://github.com/Leva-org/leva) or custom GLSL visualizers do not have this preset depth, and building a shader visualizer from scratch would be a significant engineering effort for diminishing returns when Butterchurn already exists.
+Custom GLSL visualizers do not have this preset depth, and building a shader visualizer from scratch would be a significant engineering effort for diminishing returns when Butterchurn already exists.
 
 The preset library is bundled in `webapp/assets/js/lib/` so it works fully offline.
 
@@ -168,11 +150,11 @@ Velvet is a personal self-hosted music server. It is designed to run on a Raspbe
 - **Zero-install** — no separate database server process
 - **Built into Node.js v22** via the `node:sqlite` module (`DatabaseSync`) — no native addon or third-party driver needed
 - **Adequate performance** — WAL mode, a 32 MB page cache, and prepared statements handle even 100,000+ track libraries without event-loop stalls
-- **Single file** — the entire database is `velvet.sqlite`; backup = copy one file
+- **Single file** — the entire database is `velvet.sqlite`; a backup is one consistent snapshot of it (`VACUUM INTO`, see [backup.md](backup.md))
 
 PostgreSQL or MySQL would require a running database server, a separate install step, and connection management. For a single-user personal server that holds music metadata, that is unjustified complexity.
 
-LokiJS (in-memory JSON database) is still supported as a legacy fallback for installations that pre-date the SQLite migration, but SQLite is the default and recommended engine.
+SQLite is the only database engine.
 
 ---
 
@@ -182,20 +164,24 @@ LokiJS (in-memory JSON database) is still supported as a legacy fallback for ins
 
 ```
 MediaElementSource
-  → AnalyserNode      (visualizer tap)
+  → GainNode          (per-element, for gapless/crossfade switching)
   → GainNode          (ReplayGain normalisation)
+  → GainNode          (fixed headroom gain)
   → 8× BiquadFilter   (equaliser bands)
-  → GainNode          (master volume)
+      ├→ AnalyserNode (Milkdrop tap, pre-balance)
   → StereoPannerNode  (stereo balance)
-  → GainNode          (per-element, for crossfade)
+      ├→ L/R AnalyserNodes (VU / spectrum, post-balance)
+  → GainNode          (cast mute: 0 while casting to MPV/Sonos)
   → AudioContext.destination
 ```
+
+Volume is set on the audio element itself.
 
 **Why build this rather than using an audio library?**
 
 No JavaScript audio library provides gapless playback, crossfade, a full EQ, ReplayGain normalisation, stereo balance, and a visualizer tap — all simultaneously — without browser plugins. The Web Audio API is a browser standard (no library needed) and gives direct access to the audio graph at every point. This makes it possible to:
 
-- Tap the signal before the StereoPannerNode for the visualizer (so balance changes do not skew the spectrum display)
+- Tap the signal before the StereoPannerNode for the Milkdrop visualizer (so balance changes do not skew it), and after it for the VU meters (so they show the balance)
 - Apply ReplayGain as a `GainNode` without any perceived volume jump between tracks
 - Schedule gapless crossfades using `AudioContext.currentTime` for sample-accurate timing
 
@@ -228,10 +214,9 @@ The Open Subsonic extension layer (`openSubsonic: true`) allows newer clients to
 | Technology | Category | Why chosen |
 |---|---|---|
 | FFmpeg | Audio processing | Only tool covering all formats; transcoding + waveform + repair + tag writing in one binary |
-| LRCLIB | Lyrics | Free, no API key, synced LRC timestamps, open-source, exact-match-only (no wrong versions) |
+| LRCLIB | Lyrics | Free, no API key, synced LRC timestamps, open-source; duration-matched first |
 | Discogs | Album art | Best catalogue depth for physical/vinyl releases; free personal-use API; cacheable images |
 | Last.fm | Scrobbling + AutoDJ | De facto scrobbling standard; free similar-artist data; no OAuth for lookups |
-| Syncthing | Library sync | Self-hosted, peer-to-peer, encrypted, bundleable as one binary, no cloud required |
 | Butterchurn | Milkdrop visualizer | 20+ years of community presets; WebGL; open-source; no alternative has this library |
 | audioMotion-analyzer | Spectrum visualizer | Logarithmic scaling, octave bands, multiple modes; saves ~500 lines of custom canvas code |
 | VoltViz | Modern visualizer styles | 40+ WebGL/WebGPU styles, MIT; lazy-loaded so it costs nothing until used |

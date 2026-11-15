@@ -1,6 +1,5 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -8,22 +7,25 @@ import Joi from 'joi';
 import * as config from '../state/config.js';
 import * as dbManager from '../db/manager.js';
 import { resolvePathWithinRoot } from '../util/path-security.js';
+import { artFileName, writeArtWithThumbs } from '../util/art-cache.js';
 import { fetchPublicJson, fetchPublicUrlBuffer, isPrivateHost } from '../util/ssrf-check.js';
 import { getVPathInfo } from '../util/vpath.js';
 import { joiValidate } from '../util/validation.js';
 import { ffmpegBin } from '../util/ffmpeg-bootstrap.js';
+import { canEmbedCover, embedCover } from '../util/ffmpeg-tags.js';
+import { DISCOGS_USER_AGENT, discogsHeaders } from '../util/discogs-headers.js';
 
 const execFileAsync = promisify(execFile);
 
-const UA_BASE = 'Velvet/dev +https://github.com/aroundmyroom/Velvet';
+// Credentials for the genre enricher worker. Same switch as the routes here:
+// only an explicit enabled:false turns Discogs off.
+export function discogsCredentials(dc = config.program?.discogs) {
+  if (!dc?.apiKey || dc.enabled === false) return null;
+  return { apiKey: dc.apiKey, apiSecret: dc.apiSecret || '', userAgentTag: dc.userAgentTag || '' };
+}
 
-function discogsHeaders() {
-  const { apiKey, apiSecret, userAgentTag } = config.program.discogs;
-  const ua = userAgentTag ? `Velvet/dev/${userAgentTag} +https://github.com/aroundmyroom/Velvet` : UA_BASE;
-  return {
-    'User-Agent': ua,
-    'Authorization': `Discogs key=${apiKey}, secret=${apiSecret}`,
-  };
+function authHeaders() {
+  return discogsHeaders(config.program.discogs) || { 'User-Agent': DISCOGS_USER_AGENT };
 }
 
 async function discogsGet(url) {
@@ -32,7 +34,7 @@ async function discogsGet(url) {
     throw new Error('Discogs API host not allowed');
   }
   return fetchPublicJson(url, {
-    headers: discogsHeaders(),
+    headers: authHeaders(),
     allowedHosts: new Set(['api.discogs.com']),
     maxRedirects: 0,
     maxContentLength: 5 * 1024 * 1024,
@@ -41,7 +43,7 @@ async function discogsGet(url) {
 
 async function fetchImageBuf(url, useDiscogsAuth = true) {
   const buf = await fetchPublicUrlBuffer(url, {
-    headers: useDiscogsAuth ? discogsHeaders() : { 'User-Agent': UA_BASE },
+    headers: useDiscogsAuth ? authHeaders() : { 'User-Agent': DISCOGS_USER_AGENT },
     maxContentLength: 20 * 1024 * 1024,
   });
   // Validate JPEG magic bytes — redirects or HTML error pages must not be
@@ -230,12 +232,12 @@ export function setup(velvet) {
           discogsGet(`https://api.discogs.com/database/search?${params}`)
         )
       );
+      _throwIfAllRateLimited(searchSettled);
       const candidates = _buildCandidates(searchSettled, searches, artist);
       const choices    = await _resolveImages(candidates);
       res.json({ choices });
     } catch (e) {
-      const status = e?.response?.status;
-      if (status === 429) return res.status(429).json({ error: 'Discogs rate limit reached — please wait a minute before searching again' });
+      if (e?.httpStatus === 429) return res.status(429).json({ error: 'Discogs rate limit reached — please wait a minute before searching again' });
       res.status(500).json({ error: e.message });
     }
   });
@@ -246,6 +248,7 @@ export function setup(velvet) {
   // Accepts optional ?artist=&album= in addition to ?q= to allow server-side
   // smart query building (Presents stripping, catalog number injection).
   velvet.get('/api/v1/deezer/search', async (req, res) => {
+    if (req.user.admin !== true) return res.status(403).json({ error: 'Admin only' });
     let q = (req.query.q || '').trim();
     // Smart query: if artist+album are supplied separately, build a clean q.
     // Strip "X Presents" from artist — Deezer doesn't know about it.
@@ -260,7 +263,7 @@ export function setup(velvet) {
     try {
       const url = `https://api.deezer.com/search/album?q=${encodeURIComponent(q)}&limit=10`;
       const data = await fetchPublicJson(url, {
-        headers: { 'User-Agent': UA_BASE },
+        headers: { 'User-Agent': DISCOGS_USER_AGENT },
         allowedHosts: new Set(['api.deezer.com']),
         maxRedirects: 0,
         maxContentLength: 5 * 1024 * 1024,
@@ -289,7 +292,7 @@ export function setup(velvet) {
     try {
       const url = `https://itunes.apple.com/search?term=${encodeURIComponent(q)}&entity=album&limit=10`;
       const data = await fetchPublicJson(url, {
-        headers: { 'User-Agent': UA_BASE },
+        headers: { 'User-Agent': DISCOGS_USER_AGENT },
         allowedHosts: new Set(['itunes.apple.com']),
         maxRedirects: 0,
         maxContentLength: 5 * 1024 * 1024,
@@ -332,18 +335,14 @@ export function setup(velvet) {
     const absPath = pathInfo.fullPath;
     if (!fs.existsSync(absPath)) return res.status(404).json({ error: 'File not found' });
 
-    // WAV and AIFF containers don't support embedded cover art — cache to DB only
+    // WAV, AIFF and other containers without cover support — cache to DB only
     const extLower = path.extname(absPath).toLowerCase();
-    const cacheOnly = ['.wav', '.aiff', '.aif', '.w64'].includes(extLower);
+    const cacheOnly = !canEmbedCover(absPath);
 
-    // Declare temp paths before try so the catch block can clean them up.
     // tmpCover goes to the OS temp dir so it never appears as a visible file in
     // the user's NFS music directory during download.
-    // tmpOut must be in the same directory as absPath so fs.renameSync is a
-    // single-syscall atomic replace (same filesystem, avoids EXDEV errors).
     const _ts      = Date.now();
     const tmpCover = path.join(os.tmpdir(), `.velvet-cover-${_ts}.jpg`);
-    const tmpOut   = path.join(path.dirname(absPath), `.velvet-out-${_ts}${extLower}`);
 
     try {
       let imgUrl;
@@ -374,10 +373,8 @@ export function setup(velvet) {
       fs.writeFileSync(tmpCover, imgBuf);
 
       if (!cacheOnly) {
-        const ffmpegBinPath = ffmpegBin();
-        await _embedCoverArt(ffmpegBinPath, absPath, tmpCover, tmpOut);
-        fs.renameSync(tmpOut, absPath);
-        await _fixPtsIssues(ffmpegBinPath, absPath, tmpCover, extLower, _ts);
+        await embedCover({ input: absPath, artPath: tmpCover });
+        await _fixPtsIssues(absPath, tmpCover, extLower, _ts);
         // Keep DB mtime aligned with the rewritten file so incremental scans
         // don't treat this server-side edit as an external stale change.
         try {
@@ -410,7 +407,6 @@ export function setup(velvet) {
       res.json({ ok: true, aaFile, cacheOnly, coverFile: writtenCoverFile });
     } catch (e) {
       try { fs.unlinkSync(tmpCover); } catch (e) { console.debug('[velvet]', e?.message ?? e); }
-      try { fs.unlinkSync(tmpOut);   } catch (e) { console.debug('[velvet]', e?.message ?? e); }
       console.error('[discogs/embed] ERROR:', e);
       res.status(500).json({ error: e.message });
     }
@@ -478,7 +474,7 @@ export function setup(velvet) {
       const choices = await _resolveImages([{ result: { id: value.id, type: value.type } }]);
       res.json({ choices });
     } catch (e) {
-      const status = e?.response?.status === 429 ? 429 : 500;
+      const status = e?.httpStatus === 429 ? 429 : 500;
       res.status(status).json({ error: e.message || 'Discogs lookup failed' });
     }
   });
@@ -511,7 +507,7 @@ async function _deezerChoices(artist, album) {
   if (!q) return [];
   const url = `https://api.deezer.com/search/album?q=${encodeURIComponent(q)}&limit=10`;
   const data = await fetchPublicJson(url, {
-    headers: { 'User-Agent': UA_BASE },
+    headers: { 'User-Agent': DISCOGS_USER_AGENT },
     allowedHosts: new Set(['api.deezer.com']),
     maxRedirects: 0,
     maxContentLength: 5 * 1024 * 1024,
@@ -534,7 +530,7 @@ async function _itunesChoices(artist, album) {
   if (!q) return [];
   const url = `https://itunes.apple.com/search?term=${encodeURIComponent(q)}&entity=album&limit=10`;
   const data = await fetchPublicJson(url, {
-    headers: { 'User-Agent': UA_BASE },
+    headers: { 'User-Agent': DISCOGS_USER_AGENT },
     allowedHosts: new Set(['itunes.apple.com']),
     maxRedirects: 0,
     maxContentLength: 5 * 1024 * 1024,
@@ -563,7 +559,7 @@ async function _caaChoice(mbReleaseId) {
   let buf;
   try {
     buf = await fetchPublicUrlBuffer(`${base}/front-250`, {
-      headers: { 'User-Agent': UA_BASE },
+      headers: { 'User-Agent': DISCOGS_USER_AGENT },
       maxContentLength: 12 * 1024 * 1024,
     });
   } catch (e) {
@@ -831,6 +827,14 @@ function _buildCandidates(searchSettled, searches, artist) {
   return candidates;
 }
 
+// Lookups run side by side and single failures are skipped; when nothing came
+// back and Discogs answered 429, report the rate limit instead of "no results".
+function _throwIfAllRateLimited(settled) {
+  if (settled.some(s => s.status === 'fulfilled')) return;
+  const limited = settled.find(s => s.reason?.httpStatus === 429);
+  if (limited) throw limited.reason;
+}
+
 async function _resolveImages(candidates) {
   const imageSettled = await Promise.allSettled(
     candidates.slice(0, 12).map(async ({ result }) => {
@@ -849,6 +853,7 @@ async function _resolveImages(candidates) {
       return { releaseId, releaseTitle: release.title || result.title || '', year: String(release.year || result.year || ''), thumbB64 };
     })
   );
+  _throwIfAllRateLimited(imageSettled);
   const choices = [], seenReleases = new Set();
   for (const s of imageSettled) {
     if (choices.length >= 8) break;
@@ -862,19 +867,8 @@ async function _resolveImages(candidates) {
 
 // ── discogs/embed helpers ─────────────────────────────────────────────────────
 
-async function _embedCoverArt(ffmpegBinPath, absPath, tmpCover, tmpOut) {
-  await execFileAsync(ffmpegBinPath, [
-    '-y', '-i', absPath, '-i', tmpCover,
-    '-map', '0:a', '-map', '1:v',
-    '-c:a', 'copy', '-c:v', 'mjpeg',
-    '-disposition:v:0', 'attached_pic',
-    '-metadata:s:v', 'title=Cover (Front)',
-    '-metadata:s:v', 'comment=Cover (Front)',
-    tmpOut,
-  ]);
-}
-
-async function _fixPtsIssues(ffmpegBinPath, absPath, tmpCover, extLower, ts) {
+async function _fixPtsIssues(absPath, tmpCover, extLower, ts) {
+  const ffmpegBinPath = ffmpegBin();
   let probeStderr;
   try {
     const pr = await execFileAsync(ffmpegBinPath, ['-v', 'error', '-i', absPath, '-f', 'null', '-']);
@@ -887,43 +881,22 @@ async function _fixPtsIssues(ffmpegBinPath, absPath, tmpCover, extLower, ts) {
   console.warn('[discogs/embed] PTS issue detected — running recovery:', absPath);
   const dir        = path.dirname(absPath);
   const tmpRecover = resolvePathWithinRoot(dir, `.velvet-recover-${ts}${extLower}`);
-  const tmpReembed = resolvePathWithinRoot(dir, `.velvet-reembed-${ts}${extLower}`);
   try {
     await execFileAsync(ffmpegBinPath, ['-y', '-i', absPath, '-map', '0:a', '-c:a', 'copy', tmpRecover]);
-    await execFileAsync(ffmpegBinPath, [
-      '-y', '-i', tmpRecover, '-i', tmpCover,
-      '-map', '0:a', '-map', '1:v',
-      '-c:a', 'copy', '-c:v', 'mjpeg', '-r', '1',
-      '-disposition:v:0', 'attached_pic',
-      '-metadata:s:v', 'title=Cover (Front)',
-      '-metadata:s:v', 'comment=Cover (Front)',
-      tmpReembed,
-    ]);
-    fs.renameSync(tmpReembed, absPath);
+    await embedCover({ input: tmpRecover, output: absPath, artPath: tmpCover, fixPts: true });
     console.log('[discogs/embed] PTS recovery completed:', absPath);
   } catch (recovErr) {
     console.error('[discogs/embed] PTS recovery failed:', recovErr.message);
   } finally {
     try { fs.unlinkSync(tmpRecover); } catch (e) { console.debug('[velvet]', e?.message ?? e); }
-    try { fs.unlinkSync(tmpReembed); } catch (e) { console.debug('[velvet]', e?.message ?? e); }
   }
-}
-
-async function _generateThumbnails(imgBuf, artDir, aaFile) {
-  try {
-    if (imgBuf.length >= 100) {
-      const { default: sharp } = await import('sharp');
-      await sharp(imgBuf).resize(256, 256, { fit: 'inside', withoutEnlargement: true }).toFile(path.join(artDir, `zl-${aaFile}`));
-      await sharp(imgBuf).resize(92, 92, { fit: 'inside', withoutEnlargement: true }).toFile(path.join(artDir, `zs-${aaFile}`));
-    }
-  } catch (e) { console.debug('[velvet]', e?.message ?? e); }
 }
 
 function _cleanupOldArt(oldAaFile, newAaFile, artDir) {
   if (!oldAaFile || oldAaFile === newAaFile) return;
   try {
     if (dbManager.countArtUsage(oldAaFile) === 0) {
-      for (const prefix of ['', 'zl-', 'zs-']) {
+      for (const prefix of ['', 'zl-', 'zs-', 'zm-']) {
         try {
           fs.unlinkSync(resolvePathWithinRoot(artDir, prefix + oldAaFile));
         } catch (e) { console.debug('[velvet]', e?.message ?? e); }
@@ -933,16 +906,12 @@ function _cleanupOldArt(oldAaFile, newAaFile, artDir) {
 }
 
 async function _updateArtRecord(imgBuf, pathInfo, artDir, coverUrl, coverFile = null) {
-  const md5     = crypto.createHash('sha256').update(imgBuf).digest('hex');
-  const aaFile  = `${md5}.jpg`;
-  const artPath = path.join(artDir, aaFile);
+  const aaFile = artFileName(imgBuf, 'jpg');
 
   const oldRecord = dbManager.findFileByPath(pathInfo.relativePath, pathInfo.vpath);
   const oldAaFile = oldRecord?.aaFile || null;
 
-  if (!fs.existsSync(artPath)) fs.writeFileSync(artPath, imgBuf);
-
-  await _generateThumbnails(imgBuf, artDir, aaFile);
+  if (!await writeArtWithThumbs(artDir, imgBuf, aaFile)) console.debug('[velvet] discogs: could not make thumbnails for', aaFile);
 
   try {
     dbManager.updateFileArt(pathInfo.relativePath, pathInfo.vpath, aaFile, null, coverUrl ? 'deezer' : 'discogs', coverFile);

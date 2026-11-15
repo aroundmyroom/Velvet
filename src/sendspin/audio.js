@@ -6,9 +6,9 @@ import { eqFilterChain } from './eq.js';
 export const MASTER_BYTES_PER_SAMPLE = 4;
 export const MIN_CHUNK_MS = 15;
 export const MAX_CHUNK_MS = 150;
-export const DEFAULT_CHUNK_MS = { pcm: 25, flac: 50, opus: 20 };
+const DEFAULT_CHUNK_MS = { pcm: 25, flac: 50, opus: 20 };
 export const OPUS_SAMPLE_RATES = Object.freeze([8000, 12000, 16000, 24000, 48000]);
-export const OPUS_FRAME_MS = Object.freeze([20, 40, 60]);
+const OPUS_FRAME_MS = Object.freeze([20, 40, 60]);
 
 const STDERR_TAIL = 2048;
 const PROBE_TIMEOUT_MS = 5000;
@@ -124,6 +124,14 @@ function channelFilter(inputChannels, channels) {
   if (inputChannels === 1 && channels === 2) return 'pan=stereo|c0=c0|c1=c0';
   if (inputChannels === 2 && channels === 1) return 'pan=mono|c0=0.5*c0+0.5*c1';
   return null;
+}
+
+const MIN_GAIN_DB = -30;
+const MAX_GAIN_DB = 20;
+
+// ReplayGain/preamp values reach volume= filters with no limiter behind them
+export function clampGainDb(gainDb) {
+  return Number.isFinite(gainDb) ? Math.max(MIN_GAIN_DB, Math.min(MAX_GAIN_DB, gainDb)) : null;
 }
 
 export function createDecoder({
@@ -649,7 +657,7 @@ class PcmRepackEncoder extends Encoder {
 }
 
 // libopus pre-skip at 48 kHz for -application audio (2.5 ms lookahead + 4 ms delay compensation).
-export const OPUS_PRE_SKIP = 312;
+const OPUS_PRE_SKIP = 312;
 
 // Input samples to feed ahead of a splice so the packet grid lands on it: preRoll + pre-skip = one frame.
 export function opusPreRoll(inputRate, chunkMs) {

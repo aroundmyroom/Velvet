@@ -9,8 +9,8 @@ The Album Library is a dedicated, full-featured view for browsing, navigating, a
 ## Quick start
 
 1. **Create your folder structure** (see [Folder layout](#folder-layout) below).
-2. **Mark the folder as Albums Only** — Admin → Directories → edit the folder → toggle **Albums Only** → Save.
-3. **Run a scan** — Admin → Database → Start Scan (or wait for the scheduled scan).
+2. **Mark the folder as Albums Only** — Admin → Directories → click **Albums Only: Off** on the folder card so it reads **Albums Only: On**. See [albums-only.md](albums-only.md).
+3. **Run a scan** — Admin → Database → **Start A Scan** (or wait for the scheduled scan).
 4. **Open the Album Library** — click **Albums** in the left navigation.
 
 That is all. No extra configuration is required for basic use.
@@ -56,32 +56,36 @@ The Album Library reads file paths from the database. It expects music to be org
 | `The Beatles/Abbey Road (1969)/CD 1/01 Come Together.flac` | Multi-disc album, disc tab "CD 1" |
 | `Cerrone Discography/Cerrone I (1976)/01 Love In C Minor.flac` | Album inside a series |
 | `Cerrone Discography/[Live]/Cerrone Live At Palais Des Congrès/01.flac` | Album under category `[Live]` |
-| `Cerrone Discography/Downloads uitzoeken/Some Mix.flac` | Album under category `Downloads uitzoeken` |
-| `Hit Mix/Hit Mix '88 CD - 1/01 Track.flac` | Disc suffix pattern — treated as disc, not sub-album |
+| `Cerrone Discography/Downloads uitzoeken/Some Mix.flac` | Album under category `Downloads uitzoeken` (only when that name is in the category list) |
+| `Hit Mix/Hit Mix '88 CD - 1/01 Track.flac` | Disc suffix pattern — treated as a disc of `Hit Mix`, not a sub-album |
 
 ---
 
 ## Album vs Series vs Disc detection
 
-The system inspects every **L1 folder** (direct child of the albumsOnly root):
+The tree is built from the file paths in the database, working **bottom-up** from each file (`src/api/albums-browse.js`, disc rule in `src/util/album-dir.js`):
 
 | Condition | Result |
 |---|---|
-| All files sit directly in the L1 folder | **Standalone album** |
-| All L2 sub-folders match the disc pattern | **Multi-disc album** — each L2 becomes a disc tab |
-| L2 sub-folders do NOT match the disc pattern | **Series** — each L2 becomes its own album card |
+| The file's folder matches the disc pattern | The **album** is the folder above it; the disc folder becomes a disc tab |
+| Otherwise | The **album** is the file's own folder |
+| Files sitting directly in the albumsOnly root | Ignored (no album folder) |
+
+The folder above the album is its **artist folder** (category folders are skipped, see below). When an artist folder holds **two or more** albums they are grouped into a **series** card; an artist folder with a single album, or an album directly under the root, is shown as a **standalone album** card.
+
+Inside one album folder, if there are two or more files and every one carries its own CUE data, each file becomes its own disc.
 
 ### Disc folder patterns
 
-A sub-folder is treated as a *disc* (not a separate album) when its name matches any of:
+A folder is treated as a *disc* (not a separate album) when its name matches any of these (case-insensitive):
 
 | Pattern | Matches | Does not match |
 |---|---|---|
-| Starts with `CD`, `Disc`, `DISC` + optional dash + digit | `CD 1`, `Disc 2`, `CD-3`, `DISC 1` | `Disconet`, `2CD` |
-| Ends with `CD` / `Disc` + optional dash + digit | `Hit Mix '88 CD - 1`, `Album Disc 2` | `CD Edition`, `2xCD` |
+| Starts with `CD` or `Disc` + optional dash + digit | `CD 1`, `Disc 2`, `CD-3`, `disc1` | `Disconet`, `2CD` |
+| Ends with `CD` / `Disc` + optional dash + number | `Hit Mix '88 CD - 1`, `Album Disc 2` | `CD Edition`, `2xCD` |
 | Bare one or two digit number | `1`, `2`, `12` | `12 Hits` |
 
-The suffix pattern (`…CD - N`) was added in v6.14.18-velvet to handle EAC-style disc naming where the disc indicator comes at the end of the folder name.
+The same disc rule is used by the Subsonic album id, the Tag Workshop grouping and ReplayGain album gain.
 
 ---
 
@@ -89,47 +93,36 @@ The suffix pattern (`…CD - N`) was added in v6.14.18-velvet to handle EAC-styl
 
 *Added in v6.14.18-velvet.*
 
-Sometimes an artist or series folder contains sub-folders that are **not** albums or discs, but **categories** — e.g. `[Live]`, `[Compilations]`, `Downloads uitzoeken`. Without special handling these look like series sub-albums and pollute the artist grouping.
+Sometimes an artist or series folder contains sub-folders that are **not** albums or discs, but **categories** — e.g. `[Live]`, `[Compilations]`, `Downloads uitzoeken`. Without special handling these look like artist folders of their own and pollute the artist grouping.
 
-**Category folders are transparent containers.** When a folder name matches the configured list:
-- It is stripped from the album's artist path (so the album groups under its grandparent, not under `[Live]`)
+**Category folders are transparent containers.** When a folder name in the album's artist path matches the configured list (`albumCategoryFolders` in the config):
+- It is stripped from the album's artist path (so the album groups under the real artist, not under `[Live]`)
 - Its name is stored as a `categoryLabel` on the album
-- The series/artist view shows **category pills** — one pill per distinct category in that series
+- The album card shows a small category badge, and the series/artist view shows **category pills**
 
 ### Category pill UI
 
-In the **Album Series** view and the **Artist → Albums tab**, a pill row appears above the grid when at least one album in the series has a category label:
+In the **Album Series** view and the **Artist profile → Albums** tab, a pill row appears above the grid when at least one album has a category label:
 
 ```
-[ Albums ]  [ Live ]  [ Compilations ]  [ Downloads uitzoeken ]
+[ Albums (12) ]  [ Live (3) ]  [ Compilations (2) ]  [ Downloads uitzoeken (1) ]
 ```
 
-Clicking a pill filters the grid to show only albums of that category. Clicking the active pill again (or clicking **Albums**) resets to show everything.
+**Albums** shows the albums without a category; each other pill shows only the albums of that category. Brackets are dropped from the pill label.
 
 ### Configuring category folders
 
-Go to **Admin → Database → Artist Albums** and look for the **Album Category Folders** section.
+Go to **Admin → Artist Albums** (Config section of the admin menu); the **Album Category Folders** card is at the top.
 
-- The list shows the current category names (one per line / one per chip).
-- Click **Add** to type a new name, then **Save**.
-- Click the × on an existing chip to remove it, then **Save**.
+- The list shows the current category names as chips.
+- Type a name and click **Add** (or press Enter) — it is saved straight away.
+- Click the ✕ on a chip to remove it — also saved straight away.
+- **Save** stores the list as shown.
 - Changes take effect immediately — no rescan needed.
 
-**Default category names** (shipped with Velvet):
+**Default list.** Until the list has been saved once, the server uses **no** category folders. The admin card pre-fills a suggested list (English bracketed and plain names such as `[Live]`, `Live`, `[Compilations]`, `Singles`, `B-Sides`, plus Dutch, German, French, Italian and Spanish variants such as `Compilaties`, `Kompilationen`, `Raretés`, `Raccolte`, `Recopilaciones`); it becomes active when you add, remove or save.
 
-| Name | Language |
-|---|---|
-| `[Live]`, `Live`, `Live Albums` | English |
-| `[Compilations]`, `Compilations`, `Compilation` | English |
-| `[Singles]`, `Singles`, `EPs & Singles` | English |
-| `[Remixes]`, `Remixes` | English |
-| `Downloads uitzoeken`, `Compilaties`, `Live Albums` | Dutch |
-| `Compilations`, `En direct` | French |
-| `Sampler`, `Live-Alben` | German |
-| `Compilazioni`, `Dal vivo` | Italian |
-| `Recopilaciones`, `En vivo` | Spanish |
-
-Add any folder name that appears in your own collection. The match is case-sensitive and exact.
+Add any folder name that appears in your own collection (max 50 names, 120 characters each). The match is case-sensitive and exact.
 
 ---
 
@@ -139,20 +132,27 @@ The Album Library fully supports **single-file rips** (one FLAC or WAV file per 
 
 ### CUE detection order
 
-1. **Embedded CUE sheet** — stored inside the FLAC file's `CUESHEET` block (written by EAC and dBpoweramp in lossless mode). Detected automatically — no extra file needed.
-2. **Sidecar `{filename}.cue`** — e.g. `Sade - Promise.cue` next to `Sade - Promise.flac`. The `FILE` line in the `.cue` may reference either the exact filename OR the same base name with a different extension (e.g. `FILE "Sade - Promise.wav"` is accepted for `Sade - Promise.flac`).
-3. **Sidecar `{filename}.flac.cue`** — double-extension variant (e.g. `Sade - Promise.flac.cue`). This takes priority over the bare `.cue` when both exist.
-4. **Sole `.cue` in the folder** — if the folder contains exactly one `.cue` file and its `FILE` line matches the audio file by base name, it is used.
+During the scan (`src/db/scanner.mjs`):
+
+1. **Embedded CUE sheet** — stored inside the file (e.g. a FLAC `CUESHEET` block). Detected automatically — no extra file needed.
+2. **Sidecar `{filename}.cue`** — double-extension variant, e.g. `Sade - Promise.flac.cue`. Checked first among the sidecars.
+3. **Sidecar `{basename}.cue`** — e.g. `Sade - Promise.cue` next to `Sade - Promise.flac`.
+4. **Sole `.cue` in the folder** — if the folder contains exactly one `.cue` file.
+5. **M4B chapters** — for `.m4b` files with no CUE data, chapters are read with ffprobe.
+
+A sidecar is only used when it has exactly one `FILE` line and that line matches the audio file by base name (the extension is ignored, so `FILE "Sade - Promise.wav"` is accepted for `Sade - Promise.flac`). At least two tracks are needed.
+
+When an album is opened, single-file discs without CUE data are checked again for a sidecar `.cue` on disk, so a fixed CUE file shows up without a rescan. A `.cue` that exists but does not match is shown with a "CUE file invalid" badge.
 
 > **Note:** EAC always writes `FILE "album.wav" WAVE` in the CUE, even when ripping to FLAC. Velvet accepts this — it compares base names only, ignoring the extension.
 
 ### What you see in the UI
 
 When a single-file album is detected as having CUE points:
-- The album detail view shows individual track rows with track numbers, titles, and durations derived from the CUE offsets.
+- The album detail view shows a CUE badge and individual track rows with track numbers, titles, and durations derived from the CUE offsets.
 - Clicking a track starts playback from that position.
-- The progress bar shows the position within the full file, with track boundaries visible.
-- "Add all to queue" and per-track "+" queue buttons work as expected.
+- The progress bar shows the position within the full file, with tick marks at the track boundaries.
+- **+ Add to Queue** and the per-track **⋯** menu work as for normal albums.
 
 ---
 
@@ -164,37 +164,44 @@ When an album folder contains version or edition information, Velvet extracts it
 
 ### Where version info comes from
 
-1. **Tag fields** — the scanner reads a configurable list of tag fields:
-   - Default fields: `TIT3`, `TXXX:EDITION`, `TXXX:VERSION`, `COMMENT` (and Vorbis equivalents).
-   - Custom fields can be added via Admin → Database → Artist Albums → **Album Version Tag Fields**.
-2. **Folder name heuristics** — year patterns, press info, edition keywords in the folder name are also recognised.
+The scanner only does this for files inside an albumsOnly folder. The first match wins:
+
+1. **Tag fields** — a configurable list of tag fields (`albumVersionTags` in the config):
+   - Default fields: `TIT3`, `SUBTITLE`, `DISCSUBTITLE`, `TXXX:EDITION`, `TXXX:VERSION`, `TXXX:ALBUMVERSION`, `TXXX:QUALITY`, `TXXX:REMASTER`, `TXXX:DESCRIPTION`, `EDITION`, `VERSION`, `ALBUMVERSION`, `QUALITY`, `REMASTER`. `COMMENT` is not in the default list (too noisy) but can be added.
+2. **Album title heuristics** — edition keywords in the `album` tag.
+3. **Folder name heuristics** — the same keywords in the album's folder name.
+4. **Audio properties** — 24-bit files at 88.2 kHz or higher get `Hi-Res <bits>bit/<kHz>kHz`.
+
+When any album has a version, the Album Library shows version filter pills above the grid.
 
 ### Configuring version tag fields
 
-Go to **Admin → Database → Artist Albums** → **Album Version Tag Fields**. Add any tag field name your ripping software writes. Click **Save**; the new fields are used in the next scan.
+Go to **Admin → Database** → **Album Version Tag Fields** card. Add any tag field name your ripping software writes (max 20 fields). Click **Save**; the new fields are used in the next scan.
 
 ---
 
 ## Cover art resolution
 
-For every album the system looks for cover art in this priority order:
+For every album the player shows the first art it finds in this order:
 
-1. **Image file in the album folder** — scanned top-down:
+1. **Art from the DB** (`aaFile`) — the image the scanner stored in the image cache (`image-cache/` by default) for one of the album's tracks. This can be embedded art or a folder image the scanner picked up.
+2. **Folder image recorded by the scanner** (`cover_file`) — served from disk via `/api/v1/albums/art-file`.
+3. **Folder image found when browsing** — only for albums with neither of the above, the album folder is checked for these names, in order:
    ```
-   cover.jpg   Cover.jpg   front.jpg   Front.jpg
-  frente.jpg  Frente.jpg  frente.png  Frente.png
-   Folder.jpg  folder.jpg
-   cover.png   Cover.png   front.png   Front.png
-  frente.webp Frente.webp cover.webp  Cover.webp
+   cover.jpg  Cover.jpg  cover.jpeg  Cover.jpeg
+   front.jpg  Front.jpg  front.jpeg  Front.jpeg
+   frente.jpg Frente.jpg frente.jpeg Frente.jpeg
+   Folder.jpg folder.jpg Folder.jpeg folder.jpeg
+   cover.png  Cover.png  front.png   Front.png  frente.png  Frente.png
+   cover.webp Cover.webp frente.webp Frente.webp
    ```
-2. **Image file inside the first disc sub-folder** — for multi-disc albums that store art per-disc.
-3. **Embedded art from the DB** (`aaFile`) — extracted during file scanning, cached in `image-cache/`.
+   then the first disc sub-folder, for multi-disc albums that store art per disc.
 
-If none found, a placeholder icon is shown.
+If none found, a placeholder icon is shown. A series card uses the art of its first album that has any.
 
 ### Adding cover art manually
 
-Drop a supported filename into the album folder. The cache TTL is **5 minutes** — art appears automatically on the next browse.
+Drop a supported filename into the album folder. The browse cache lives for **5 minutes**, so the art appears on a browse after that. If the album already has DB art, that art keeps priority. Admins can also pick a cover from the album detail view (art edit overlay); it is written as `cover.jpg` in the album folder and the cache is cleared at once.
 
 ```
 /media/music/Albums/Sade/Diamond Life (1984)/cover.jpg
@@ -208,9 +215,9 @@ Drop a supported filename into the album folder. The cache TTL is **5 minutes** 
 
 Open **Albums** in the left nav. The main grid shows:
 - **Series cards** — a representative cover + series name + number of albums.
-- **Standalone album cards** — cover + album title + year.
+- **Standalone album cards** — cover + album title + year, with version and category badges and a disc count for multi-disc albums.
 
-Use the **search box** (top right) to filter by title, artist, or year as you type.
+Use the **filter box** above the grid to filter as you type: series by name, albums by title, artist or category. The sort button switches between name (A–Z, Z–A) and year (newest, oldest); the density buttons switch between comfy, compact and list. Sort and density are remembered per user in this browser. With two or more albumsOnly sources a pill per source appears; with album versions present, version pills appear.
 
 ### Series view
 
@@ -223,13 +230,13 @@ Click a series card to see all albums in the series. Each album card shows:
 
 ### Album detail view
 
-Click an album card to open the full detail:
-- **Disc tabs** — for multi-disc albums, one tab per disc. Click to switch.
-- **Track list** — track number, title, duration. Drag-to-reorder is not available here; use the queue panel.
-- **CUE tracks** — for single-file CUE albums, individual tracks are listed with their chapter time offsets.
-- **Play album** button — clears the queue and plays the full album from the first track.
-- **Add to queue** (+ icon per track) — appends the selected track.
-- **Clicking a track row** depends on the album click mode (toggle next to the hint above the track list): *full disc* replaces the queue with the disc and plays from that track; *single track* only adds that track to the queue.
+Click an album card to open the full detail (loaded from `/api/v1/albums/detail`):
+- **Disc tabs** — for multi-disc albums, one tab per disc. Click to switch; the **+** on a tab appends that disc to the queue.
+- **Track list** — track number, title, track artist (when it differs from the album artist), duration, and a **⋯** menu per track. Drag-to-reorder is not available here; use the queue panel.
+- **CUE tracks** — for single-file CUE albums, individual tracks are listed with their durations from the CUE offsets.
+- **▶ Play** — replaces the queue with the current disc and plays it from the first track.
+- **+ Add to Queue** / **+ Add to Playlist** — the current disc.
+- **Clicking a track row** depends on the **Full disc** toggle next to the hint above the track list: on, it replaces the queue with the disc and plays from that track; off, it only adds that track to the queue. The choice is remembered per user in this browser.
 
 ### Restore previous queue
 
@@ -237,52 +244,56 @@ Playing an album (or a single song) replaces the queue. If that was a mistake, t
 
 - Clicking another track in the same album keeps the original queue as the one to restore, so it is never overwritten by the album itself.
 - **Clear queue** can be undone the same way.
-- The previous queue is kept for the current browser session only, and the button disappears once it has been used.
+- The previous queue is kept in memory only (a page reload drops it), and the button disappears once it has been used.
 
 ---
 
 ## Admin tools
 
-### Admin → Database → Artist Albums
+### Admin → Artist Albums
 
-This page contains two configuration panels and a diagnostic tool:
+| Panel | Purpose |
+|---|---|
+| **Album Category Folders** | Configure folder names that are treated as category containers |
+| **Artist Albums Diagnostic** | Inspect how a specific artist's albums are structured in the DB |
+
+### Admin → Database
 
 | Panel | Purpose |
 |---|---|
 | **Album Version Tag Fields** | Configure which tag fields the scanner reads for edition/version info |
-| **Album Category Folders** | Configure folder names that are treated as category containers |
-| **Artist Albums Diagnostic** | Inspect how a specific artist's albums are structured in the DB |
 
 ### Admin → Directories
 
 | Setting | Effect |
 |---|---|
-| **Albums Only** toggle | Marks the folder as an Album Library source. All its contents appear in the Album Library. |
+| **Albums Only: On/Off** button | Marks the folder as an Album Library source. All its contents appear in the Album Library. |
 | Multiple folders can be Albums Only | All are merged into one Album Library. |
 
 ---
 
 ## Folder structure requirements
 
-Enable **Albums Only** on a folder via Admin → Directories → edit → **Albums Only** toggle → Save.
+Enable **Albums Only** on a folder via Admin → Directories → **Albums Only: Off/On** button on the folder card.
 
-- Any folder of type `music` or `audio-books` can be marked `albumsOnly: true`.
+- Any folder except `recordings`, `youtube` and `excluded` folders can be marked `albumsOnly: true`.
 - **Multiple** folders can be Albums Only simultaneously — all are merged into one Album Library.
 - A folder can be a **root vpath** (its own DB entry) or a **child vpath** (a sub-folder of another vpath). Child vpath files are already stored in the DB under the parent root — they are never indexed separately.
-- If no folder has `albumsOnly` set, the system falls back to auto-detecting any root vpath that has an `Albums/` sub-directory on disk (legacy fallback for older configurations).
+- If no folder has `albumsOnly` set, the system falls back to the first root vpath that has an `Albums/` sub-directory on disk (legacy fallback for older configurations).
 - The `albumsOnly` flag takes effect immediately — no server restart or rescan required.
+- Users only see albums from sources whose vpath is in their own vpath list.
 
 ---
 
-## Performance
+## Caching
 
-| Scenario | Timing |
+| Scenario | Behaviour |
 |---|---|
-| First load (fresh cache) | ~60 ms — DB read + in-memory tree build + parallel art resolution |
-| Subsequent loads | instant — 5-minute in-memory cache, no DB or filesystem access |
-| After a new scan | cache is invalidated automatically |
+| First load | DB read + in-memory tree build + parallel art checks on disk |
+| Subsequent loads | served from a 5-minute in-memory cache, no DB or filesystem access |
+| After a new scan | new files show up once the 5-minute cache expires |
 | After adding a cover image | art appears within 5 minutes (cache TTL) |
-| After changing `albumCategoryFolders` in admin | takes effect immediately — no rescan needed |
+| After changing `albumCategoryFolders`, an `albumsOnly` flag, or setting a cover from the player | cache is cleared at once |
 
 ---
 
@@ -290,8 +301,10 @@ Enable **Albums Only** on a folder via Admin → Directories → edit → **Albu
 
 | Endpoint | Description |
 |---|---|
-| `GET /api/v1/albums/browse` | Returns the full album tree `{ albums, series }` |
+| `GET /api/v1/albums/browse` | Returns the album tree `{ albums, series }` (slim: no track lists) |
+| `GET /api/v1/albums/detail?id=<albumId>` | Returns one album with its discs and tracks |
 | `GET /api/v1/albums/art-file?p=<path>` | Serves an on-disk art file by its relative path |
+| `POST /api/v1/albums/set-art` | Admin only: downloads a cover (`releaseId` from Discogs or `coverUrl`) and writes it as `cover.jpg` in the album folder |
 
 See [docs/API/albums_browse.md](API/albums_browse.md) for full request/response details.
 

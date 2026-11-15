@@ -7,11 +7,11 @@ import path from 'node:path';
 import Joi from 'joi';
 import * as config from '../state/config.js';
 import * as db from '../db/manager.js';
-import * as admin from '../util/admin.js';
-import { isPrivateHost, safeFetch, safeLookup } from '../util/ssrf-check.js';
+import { isPrivateHost, safeFetch, safeLookup, resolveStreamUrl } from '../util/ssrf-check.js';
 import { resolveChildPath } from '../util/path-security.js';
 
 const _URL_RE = /^https?:\/\/.+/i;
+const ART_MAX_BYTES = 10 * 1024 * 1024;
 
 // Download a remote image URL once and store it in the album-art directory.
 // Returns the local filename (e.g. "radio-abc123.jpg") on success, or the
@@ -31,10 +31,7 @@ async function _cacheRadioArt(imgUrl, force = false) {
       const cachedPath = path.join(artDir, `radio-${hash}.${urlExt}`);
       if (existsSync(cachedPath)) return `radio-${hash}.${urlExt}`;
     }
-    const ac = new AbortController();
-    const timer = setTimeout(() => ac.abort(), 10000);
-    const r = await safeFetch(imgUrl, { signal: ac.signal });
-    clearTimeout(timer);
+    const r = await safeFetch(imgUrl, { timeoutMs: 10_000, maxBytes: ART_MAX_BYTES });
     if (!r.ok) return imgUrl;
     const ct = r.headers.get('content-type') || '';
     if (!ct.startsWith('image/')) return imgUrl;
@@ -60,10 +57,14 @@ async function _cacheRadioArt(imgUrl, force = false) {
 // Uses node:http/https (always HTTP/1.1) so the server actually injects ICY
 // metadata — fetch() negotiates HTTP/2 via ALPN and CDN servers only inject
 // ICY data on HTTP/1.1 connections even though they send the icy-metaint header.
-async function _fetchIcyMeta(rawUrl) {
+const ICY_MAX_REDIRECTS = 3;
+
+async function _fetchIcyMeta(rawUrl, base = undefined, hops = 0) {
   return new Promise(resolve => {
+    if (hops > ICY_MAX_REDIRECTS) return resolve(null);
+    let parsed;
+    try { parsed = resolveStreamUrl(rawUrl, base); } catch { return resolve(null); }
     const timeout = setTimeout(() => { req.destroy(); resolve(null); }, 15000);
-    const parsed  = new URL(rawUrl);
     const lib     = parsed.protocol === 'https:' ? https : http;
     const req = lib.request(
       { hostname: parsed.hostname, port: parsed.port || (parsed.protocol === 'https:' ? 443 : 80),
@@ -72,7 +73,7 @@ async function _fetchIcyMeta(rawUrl) {
       res => {
         if ((res.statusCode === 301 || res.statusCode === 302 || res.statusCode === 307) && res.headers.location) {
           res.resume(); clearTimeout(timeout);
-          _fetchIcyMeta(res.headers.location).then(resolve);
+          _fetchIcyMeta(res.headers.location, parsed, hops + 1).then(resolve);
           return;
         }
         if (res.statusCode !== 200) { res.resume(); clearTimeout(timeout); resolve(null); return; }
@@ -177,10 +178,7 @@ export function setup(velvet) {
     const { error, value } = schema.validate(req.body);
     if (error) return res.status(400).json({ error: error.message });
 
-    const loadConfig = await admin.loadFile(config.configFile);
-    if (!loadConfig.radio) loadConfig.radio = {};
-    loadConfig.radio.enabled = value.enabled;
-    await admin.saveFile(loadConfig, config.configFile);
+    await config.updateConfigFile(c => { c.radio = { ...c.radio, enabled: value.enabled }; });
 
     if (!config.program.radio) config.program.radio = {};
     config.program.radio.enabled = value.enabled;
@@ -199,10 +197,7 @@ export function setup(velvet) {
     // SSRF protection
     if (isPrivateHost(parsed.hostname)) return res.status(403).end();
     try {
-      const ac = new AbortController();
-      const timer = setTimeout(() => ac.abort(), 8000);
-      const r = await safeFetch(parsed.href, { signal: ac.signal });
-      clearTimeout(timer);
+      const r = await safeFetch(parsed.href, { timeoutMs: 8000, maxBytes: ART_MAX_BYTES });
       if (!r.ok) return res.status(r.status).end();
       const ct = r.headers.get('content-type') || 'image/jpeg';
       if (!ct.startsWith('image/')) return res.status(415).end();
@@ -411,7 +406,7 @@ export function setup(velvet) {
       const stillUsed = db.getRadioStationImgUsageCount(station.img);
       if (stillUsed === 0) {
         const artDir = config.program.storage.albumArtDirectory;
-        for (const prefix of ['', 'zs-', 'zl-']) {
+        for (const prefix of ['', 'zs-', 'zl-', 'zm-']) {
           try {
             unlink(resolveChildPath(artDir, prefix + station.img), () => {});
           } catch (e) { console.debug('[velvet]', e?.message ?? e); }

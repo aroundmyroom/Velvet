@@ -1,6 +1,8 @@
 # Audio Analysis & Acoustic Similarity — Design Plan
 
-This document describes the planned feature to add per-track audio analysis to Velvet, enabling acoustically-aware smart playlists and Auto-DJ improvements.
+This document describes the plan to add per-track audio analysis to Velvet, enabling acoustically-aware smart playlists and Auto-DJ improvements.
+
+> **Status:** only part of this plan is built — Essentia BPM + musical-key analysis (see [Implementation Phases](#implementation-phases) and [BPM & Harmonic Mixing](bpm-harmonic.md)). Timbre (MFCC/HPCP), danceability, loudness features, the `audio_features` table and the "Build Similar Playlist" UI are **not** built. Sections 1–6 below are the original design, not a description of shipped code.
 
 ---
 
@@ -36,7 +38,7 @@ The WASM backend **cannot decode audio files itself** — it processes raw PCM f
 | Service | Notes | Why not |
 |---|---|---|
 | Spotify Audio Features API | BPM, key, energy, danceability | You cannot fetch features for tracks not in Spotify's catalogue; requires OAuth; your private FLAC library is not indexed by Spotify |
-| AcousticBrainz | Similar feature set | **Shut down in 2022** |
+| AcousticBrainz | Similar feature set | Stopped collecting new data in 2022; existing data is still served and Velvet uses it for BPM/key only (Tier 0, see [bpm-harmonic.md](bpm-harmonic.md)) |
 | AudD | Recognition + features | Paid; fingerprinting-based, doesn't cover all tracks |
 | DIY with Essentia | Full access, runs offline | Our choice |
 
@@ -50,9 +52,11 @@ Essentia.js is licensed under **AGPL v3**. This project is already distributed a
 
 ---
 
-## Architecture
+## Architecture (original design — not built as written)
 
-### 1. Analysis Script — `src/db/audio-analyzer.mjs`
+What was actually built is a worker thread, `src/util/essentia-bpm-worker.mjs`, that writes `bpm` and `musical_key` straight into the `files` table. There is no `src/db/audio-analyzer.mjs` and no `audio_features` table.
+
+### 1. Analysis Script — `src/db/audio-analyzer.mjs` (not built)
 
 A standalone Node.js script (same pattern as `scanner.mjs`) that:
 
@@ -68,9 +72,9 @@ A standalone Node.js script (same pattern as `scanner.mjs`) that:
 
 **Processing rate estimate:** On a modern x86 server, Essentia analysis runs at approximately 5–30× real-time for a full feature set. For a 3-minute song: roughly 10–30 seconds. For 130,000 tracks: roughly 1 week at the low end. This is fine per the requirement.
 
-### 2. Database Schema
+### 2. Database Schema (not built)
 
-New table added via a migration-safe `CREATE TABLE IF NOT EXISTS`:
+Planned table, created with a migration-safe `CREATE TABLE IF NOT EXISTS`:
 
 ```sql
 CREATE TABLE IF NOT EXISTS audio_features (
@@ -91,7 +95,9 @@ CREATE TABLE IF NOT EXISTS audio_features (
 
 **Why store MFCC and HPCP as JSON strings?** SQLite has no native array type. The vectors are small (13 and 12 floats respectively) — serialising as JSON adds ~200 bytes per track and avoids a separate table or blob encoding.
 
-### 3. Similarity Computation
+### 3. Similarity Computation (planned scoring — not built)
+
+What is built instead is `getSimilarSongs(hash, limit)` in `src/db/sqlite-backend.js`: it reads `bpm` and `musical_key` from `files`, takes up to 2000 candidates inside a BPM window of ±10 % (at least ±5 BPM), and scores them by BPM proximity plus Camelot key compatibility (same key +2, adjacent key +1). No timbre, danceability or loudness.
 
 Given a seed track (song A), find the N most similar songs in the library:
 
@@ -123,28 +129,23 @@ Half/double tempo is considered compatible (a 120 BPM track fits a 60 BPM playli
 
 **Performance on 130K tracks**: Loading all 130K feature rows (~40–80 MB of JSON), deserialising MFCC/HPCP vectors, and computing cosine similarity for each pair takes roughly 2–5 seconds in Node.js. This is acceptable for an on-demand "build playlist" action. For real-time Auto-DJ (needs a result immediately), a pre-built nearest-neighbour index or a faster pre-filter (BPM range + key group) reduces the candidate set to ~100–500 before running the full similarity computation.
 
-### 4. New API Endpoints
+### 4. API Endpoints
+
+Built:
 
 ```
-GET  /api/v1/db/audio-features/:hash
-  → { bpm, key_name, key_scale, danceability, loudness, ... }
-
-GET  /api/v1/db/similar?hash=…&limit=200&seed_weight=timbre|rhythm|mixed
-  → { songs: [track objects sorted by similarity score, highest first] }
-
-POST /api/v1/admin/audio-analysis/start
-  → { jobId }   — starts background analysis job (admin only)
-
-GET  /api/v1/admin/audio-analysis/status
-  → { running, analysed, total, percent, currentFile }
-
-POST /api/v1/admin/audio-analysis/stop
-  → { stopped: true }
+GET  /api/v1/db/similar?hash=<32-char hex>&limit=<1–200, default 50>
+  → [track objects sorted by BPM/key score, highest first]
+     (filtered to the user's folders; 400 if hash is not a 32-char hex MD5)
 ```
 
-### 5. Admin Panel Integration
+Worker start/stop is done with the BPM endpoints (`/api/v1/admin/bpm/essentia/start`, `/stop`, `/reset-failed` and `GET /api/v1/admin/bpm/status`) — see [bpm-harmonic.md](bpm-harmonic.md#api-endpoints).
 
-New "Audio Analysis" card under the admin panel (alongside Discogs, Scan, etc.):
+Planned, not built: a `seed_weight=timbre|rhythm|mixed` parameter on `/db/similar`, and separate `/api/v1/admin/audio-analysis/start|status|stop` endpoints. A `GET /api/v1/db/audio-features/:hash` route existed for a while but was removed together with the unused `audio_features` table.
+
+### 5. Admin Panel Integration (built differently)
+
+Built as **Admin → BPM & Key Analysis → Step 2 — Essentia Audio Analysis** (queued count, Start/Stop, "Re-queue skipped"). The original design below had more:
 
 - Shows analysis progress bar: `X / Y tracks analysed (Z%)`
 - **Start Analysis** button — starts the background job if not already running
@@ -152,7 +153,9 @@ New "Audio Analysis" card under the admin panel (alongside Discogs, Scan, etc.):
 - Settings: throttle (concurrent jobs = 1; add inter-track sleep ms for low-power servers)
 - Info text: "Analysis processes one track at a time. A library of 130,000 songs may take several days. The server remains fully usable during analysis."
 
-### 6. Player UI Integration
+### 6. Player UI Integration (not built)
+
+The player does not call `/api/v1/db/similar`. BPM and key are shown in the Now Playing line of the queue panel (e.g. `128 BPM · A minor (8A)`), and Auto-DJ uses them as scoring signals (BPM Continuity, Harmonic Mixing — see [bpm-harmonic.md](bpm-harmonic.md)). Everything below is still a plan.
 
 **"Similar Songs" playlist builder (Now Playing modal):**
 - New "≈ Build Similar Playlist" button in the Now Playing modal (only visible when the current track has audio features)
@@ -172,29 +175,29 @@ New "Audio Analysis" card under the admin panel (alongside Discogs, Scan, etc.):
 
 ## Implementation Phases
 
-### Phase 1 — Storage & Backend Core ✅ Implemented (v6.14.17)
-- ✅ `audio_features` table added to SQLite (`src/db/sqlite-backend.js`)
-- ✅ `src/util/essentia-bpm-worker.mjs` — FFmpeg PCM pipe → Essentia WASM (`RhythmExtractor2013` + `KeyExtractor`) → DB write. Queue: files where `bpm IS NULL OR musical_key IS NULL`. Graceful stop + 120 s force-terminate.
-- ✅ `getSimilarSongs(hash, limit)` — in-process scoring by BPM proximity + Camelot wheel key compatibility
-- ✅ `GET /api/v1/db/similar?hash=&limit=` — similar tracks endpoint
-- ✅ `GET /api/v1/db/audio-features/:hash` — audio features endpoint
-- ✅ `POST /api/v1/admin/bpm/essentia/start` / `stop` — real worker lifecycle (was 501 stub)
-- ✅ `saveAudioFeatures()` / `getAudioFeatures()` helpers in `src/db/manager.js`
-- **Dependency**: `essentia.js` 0.1.3 (AGPL v3 — confirmed working on Node v24.14.1)
+### Phase 1 — Backend Core (BPM + key only) ✅ Built
+- ✅ `src/util/essentia-bpm-worker.mjs` — worker thread: FFmpeg decodes to mono 22050 Hz PCM → Essentia WASM (`RhythmExtractor2013` + `KeyExtractor`) → `UPDATE files SET bpm, musical_key, bpm_source='essentia'`. Queue: files where `(bpm IS NULL OR musical_key IS NULL) AND bpm_status IS NULL`. Only a window of `scanOptions.analyzeBpmWindowSec` seconds (default 60, `0` = whole file) from the middle of the track is decoded. Files longer than 20 minutes are skipped; files that fail are marked `bpm_status='error'` and are only retried after "Re-queue skipped" (`/essentia/reset-failed`).
+- ✅ Worker lifecycle through `src/util/worker-controller.js` (name `bpm-essentia`): paused during file scans, auto-started after each scan (see [bpm-harmonic.md](bpm-harmonic.md#background-worker-behaviour)), Stop force-terminates after 120 s.
+- ✅ `getSimilarSongs(hash, limit)` — BPM proximity + Camelot key compatibility, reading `files.bpm` / `files.musical_key`
+- ✅ `GET /api/v1/db/similar?hash=&limit=` — similar tracks endpoint (no UI uses it yet)
+- ✅ `POST /api/v1/admin/bpm/essentia/start` / `stop` / `reset-failed`
+- ✅ Octave correction of doubled tempos — see [bpm-plan.md](bpm-plan.md)
+- ✗ `audio_features` table, `saveAudioFeatures()` / `getAudioFeatures()` and `GET /api/v1/db/audio-features/:hash` — added early, never filled by any worker, then removed.
+- **Dependency**: `essentia.js` ^0.1.3 (AGPL v3, runs on Node 24)
 
 ### Phase 2 — Admin UI
-- [ ] Audio Analysis card in admin panel with progress display and start/stop controls
+- ✅ Essentia start/stop and progress in **Admin → BPM & Key Analysis** (Step 2)
 - [ ] Per-track `analyzed_at` visible in the scan error detail (so you can tell which files were skipped)
 
 ### Phase 3 — Player UI
 - [ ] "Build Similar Playlist" button + options sheet in Now Playing modal
-- [ ] BPM / key / danceability shown in Now Playing modal when features available
-- [ ] Auto-DJ: "Acoustic" mode
+- ✅ BPM and key shown in the queue panel's Now Playing line (danceability: not built)
+- [ ] Auto-DJ: "Acoustic" mode (Auto-DJ already scores BPM and key — see [bpm-harmonic.md](bpm-harmonic.md))
 
 ### Phase 4 — Tuning (optional, post-launch)
 - [ ] User-adjustable similarity weighting sliders in player Settings panel
 - [ ] Pre-built nearest-neighbour index (ANN) for sub-100ms similar-song lookup at scale
-- [ ] Subsonic `getSimilarSongs` endpoint wired to this instead of returning empty
+- Subsonic `getSimilarSongs` / `getSimilarSongs2` no longer return empty: they return a radio chain built by the server-side Auto-DJ (`src/autodj/radio.js`), with Last.fm `track.getSimilar` as fallback. They do not use `getSimilarSongs()` from this plan.
 
 ---
 
@@ -202,18 +205,18 @@ New "Audio Analysis" card under the admin panel (alongside Discogs, Scan, etc.):
 
 | Risk | Mitigation |
 |---|---|
-| Essentia.js WASM build is large (~5–8 MB) | Load once per analyzer run; not loaded in the main server process |
+| Essentia.js WASM build is large (~5–8 MB) | Loaded only in the worker thread, not in the main server thread |
 | AGPL license | Personal self-hosted use is fine; document if distributing |
-| Essentia.js not actively maintained since 2021 | Pin to last known-working version; WASM builds are self-contained |
-| Node.js v22 WASM compatibility | Test before implementing; fallback: port BPM + key algorithms in pure JS (well understood literature) |
-| Memory pressure on Raspberry Pi / low-RAM VPS | Process one file at a time; release WASM memory between files |
+| Essentia.js not actively maintained since 2021 | Pinned to `^0.1.3`; WASM builds are self-contained |
+| Node.js WASM compatibility | Resolved: runs on Node 24 |
+| Memory pressure on Raspberry Pi / low-RAM VPS | One file at a time; only a 60 s window is decoded by default; decoded PCM over 60 MB is retried at 11025 Hz, and marked as error if still too large |
 | Analysis quality for electronic music | MFCC is best for timbre; for pure BPM-based matching, `RhythmExtractor2013` is state-of-the-art |
 
 ---
 
-## Fallback: Pure-Node.js Implementation
+## Fallback: Pure-Node.js Implementation (not needed — Essentia.js works)
 
-If Essentia.js WASM is incompatible with Node v22 or proves too heavy, all required features can be implemented in ~600 lines of pure Node.js mathematics (FFT via standard library + typed arrays):
+If Essentia.js WASM had been incompatible with Node or too heavy, all required features can be implemented in ~600 lines of pure Node.js mathematics (FFT via standard library + typed arrays):
 
 - **BPM**: Autocorrelation of onset strength signal (standard MIR)
 - **Key**: Krumhansl-Schmuckler profile correlation against 24 major/minor templates

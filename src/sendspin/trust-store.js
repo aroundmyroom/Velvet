@@ -4,7 +4,7 @@ import path from 'node:path';
 import { SENTINEL_PSK, SENTINEL_PSK_ID, PSK_CATEGORY, pskId, isKeyId } from './keys.js';
 import { METHODS } from './pairing.js';
 
-export const TRUST_STORE_FILE = 'trust-store.json';
+const TRUST_STORE_FILE = 'trust-store.json';
 export const STAGED_PSK_LIFETIME_MS = 24 * 60 * 60 * 1000;
 const NAME_MAX = 200;
 

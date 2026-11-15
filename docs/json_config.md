@@ -1,6 +1,6 @@
 # JSON config
 
-By default, Velvet will generate a config at `save/conf/default.conf`. You can set the config file for velvet the the `-j` flag.
+By default, Velvet will generate a config at `save/conf/default.json`. You can set another config file with the `-j` (`--json`) flag.
 
 ```
 velvet -j /path/to/config.json
@@ -8,7 +8,8 @@ velvet -j /path/to/config.json
 
 # Example Config
 
-All config params have default values. A newly generated config will be empty json object:
+All config params have default values. A newly generated config starts as an empty JSON object; on first boot
+Velvet adds a random `secret` and an `instanceId` to it:
 
 ```
 { }
@@ -19,7 +20,6 @@ A heavily edited config would look like:
 ```json
 {
   "port": 3000,
-  "webAppDirectory": "public",
   "secret": "<your-random-secret-here>",
   "writeLogs": true,
   "noUpload": false,
@@ -27,7 +27,6 @@ A heavily edited config would look like:
     "skipImg": true,
     "scanInterval": 1.5,
     "pause": 50,
-    "saveInterval": 500,
     "bootScanDelay": 15,
     "allowId3Edit": false
   },
@@ -48,9 +47,9 @@ A heavily edited config would look like:
       "vpaths": ["blues", "rock"]
     },
     "james": {
-     "password": "<pbkdf2-hash>",
+      "password": "<pbkdf2-hash>",
       "salt": "<base64-salt>",
-      "vpaths": "rock",
+      "vpaths": ["rock"],
       "lastfm-user": "username",
       "lastfm-session": "<session-key-set-via-admin-ui>"
     }
@@ -84,7 +83,8 @@ Folders are set by key value pairs.  The key is used later to give access to fol
   }
 ```
 
-If this is not set, the cwd will be used
+If this is not set, there are no folders until you add one in the admin panel. Every `root` must exist when Velvet
+starts (folders of type `recordings` and `youtube` are created if missing), or Velvet refuses to boot.
 
 ### Folder types
 
@@ -93,8 +93,17 @@ Each folder entry supports an optional `type` key:
 | Value | Description |
 |-------|-------------|
 | `music` | *(default)* Standard music library — included in all scans |
-| `audio-books` | Audio-books / podcasts save target — included in scans |
+| `audio-books` | Audio-books / podcasts — included in scans |
 | `recordings` | Radio recordings destination — **excluded from library scans**. Files recorded from radio streams land here. |
+| `youtube` | YouTube download destination |
+| `excluded` | Never scanned |
+
+Other folder keys (all set from Admin → Directories):
+
+- `allowRecordDelete` — see below.
+- `albumsOnly` (default `false`) — marks the folder as album content for the Album Library, see [albums-only.md](albums-only.md).
+- `artistsOn` (default `true`) — `false` leaves the folder's tracks out of the Artist Library.
+- `dlnaEnabled` — `true` shares the folder over DLNA/UPnP (music and audio-books folders only), see [dlna.md](dlna.md).
 
 ### Allow users to delete recordings
 
@@ -118,11 +127,15 @@ When enabled, a red **Delete** (trash) button appears next to each file in the r
 
 ## Users
 
-If there is no users object, the login system will not be enabled and anyone will be abe to access the server.  All folders will be accessible
+If there is no users object, the login system will not be enabled and anyone will be able to access the server.  All folders will be accessible (and the admin panel too, unless `lockAdmin` is set).
 
 A basic user example.  
 
-Note that the hashed password and salt can be generated automatically by creating a new user via the admin ui.
+`password` and `salt` are both required: `password` is the PBKDF2 hash, not the plain password. Create users in the
+admin panel to get them. Hashes are PBKDF2-HMAC-SHA512 with 210,000 iterations; the count is stored in the salt
+(`pbkdf2-210000$<salt>`). A salt without that prefix is an older hash made with 15,000 iterations: it still works, and
+the next successful login rewrites it with the current count. Users may also carry a `tokenVersion` (set by Velvet);
+raising it logs that user out everywhere.
 
 ```json
 {
@@ -133,7 +146,7 @@ Note that the hashed password and salt can be generated automatically by creatin
     "paul": {
       "password": "<pbkdf2-hash>",
       "salt": "<base64-salt>",
-      "vpaths": "media"
+      "vpaths": ["media"]
     }
   }
 }
@@ -149,7 +162,8 @@ A user with multiple folders
   },
   "users": {
     "paul": {
-      "password":"p@ssword",
+      "password": "<pbkdf2-hash>",
+      "salt": "<base64-salt>",
       "vpaths": ["music", "audiobooks"]
     }
   }
@@ -167,11 +181,13 @@ Multiple users with multiple directories
   },
   "users": {
     "jake": {
-      "password":"p@ssword",
+      "password": "<pbkdf2-hash>",
+      "salt": "<base64-salt>",
       "vpaths": ["jake-music", "audiobooks"]
     },
     "finn": {
-      "password":"p@ssword",
+      "password": "<pbkdf2-hash>",
+      "salt": "<base64-salt>",
       "vpaths": ["finn-music", "audiobooks"]
     }
   }
@@ -187,6 +203,9 @@ and `Music` has `root: /media/music`, then `12-inches` is a child of `Music`.
 Giving a user only `"vpaths": ["12-inches"]` restricts them to that sub-folder:
 they see only artists, albums, genres and decades from files in that directory.
 They cannot access any other content from the parent `Music` root.
+The server enforces this on every library list (search, recent, rated, most played,
+random songs, similar songs, Auto-DJ, Rooms, Smart Playlists, Subsonic), whatever the
+client asks for, and a path with `..` cannot step out of the sub-folder.
 
 ```json
 {
@@ -210,9 +229,9 @@ They cannot access any other content from the parent `Music` root.
 |-----|---------|-------------|
 | `enabled` | `false` | Enable on-the-fly transcoding |
 | `ffmpegDirectory` | `bin/ffmpeg/` | Path to the directory containing the ffmpeg binary |
-| `algorithm` | `stream` | Transcoding algorithm. Valid values: `stream` |
+| `algorithm` | `stream` | Transcoding algorithm. Valid values: `stream`, `buffer` |
 | `defaultCodec` | `opus` | Codec used when the client does not request a specific one. Valid values: `aac`, `mp3`, `opus` |
-| `defaultBitrate` | `96k` | Bitrate used when the client does not request a specific one. Valid values: `192k`, `128k`, `96k`, `64k` |
+| `defaultBitrate` | `96k` | Bitrate used when the client does not request a specific one. Valid values: `64k`, `96k`, `128k`, `192k`, `256k`, `320k` |
 
 ```json
 {
@@ -225,25 +244,30 @@ They cannot access any other content from the parent `Music` root.
 }
 ```
 
-Note: Velvet's bundled ffmpeg bootstrap downloader follows only bounded HTTPS redirects and uses request timeouts. Automatic update checks replace binaries only after a successful download/verification cycle, so a failed refresh does not remove an already working ffmpeg install.
+Note: Velvet's bundled ffmpeg bootstrap downloader follows only bounded HTTPS redirects and uses request timeouts. It downloads ffmpeg when `bin/ffmpeg/` has none or one older than v6, and replaces the binary only after a successful download, so a failed attempt does not remove a working ffmpeg.
 
 ## Secret 
 
-Sets the secret key used for the login system.  If this is not set, Velvet will generate a different secret key on each boot and all previous login sessions will be voided
+Sets the secret key used to sign login tokens. If it is not set, Velvet generates a random one at boot and saves it to the config file, so sessions survive restarts. Changing the secret logs every user out. To log out one user everywhere, use **Admin → Users → Password button → Sessions → Log out everywhere** instead (it raises that user's `tokenVersion`).
+
+## Config file writes
+
+Every change Velvet makes to the config file (admin settings, user changes, Last.fm/ListenBrainz links, Sonos, DLNA, network mounts) goes through one serialised writer: the file is read, changed, written to a temp file, flushed and renamed into place, keeping its file mode. Two changes at the same moment can no longer overwrite each other, and a crash mid-write cannot leave a half-written file.
 
 ## Scan Options
 
 | Key | Default | Description |
 |-----|---------|-------------|
 | `skipImg` | `false` | Skip album art during scan — speeds up scanning and saves disk space |
-| `bootScanDelay` | `3` | Seconds to wait after server boot before the first scan begins |
+| `bootScanDelay` | `3` | Seconds to wait after server boot before the scan schedule starts |
+| `bootScanEnabled` | `false` | Always scan at boot. When `false`, a boot scan runs only if the last scan is older than `scanInterval` |
 | `scanInterval` | `24` | Hours between automatic rescans. Set to `0` to disable automatic scanning |
-| `saveInterval` | `250` | How often (in files processed) to flush changes to the database during a scan. Increase for large collections to reduce CPU pressure |
+| `scanStartTime` | `null` | `"HH:MM"`: scan once a day at this time instead of every `scanInterval` hours |
 | `pause` | `0` | Milliseconds of pause injected between each file during scanning. Prevents Velvet from monopolising CPU on low-power hardware |
-| `maxConcurrentTasks` | `1` | Number of files processed in parallel during a scan. Increasing this speeds up scanning on multi-core machines but raises CPU usage |
+| `maxConcurrentTasks` | `1` | Number of folder scans (one per vpath) that run at the same time. More speeds up scanning several folders on multi-core machines but raises CPU usage |
 | `compressImage` | `true` | Compress album art images when caching them. Reduces storage at the cost of a small amount of CPU during initial scan |
 | `scanErrorRetentionHours` | `48` | How long (hours) scan errors are retained in the log. Valid values: `12`, `24`, `48`, `72`, `168`, `336`, `720` |
-| `allowId3Edit` | `false` | When `true`, admin users see a **✏ Edit Tags** button in the Now Playing modal to rewrite ID3/Vorbis/MP4 tags directly on disk. See [API/admin_id3-tags.md](API/admin_id3-tags.md) |
+| `allowId3Edit` | *(absent = off)* | Not in the schema; set from the admin panel. When `true`, admin users see a **✏ Edit Tags** button in the Now Playing modal to rewrite ID3/Vorbis/MP4 tags directly on disk. See [API/admin_id3-tags.md](API/admin_id3-tags.md) |
 | `maxRecordingMinutes` | `180` | Maximum duration (minutes) of a radio recording before it is automatically stopped. Set via Admin → DB Scan Settings. |
 | `maxZipMb` | `500` | Maximum total size (MB) of a ZIP download. Requests that would exceed this limit are rejected. Set via Admin → DB Scan Settings. |
 
@@ -253,7 +277,6 @@ Sets the secret key used for the login system.  If this is not set, Velvet will 
     "skipImg": false,
     "scanInterval": 24,
     "pause": 0,
-    "saveInterval": 250,
     "bootScanDelay": 3,
     "maxConcurrentTasks": 1,
     "compressImage": true,
@@ -278,17 +301,25 @@ The admin SSL form only accepts existing certificate files from trusted certific
   }
 ```
 
+## Local HTTP port
+
+When Velvet runs with SSL, `localHttpPort` (1024–65535, default `null` = off) opens an extra plain-HTTP listener on
+the same address, for LAN devices such as Sonos that cannot use HTTPS.
+
 ## Disable Uploading
 
 ```
   "noUpload": true
 ```
 
+Blocks file uploads in the file explorer and YouTube downloads for everyone. Per user, `allow-upload: false` blocks
+uploads for that user only.
+
 ## LastFM Scrobbling
 
 Each user can link their own Last.fm account in two ways:
 
-**Recommended — via the GUIv2 interface (Tools → Last.fm)**  
+**Recommended — via the player's Last.fm page**  
 The user enters their Last.fm username and password once. Velvet authenticates against Last.fm, receives a session key, and stores only the session key. The password is never written to disk.
 
 **Config file reference** (managed automatically — do not edit by hand):
@@ -296,11 +327,11 @@ The user enters their Last.fm username and password once. Velvet authenticates a
 ```json
 {
   "folders": {
-    "jake-music": "/media/jake/music"
+    "jake-music": { "root": "/media/jake/music" }
   },
   "users": {
     "jake": {
-      "password": "<bcrypt hash>",
+      "password": "<pbkdf2-hash>",
       "salt": "<salt>",
       "vpaths": ["jake-music"],
       "lastfm-user":    "jakeslastfm",
@@ -315,12 +346,18 @@ The user enters their Last.fm username and password once. Velvet authenticates a
 | `lastfm-user` | The Last.fm username |
 | `lastfm-session` | Session key obtained from Last.fm on connect — replaces password |
 | `lastfm-password` | Legacy field. Stored in old configs before the session-key flow was introduced. Still functional but replaced on next connect. |
-| `listenbrainz-token` | ListenBrainz user token. Set automatically when the user links their account via Admin → ListenBrainz. |
+| `listenbrainz-token` | ListenBrainz user token. Set automatically when the user links their account on the player's ListenBrainz page. |
+| `admin` | `true` gives the user admin rights (default `false`). |
 | `allow-radio-recording` | When `true`, this user can record live radio streams to a Recordings folder. Granted per-user via Admin → Users. |
-| `subsonic-password` | Separate plain-text password used by Subsonic API clients. Set via Admin → Users → Subsonic password. |
+| `allow-youtube-download` | When `true`, this user can use YouTube downloads. |
+| `allow-upload` | `false` blocks file uploads for this user. |
+| `allow-ai-dj` | `false` hides the AI DJ for this user. |
+| `discord-webhook-enabled`, `discord-webhook-nick` | Per-user Discord now-playing posts (with the server-level `discordWebhook` below). |
+| `subsonic-password` | Separate plain-text password used by Subsonic API clients. Set via Admin → Users → Subsonic password, or by the user on the player's Subsonic API page. |
 
-**Admin API key override**  
-The server ships with built-in Last.fm API credentials. An admin can override them without restarting via Admin panel → Last.fm, or via `POST /api/v1/admin/lastfm/config`.
+**Admin API key**  
+There are no built-in Last.fm credentials: `lastFM.apiKey` and `apiSecret` default to empty, and without a key
+scrobbling and similar artists do nothing. An admin sets them without restarting via Admin panel → Last.fm, or via `POST /api/v1/admin/lastfm/config`.
 
 See [API/lastfm.md](API/lastfm.md) for the full API reference.
 
@@ -332,9 +369,8 @@ Velvet will write logs, DB files, album art and waveform data to the filesystem.
 |-----|---------|-------------|
 | `albumArtDirectory` | `image-cache/` | Album art images. Publicly served by Velvet. |
 | `waveformDirectory` | `waveform-cache/` | Waveform JSON files generated by the scrubber. Safe to delete — regenerated on demand when FFmpeg is enabled. |
-| `dbDirectory` | `save/db/` | SQLite / LokiJS database files. |
+| `dbDirectory` | `save/db/` | SQLite database file. |
 | `logsDirectory` | `save/logs/` | Server log files. |
-| `syncConfigDirectory` | `save/sync/` | Directory used by the Syncthing integration for its config and state files. |
 
 ```json
 {
@@ -363,7 +399,9 @@ Older files are removed automatically on each log rotation. You can also trigger
 
 ## UI
 
-Folder that contains the frontend for Velvet.  Defaults to `public` if not set
+`webAppDirectory` is the folder that contains the frontend for Velvet. Defaults to the bundled `webapp` folder if not set.
+
+The theme is set with `ui`: `"velvet"` (default), `"velvet-dark"` or `"velvet-light"`.
 
 ## Supported Files
 
@@ -392,7 +430,7 @@ The IP address Velvet binds to. Defaults to `::` (all interfaces, IPv4 + IPv6). 
 
 ## Lock Admin
 
-When `true`, the admin panel is only accessible from `localhost`. Requests from any other IP receive a 403. Defaults to `false`.
+When `true`, the admin API is switched off: every `/api/v1/admin/*` request answers `405`, and the `/admin` page shows "Admin Page Disabled". Defaults to `false`.
 
 ```json
 {
@@ -402,7 +440,7 @@ When `true`, the admin panel is only accessible from `localhost`. Requests from 
 
 ## Max Request Size
 
-Maximum body size for upload requests. Defaults to `1MB`. Accepts a string in the format `{number}KB` or `{number}MB`.
+Maximum body size for upload requests. Defaults to `10MB`. Accepts a string in the format `{number}KB` or `{number}MB`.
 
 ```json
 {
@@ -412,17 +450,15 @@ Maximum body size for upload requests. Defaults to `1MB`. Accepts a string in th
 
 ## Database
 
-Controls the shared-playlist database engine and housekeeping interval.
+Velvet always uses SQLite (`velvet.sqlite` in `storage.dbDirectory`). The `db` object only sets housekeeping.
 
 | Key | Default | Description |
 |-----|---------|-------------|
-| `engine` | `loki` | Database backend. Valid values: `loki` (in-memory, fast), `sqlite` (persistent, recommended for production) |
 | `clearSharedInterval` | `24` | Hours between automatic purges of expired shared playlist tokens. Set to `0` to disable |
 
 ```json
 {
   "db": {
-    "engine": "sqlite",
     "clearSharedInterval": 24
   }
 }
@@ -437,8 +473,8 @@ Controls the Last.fm integration for **all users**. This covers both scrobbling 
 | Key | Default | Description |
 |-----|---------|-------------|
 | `enabled` | `true` | Enable Last.fm for all users (scrobbling + similar artists in Auto-DJ). Set to `false` to disable globally |
-| `apiKey` | *(built-in)* | Override the default Last.fm API key. Only needed if the built-in key reaches rate limits |
-| `apiSecret` | *(built-in)* | Override the default Last.fm API secret |
+| `apiKey` | `""` | Your Last.fm API key. Needed for scrobbling and similar artists |
+| `apiSecret` | `""` | Your Last.fm API secret |
 
 ```json
 {
@@ -505,6 +541,8 @@ Controls the Discogs integration used for artist images and metadata enrichment.
 | `apiKey` | `""` | Your Discogs OAuth consumer key |
 | `apiSecret` | `""` | Your Discogs OAuth consumer secret |
 | `userAgentTag` | `""` | A short alphanumeric tag (max 4 chars) appended to the User-Agent string sent to Discogs |
+| `itunesEnabled` | `true` | Use iTunes as an album-art source |
+| `deezerEnabled` | `true` | Use Deezer as an album-art source |
 
 ```json
 {
@@ -611,6 +649,33 @@ together: Velvet's backups include all of them, and restoring one without the
 other means every speaker must pair again. A listener that cannot start (port
 in use) never stops Velvet from booting; the admin page shows the error.
 
+## Other integrations
+
+All of these are set from the admin panel; the keys are listed so you know what you see in the file.
+
+| Object | Keys (default) |
+|---|---|
+| `albumArt` | `autoApprove` (`false`), `autoSuggestNewContent` (`false`), `coverArtArchive` (`true`) — see [album-art-workshop.md](album-art-workshop.md) |
+| `acoustid` | `enabled` (`false`), `apiKey` (`""`), `autostart` (`false`) |
+| `dlna` | `enabled` (`false`), `port` (`10293`), `name` (`"Velvet"`) — see [dlna.md](dlna.md). There is no `browse` key; an old one is ignored. |
+| `serverAudio` | `enabled` (`false`), `mpvBin` (`"mpv"`), `autoUnmute` (`true`) — see [server-audio.md](server-audio.md) |
+| `sonos` | `enabled` (`true`), `transcodeOpus` (`false`), `sleepEnabled` (`false`), `hiddenFavorites` (`[]`), `knownIps` (`[]`), `defaultRoom` (`null`, or `{ name, ip, uuid }`) — see [sonos.md](sonos.md). An old `pauseSleepMinutes` key is ignored. |
+| `extAuth` | `enabled` (`false`), `headerName` (`"Remote-User"`), `trustedProxies` (`[]`), `secretHeaderName` (`"X-Velvet-ExtAuth-Secret"`), `secretValue` (`""`), `autoCreateUsers` (`false`) — see [auth-reverse-proxy.md](auth-reverse-proxy.md) |
+| `discordWebhook` | `enabled` (`false`), `url` (`""`) |
+| `networkMounts` | One entry per share added in Admin → Network shares: `{ type, server, mountPoint, options, hasCredentials }` — see [network-shares.md](network-shares.md) |
+
+`instanceId` is a random UUID Velvet writes on first boot.
+
+## Background workers (`workerAutostart`)
+
+Velvet sets this itself when an admin presses Start or Stop on a background worker; you rarely edit it by hand.
+
+```json
+"workerAutostart": { "rg-analysis": false, "genre-enricher": true }
+```
+
+Names: `rg-analysis`, `bpm-ab`, `bpm-essentia`, `genre-enricher`, `tagworkshop-enrich`, `tagworkshop-text-search`. A missing entry means the worker may start on its own after a scan; `false` keeps it stopped until an admin starts it. AcoustID keeps its own `acoustid.autostart` flag, and now only starts after a scan when that flag is `true`.
+
 ## Opt-in vs Opt-out: How Feature Defaults Work
 
 Some features in Velvet are **opt-out** (enabled by default, set to `false` to turn off) while others are **opt-in** (disabled by default, must be explicitly enabled). This is a deliberate design distinction:
@@ -626,48 +691,9 @@ This means:
 - Discogs is **off until you explicitly enable it** with your API credentials.
 - Radio is **off until the admin enables it** via the UI or by setting `"radio": { "enabled": true }` in the config.
 
-## Federation
+## Removed options
 
-> **Advanced / experimental.** Allows multiple Velvet servers to share libraries.
-
-| Key | Default | Description |
-|-----|---------|-------------|
-| `enabled` | `false` | Enable federation |
-| `folder` | *(none)* | Path to the folder used for federated content |
-| `federateUsersMode` | `false` | When `true`, users are federated across servers |
-
-```json
-{
-  "federation": {
-    "enabled": false,
-    "folder": "/media/federated",
-    "federateUsersMode": false
-  }
-}
-```
-
-## Remote Proxy Network (RPN)
-
-Configures the Velvet RPN tunnel service that allows external access without port forwarding. Managed via Admin panel → RPN or `velvet.io`.
-
-| Key | Default | Description |
-|-----|---------|-------------|
-| `apiUrl` | `https://api.velvet.io` | RPN API endpoint |
-| `iniFile` | `bin/rpn/frps.ini` | Path to the frps config file |
-| `email` | `""` | velvet.io account email |
-| `password` | `""` | velvet.io account password |
-| `token` | *(none)* | Auth token (set automatically after login) |
-| `url` | *(none)* | Assigned tunnel URL (set automatically after connection) |
-
-```json
-{
-  "rpn": {
-    "apiUrl": "https://api.velvet.io",
-    "email": "you@example.com",
-    "password": "your-password"
-  }
-}
-```
+The `rpn` (Remote Proxy Network) key is gone. An old config that still has it boots fine; Velvet ignores the key. You can delete it.
 
 ## Telemetry
 

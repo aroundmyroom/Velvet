@@ -133,42 +133,35 @@ async function _bootstrapUsers(cfg, adminUser, adminPass) {
   };
 }
 
-// Check if we are in an electron environment
-if (process.versions["electron"]) {
-  // off to a separate electron boot environment
-  await import("./build/electron.js");
-} else {
-  const { Command } = await import('commander');
-  const program = new Command();
-  program
-    .version(version)
-    .option('-j, --json <json>', 'Specify JSON Boot File', join(__dirname, 'save/conf/default.json'))
-    .parse(process.argv);
+const { Command } = await import('commander');
+const program = new Command();
+program
+  .version(version)
+  .option('-j, --json <json>', 'Specify JSON Boot File', join(__dirname, 'save/conf/default.json'))
+  .parse(process.argv);
 
-  console.clear();
-  console.log(`
+console.clear();
+console.log(`
     __   __   _          _
     \\ \\ / /__| |_   _____| |_
      \\ V / _ \\ \\ \\ / / _ \\ __|
       \\ V  __/ |\\ V /  __/ |_
        \\_/\\___|_| \\_/ \\___|\\__|`);
-  console.log(`v${program.version()}`);
-  console.log();
-  console.log('Check out our Discord server:');
-  console.log('https://discord.gg/KfsTCYrTkS');
-  console.log();
+console.log(`v${program.version()}`);
+console.log();
+console.log('Check out our Discord server:');
+console.log('https://discord.gg/KfsTCYrTkS');
+console.log();
 
-  // First-run bootstrap: if VELVET_MUSIC_DIR is set and config has no folders
-  // yet, auto-generate an initial config from environment variables.
-  try {
-    await bootstrapFromEnv(program.opts().json);
-  } catch (err) {
-    // Bootstrap failure is non-fatal — the server will still start.
-    // Log clearly so the issue is visible in docker logs.
-    console.error('[bootstrap] Failed to write initial config:', err.message);
-  }
-
-  // Boot the server
-  const server = await import("./src/server.js");
-  server.serveIt(program.opts().json);
+// First-run bootstrap: if VELVET_MUSIC_DIR is set and config has no folders
+// yet, auto-generate an initial config from environment variables.
+try {
+  await bootstrapFromEnv(program.opts().json);
+} catch (err) {
+  // Bootstrap failure is non-fatal — the server will still start.
+  // Log clearly so the issue is visible in docker logs.
+  console.error('[bootstrap] Failed to write initial config:', err.message);
 }
+
+const server = await import("./src/server.js");
+server.serveIt(program.opts().json);

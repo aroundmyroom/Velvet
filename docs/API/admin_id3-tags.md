@@ -45,7 +45,7 @@ Toggles the `allowId3Edit` setting and persists it to the config file.
 
 ## Discogs config — `allowId3Edit` field
 
-[`GET /api/v1/admin/discogs/config`](discogs.md) now includes `allowId3Edit` in its response so the player can decide whether to show the **Edit Tags** button in the Now Playing modal on login and session restore:
+[`GET /api/v1/admin/discogs/config`](discogs.md) (admin only) includes `allowId3Edit` in its response so the player can decide whether to show the **Edit Tags** button in the Now Playing modal on login and session restore:
 
 ```json
 {
@@ -54,7 +54,9 @@ Toggles the `allowId3Edit` setting and persists it to the config file.
   "allowId3Edit": true,
   "apiKey": "…",
   "apiSecret": "…",
-  "userAgentTag": "amr"
+  "userAgentTag": "amr",
+  "itunesEnabled": true,
+  "deezerEnabled": true
 }
 ```
 
@@ -87,7 +89,7 @@ The operation is **atomic at the filesystem level**: ffmpeg writes to a temporar
 | Field | Type | Required | Notes |
 |-------|------|----------|-------|
 | `filepath` | string | ✓ | vpath-relative path as returned by any DB query (e.g. `"Music/folder/file.mp3"`). Must be a path the authenticated user has access to. |
-| `title`    | string |   | Pass `""` to explicitly clear the tag. Omit to leave unchanged — **not supported yet; all fields are written when provided.** |
+| `title`    | string |   | Pass `""` to clear the tag. Omit a field to leave that tag (and its DB column) unchanged. The player always sends all seven fields. |
 | `artist`   | string |   | |
 | `album`    | string |   | |
 | `year`     | string or number |   | Mapped to ffmpeg's `date` metadata key. |
@@ -95,15 +97,15 @@ The operation is **atomic at the filesystem level**: ffmpeg writes to a temporar
 | `track`    | string or number |   | |
 | `disk`     | string or number |   | Mapped to ffmpeg's `disc` metadata key. |
 
-**Supported formats**: Any container ffmpeg can demux/remux losslessly — MP3, FLAC, OGG, M4A, M4B, OPUS, AAC, WAV, AIFF, W64, etc.  
+**Supported formats**: Any container ffmpeg can remux losslessly — MP3, FLAC, OGG, M4A, M4B, OPUS, AAC, WAV, AIFF, W64, etc.  
 For containers that do not support certain tag keys (e.g. WAV has limited metadata support) ffmpeg silently ignores inapplicable keys.
 
-**Process**
-1. Resolve the absolute path via `getVPathInfo(filepath, user)` (same path resolver used by Discogs embed)
-2. Build ffmpeg `-metadata key=value` arguments for each provided field
-3. Run: `ffmpeg -y -i <source> -map 0 -map_metadata 0 -codec copy -metadata … <tmpfile>`
-4. Atomically replace source with `tmpfile` via `rename(2)` (same filesystem — no cross-device copy)
-5. Update the `files` table in the database: `title`, `artist`, `album`, `year`, `genre`, `track`, `disk`
+**Process** (`writeTags()` in `src/util/ffmpeg-tags.js`)
+1. Resolve the absolute path via `getVPathInfo(filepath, user)`
+2. Build ffmpeg `-metadata key=value` arguments for each provided field (Ogg/Opus also get them on the audio stream)
+3. MP3, M4A/M4B/MP4 and FLAC: `ffmpeg -y -i <source> -map 0 -c copy -map_metadata 0 -metadata … <tmpfile>` (MP3 adds `-id3v2_version 3`); other formats map only the audio (`-map 0:a`). Ogg/Opus files with a cover have the cover extracted and re-embedded so it is kept.
+4. Atomically replace the source with the temp file (a hidden `.velvet-tag-*` file in the same folder) via `rename(2)`
+5. Update the `files` table for the provided fields (`title`, `artist`, `album`, `year`, `genre`, `track`, `disk`) and store the new file mtime so the scanner does not treat the file as changed
 
 **Response**
 ```json
@@ -129,8 +131,8 @@ Pressing it reveals an inline form pre-filled with the current tag values. The *
 
 1. The tags are sent to `POST /api/v1/admin/tags/write`.
 2. All matching entries in the in-memory playback queue are updated so the player bar and queue panel reflect the new values immediately.
-3. If the edited song is currently loaded in the audio element, `audioEl.load()` is called so the browser re-fetches the newly written file (seeking back to the previous position and resuming playback automatically), preventing any "unplayable file" decode errors from the browser reading a stale stream.
+3. If the edited song is the one playing, playback is paused before the write; afterwards the audio source is reloaded with a cache-buster and starts again **from the beginning** (byte offsets change when the file is rewritten). When casting to Server Audio (MPV) or Sonos, the cast is reloaded as well.
 
 ### Write-access guard
 
-The **Edit Tags** button and Discogs/Deezer/iTunes art-search buttons are only shown when the server process has write permission to the song's folder. `GET /api/v1/ping` now includes a `vpathWriteAccess: { [vpathName]: bool }` map (admin-only) checked on every login. If the flag is `false` for the relevant vpath, the art-search section is hidden and attempting to open the album art picker shows a toast: *"Velvet does not have write access to this folder"*.
+`GET /api/v1/ping` includes a `vpathWriteAccess: { [vpathName]: bool }` map for admin users. When the flag is `false` for the song's root vpath, the Discogs/Deezer/iTunes art-search section is hidden and opening the album art picker shows a toast that Velvet has no write access to the folder. The **Edit Tags** button itself is not gated by this map; a write to a read-only folder fails with `500`.

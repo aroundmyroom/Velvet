@@ -4,14 +4,18 @@
 // library has, stays under the cap, and comes out the same for the same brief.
 import Joi from 'joi';
 import { FAMILIES, familyCompat } from './genre-family.js';
+import { CAMELOT, toCamelot } from './camelot.js';
+import { COLLAB_SEP, DUO_SEP, TRACK_NO_PREFIX } from './artist-credit.js';
+
+export { toCamelot };
 
 export const ENERGY = ['steady', 'build', 'peak', 'wave', 'cooldown'];
-export const RELEASES = ['any', 'album', 'single', '12inch', 'extended', 'instrumental', 'remix', 'live', 'original'];
-export const PREFERS = ['none', 'longest', 'shortest', 'newest', 'oldest'];
-export const RANKINGS = ['none', 'mostPlayed', 'leastPlayed', 'topRated', 'recentlyAdded', 'recentlyPlayed'];
-export const ORDERS = ['dj', 'chronological', 'newestFirst', 'alphabetical', 'random', 'countdown'];
-export const PLAYED = ['any', 'never', 'played'];
-export const RATED = ['any', 'rated', 'unrated'];
+const RELEASES = ['any', 'album', 'single', '12inch', 'extended', 'instrumental', 'remix', 'live', 'original'];
+const PREFERS = ['none', 'longest', 'shortest', 'newest', 'oldest'];
+const RANKINGS = ['none', 'mostPlayed', 'leastPlayed', 'topRated', 'recentlyAdded', 'recentlyPlayed'];
+const ORDERS = ['dj', 'chronological', 'newestFirst', 'alphabetical', 'random', 'countdown'];
+const PLAYED = ['any', 'never', 'played'];
+const RATED = ['any', 'rated', 'unrated'];
 // What each release wish looks for in titles and file names.
 export const RELEASE_PATTERNS = {
   '12inch': ['12"', '12 inch', '12-inch', '12inch', 'extended', 'maxi', 'club mix', 'club version', 'long version', 'dub'],
@@ -23,31 +27,15 @@ export const RELEASE_PATTERNS = {
   original: ['original', 'album version', 'lp version'],
 };
 export const DEFAULT_SONGS = 25;
-export const MAX_MINUTES = 24 * 60;
+const MAX_MINUTES = 24 * 60;
 export const MAX_SONGS = 9999;
 export const MAX_LIST = 25;
-export const MAX_SEGMENTS = 12;
+const MAX_SEGMENTS = 12;
 const FALLBACK_DURATION = 240;
 const CHAIN_LIMIT = 1500;
 
-const CAMELOT = {
-  'Ab minor': '1A', 'G# minor': '1A', 'B major': '1B',
-  'Eb minor': '2A', 'D# minor': '2A', 'F# major': '2B', 'Gb major': '2B',
-  'Bb minor': '3A', 'A# minor': '3A', 'Db major': '3B', 'C# major': '3B',
-  'F minor': '4A', 'Ab major': '4B', 'G# major': '4B',
-  'C minor': '5A', 'Eb major': '5B', 'D# major': '5B',
-  'G minor': '6A', 'Bb major': '6B', 'A# major': '6B',
-  'D minor': '7A', 'F major': '7B',
-  'A minor': '8A', 'C major': '8B',
-  'E minor': '9A', 'G major': '9B',
-  'B minor': '10A', 'D major': '10B',
-  'F# minor': '11A', 'A major': '11B',
-  'C# minor': '12A', 'E major': '12B',
-};
-export function toCamelot(key) { return key ? CAMELOT[key] ?? null : null; }
-
 const KEY_ALIASES = { 'a#': 'Bb', 'c#': 'Db', 'd#': 'Eb', 'f#': 'Gb', 'g#': 'Ab' };
-export function keyToCamelot(text) {
+function keyToCamelot(text) {
   const t = String(text || '').trim();
   if (/^\d{1,2}[ab]$/i.test(t)) { const n = Number.parseInt(t, 10); return n >= 1 && n <= 12 ? `${n}${t.slice(-1).toUpperCase()}` : null; }
   const m = t.match(/^([a-g])\s*([#b♭♯])?\s*(minor|major|min|maj|m|dur|moll)?$/i);
@@ -275,13 +263,16 @@ export function validateBrief(raw) {
   return value;
 }
 
+// Folds accents like autodj/scoring.js artistKey, but keeps non-Latin scripts:
+// that one maps every Cyrillic or CJK name to '', which would make them one artist here.
 export function artistKey(name) {
-  return String(name || '').toLowerCase().replaceAll('.', '').replaceAll(/\s+/g, ' ').trim();
+  return String(name || '').toLowerCase().normalize('NFD').replaceAll(/[\u0300-\u036f]/g, '')
+    .normalize('NFC').replaceAll('.', '').replaceAll(/\s+/g, ' ').trim();
 }
 
 const clamp = (n, lo, hi) => Math.min(hi, Math.max(lo, n));
 
-export function median(values) {
+function median(values) {
   const v = values.filter(x => Number.isFinite(x) && x > 0).sort((a, b) => a - b);
   return v.length ? v[Math.floor(v.length / 2)] : null;
 }
@@ -305,8 +296,9 @@ function outside(v, lo, hi) {
   return 0;
 }
 
-function creditParts(artist) {
-  return String(artist || '').toLowerCase().split(/[;,]|\s(?:&|and|feat\.?|ft\.?|featuring|vs\.?|pres\.?|presents?|x)\s/).map(p => artistKey(p)).filter(Boolean);
+export function creditParts(artist) {
+  return String(artist || '').trim().replace(TRACK_NO_PREFIX, '').split(COLLAB_SEP)
+    .flatMap(p => p.split(DUO_SEP)).map(p => artistKey(p)).filter(Boolean);
 }
 
 function scoreRow(row, brief, ctx) {
@@ -662,8 +654,8 @@ function sprinkle(seq, extras) {
 // relative major/minor (8A ↔ 8B). Walking the tempo ladder, the next song is
 // the one the current key mixes into — as long as the tempo step stays small
 // and no artist ends up next to itself.
-export const HARMONIC = 0.8;
-export function harmonic(a, b) { return !!a && !!b && camelotScore(a, b) >= HARMONIC; }
+const HARMONIC = 0.8;
+function harmonic(a, b) { return !!a && !!b && camelotScore(a, b) >= HARMONIC; }
 
 // Reordering can only do so much when the picks' keys do not chain. Walking
 // the finished ladder, a transition that is not harmonic is repaired from the

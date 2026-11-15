@@ -24,11 +24,12 @@
  */
 
 import { workerData, parentPort } from 'node:worker_threads';
-import { DatabaseSync } from 'node:sqlite';
+import { openWorkerDb } from '../db/worker-connection.js';
 import { spawn } from 'node:child_process';
 import path from 'node:path';
 import fs from 'node:fs';
 import { resolvePathWithinRoot } from './path-security.js';
+import { sleep, stopRequested, dbWriteWithRetry, runWithLockRetry } from './worker-helpers.mjs';
 
 const { dbPath, folders, rsgainBin, ffmpegBin } = workerData;
 
@@ -36,19 +37,9 @@ const { dbPath, folders, rsgainBin, ffmpegBin } = workerData;
 const BATCH_SIZE          = 50;
 const YIELD_BETWEEN_MS    = 250;  // ms between files — gives OS room to breathe alongside other workers
 
-let _stopRequested = false;
-
-parentPort.on('message', msg => {
-  if (msg?.type === 'stop') _stopRequested = true;
-});
-
 // ── SQLite ────────────────────────────────────────────────────────────────────
 
-const db = new DatabaseSync(dbPath, { timeout: 300_000 });
-db.exec('PRAGMA busy_timeout = 300000');  // 5 min — covers scanner long-running transactions
-db.exec('PRAGMA journal_mode=WAL');
-db.exec('PRAGMA synchronous = NORMAL');
-db.exec('PRAGMA cache_size = -4000');
+const db = openWorkerDb(dbPath, { busyTimeoutMs: 300_000 });  // 5 min — covers scanner long-running transactions
 
 const _rsgainAvail = Boolean(rsgainBin && fs.existsSync(rsgainBin));
 
@@ -298,12 +289,6 @@ function computeAlbumGain(siblings) {
   return { albumGain, albumPeak };
 }
 
-// ── Yield helper ──────────────────────────────────────────────────────────────
-
-function sleep(ms) {
-  return new Promise(resolve => setTimeout(resolve, ms).unref());
-}
-
 // ── Main loop ─────────────────────────────────────────────────────────────────
 
 async function run() {
@@ -315,7 +300,7 @@ async function run() {
 
   parentPort.postMessage({ type: 'ready' });
 
-  while (!_stopRequested) {
+  while (!stopRequested()) {
     const batch = _getQueue.all(BATCH_SIZE);
 
     if (!batch.length) {
@@ -327,12 +312,12 @@ async function run() {
     }
 
     for (const row of batch) {
-      if (_stopRequested) break;
+      if (stopRequested()) break;
 
       const rootDir = folders[row.vpath];
       if (!rootDir) {
         _processedCount++;
-        _setFailed.run('missing_vpath', null, row.id);
+        await dbWriteWithRetry(() => _setFailed.run('missing_vpath', null, row.id));
         continue;
       }
       let absolutePath;
@@ -340,20 +325,20 @@ async function run() {
         absolutePath = resolvePathWithinRoot(rootDir, row.filepath);
       } catch {
         _processedCount++;
-        _setFailed.run('invalid_path', null, row.id);
+        await dbWriteWithRetry(() => _setFailed.run('invalid_path', null, row.id));
         continue;
       }
 
       // macOS resource fork files (._filename) are never audio — skip immediately.
       if (path.basename(absolutePath).startsWith('._')) {
         _processedCount++;
-        _setFailed.run('resource_fork', 'macOS resource fork file — not audio', row.id);
+        await dbWriteWithRetry(() => _setFailed.run('resource_fork', 'macOS resource fork file — not audio', row.id));
         continue;
       }
 
       if (!fs.existsSync(absolutePath)) {
         _processedCount++;
-        _setFailed.run('file_not_found', null, row.id);
+        await dbWriteWithRetry(() => _setFailed.run('file_not_found', null, row.id));
         continue;
       }
 
@@ -370,7 +355,7 @@ async function run() {
         _processedCount++;
         const reason   = result?.timedOut ? 'timed_out' : 'measure_failed';
         const errorMsg = result?.timedOut ? null : (result?.errorMsg || null);
-        _setFailed.run(reason, errorMsg, row.id);
+        await dbWriteWithRetry(() => _setFailed.run(reason, errorMsg, row.id));
         const stats = _getStats.get();
         parentPort.postMessage({ type: 'status', stats: { ...stats, tool: _rsgainAvail ? 'rsgain' : 'ffmpeg' }, processedCount: _processedCount });
         await sleep(YIELD_BETWEEN_MS);
@@ -378,10 +363,10 @@ async function run() {
       }
 
       const now = Math.floor(Date.now() / 1000);
-      _setMeasurement.run(
+      await dbWriteWithRetry(() => _setMeasurement.run(
         result.integratedLufs, result.truePeak, result.trackGain,
         result.lra, now, result.tool, row.id
-      );
+      ));
 
       // ── Album gain: check if the whole album is now complete ─────────────
       // Reload siblings (including this file's freshly set columns)
@@ -398,15 +383,15 @@ async function run() {
       const hadAlbumGain = siblings.some(s => s.id !== row.id && s.rg_album_gain_db != null);
       if (hadAlbumGain) {
         // Reset album gain on all siblings — will be rewritten below if complete
-        for (const s of siblings) _clearAlbumGain.run(s.id);
+        await dbWriteWithRetry(() => { for (const s of siblings) _clearAlbumGain.run(s.id); });
         for (const s of siblings) s.rg_album_gain_db = null;
       }
 
       const albumResult = computeAlbumGain(siblings);
       if (albumResult) {
-        for (const s of siblings) {
-          _setAlbumGain.run(albumResult.albumGain, albumResult.albumPeak ?? null, s.id);
-        }
+        await dbWriteWithRetry(() => {
+          for (const s of siblings) _setAlbumGain.run(albumResult.albumGain, albumResult.albumPeak ?? null, s.id);
+        });
       }
 
       _processedCount++;
@@ -422,25 +407,4 @@ async function run() {
   parentPort.postMessage({ type: 'stopped' });
 }
 
-// Retry loop: if the DB is locked (scanner running a long transaction), wait and retry
-// instead of crashing.  Any other error is fatal as before.
-async function runWithRetry() {
-  const LOCK_RETRY_DELAY_MS = 60_000;
-  for (;;) {
-    try {
-      await run();
-      return;
-    } catch (e) {
-      const isLock = /database is locked|SQLITE_BUSY|ERR_SQLITE/i.test(e.message || '');
-      if (isLock) {
-        parentPort.postMessage({ type: 'log', message: '[rg-analysis] DB locked (scanner running) — waiting 60 s then retrying' });
-        await new Promise(r => setTimeout(r, LOCK_RETRY_DELAY_MS));
-        // continue retry loop
-      } else {
-        parentPort.postMessage({ type: 'error', message: e.message });
-        process.exit(1);
-      }
-    }
-  }
-}
-await runWithRetry();
+await runWithLockRetry(run, 'rg-analysis');

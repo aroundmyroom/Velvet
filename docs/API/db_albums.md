@@ -15,7 +15,7 @@
 
 ### GET /api/v1/db/albums
 
-Returns the complete album list for the authenticated user's vpaths.
+Returns the complete album list for the authenticated user's vpaths. For a user who only has child vpaths, the list is limited to those folders.
 
 * **Success Response:**
 
@@ -25,11 +25,13 @@ Returns the complete album list for the authenticated user's vpaths.
     ```json
     {
       "albums": [
-        { "name": "Thriller", "year": 1982, "album_art_file": "abc123.jpg" },
-        { "name": "Homework",  "year": 1997, "album_art_file": null }
+        { "name": "Thriller", "year": 1982, "album_art_file": "abc123.jpg", "album_version": null },
+        { "name": "Homework",  "year": 1997, "album_art_file": null, "album_version": null }
       ]
     }
     ```
+
+    An album name can appear more than once when the same album tag lives in different folders (disc sub-folders such as `CD 1` / `CD 2` count as one folder).
 
 ---
 
@@ -81,6 +83,6 @@ All music files are stored in SQLite under a **single root vpath** (e.g. `Music`
 
 When filtering for a child vpath, **always use the whitelist approach** (`includeFilepathPrefixes`) rather than the blacklist (`excludeFilepathPrefixes`). The whitelist is a hard filter; the blacklist only excludes *known* siblings and leaks files stored at the parent root or in any unrecognised sibling.
 
-`GET /api/v1/ping` returns `vpathMeta[vpath] = { parentVpath, filepathPrefix, albumsOnly, … }` so clients know the structure.
+`GET /api/v1/ping` returns `vpathMetaData[vpath] = { type, parentVpath, filepathPrefix, allowRecordDelete, albumsOnly }` so clients know the structure.
 
 See also: [Admin directory flags](admin_directory-flags.md), [Albums-Only feature](../albums-only.md)

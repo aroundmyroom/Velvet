@@ -16,9 +16,9 @@ export const MSG = Object.freeze({
 
 export const MAX_PLAINTEXT = 65535 - 16;
 export const MAX_PAYLOAD = MAX_PLAINTEXT - 1;
-export const DEFAULT_MAX_MESSAGE = 64 * 1024 * 1024;
-export const FRAGMENT_FLAG_LAST = 0x01;
-export const FRAGMENT_FLAG_FIRST = 0x02;
+const DEFAULT_MAX_MESSAGE = 64 * 1024 * 1024;
+const FRAGMENT_FLAG_LAST = 0x01;
+const FRAGMENT_FLAG_FIRST = 0x02;
 export const AUDIO_HEADER_LEN = 13;
 export const SEND_AHEAD_MAX = 0xffffffffn;
 
@@ -28,6 +28,11 @@ const ARTWORK_FLAG_CANCEL = 0x01;
 const ARTWORK_FLAG_ANNOUNCE = 0x02;
 
 export class WireError extends Error {}
+
+export function sameFormat(a, b) {
+  return Boolean(a && b) && a.codec === b.codec && a.sample_rate === b.sample_rate
+    && a.channels === b.channels && (a.codec === 'opus' || a.bit_depth === b.bit_depth);
+}
 
 export function frame(type, payload) {
   return Buffer.concat([Buffer.from([type]), payload]);

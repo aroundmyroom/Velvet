@@ -1,7 +1,6 @@
 # Directory Access Test
 
 > **Admin Panel → Directories → Test Access**
-> Added in v5.16.10-velvet
 
 ---
 
@@ -10,10 +9,12 @@
 When you click **Test Access** in the Directories card, Velvet immediately checks every configured vpath directory for read *and* write access, then shows the results in a modal — no server restart needed.
 
 For each directory the server:
-1. Opens the directory for reading (`fs.access R_OK`)
-2. Creates a uniquely-named temp file (`.velvet-writetest-<timestamp>-<random>`)
+1. Checks read permission on the directory (`fs.access R_OK`)
+2. If readable, creates a uniquely-named temp file (`.velvet-writetest-<timestamp>-<random>`)
 3. Reads the temp file back to confirm the write succeeded
 4. **Deletes the temp file** — no artifact is ever left on disk
+
+If the read check fails, the write test is skipped and the directory is reported as not writable.
 
 ---
 
@@ -72,7 +73,8 @@ After fixing permissions, click **Test Access** again — no restart needed.
 
 ### Mounted / network drives
 
-- The drive must be mounted *before* Velvet starts. If it was mounted after startup, restart the service: `systemctl restart music.service`
+- The drive must be mounted *before* Velvet starts. If it was mounted after startup, restart the Velvet service.
+- NFS and SMB shares can also be mounted from inside Velvet — see [network-shares.md](network-shares.md).
 - Network shares require the Velvet service account to have credentials for the share; anonymous mounts are often read-only by default
 
 ---

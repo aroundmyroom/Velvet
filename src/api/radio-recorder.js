@@ -10,8 +10,11 @@ import * as config from '../state/config.js';
 import { joiValidate } from '../util/validation.js';
 import { ffmpegBin } from '../util/ffmpeg-bootstrap.js';
 import { resolvePathWithinRoot } from '../util/path-security.js';
+import { dbFilepath } from '../util/db-filepath.js';
+import { canEmbedCover, embedCover } from '../util/ffmpeg-tags.js';
+import { isPrivateHost, safeLookup, resolveStreamUrl } from '../util/ssrf-check.js';
 
-import { isPrivateHost, safeLookup } from '../util/ssrf-check.js';
+const MAX_REDIRECTS = 3;
 
 // ── Content-Type → file extension map ────────────────────────────────────────
 const CT_EXT = {
@@ -112,9 +115,7 @@ async function _embedCoverArt(audioPath, artFilename) {
   // Security: artFilename must be a bare filename — no path separators or traversal
   if (!artFilename || /[/\\]/.test(artFilename)) return audioPath;
 
-  const ext = path.extname(audioPath).toLowerCase();
-  // Only formats where FFmpeg cover-art embedding is well-supported
-  if (!['.mp3', '.m4a', '.aac', '.flac'].includes(ext)) return audioPath;
+  if (!canEmbedCover(audioPath)) return audioPath;
 
   let artPath;
   try {
@@ -124,45 +125,19 @@ async function _embedCoverArt(audioPath, artFilename) {
   }
   try { await fsp.access(artPath); } catch { return audioPath; }  // art file missing
 
-  const ffmpegPath = ffmpegBin();
-  if (!ffmpegPath) return audioPath;
-  try { await fsp.access(ffmpegPath); } catch { return audioPath; }  // ffmpeg not present
-
-  const tmpPath = audioPath + '.art-tmp' + ext;
-
-  const args = ext === '.mp3'
-    ? ['-y', '-i', audioPath, '-i', artPath,
-       '-map', '0:a', '-map', '1:v',
-       '-c:a', 'copy', '-c:v', 'mjpeg',
-       '-id3v2_version', '3',
-       '-metadata:s:v', 'title=Album cover',
-       '-metadata:s:v', 'comment=Cover (front)',
-       tmpPath]
-    : ['-y', '-i', audioPath, '-i', artPath,
-       '-map', '0:a', '-map', '1:v',
-       '-c:a', 'copy', '-c:v', 'copy',
-       '-disposition:v:0', 'attached_pic',
-       tmpPath];
-
   try {
-    await new Promise((resolve, reject) => {
-      const proc = spawn(ffmpegPath, args, { stdio: 'pipe' });
-      proc.on('close', code => (code === 0 ? resolve() : reject(new Error(`FFmpeg exited ${code}`))));
-      proc.on('error', reject);
-    });
-    await fsp.rename(tmpPath, audioPath);
+    await embedCover({ input: audioPath, artPath });
   } catch (err) {
     console.error(`[radio-recorder] cover-art embed failed for ${path.basename(audioPath)}: ${err.message}`);
-    try { await fsp.unlink(tmpPath); } catch (e) { console.debug('[velvet]', e?.message ?? e); }
   }
   return audioPath;
 }
 
-// ── Auto-stop a recording when max duration is reached ────────────────────────
-async function _autoStopRecording(id) {
+async function _finishRecording(id) {
   const rec = activeRecordings.get(id);
-  if (!rec) return;
+  if (!rec) return null;
 
+  clearTimeout(rec._autoStopTimer);
   rec.upRes.unpipe(rec.writer);
   rec.upReq.destroy();
   activeRecordings.delete(id);
@@ -178,11 +153,17 @@ async function _autoStopRecording(id) {
   if (rec.artFile) {
     await _embedCoverArt(rec.filePath, rec.artFile);
   }
-  console.info(`[radio-recorder] Auto-stopped recording ${id} after max duration`);
+  return rec;
+}
+
+async function _autoStopRecording(id) {
+  if (await _finishRecording(id)) {
+    console.info(`[radio-recorder] Auto-stopped recording ${id} after max duration`);
+  }
 }
 
 // ── Internal start helper (called by HTTP endpoint + scheduler) ───────────────
-// SSRF check and vpath validation must be done by the caller.
+// SSRF check of the first URL and vpath validation must be done by the caller.
 // Returns: Promise<{ id, relPath, filename }>
 export function startStreamRecording({ username, url, vpath, recordDir, stationName, artFile, durationMinutes, description }) {
   return new Promise((resolve, reject) => {
@@ -192,11 +173,13 @@ export function startStreamRecording({ username, url, vpath, recordDir, stationN
   });
 }
 
+
 function _attemptStreamConnect(streamUrl, tries, ctx) {
   const { id, name, username, vpath, recordDir, stationName, artFile, durationMinutes, description, resolve, reject } = ctx;
-  if (tries > 3) return reject(new Error('Could not connect to stream after redirects'));
+  if (tries > MAX_REDIRECTS) return reject(new Error('Could not connect to stream after redirects'));
 
-  const parsed = new URL(streamUrl);
+  let parsed;
+  try { parsed = resolveStreamUrl(streamUrl); } catch (err) { return reject(err); }
   const useLib = parsed.protocol === 'https:' ? https : http;
   const upReq  = useLib.request({
     hostname: parsed.hostname,
@@ -206,9 +189,22 @@ function _attemptStreamConnect(streamUrl, tries, ctx) {
     lookup:   safeLookup,
     headers:  { 'User-Agent': 'Velvet/5 RadioRecorder', 'Icy-MetaData': '0' },
   }, upRes => {
+    try {
+      _onStreamResponse(upRes);
+    } catch (err) {
+      upRes.destroy();
+      reject(err);
+    }
+  });
+
+  upReq.on('error', reject);
+  upReq.setTimeout(15000, () => { upReq.destroy(); reject(new Error('Stream connection timed out')); });
+  upReq.end();
+
+  function _onStreamResponse(upRes) {
     if ([301, 302, 307, 308].includes(upRes.statusCode) && upRes.headers.location) {
       upRes.resume();
-      _attemptStreamConnect(upRes.headers.location, tries + 1, ctx);
+      _attemptStreamConnect(resolveStreamUrl(upRes.headers.location, parsed).href, tries + 1, ctx);
       return;
     }
     if (upRes.statusCode !== 200) {
@@ -238,14 +234,10 @@ function _attemptStreamConnect(streamUrl, tries, ctx) {
     writer.on('error', () => { upRes.destroy(); activeRecordings.delete(id); });
 
     resolve({ id, relPath: `${vpath}/${filename}`, filename });
-  });
-
-  upReq.on('error', reject);
-  upReq.setTimeout(15000, () => { upReq.destroy(); reject(new Error('Stream connection timed out')); });
-  upReq.end();
+  }
 }
 
-export const stopStreamRecording = _autoStopRecording;
+export const stopStreamRecording = _finishRecording;
 
 export function setup(velvet) {
 
@@ -262,6 +254,7 @@ export function setup(velvet) {
         stationName: r.stationName,
         filePath: r.filePath,
         vpath: r.vpath,
+        filepath: dbFilepath(r.vpath, path.basename(r.filePath)),
         startedAt: r.startedAt,
         bytesWritten: r.bytesWritten,
       });
@@ -313,7 +306,7 @@ export function setup(velvet) {
         artFile:     value.artFile,
         description: value.description || null,
       });
-      res.json({ id: result.id, filePath: result.relPath, filename: result.filename });
+      res.json({ id: result.id, filePath: result.relPath, filepath: dbFilepath(value.vpath, result.filename), filename: result.filename });
     } catch (err) {
       if (!res.headersSent) res.status(502).json({ error: err.message || 'Failed to start recording' });
     }
@@ -333,34 +326,17 @@ export function setup(velvet) {
     if (rec.username !== req.user.username) return res.status(403).json({ error: 'Not your recording' });
 
     const durationMs = Date.now() - rec.startedAt;
-
-    clearTimeout(rec._autoStopTimer);
-    rec.upRes.unpipe(rec.writer);
-    rec.upReq.destroy();
-    activeRecordings.delete(req.body.id);
-
-    // Wait for the file writer to fully flush before post-processing
-    await new Promise(resolve => {
-      if (rec.writer.writableEnded) { resolve(); return; }
-      rec.writer.on('finish', resolve);
-      rec.writer.on('error', resolve);
-      rec.writer.end();
-    });
-
-    // Remux raw AAC → M4A container for seekability, then embed cover art
-    rec.filePath = await _remuxAacToM4a(rec.filePath);
-    if (rec.artFile) {
-      await _embedCoverArt(rec.filePath, rec.artFile);
-    }
+    const done = await _finishRecording(req.body.id);
 
     res.json({
-      filePath:     rec.filePath,
-      relPath:      `${rec.vpath}/${path.basename(rec.filePath)}`,
-      bytesWritten: rec.bytesWritten,
+      filePath:     done.filePath,
+      relPath:      `${done.vpath}/${path.basename(done.filePath)}`,
+      filepath:     dbFilepath(done.vpath, path.basename(done.filePath)),
+      bytesWritten: done.bytesWritten,
       durationMs,
-      vpath:        rec.vpath,
-      stationName:  rec.stationName,
-      artFile:      rec.artFile || null,
+      vpath:        done.vpath,
+      stationName:  done.stationName,
+      artFile:      done.artFile || null,
     });
   });
 }

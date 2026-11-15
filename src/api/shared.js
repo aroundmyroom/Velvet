@@ -14,8 +14,9 @@ function lookupShared(playlistId) {
 
   try {
     jwt.verify(playlistItem.token, config.program.secret);
-  } catch {
-    throw new WebError('Share Link Expired', 401);
+  } catch (err) {
+    if (err.name === 'TokenExpiredError') throw new WebError('Share Link Expired', 410);
+    throw new WebError('Invalid Share Link', 401);
   }
   return {
     token: playlistItem.token,
@@ -31,10 +32,8 @@ export function setupBeforeSecurity(velvet) {
   velvet.get('/shared/:playlistId', async (req, res) => {
     // don't end this with a slash. otherwise relative URLs don't work
     if (req.path.endsWith('/')) {
-      const matchEnd = req.path.match(/(\/)+$/g);
-      const queryString = req.url.match(/(\?.*)/g) === null ? '' : req.url.match(/(\?.*)/g);
-      // redirect to a more sane URL
-      return res.redirect(301, req.path.slice(0, (matchEnd[0].length)*-1) + queryString[0]);
+      const q = req.url.indexOf('?');
+      return res.redirect(301, `/shared/${encodeURIComponent(req.params.playlistId)}${q === -1 ? '' : req.url.slice(q)}`);
     }
 
     if (!req.params.playlistId) { throw new WebError('Validation Error', 403); }
@@ -45,39 +44,26 @@ export function setupBeforeSecurity(velvet) {
       throw new WebError('Page not found', 404);
     }
 
+    // An expired or unknown link gets the same page with { error }; shared/app.js shows
+    // the message in the visitor's language.
     let sharedData;
+    let status = 200;
     try {
       sharedData = lookupShared(req.params.playlistId);
     } catch (e) {
-      // Link is expired or not found — serve a friendly HTML error page
-      const isExpired = e instanceof Error && e.name === 'TokenExpiredError';
-      const headline  = isExpired ? 'This link has expired' : 'Link not found';
-      const detail    = isExpired
-        ? 'The shared playlist link you followed is no longer valid.'
-        : 'This shared playlist link does not exist or has been revoked.';
-      const errorPage = sharePage.replace(
-        /<title>[^<]*<\/title>/,
-        `<title>Velvet – ${headline}</title>`
-      ).replace(
-        /<body[^>]*>/,
-        `$&<div style="position:fixed;inset:0;z-index:9999;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:1.4rem;background:#0f0f1a;color:#f0f0ff;font-family:system-ui,sans-serif;padding:2rem;text-align:center;">` +
-        `<svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="#a78bfa" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>` +
-        `<h1 style="margin:0;font-size:2rem;font-weight:700;color:#f0f0ff;">${headline}</h1>` +
-        `<p style="margin:0;font-size:1.1rem;color:#b0b0d0;max-width:400px;line-height:1.6;">${detail}</p>` +
-        `</div>`
-      );
-      return res.status(isExpired ? 410 : 404).send(errorPage);
+      status = e?.status === 410 ? 410 : 404;
+      sharedData = { error: status === 410 ? 'expired' : 'not-found' };
     }
 
-    // Inject the playlist into a non-executable JSON data block (read by
-    // shared/app.js). Escaping '<' prevents a "</script>" breakout and keeps the
-    // page free of inline executable scripts, so it works under script-src 'self'.
+    // Inject the data into a non-executable JSON data block (read by shared/app.js).
+    // Escaping '<' prevents a "</script>" breakout and keeps the page free of inline
+    // executable scripts, so it works under script-src 'self'.
     const dataJson = JSON.stringify(sharedData).replace(/</g, '\\u003c');
     sharePage = sharePage.replace(
       '<script type="application/json" id="sh-data"></script>',
       `<script type="application/json" id="sh-data">${dataJson}</script>`
     );
-    res.send(sharePage);
+    res.status(status).send(sharePage);
   });
 
   velvet.get('/api/v1/shared/:playlistId', (req, res) => {
@@ -116,7 +102,6 @@ export function setupAfterSecurity(velvet) {
     };
 
     db.insertSharedPlaylist(sharedItem);
-    db.saveShareDB();
     res.json(sharedItem);
   });
 
@@ -137,7 +122,6 @@ export function setupAfterSecurity(velvet) {
     if (!item) { throw new WebError('Not Found', 404); }
     if (item.user !== req.user.username) { throw new WebError('Forbidden', 403); }
     db.removeSharedPlaylistById(req.params.playlistId);
-    db.saveShareDB();
     res.json({ success: true });
   });
 }

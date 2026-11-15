@@ -1,5 +1,6 @@
 import crypto from 'node:crypto';
 import { SENTINEL_PSK, pskId, encodeKeyId, isKeyId } from './keys.js';
+import { sha256 } from './noise.js';
 
 export const METHODS = Object.freeze({
   PAIRING_PSK: 'pairing_psk',
@@ -7,7 +8,7 @@ export const METHODS = Object.freeze({
   STATIC: 'static_pairing_code',
 });
 export const FORMATS = Object.freeze({ DIGITS: 'digits', QR_CODE: 'qr_code' });
-export const ABORT_REASONS = Object.freeze({
+const ABORT_REASONS = Object.freeze({
   ATTEMPT_TIMEOUT: 'attempt_timeout',
   CONCURRENT_ATTEMPT: 'concurrent_attempt',
   METHOD_NOT_SUPPORTED: 'method_not_supported',
@@ -22,11 +23,11 @@ export const ROUND_LIMIT = 20;
 export const PENDING_MESSAGE_MAX_BYTES = 200;
 export const DYNAMIC_DIGITS = 6;
 export const STATIC_DIGITS = 8;
-export const QR_CODE_BYTES = 24;
+const QR_CODE_BYTES = 24;
 // Longer than the client's recommended 2-minute attempt timeout, so the client's in-band
 // abort wins when both sides are alive (same bounds as aiosendspin).
 export const TIMEOUTS = Object.freeze({ firstMessageMs: 60_000, gestureMs: 360_000, attemptMs: 180_000 });
-export const COOLDOWN = Object.freeze({ initialMs: 2_000, maxMs: 120_000 });
+const COOLDOWN = Object.freeze({ initialMs: 2_000, maxMs: 120_000 });
 
 const PSK_TOKEN_VERSION = '0';
 const CODE_TOKEN_VERSION = '1';
@@ -56,13 +57,7 @@ export class PairingInputError extends Error {
   }
 }
 
-export class CPaceError extends Error {}
-
-function sha256(...parts) {
-  const h = crypto.createHash('sha256');
-  for (const p of parts) h.update(p);
-  return h.digest();
-}
+class CPaceError extends Error {}
 
 function sha512(...parts) {
   const h = crypto.createHash('sha512');
@@ -126,11 +121,11 @@ function base32Decode(text) {
   return Buffer.from(out);
 }
 
-export function encodePairingToken(version, payload) {
+function encodePairingToken(version, payload) {
   return `${TOKEN_PREFIX}${version}${base32Encode(payload).replaceAll('2', '9')}`;
 }
 
-export function decodePairingToken(input, expectVersion) {
+function decodePairingToken(input, expectVersion) {
   if (typeof input !== 'string' || input.length > MAX_TOKEN_CHARS) {
     throw new PairingInputError('malformed_token', 'malformed pairing token');
   }
@@ -179,7 +174,7 @@ export function decodeCodeToken(input) {
 
 // ---- Pairing codes --------------------------------------------------------------------------
 
-export function stripSeparators(input) {
+function stripSeparators(input) {
   return String(input).replace(/[\s-]/g, '');
 }
 
@@ -200,7 +195,7 @@ export function commitNonce(nonceB) {
   return sha256(LABEL.commit, nonceB);
 }
 
-export function deriveCodeDigest(handshakeHash, nonceA, nonceB) {
+function deriveCodeDigest(handshakeHash, nonceA, nonceB) {
   return sha256(LABEL.derive, handshakeHash, nonceA, nonceB);
 }
 
@@ -459,7 +454,7 @@ export function createPairingAttempt(opts) {
   return new PairingAttempt(opts);
 }
 
-export class PairingAttempt {
+class PairingAttempt {
   #o;
   #random;
   #now;

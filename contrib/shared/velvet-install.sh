@@ -38,7 +38,7 @@ DRY_RUN=0
 NO_START=0
 LOG_FILE="/var/log/velvet-installer.log"
 RELEASES_API="https://api.github.com/repos/aroundmyroom/Velvet/releases/latest"
-NODE_MAJOR_MIN=22
+NODE_MIN=22.5
 NODE_MAJOR_TARGET=24
 
 # ── output helpers ───────────────────────────────────────────────────────
@@ -205,12 +205,8 @@ do_install() {
   run_step "Updating package lists" apt-get update -y
   run_step "Installing base packages" apt-get install -y --no-install-recommends git curl ca-certificates gnupg jq
 
-  local node_major=0
-  if command -v node >/dev/null 2>&1; then
-    node_major=$(node -e 'console.log(process.versions.node.split(".")[0])' 2>/dev/null || echo 0)
-  fi
-  if [ "$node_major" -ge "$NODE_MAJOR_MIN" ] 2>/dev/null; then
-    msg_ok "Node.js $(node -v 2>/dev/null) already satisfies >=${NODE_MAJOR_MIN} — not reinstalling"
+  if command -v node >/dev/null 2>&1 && node -e "const [a,b]=process.versions.node.split('.').map(Number);const [x,y]='${NODE_MIN}'.split('.').map(Number);process.exit(a>x||(a===x&&b>=y)?0:1)" 2>/dev/null; then
+    msg_ok "Node.js $(node -v 2>/dev/null) already satisfies >=${NODE_MIN} — not reinstalling"
   else
     run_step "Adding the NodeSource repository (Node ${NODE_MAJOR_TARGET}.x)" bash -c "curl -fsSL https://deb.nodesource.com/setup_${NODE_MAJOR_TARGET}.x | bash -"
     run_step "Installing Node.js" apt-get install -y nodejs

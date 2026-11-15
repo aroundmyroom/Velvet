@@ -23,7 +23,8 @@ is then played from scratch.
   **zero** `savePlayQueue` / `getPlayQueue` calls. Feishin keeps its queue
   **entirely on the client**; it never stores or restores it on the server.
 - After the server's exact-file id change, Feishin streams each track by its
-  exact `<hash>@<rowid>` id, and a healthy in-order session advances cleanly
+  exact id (`<hash>`, or `<hash>@<rowid>` when the hash is shared), and a
+  healthy in-order session advances cleanly
   (consecutive tracks, each scrobbled, no repeats).
 
 ## Diagnosis (verified reasoning)
@@ -47,9 +48,11 @@ This is a **Feishin client-side issue**, not a Velvet server issue:
   restored `current` id always matches a returned entry. This benefits clients that
   use server-side queues (DSub, play:Sub) but **does not affect Feishin**, which
   does not use those endpoints.
-- An earlier change made every Subsonic song id carry an exact-file
-  `<hash>@<rowid>` disambiguator, so the server never serves the wrong file for a
-  shared content hash. This is in effect and is the right fix for "plays the wrong
+- An earlier change made a Subsonic song id carry an exact-file `@<rowid>`
+  suffix whenever its content hash is shared by more than one file
+  (`<hash>@<rowid>`; a unique hash stays a bare `<hash>`), so the server never
+  serves the wrong file for a shared content hash (`decodeSongId` in
+  `src/api/subsonic.js`). This is in effect and is the right fix for "plays the wrong
   file," but it does not change which id Feishin chooses to prefetch.
 
 No Velvet server change can fix the reported behaviour, because the wrong track is

@@ -25,12 +25,12 @@
  */
 
 import { workerData, parentPort } from 'node:worker_threads';
-import { DatabaseSync } from 'node:sqlite';
+import { openWorkerDb } from '../db/worker-connection.js';
 import { spawn, execFileSync } from 'node:child_process';
 import https from 'node:https';
-import path from 'node:path';
 import fs from 'node:fs';
 import { resolvePathWithinRoot } from './path-security.js';
+import { sleep, stopRequested, requestStop, dbWriteWithRetry } from './worker-helpers.mjs';
 
 // Absolute path for ionice — avoids PATH-injection (sonarjs/no-os-command-from-path)
 const _IONICE_BIN = ['/usr/bin/ionice', '/bin/ionice'].find(p => fs.existsSync(p)) ?? null;
@@ -47,23 +47,9 @@ const BATCH_SIZE        = 50;
 // HTTP timeout for AcoustID requests
 const HTTP_TIMEOUT_MS   = 15_000;
 
-let _stopRequested = false;
-
-// ── Main + stop signal ───────────────────────────────────────────────────────
-
-parentPort.on('message', msg => {
-  if (msg?.type === 'stop') {
-    _stopRequested = true;
-  }
-});
-
 // ── SQLite (direct access, WAL mode supports concurrent readers) ─────────────
 
-const db = new DatabaseSync(dbPath, { timeout: 30_000 });
-db.exec('PRAGMA busy_timeout = 30000');
-db.exec('PRAGMA journal_mode=WAL');
-db.exec('PRAGMA synchronous = NORMAL');
-db.exec('PRAGMA cache_size = -4000');
+const db = openWorkerDb(dbPath);
 
 const _getQueue = db.prepare(`
   SELECT filepath, vpath, duration
@@ -201,35 +187,6 @@ function acoustidLookup(duration, fingerprint) {
   });
 }
 
-// ── Delay helper ─────────────────────────────────────────────────────────────
-
-function sleep(ms) {
-  return new Promise(resolve => setTimeout(resolve, ms));
-}
-
-// ── DB write retry ───────────────────────────────────────────────────────────
-// SQLite can throw "database is locked" when another writer (artist-rebuild,
-// MB-enrich, main-thread scan) holds the write lock.  PRAGMA busy_timeout only
-// blocks up to 30 s — not enough for a full-library artist FTS rebuild.
-// Instead of crashing the worker, wait and retry for up to ~3 minutes.
-const DB_RETRY_ATTEMPTS = 60;
-const DB_RETRY_DELAY_MS = 3_000;
-
-async function dbWriteWithRetry(fn) {
-  for (let i = 0; i < DB_RETRY_ATTEMPTS; i++) {
-    try {
-      return fn();
-    } catch (err) {
-      const locked = err && typeof err.message === 'string' &&
-        (err.message.includes('database is locked') || err.message.includes('SQLITE_BUSY'));
-      if (!locked || i === DB_RETRY_ATTEMPTS - 1) throw err;
-      // Abort retry loop immediately if a stop was requested
-      if (_stopRequested) throw err;
-      await sleep(DB_RETRY_DELAY_MS);
-    }
-  }
-}
-
 // ── Process one file ─────────────────────────────────────────────────────────
 
 // Shorthand for null results (error/not_found paths — no MB data)
@@ -295,9 +252,9 @@ async function processFile(row) {
     // HTTP 400/401 = invalid API key — abort the entire worker immediately so
     // the user sees one clear error instead of every file being marked 'error'.
     if (err.statusCode === 400 || err.statusCode === 401) {
-      parentPort.postMessage({ type: 'error',
+      parentPort.postMessage({ type: 'fatal',
         message: `Invalid AcoustID API key (HTTP ${err.statusCode}). Check your key at https://acoustid.org/new-application` });
-      _stopRequested = true;
+      requestStop();
       return;
     }
     parentPort.postMessage({ type: 'log', level: 'warn',
@@ -344,7 +301,7 @@ async function processFile(row) {
 async function run() {
   // Verify API key before starting
   if (!apiKey || apiKey.length < 4) {
-    parentPort.postMessage({ type: 'error', message: 'No valid AcoustID API key configured' });
+    parentPort.postMessage({ type: 'fatal', message: 'No valid AcoustID API key configured' });
     return;
   }
 
@@ -353,7 +310,7 @@ async function run() {
 
   parentPort.postMessage({ type: 'ready' });
 
-  while (!_stopRequested) {
+  while (!stopRequested()) {
     const cutoff = Math.floor(Date.now() / 1000) - RETRY_AFTER_SEC;
     const batch = _getQueue.all(cutoff, BATCH_SIZE);
 
@@ -366,7 +323,7 @@ async function run() {
     }
 
     for (const row of batch) {
-      if (_stopRequested) break;
+      if (stopRequested()) break;
       try {
         await processFile(row);
       } catch (err) {

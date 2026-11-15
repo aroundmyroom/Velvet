@@ -12,19 +12,18 @@
 
   <script src="../assets/js/lib/vue2.js"></script>
   <script src="../assets/js/lib/axios.js"></script>
-  <script src="../assets/js/lib/clipboard.js"></script>
   <script src="../assets/js/lib/jwt-decode.js"></script>
   <script src="../assets/js/lib/cookie.min.js"></script>
 
   <script defer src="../assets/js/lib/izi-toast.js"></script>
   <link rel="stylesheet" href="../assets/css/izi-toast.css">
   <link rel="stylesheet" href="../assets/css/spinner.css">
-  <link rel="stylesheet" href="index.css?v=0.9.3-7408efd9">
+  <link rel="stylesheet" href="index.css?v=0.10.0-3c7611b8">
 
   <script src="../assets/js/i18n.js"></script>
   <script src="../assets/js/api.js"></script>
 
-  <script src="admin-init-head.js?v=0.9.3-626d739f"></script>
+  <script src="admin-init-head.js?v=0.10.0-cb6dd454"></script>
 </head>
 
 <body>
@@ -68,7 +67,7 @@
     </div>
     <div class="side-nav-item" data-admin-view="artist-albums-diag-view">
       <svg xmlns="http://www.w3.org/2000/svg" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/><line x1="11" y1="8" x2="11" y2="14"/><line x1="8" y1="11" x2="14" y2="11"/></svg>
-      <span>Artist Albums</span>
+      <span data-i18n="admin.nav.artistAlbums">Artist Albums</span>
     </div>
     <div class="side-nav-item" data-admin-view="genre-groups-view">
       <svg xmlns="http://www.w3.org/2000/svg" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>
@@ -93,10 +92,6 @@
     <div class="side-nav-item" data-admin-view="dlna-view">
       <svg xmlns="http://www.w3.org/2000/svg" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/><path d="M7 8l3 3-3 3"/><line x1="13" y1="11" x2="17" y2="11"/></svg>
       <span data-i18n="admin.nav.dlna">DLNA / UPnP</span>
-    </div>
-    <div class="side-nav-item" data-admin-view="federation-view">
-      <svg xmlns="http://www.w3.org/2000/svg" height="20" viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M44.4 17.3C44.3 15.9 43.3 14.8 41.9 14.6 38.4 14 30.3 13 24.2 13 18.1 13 9.6 13.9 6 14.5 4.7 14.7 3.7 15.8 3.5 17.2L3 25c-.1 1.6 1.1 2.8 2.7 3.2 2.9.8 10 .8 18.5.8 8.5 0 15.3-.1 18.1-.7 1.6-.3 2.8-1.6 2.7-3.2z"/><path d="M23.7 3c-.2 0-.2 0-.3.2C19 8.4 15.7 14.8 13.4 22.9c-1.6 6-.9 13.2-1.4 21.8 0 .2.2.3.3.3l.2-.001c.2 0 .2 0 .3-.2C17.2 38.2 20.5 33.1 26 29.8c1-.5 1.5-.8 2-.8.2 0 .5.2 1 .8 2.6 3.6 5.4 7.1 8.2 12 .001 0 .3 0 .5 0 .2 0 .3-.2.3-.3-.7-7.2-1.8-13.8-4.1-20.3C31.6 14.7 28.3 8.5 24.1 3.2c0-.2-.2-.2-.4-.2z"/></svg>
-      <span data-i18n="admin.nav.federation">Federation</span>
     </div>
     <div class="side-nav-item" data-admin-view="db-view">
       <svg xmlns="http://www.w3.org/2000/svg" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg>
@@ -198,7 +193,7 @@
     </div>
     <div class="side-nav-item" data-admin-view="lyrics-view">
       <svg xmlns="http://www.w3.org/2000/svg" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
-      <span>Lyrics</span>
+      <span data-i18n="admin.nav.lyrics">Lyrics</span>
     </div>
     <div class="side-nav-item" data-admin-view="radio-view">
       <svg xmlns="http://www.w3.org/2000/svg" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="2"/><path d="M4.93 4.93a10 10 0 0 0 0 14.14"/><path d="M7.76 7.76a6 6 0 0 0 0 8.49"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/><path d="M16.24 7.76a6 6 0 0 1 0 8.49"/></svg>
@@ -296,8 +291,8 @@
     </button>
   </div>
 
-  <script src="admin-init-body.js?v=0.9.3-20077639"></script>
-  <script defer src="index.js?v=0.9.3-43e3a079"></script>
+  <script src="admin-init-body.js?v=0.10.0-9c61e5fa"></script>
+  <script defer src="index.js?v=0.10.0-57c97ddd"></script>
 
   <!-- Custom tooltip — same system as player -->
   <div id="tip-box"></div>

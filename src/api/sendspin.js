@@ -42,48 +42,45 @@
  *   POST   /api/v1/rooms/:id/sonos          — a Sonos follows this room
  *   PATCH  /api/v1/rooms/:id/sonos/:uuid    — its delay
  *   DELETE /api/v1/rooms/:id/sonos/:uuid    — it stops following
+ *   POST   /api/v1/rooms/:id/line-in        — play a source device's input in the room
+ *   POST   /api/v1/rooms/:id/line-in/stop   — stop the line-in (the queue stays paused)
  *
  * Public (the Sonos has no login; an unguessable per-session token in the path, LAN peers only):
  *   GET    /api/v1/rooms/sonos-stream/:token.mp3 — the room's live stream for a following Sonos
- *   POST   /api/v1/rooms/:id/line-in        — play a source device's input in the room
- *   POST   /api/v1/rooms/:id/line-in/stop   — stop the line-in (the queue stays paused)
  */
 
 import fsp from 'node:fs/promises';
-import path from 'node:path';
 import net from 'node:net';
 import Joi from 'joi';
 import winston from 'winston';
 import * as config from '../state/config.js';
 import * as db from '../db/manager.js';
 import * as vpath from '../util/vpath.js';
-import { loadFile, saveFile } from '../util/admin.js';
-import { resolvePathWithinRoot } from '../util/path-security.js';
-import { resolveTrackGain } from './db.js';
-import { RoomsService, RoomError, SourceError, STOP_TIMEOUT_MS } from '../sendspin/service.js';
+import { locateMedia, MAX_MEDIA_FILEPATH } from '../util/media-locate.js';
+import { canCastToServer } from '../util/permissions.js';
+import { rgGainDb } from '../util/replaygain.js';
+import { RoomsService, RoomError, SourceError } from '../sendspin/service.js';
+import { onShutdown, PHASE } from '../state/shutdown.js';
 import { createArtwork } from '../sendspin/artwork.js';
 import {
   createSonosSoap, streamUrlFor, isSonosUuid, sonosStreamPeerAllowed, STREAM_PATH, MAX_SONOS_TRIM_MS,
 } from '../sendspin/sonos.js';
 import * as sonosApi from './sonos.js';
+import { clampGainDb } from '../sendspin/audio.js';
 import { PairingInputError, decodePskToken } from '../sendspin/pairing.js';
 import { EQ_BANDS, EQ_MIN_DB, EQ_MAX_DB, MAX_PRESET_LENGTH } from '../sendspin/eq.js';
 import { nextForRoom } from '../autodj/library.js';
+import { enforcedScope } from './autodj.js';
 import { roomListen } from './room-listen.js';
+import { sendspinDir } from './backup.js';
 
 const MAX_SONGS = 10_000;
-const MAX_FILEPATH = 4096;
+const MAX_FILEPATH = MAX_MEDIA_FILEPATH;
 const STAT_BATCH = 64;
 const PAIR_LIMIT = { windowMs: 60_000, mutate: 20, poll: 180 };
 
 let service = null;
-let serviceOpts = {};
-let sigHandler = null;
 const pairHits = new Map();
-
-export function sendspinDataDir() {
-  return path.join(config.program.storage.dbDirectory, '..', 'sendspin');
-}
 
 class ApiError extends Error {
   constructor(status, code, message, extra = {}) {
@@ -95,7 +92,7 @@ class ApiError extends Error {
 const fail = (status, code, message, extra) => { throw new ApiError(status, code, message, extra); };
 
 // "10.1.1.5", "10.1.1.5:8928", "[fd00::5]:8928", "fd00::5" or "ws://10.1.1.5:8928/sendspin"; IP literals only, so no DNS lookup decides where Velvet dials.
-export function parseSpeakerAddress(input) {
+function parseSpeakerAddress(input) {
   let text = String(input).trim();
   let path;
   if (/^ws:\/\//i.test(text)) {
@@ -133,7 +130,7 @@ const SCHEMAS = {
   djs: Joi.array().items(Joi.boolean()).max(MAX_SONGS),
   rg: {
     rgEnabled: Joi.boolean(), rgMode: Joi.string().valid('track', 'album'),
-    rgPreamp: Joi.number().min(-15).max(15), rgClip: Joi.boolean(),
+    rgPreamp: Joi.number().min(-15).max(15), rgClip: Joi.boolean(), // accepted for client compatibility; rooms always limit (see gainFor)
   },
   index: Joi.object({ index: Joi.number().integer().min(0).required() }),
   queueVersion: Joi.number().integer().min(0),
@@ -175,6 +172,7 @@ SCHEMAS.autoDj = Joi.object({
       ignoreVPaths: djStrings(100, 256),
       filepathPrefix: Joi.string().max(MAX_FILEPATH).allow(null),
       excludeFilepathPrefixes: Joi.array().items(Joi.object({ vpath: Joi.string().max(256).required(), prefix: Joi.string().max(MAX_FILEPATH).required() })).max(100),
+      includeFilepathPrefixes: Joi.array().items(Joi.object({ vpath: Joi.string().max(256).required(), prefix: Joi.string().max(MAX_FILEPATH).required() })).max(100),
       minRating: Joi.number().integer().min(0).max(10),
       minDuration: Joi.number().min(0).max(86400),
       maxDuration: Joi.number().min(0).max(86400),
@@ -322,29 +320,16 @@ function sonosBases(req) {
 function svc() {
   if (!service) {
     const art = createArtwork({ artDir: config.program.storage.albumArtDirectory });
-    const roomOptions = { sonos: sonosBridge(), autoDjPick, listen: roomListen, ...serviceOpts.roomOptions };
-    service = new RoomsService({ dataDir: sendspinDataDir(), logger: winston, ...art, ...serviceOpts, roomOptions });
+    const roomOptions = { sonos: sonosBridge(), autoDjPick, listen: roomListen };
+    service = new RoomsService({ dataDir: sendspinDir(), logger: winston, ...art, roomOptions });
   }
   return service;
-}
-
-function installSignalHandlers() {
-  if (sigHandler) return;
-  sigHandler = (signal) => {
-    process.off('SIGTERM', sigHandler);
-    process.off('SIGINT', sigHandler);
-    sigHandler = null;
-    const done = () => process.kill(process.pid, signal);
-    Promise.race([service?.stop(), new Promise((r) => setTimeout(r, STOP_TIMEOUT_MS + 1000).unref())]).then(done, done);
-  };
-  process.on('SIGTERM', sigHandler);
-  process.on('SIGINT', sigHandler);
 }
 
 export async function applySettings() {
   const s = settingsFromConfig();
   await svc().apply(s);
-  if (s.enabled) installSignalHandlers();
+  if (s.enabled) onShutdown('sendspin', PHASE.SERVICES, () => service?.stop());
 }
 
 export function stop() {
@@ -353,10 +338,6 @@ export function stop() {
 
 export function settingsChanged() {
   return JSON.stringify(service?.settings ?? null) !== JSON.stringify(settingsFromConfig());
-}
-
-export function setTestOptions(opts) {
-  serviceOpts = opts;
 }
 
 function status() {
@@ -386,13 +367,9 @@ function requireDevice(sv, id) {
   if (!sv.knownIds().has(id)) fail(404, 'not_found', 'unknown device');
 }
 
-function canUseRooms(user) {
-  return user?.admin === true || user?.['allow-mpv-cast'] === true;
-}
-
 function playerGuard(req, res, next) {
   if (config.program.sendspin?.enabled !== true) return res.status(409).json({ error: 'Velvet Rooms is disabled', code: 'rooms_disabled' });
-  if (!canUseRooms(req.user)) return res.status(403).json({ error: 'Velvet Rooms is not allowed for this user', code: 'forbidden' });
+  if (!canCastToServer(req.user)) return res.status(403).json({ error: 'Velvet Rooms is not allowed for this user', code: 'forbidden' });
   if (!service?.running) return res.status(503).json({ error: 'the Sendspin listener is not running', code: 'not_running' });
   next();
 }
@@ -404,50 +381,16 @@ function adminGuard(req, res, next) {
 
 // ── Item resolution ────────────────────────────────────────────────────────
 
-function parentOf(name) {
-  const folders = config.program.folders;
-  const root = folders[name]?.root?.replace(/\/?$/, '/');
-  if (!root) return null;
-  for (const [other, f] of Object.entries(folders)) {
-    const r = f.root.replace(/\/?$/, '/');
-    if (other !== name && root.startsWith(r) && root !== r) return { vpath: other, prefix: root.slice(r.length) };
-  }
-  return null;
-}
-
 function locate(fp, user) {
-  if (typeof fp !== 'string' || !fp || fp.length > MAX_FILEPATH || /[\0\\]/.test(fp)) return null;
-  const segs = fp.split('/');
-  if (segs.length < 2 || segs.some((s) => s === '' || s === '.' || s === '..')) return null;
-  let info;
-  try {
-    info = vpath.getVPathInfo(fp, user);
-  } catch {
-    return null;
-  }
-  if (config.program.folders[info.vpath]?.type === 'excluded') return null;
-  const rel = segs.slice(1).join('/');
-  let file;
-  try {
-    file = resolvePathWithinRoot(info.basePath, rel);
-  } catch {
-    return null;
-  }
-  const parent = parentOf(info.vpath);
-  return parent
-    ? { fp, file, dbVpath: parent.vpath, dbRel: parent.prefix + rel }
-    : { fp, file, dbVpath: info.vpath, dbRel: rel };
+  const l = locateMedia(fp, user);
+  return l && { fp: l.fp, file: l.file, dbVpath: l.dbVpath, dbRel: l.dbRel };
 }
 
 function gainFor(row, rg) {
   if (rg.rgEnabled === false) return 0;
-  const r = resolveTrackGain(row, rg.rgMode === 'album' ? 'album' : 'track');
-  if (r?.gain == null) return 0;
-  let gain = Number(r.gain) + (Number(rg.rgPreamp) || 0);
-  // The decoder applies volume= without a limiter: never push the peak over 0 dBFS.
-  const headroom = r.peak == null ? 0 : -Number(r.peak);
-  if (gain > headroom) gain = headroom;
-  return Number.isFinite(gain) ? Math.max(-30, Math.min(20, gain)) : 0;
+  // The decoder applies volume= without a limiter: never push the peak over 0 dBFS, even when the peak is unknown.
+  const gain = rgGainDb(row, { mode: rg.rgMode, preamp: rg.rgPreamp, clip: true, peakFallback: 0 });
+  return clampGainDb(gain) ?? 0;
 }
 
 function metaOf(row) {
@@ -474,7 +417,7 @@ async function isFile(file) {
 }
 
 // djs: per song, whether it was an Auto-DJ pick in the web player (kept as the queue's DJ marker).
-export async function resolveSongs(songs, user, rg = {}, djs = null) {
+async function resolveSongs(songs, user, rg = {}, djs = null) {
   const located = songs.map((fp) => locate(fp, user));
   const byVpath = new Map();
   for (const l of located) {
@@ -512,20 +455,6 @@ export async function resolveSongs(songs, user, rg = {}, djs = null) {
 
 // ── Auto-DJ for rooms ──────────────────────────────────────────────────────
 
-// The DB (root) vpaths behind a user's folders: a child folder is indexed under its parent root.
-function rootVpathsFor(user) {
-  const folders = config.program.folders || {};
-  const withSlash = (r) => r.replace(/\/?$/, '/');
-  const out = new Set();
-  for (const v of user.vpaths || []) {
-    const root = folders[v]?.root;
-    if (!root) continue;
-    const parent = Object.entries(folders).find(([o, f]) => o !== v && f.root && withSlash(root).startsWith(withSlash(f.root)) && withSlash(root) !== withSlash(f.root));
-    out.add(parent ? parent[0] : v);
-  }
-  return [...out];
-}
-
 // The next Auto-DJ song after `seed` for a room, picked like the web player picks it (autodj/library.js nextForRoom)
 // with the switched-on user's settings, DJ state and folder access. -> { item, state } or null.
 async function autoDjPick({ seed, history, queue, autoDj }) {
@@ -541,7 +470,8 @@ async function autoDjPick({ seed, history, queue, autoDj }) {
   const inQueue = new Set(queue);
   const picked = await nextForRoom({
     seedRow, seedIsDj: seed.dj === true, historyRows: history.map((h) => rowOf(h.filepath)).filter(Boolean),
-    username: user.username, vpaths: rootVpathsFor(user), settings: autoDj.settings ?? {}, state: autoDj.state ?? null,
+    username: user.username, vpaths: vpath.userRootVpaths(user),
+    settings: { ...(autoDj.settings ?? {}), scope: enforcedScope(user, autoDj.settings?.scope ?? {}) }, state: autoDj.state ?? null,
   });
   if (!picked) return null;
   const fp = `${picked.row.vpath}/${picked.row.filepath}`;
@@ -604,19 +534,23 @@ export function setup(velvet) {
   const admin = (method, p, ...handlers) => velvet[method](`/api/v1/admin/sendspin${p}`, adminGuard, ...handlers);
   const player = (method, p, fn) => velvet[method](`/api/v1/rooms${p}`, playerGuard, route(fn));
   // A room scrobbles and counts plays for whoever last controlled it (see rooms.js setListener).
-  const control = (method, p, fn) => player(method, p, (req, res) => {
-    service.rooms.setListener(req.params.id, req.user.username);
-    return fn(req, res);
+  // Set before fn (play starts the listen for the new user); a rejected request hands the room back.
+  const control = (method, p, fn) => player(method, p, async (req, res) => {
+    const prev = service.rooms.setListener(req.params.id, req.user.username);
+    try {
+      return await fn(req, res);
+    } catch (err) {
+      if (prev !== undefined) service.rooms.restoreListener(req.params.id, prev);
+      throw err;
+    }
   });
 
   admin('get', '/status', route(() => status()));
 
   admin('post', '/settings', route(async (req) => {
     const body = validate(SCHEMAS.settings, req.body);
-    const loaded = await loadFile(config.configFile);
-    loaded.sendspin = { ...(loaded.sendspin ?? {}), ...body };
+    await config.updateConfigFile((loaded) => { loaded.sendspin = { ...(loaded.sendspin ?? {}), ...body }; });
     config.program.sendspin = { ...settingsFromConfig(), ...(config.program.sendspin ?? {}), ...body };
-    await saveFile(loaded, config.configFile);
     await applySettings();
     return status();
   }));
@@ -744,8 +678,8 @@ export function setup(velvet) {
   }));
 
   velvet.get('/api/v1/rooms', (req, res, next) => {
-    if (config.program.sendspin?.enabled !== true) return res.json({ enabled: false, allowed: canUseRooms(req.user), rooms: [], sources: [] });
-    if (!canUseRooms(req.user)) return res.json({ enabled: true, allowed: false, rooms: [], sources: [] });
+    if (config.program.sendspin?.enabled !== true) return res.json({ enabled: false, allowed: canCastToServer(req.user), rooms: [], sources: [] });
+    if (!canCastToServer(req.user)) return res.json({ enabled: true, allowed: false, rooms: [], sources: [] });
     next();
   });
   player('get', '', () => ({ enabled: true, allowed: true, rooms: service.listRooms(), sources: service.listSources() }));

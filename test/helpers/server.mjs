@@ -110,7 +110,6 @@ export async function startServer(opts = {}) {
       albumArtDirectory:   path.join(tmpDir, 'image-cache'),
       dbDirectory:         path.join(tmpDir, 'db'),
       logsDirectory:       path.join(tmpDir, 'logs'),
-      syncConfigDirectory: path.join(tmpDir, 'sync'),
     },
     ...extraConfig,
   };
@@ -157,7 +156,13 @@ export async function startServer(opts = {}) {
   }
 
   if (waitForScan) {
-    await waitForScanComplete(baseUrl);
+    try {
+      await waitForScanComplete(baseUrl);
+    } catch (err) {
+      try { proc.kill('SIGKILL'); } catch { /* already gone */ }
+      await fs.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+      throw err;
+    }
   }
 
   // Create users. While there are zero users the server is in public-access

@@ -11,6 +11,10 @@
  * Folder duplicates: albums where the same artist+album appears under
  * more than one distinct directory path.
  *
+ * The scan runs on the background task broker in short chunks, so requests
+ * (streams included) keep being served and Cancel takes effect between chunks.
+ * Results of the previous scan stay visible until a new scan completes.
+ *
  * Endpoints (admin-only):
  *   GET  /api/v1/admin/dup-workshop/status
  *   POST /api/v1/admin/dup-workshop/scan       body: { threshold? }
@@ -27,209 +31,121 @@ import winston from 'winston';
 import * as config from '../state/config.js';
 import * as db from '../db/manager.js';
 import * as vpath from '../util/vpath.js';
+import * as broker from '../state/bg-task-broker.js';
+
+const AUDIO_GROUPS_PER_CHUNK = 200;
+const TRACKS_PER_CHUNK = 20_000;
 
 // ── State ────────────────────────────────────────────────────────────────────
-let _scanning    = false;
-let _cancelling  = false;
+let _run         = null;   // the scan in progress, null when idle
+let _runSeq      = 0;
 let _scanAt      = null;   // ISO timestamp of last completed scan
 let _threshold   = 90;     // similarity % threshold for "similar" tier
 let _songGroups  = { exact: [], audio: [], similar: [] };
 let _folderGroups = [];
 
 // ── Scan Logic ───────────────────────────────────────────────────────────────
-async function _scan(threshold) {
-  _scanning   = true;
-  _cancelling = false;
-  _songGroups = { exact: [], audio: [], similar: [] };
-  _folderGroups = [];
+function _group(matchType, similarity, r, title, artist, album) {
+  return {
+    matchType, similarity, title, artist, album,
+    duration: r.min_dur,
+    paths: r.paths.split('||'),
+    formats: r.fmts.split('||'),
+  };
+}
 
-  try {
-    const rawDb = db.getDB();
+function _similarity(r) {
+  const avg = (r.max_dur + r.min_dur) / 2;
+  return Math.max(0, Math.min(100, 100 - ((r.max_dur - r.min_dur) / avg * 100)));
+}
 
-    if (_cancelling) { return; }
+// Each step does one slice of work and returns true while it has more to do.
+const STEPS = [
+  function exact(run) {
+    const rows = db.dupExactGroups();
+    run.exactHashes = new Set(rows.map(r => r.hash));
+    run.songs.exact = rows.map(r => _group('exact', 100, r, r.title, r.artist, r.album));
+    return false;
+  },
 
-    // ── Tier 1: Exact (same hash) ────────────────────────────────────────
-    const exactRows = rawDb.prepare(String.raw`
-      SELECT
-        hash,
-        COUNT(*) AS c,
-        GROUP_CONCAT(vpath || '/' || filepath, '||') AS paths,
-        GROUP_CONCAT(COALESCE(format,''), '||') AS fmts,
-        MIN(duration) AS min_dur,
-        MAX(duration) AS max_dur,
-        COALESCE(MIN(title),'') AS title,
-        COALESCE(MIN(artist),'') AS artist,
-        COALESCE(MIN(album),'') AS album
-      FROM files
-      WHERE hash IS NOT NULL AND hash != ''
-        AND duration IS NOT NULL AND duration > 0
-      GROUP BY hash
-      HAVING c > 1
-      ORDER BY c DESC
-    `).all();
-
-    const exactHashes = new Set(exactRows.map(r => r.hash));
-
-    _songGroups.exact = exactRows.map(r => ({
-      matchType: 'exact',
-      similarity: 100,
-      title:  r.title,
-      artist: r.artist,
-      album:  r.album,
-      duration: r.min_dur,
-      paths: r.paths.split('||'),
-      formats: r.fmts.split('||'),
-    }));
-
-    if (_cancelling) { return; }
-
-    // ── Tier 2: Audio (same audio_hash, different file hash) ─────────────
-    const audioRows = rawDb.prepare(String.raw`
-      SELECT
-        audio_hash,
-        COUNT(*) AS c,
-        GROUP_CONCAT(vpath || '/' || filepath, '||') AS paths,
-        GROUP_CONCAT(COALESCE(format,''), '||') AS fmts,
-        MIN(duration) AS min_dur,
-        MAX(duration) AS max_dur,
-        COALESCE(MIN(title),'') AS title,
-        COALESCE(MIN(artist),'') AS artist,
-        COALESCE(MIN(album),'') AS album
-      FROM files
-      WHERE audio_hash IS NOT NULL AND audio_hash != ''
-        AND duration IS NOT NULL AND duration > 0
-        AND (hash IS NULL OR hash = '' OR hash NOT IN (SELECT hash FROM files WHERE hash IS NOT NULL AND hash != '' AND duration > 0 GROUP BY hash HAVING COUNT(*) > 1))
-      GROUP BY audio_hash
-      HAVING c > 1
-      ORDER BY c DESC
-    `).all();
-
-    // Filter out groups where all hashes are already caught by exact tier
-    _songGroups.audio = audioRows
-      .filter(r => {
-        // Only keep if NOT all paths are already in an exact group
-        const filePaths = r.paths.split('||');
-        const rowHashes = rawDb.prepare(
-          `SELECT hash FROM files WHERE vpath || '/' || filepath IN (${filePaths.map(() => '?').join(',')}) AND hash IS NOT NULL AND hash != ''`
-        ).all(...filePaths).map(x => x.hash);
-        return !rowHashes.every(h => exactHashes.has(h));
-      })
-      .map(r => ({
-        matchType: 'audio',
-        similarity: 99,
-        title:  r.title,
-        artist: r.artist,
-        album:  r.album,
-        duration: r.min_dur,
-        paths: r.paths.split('||'),
-        formats: r.fmts.split('||'),
-      }));
-
-    if (_cancelling) { return; }
-
-    // ── Tier 3: Similar (same normalised artist+title, close duration) ───
-    const similarRows = rawDb.prepare(String.raw`
-      SELECT
-        lower(trim(COALESCE(artist,''))) AS a,
-        lower(trim(COALESCE(title,'')))  AS t,
-        COUNT(*) AS c,
-        MIN(duration) AS min_dur,
-        MAX(duration) AS max_dur,
-        GROUP_CONCAT(vpath || '/' || filepath, '||') AS paths,
-        GROUP_CONCAT(COALESCE(format,''), '||') AS fmts,
-        COALESCE(MIN(artist),'') AS artist_display,
-        COALESCE(MIN(title),'')  AS title_display,
-        COALESCE(MIN(album),'')  AS album_display
-      FROM files
-      WHERE artist IS NOT NULL AND artist != '' AND artist != 'Artist'
-        AND title  IS NOT NULL AND title  != ''
-        AND duration IS NOT NULL AND duration > 0
-      GROUP BY a, t
-      HAVING c > 1
-      ORDER BY c DESC
-    `).all();
-
-    _songGroups.similar = similarRows
-      .filter(r => {
-        if (!r.max_dur || !r.min_dur) return false;
-        const avg = (r.max_dur + r.min_dur) / 2;
-        if (!avg) return false;
-        const sim = Math.max(0, Math.min(100, 100 - ((r.max_dur - r.min_dur) / avg * 100)));
-        return sim >= threshold;
-      })
-      .map(r => {
-        const avg = (r.max_dur + r.min_dur) / 2 || 1;
-        const sim = Math.max(0, Math.min(100, Math.round(100 - ((r.max_dur - r.min_dur) / avg * 100))));
-        return {
-          matchType: 'similar',
-          similarity: sim,
-          title:  r.title_display,
-          artist: r.artist_display,
-          album:  r.album_display,
-          duration: r.min_dur,
-          paths: r.paths.split('||'),
-          formats: r.fmts.split('||'),
-        };
-      });
-
-    if (_cancelling) { return; }
-
-    // ── Folder duplicates (content-based, 100% match) ────────────────────
-    // Strategy: compute a "fingerprint" for every directory = the sorted list
-    // of audio_hash values for all tracks in that folder. Two directories with
-    // the same fingerprint contain 100% identical audio — regardless of folder
-    // name or artist/album tags. This catches different rips of the same album
-    // stored under different names.
-    //
-    // If a file has no audio_hash we fall back to file hash; tracks with
-    // neither are skipped so partial results are still meaningful.
-    const trackRows = rawDb.prepare(String.raw`
-      SELECT
-        vpath || '/' || filepath AS fullpath,
-        COALESCE(NULLIF(audio_hash,''), NULLIF(hash,'')) AS content_hash,
-        COALESCE(artist,'') AS artist,
-        COALESCE(album,'')  AS album
-      FROM files
-      WHERE COALESCE(NULLIF(audio_hash,''), NULLIF(hash,'')) IS NOT NULL
-    `).all();
-
-    // Group tracks by parent directory
-    const dirMap = new Map(); // dir → { hashes, artist, album }
-    for (const row of trackRows) {
-      const dir = path.dirname(row.fullpath);
-      if (!dirMap.has(dir)) {
-        dirMap.set(dir, { hashes: [], artist: row.artist, album: row.album });
-      }
-      dirMap.get(dir).hashes.push(row.content_hash);
+  // Audio: same audio_hash, different file hash — skip groups the exact tier already covers
+  function audio(run) {
+    run.audioRows ??= db.dupAudioGroups();
+    const end = Math.min(run.audioPos + AUDIO_GROUPS_PER_CHUNK, run.audioRows.length);
+    for (; run.audioPos < end; run.audioPos++) {
+      const r = run.audioRows[run.audioPos];
+      const hashes = db.dupHashesForPaths(r.paths.split('||'));
+      if (!hashes.every(h => run.exactHashes.has(h))) run.songs.audio.push(_group('audio', 99, r, r.title, r.artist, r.album));
     }
+    return run.audioPos < run.audioRows.length;
+  },
 
-    // Build fingerprint per directory = sorted hashes joined
-    const fpMap = new Map(); // fingerprint → [{dir, artist, album, count}]
-    for (const [dir, entry] of dirMap) {
-      if (entry.hashes.length < 2) continue; // skip single-track dirs
+  function similar(run) {
+    run.songs.similar = db.dupSimilarGroups()
+      .filter(r => r.max_dur && r.min_dur && _similarity(r) >= run.threshold)
+      .map(r => _group('similar', Math.round(_similarity(r)), r, r.title_display, r.artist_display, r.album_display));
+    return false;
+  },
+
+  // Folder fingerprint = the sorted content hashes (audio_hash, else file hash) of
+  // its tracks. Two directories with the same fingerprint hold identical audio,
+  // whatever their names or tags — this catches different rips of one album.
+  function folderTracks(run) {
+    run.tracks ??= db.dupContentHashedTracks();
+    const end = Math.min(run.trackPos + TRACKS_PER_CHUNK, run.tracks.length);
+    for (; run.trackPos < end; run.trackPos++) {
+      const row = run.tracks[run.trackPos];
+      const dir = path.dirname(row.fullpath);
+      if (!run.dirMap.has(dir)) run.dirMap.set(dir, { hashes: [], artist: row.artist, album: row.album });
+      run.dirMap.get(dir).hashes.push(row.content_hash);
+    }
+    return run.trackPos < run.tracks.length;
+  },
+
+  function folderGroups(run) {
+    const fpMap = new Map();
+    for (const [dir, entry] of run.dirMap) {
+      if (entry.hashes.length < 2) continue;
       const fp = entry.hashes.slice().sort((a, b) => a.localeCompare(b)).join('|');
       if (!fpMap.has(fp)) fpMap.set(fp, []);
       fpMap.get(fp).push({ dir, artist: entry.artist, album: entry.album, count: entry.hashes.length });
     }
-
-    _folderGroups = [];
-    for (const [, copies] of fpMap) {
+    for (const copies of fpMap.values()) {
       if (copies.length < 2) continue;
-      _folderGroups.push({
+      run.folders.push({
         trackCount: copies[0].count,
         copies: copies.map(c => ({ dir: c.dir, artist: c.artist, album: c.album })),
       });
     }
-    _folderGroups.sort((a, b) => b.copies.length - a.copies.length || b.trackCount - a.trackCount);
+    run.folders.sort((a, b) => b.copies.length - a.copies.length || b.trackCount - a.trackCount);
+    return false;
+  },
+];
 
+function _startScan(threshold) {
+  const run = {
+    threshold, cancelled: false, step: 0,
+    songs: { exact: [], audio: [], similar: [] }, folders: [],
+    exactHashes: null, audioRows: null, audioPos: 0, tracks: null, trackPos: 0, dirMap: new Map(),
+  };
+  _run = run;
+  broker.submitChunks(`dup-workshop-scan-${++_runSeq}`, 'Duplicate Workshop scan', () => {
+    if (run.cancelled) return false;
+    try {
+      if (STEPS[run.step](run)) return true;
+      if (++run.step < STEPS.length) return true;
+    } catch (e) {
+      winston.error('Duplicate Workshop scan failed', { stack: e.stack ?? String(e) });
+      _run = null;
+      return false;
+    }
+    _songGroups = run.songs;
+    _folderGroups = run.folders;
     _scanAt = new Date().toISOString();
+    _run = null;
     winston.info(`Duplicate Workshop scan complete: ${_songGroups.exact.length} exact, ${_songGroups.audio.length} audio, ${_songGroups.similar.length} similar, ${_folderGroups.length} folder groups`);
-  } catch (e) {
-    winston.error('Duplicate Workshop scan failed', { stack: e.stack ?? String(e) });
-  } finally {
-    _scanning   = false;
-    _cancelling = false;
-  }
+    return false;
+  });
 }
 
 function _summary() {
@@ -255,7 +171,7 @@ export function setup(velvet) {
   // GET /status
   velvet.get('/api/v1/admin/dup-workshop/status', (_req, res) => {
     const doneOrIdle = _scanAt ? 'done' : 'idle';
-    const state = _scanning ? 'scanning' : doneOrIdle;
+    const state = _run ? 'scanning' : doneOrIdle;
     res.json({
       state,
       threshold: _threshold,
@@ -264,21 +180,23 @@ export function setup(velvet) {
     });
   });
 
-  // POST /scan — starts an async scan; returns 202 immediately
+  // POST /scan — queues the scan on the broker; returns 202 immediately
   velvet.post('/api/v1/admin/dup-workshop/scan', (req, res) => {
-    if (_scanning) return res.status(409).json({ error: 'Scan already in progress' });
+    if (_run) return res.status(409).json({ error: 'Scan already in progress' });
     const schema = Joi.object({ threshold: Joi.number().integer().min(50).max(100).default(90) });
     const { error, value } = schema.validate(req.body ?? {});
     if (error) return res.status(400).json({ error: error.message });
     _threshold = value.threshold;
-    _scan(value.threshold); // fire-and-forget
+    _startScan(value.threshold);
     res.status(202).json({ started: true });
   });
 
-  // POST /cancel
+  // POST /cancel — stops before the next chunk; the previous results stay
   velvet.post('/api/v1/admin/dup-workshop/cancel', (_req, res) => {
-    if (!_scanning) return res.status(400).json({ error: 'No scan in progress' });
-    _cancelling = true;
+    if (!_run) return res.status(400).json({ error: 'No scan in progress' });
+    _run.cancelled = true;
+    _run = null;
+    winston.info('Duplicate Workshop scan cancelled');
     res.json({ cancelling: true });
   });
 

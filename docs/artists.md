@@ -4,23 +4,22 @@ The Artist Library is a dedicated view for browsing your music collection by art
 
 ---
 
-## Feature overview (v6.8.0 — first release, refinement ongoing)
+## Feature overview
 
 | Feature | Status |
 |---------|--------|
 | Artist home page — "Most Songs in Library" shelf | ✅ |
-| Artist home page — "Recently Listened" shelf | ✅ |
 | Artist home page — "Most Played Artists" shelf | ✅ |
+| Artist home page — "Recently Listened" shelf | ✅ |
 | Shelf drag-to-reorder (persisted per user) | ✅ |
 | A–Z letter browse | ✅ |
-| Full-text artist search | ✅ |
-| Per-artist album grid with series grouping | ✅ |
-| Breadcrumb titles while drilling in | ✅ |
-| Correct back-navigation at every level | ✅ |
-| Artist biography / info panel | 🔜 planned |
-| Admin artist image repair (missing/wrong queues + Discogs picker) | ✅ |
+| Artist name search | ✅ |
+| Artist profile — Songs and Albums tabs, category pills | ✅ |
+| Artist biography (Last.fm, else TheAudioDB), genre / country / formed-year chips and fanart hero (TheAudioDB) | ✅ |
+| Similar artists on the profile (Last.fm, only artists with albums in the library) | ✅ |
+| Admin artist image repair (missing/wrong queues + Discogs/TheAudioDB picker) | ✅ |
 | Custom artist image URL apply (admin) | ✅ |
-| Auto-hydration from Discogs/Last.fm fallback | ✅ |
+| Background image hydration | ✅ |
 | Per-artist discography stats | 🔜 planned |
 
 ---
@@ -29,35 +28,37 @@ The Artist Library is a dedicated view for browsing your music collection by art
 
 ### The `artists_normalized` table
 
-All artist intelligence is stored in a single table:
+All artist intelligence is stored in one table (created in `src/db/sqlite-backend.js`, extra columns added by migrations):
 
-```sql
-CREATE TABLE artists_normalized (
-  artist_clean       TEXT PRIMARY KEY,   -- canonical display name
-  artist_raw_variants TEXT NOT NULL,     -- JSON array of all raw tags that map here
-  song_count         INTEGER NOT NULL DEFAULT 0,
-  bio                TEXT,               -- plain-text biography (future: auto-fetched)
-  image_file         TEXT                -- filename in image-cache/artists/ (future)
-);
-```
+| Column | Meaning |
+|---|---|
+| `id` | Row id (also the rowid of the `fts_artists` trigram search table) |
+| `artist_clean` | Canonical display name (unique) |
+| `artist_raw_variants` | JSON array of all raw tags that map here |
+| `vpaths_json` | JSON array of vpaths the artist has files in |
+| `song_count` | Number of songs |
+| `sort_name` | Sort key |
+| `bio`, `genre`, `country`, `formed_year`, `mbid` | Profile data (TheAudioDB / MusicBrainz) |
+| `image_file`, `image_source`, `fanart_file` | Files in `image-cache/artists/` |
+| `last_fetched`, `image_flag_wrong`, `name_override` | Hydration and admin state |
 
-`artist_clean` is the single name shown in the UI. `artist_raw_variants` is a JSON array like `["Madonna","03_Madonna","madonna "]` — every distinct value seen in the `artist` column of the `files` table that was judged to be the same person.
+`artist_clean` is the single name shown in the UI. `artist_raw_variants` is a JSON array like `["Madonna","03_Madonna","madonna "]` — every distinct value of `COALESCE(album_artist, artist)` in the `files` table that was judged to be the same person.
 
 ### Normalisation algorithm (`src/util/artist-normalize.js`)
 
-`buildArtistGroups(rows)` is called with every `{ artist, filepath }` row from the DB and returns a map of `canonicalName → Set<rawVariant>`. It runs a series of passes in order:
+`buildArtistGroups(rows)` is called with every distinct `{ artist, count }` row and returns the groups of `canonicalName → raw variants`. It runs a series of passes in order:
 
 **Pass 1 — exclusion of junk tags**
 - `PURE_DIGITS_RX` — tags that are just digits (`"01"`, `"42"`) are excluded entirely. These are ripped track numbers that ended up in the artist field; they cannot be attributed to a real artist.
 
 **Pass 2 — normalisation to a clean key**
-Each raw tag is run through these transforms in order (first match wins):
+Each raw tag is run through these transforms (first match wins):
 
 1. `PAREN_ONLY_RX` — entire field is a remix credit: `" (Nalin & Kane Remix)"` → artist = `"Nalin & Kane"`.
 2. `PAREN_SUFFIX_RX` — remix suffix on a main artist: `"EWF (Phats & Small Remix)"` → artist = `"EWF"`.
 3. `UNDERSCORE_PREFIX_RX` — filesystem-numbered tag: `"01_Communards"` → `"Communards"` (underscores replaced with spaces).
-4. `PADDED_PREFIX_RX` — zero-padded digit prefix: `"01 Madonna"` → `"Madonna"`.
-5. `UNPADDED_PREFIX_RX` (safe) — only applied when a clean variant already has many more songs; prevents `"2 Unlimited"` (235 songs) from collapsing into `"Unlimited"`.
+4. Track-number prefixes — zero-padded (`"01 Madonna"`), dotted (`"3. Madonna"`), side (`"1a) Madonna"`) and vinyl side (`"A1 Madonna"`) prefixes are stripped. A prefix that leaves only a year is dropped.
+5. `UNPADDED_PREFIX_RX` (safe) — only applied when a clean variant already has many more songs; prevents `"2 Unlimited"` from collapsing into `"Unlimited"`.
 
 **Pass 2b — explicit featuring credits**
 A group whose name is `<lead> feat. <guest>` (also `ft.` and `featuring`) is merged into the `<lead>` group whenever that group exists, regardless of song counts: `"Afrojack feat. Eva Simons"` counts as an Afrojack song. `vs`, `&` and `x` credits are collaborations without a clear lead and are left alone.
@@ -67,19 +68,24 @@ After the explicit passes, any *small* group (≤ 5 songs, `SIM_MAX_CANDIDATE`) 
 
 ### When is the index rebuilt?
 
-`rebuildArtistIndex()` runs automatically at the end of every file scan (`src/api/scanner.js`). It also runs on startup and can be triggered manually from **Admin → Database → Rebuild Artist Index** without waiting for a full scan — useful after algorithm improvements.
+`rebuildArtistIndex()` runs:
 
-As of `v6.8.3`, rebuild execution is offloaded to a `worker_thread` so heavy normalization does not block the main server event loop. This keeps audio streaming responsive while the artist index is being rebuilt.
+- at the end of every file scan (`POST /api/v1/scanner/finish-scan` in `src/api/scanner.js`);
+- when an admin clicks **Rebuild Artist Index** in **Admin → Database** (`POST /api/v1/admin/artists/rebuild-index`);
+- when a folder's **Artists: On/Off** flag changes;
+- after the Wrapped folder-metadata backfill.
+
+The rebuild runs in a `worker_thread` (`src/util/artist-rebuild-worker.mjs`) and goes through the background task broker, so heavy normalisation does not block the main server event loop.
 
 The rebuild:
-1. Queries all distinct `(artist, COUNT(*))` rows from `files`.
+1. Queries all distinct `(COALESCE(album_artist, artist), vpath, COUNT(*))` rows from `files`, limited to folders with Artists on.
 2. Passes them through `buildArtistGroups()`.
-3. DELETEs the entire `artists_normalized` table and re-inserts in a single transaction.
-4. Calls `invalidateArtistCache()` so the home-page cache is refreshed.
+3. DELETEs the `artists_normalized` table and re-inserts in one transaction, keeping each artist's bio, images, flags, name override and other profile data.
+4. When started from admin, calls `invalidateArtistCache()` when done so the home-page cache is refreshed. Otherwise the 5-minute home cache expires on its own.
 
 ### Folder-level artist inclusion (`artistsOn`)
 
-Each configured folder now has an Artist Library include flag:
+Each configured folder has an Artist Library include flag:
 
 - `artistsOn: true` (default) — folder contributes to artist index + artist features.
 - `artistsOn: false` — folder is excluded from artist index rebuilds.
@@ -99,7 +105,7 @@ When changed, the server starts a background rebuild of `artists_normalized`, so
 
 ### Why a precomputed table?
 
-A naive approach would JOIN `files` with a normalisation function on every request. With 130,000+ songs that join would be several seconds on every page load. The precomputed table makes all artist queries O(1) for lookups and O(n_artists) for listing — typically under 5 ms.
+A naive approach would JOIN `files` with a normalisation function on every request. On a large library that join takes seconds on every page load. The precomputed table makes artist lookups and listings simple single-table queries.
 
 ---
 
@@ -107,35 +113,47 @@ A naive approach would JOIN `files` with a normalisation function on every reque
 
 | Method | Endpoint | Auth | Description |
 |--------|----------|------|-------------|
-| GET | `/api/v1/artists/home` | user | Home stats: totalCount, topArtists (top 20 by song count), recentArtists (last 10 played) |
+| GET | `/api/v1/artists/home` | user | Home stats: `totalCount`, `topArtists` (top 20 by song count), `mostPlayedArtists` (top 20 by plays), `recentArtists` (last 10 played) |
 | GET | `/api/v1/artists/letter?l=A` | user | All artists starting with that letter; `l=0` returns all digit-starting names |
-| GET | `/api/v1/artists/search?q=…` | user | Full-text search across canonical names and all raw variants (min 2 chars) |
+| GET | `/api/v1/artists/search?q=…` | user | Trigram search on canonical artist names (min 2 chars), limited to artists in the caller's own folders |
+| GET | `/api/v1/artists/profile?key=…` | user | Profile: bio, image, fanart, MBID, genre, country, formed year, release categories. Fetches missing TheAudioDB data on demand |
+| GET | `/api/v1/artists/image?artist=…` | user | Cached image file for a raw artist name, or `{}` (and queues hydration) |
 | GET | `/api/v1/artists/images/:filename` | user | Serve a stored artist image from `image-cache/artists/` |
+| GET | `/api/v1/artists/placeholder` | public | The artist placeholder image: the custom one if set, else the built-in default (`webapp/assets/img/unknownartist.webp`). The custom image is stored as `artist-placeholder.jpg` in the config folder (`save/conf/`, next to `default.json`) |
+| POST | `/api/v1/artists/set-image` | admin | Download an image URL, resize, store as the artist image |
+| POST | `/api/v1/artists/set-name` | admin | Override the display name of an artist |
 | POST | `/api/v1/artists/mark-image-wrong` | admin | Flag/unflag an artist image as wrong from the player view |
 | POST | `/api/v1/db/artists-albums-multi` | user | Albums for one artist (accepts an array of variant names to handle all tag forms) |
 | POST | `/api/v1/admin/artists/rebuild-index` | admin | Trigger an immediate index rebuild without a full scan |
-| GET | `/api/v1/admin/artists/image-audit?kind=missing|no-image|wrong|with-image` | admin | List pending missing artists, already-tried no-image artists, wrong-image review, and with-image validation |
+| GET | `/api/v1/admin/artists/image-audit?kind=missing\|no-image\|wrong\|with-image` | admin | List pending missing artists, already-tried no-image artists, wrong-image review, and with-image validation |
 | GET | `/api/v1/admin/artists/hydration-status` | admin | Live hydration queue status, counters, delay profile, and Discogs readiness |
-| POST | `/api/v1/admin/artists/hydration-seed` | admin | Enqueue missing artists on demand (used by the Queue next 500 action) |
+| POST | `/api/v1/admin/artists/hydration-seed` | admin | Enqueue missing artists on demand (`limit`, default 500; used by **Queue next 500**) |
+| POST | `/api/v1/admin/artists/hydrate-tadb-noimage` | admin | Re-queue no-image artists for TheAudioDB, ignoring cooldowns (**Retry next 500 (TheAudioDB)**) |
+| POST | `/api/v1/admin/artists/enrich-tadb` | admin | Reset the fetch flag of artists with no image and no profile data, and queue artists that have an image but no fanart/genre for TheAudioDB enrichment |
 | GET | `/api/v1/admin/artists/discogs-candidates?artistKey=...` | admin | Fetch Discogs artist image candidates |
 | GET | `/api/v1/admin/artists/tadb-candidates?artistKey=...` | admin | Fetch TheAudioDB artist image candidates |
-| POST | `/api/v1/admin/artists/apply-image` | admin | Apply selected Discogs/custom image URL to artist |
+| POST | `/api/v1/admin/artists/apply-image` | admin | Apply selected Discogs/TheAudioDB/custom image URL to artist (`artistKey`, `imageUrl`, optional `source`) |
+| POST / DELETE | `/api/v1/admin/artists/placeholder` | admin | Upload (one image, max 10 MB, saved as a square JPEG to `save/conf/artist-placeholder.jpg`) or remove the custom artist placeholder image |
+| GET | `/api/v1/admin/artists/placeholder-info` | admin | Whether a custom placeholder is set |
 
 TheAudioDB lookups (`tadb-candidates` and the background bio/image hydration pipeline) use TheAudioDB's shared public test key, `TADB_API_KEY` in `src/api/artists-browse.js` (defaults to `123`; TheAudioDB has silently killed a shared test key before — their other documented one, `2`, now 404s every query). Override with the `TADB_API_KEY` env var if `123` ever meets the same fate.
 
-### Artist object shape (all list endpoints)
+### Artist object shape (home, letter and search lists)
 
 ```json
 {
-  "artistKey":    "madonna",
+  "artistKey":     "madonna",
   "canonicalName": "Madonna",
-  "songCount":    847,
-  "imageFile":    null,
-  "bio":          null
+  "imageFile":     null,
+  "hasBio":        false,
+  "songCount":     847,
+  "rawVariants":   ["Madonna", "03_Madonna"]
 }
 ```
 
-`artistKey` is the lowercase trimmed version of `canonicalName` — use it as a stable identifier for navigation state.
+Entries in `mostPlayedArtists` also carry `playCount`.
+
+`artistKey` is the lowercase version of `canonicalName` — use it as a stable identifier for navigation state.
 
 ### `POST /api/v1/db/artists-albums-multi`
 
@@ -144,22 +162,25 @@ Request body:
 {
   "artists": ["Madonna", "03_Madonna", "madonna "],
   "ignoreVPaths": [],
-  "excludeFilepathPrefixes": []
+  "excludeFilepathPrefixes": [],
+  "includeFilepathPrefixes": []
 }
 ```
 
 Response — `albums` array (each album object):
 ```json
 {
-  "name":          "Like a Prayer",
-  "album_art_file": "Music/Albums/Madonna/Like a Prayer (1989)/cover.jpg",
-  "year":          1989,
-  "dir":           "Albums/Like a Prayer (1989)/",
-  "normDir":       "Albums/Like a Prayer (1989)"
+  "name":           "Like a Prayer",
+  "album_art_file": "3f2a….jpg",
+  "year":           1989,
+  "dir":            "Albums/Like a Prayer (1989)/",
+  "normDir":        "Albums/Like a Prayer (1989)"
 }
 ```
 
-`normDir` is used client-side as the `albumDir` filter when fetching album songs — it scopes the query to exactly that physical folder so albums that share a tag name (e.g. all discs tagged `"Catalogue"`) each return only their own tracks.
+`album_art_file` is an image-cache filename (`aaFile`). `normDir` can be used as the `albumDir` filter when fetching album songs (`POST /api/v1/db/album-songs`) — it scopes the query to exactly that physical folder so albums that share a tag name (e.g. all discs tagged `"Catalogue"`) each return only their own tracks.
+
+The web player's artist profile does not use this endpoint; its Albums tab is built from the Album Library data (see below).
 
 ---
 
@@ -167,29 +188,29 @@ Response — `albums` array (each album object):
 
 ### Artist home (`viewArtists`)
 
-Loads `GET /api/v1/artists/home`. Two draggable shelves (home-shelf style):
+Loads `GET /api/v1/artists/home`. Three draggable shelves (home-shelf style), up to 8 artists each:
 - **Most Songs in Library** — top artists ranked by song count
 - **Most Played Artists** — top artists ranked by play-event history
-- **Recently Listened** — last artists played (from recently-played stats)
+- **Recently Listened** — last artists played
 
-Shelf order is persisted to `localStorage` under `ms2_art_order_{username}` and synced on each page load.
+Shelf order is persisted to `localStorage` under `ms2_art2_order_{username}`.
 
 Below the shelves: A–Z pill strip and a search bar. Clicking a letter loads `GET /api/v1/artists/letter?l=…`; the search box queries `GET /api/v1/artists/search?q=…` with 250 ms debounce.
 
-The density controls (**List / Comfortable / Compact**) apply to both the filtered result grid and the default home shelves. Preference is persisted per user in localStorage (`ms2_art2_density_{username}` for the current Artists view, `ms2_art_density_{username}` for the legacy Artists view).
+The density controls (**List / Comfortable / Compact**) apply to the result grid. Preference is persisted per user in localStorage (`ms2_art2_density_{username}`, default list).
 
 For admin users, artist cards/rows include a flag action to mark an artist image as wrong. This feeds the Admin image-repair queue.
 
 ### Background image hydration behavior
 
 - Home shelves enqueue hydration for missing artist images.
-- Letter browse (`0-9`, `A-Z`) also enqueues hydration for artists in the shown result set.
-- Search results enqueue hydration too.
-- Hydration runs as a throttled background queue with adaptive delays (`~1.4s` success, `~2.2s` no-image/skip, `~4s` on errors) and a queue cap (800) to protect upstream services.
-- When an upstream lookup yields no usable image, the system records the fetch attempt (`last_fetched`) so missing artists are not repeatedly retried and hammered.
-- Admin can monitor live queue/rate/error counters via `GET /api/v1/admin/artists/hydration-status` (used by Admin → Artists status panel).
-- Admin can force-start hydration on demand with `POST /api/v1/admin/artists/hydration-seed` (wired to **Queue next 500** in Admin → Artists).
-- Admin counts now separate **pending missing** artists (never tried yet) from **no image found** artists that were already checked upstream and returned nothing.
+- Letter browse (`0-9`, `A-Z`) and search results also enqueue hydration for artists in the shown result set.
+- Each hydration asks Discogs, TheAudioDB and Last.fm in parallel. The image is taken from TheAudioDB, else Discogs, else Last.fm; the bio from Last.fm, else TheAudioDB; fanart, genre, country and formed year from TheAudioDB.
+- Hydration runs as a throttled background queue with adaptive delays (1.4 s after success, 2.2 s after no-image/skip, 4 s after errors) and a queue cap of 50,000 entries.
+- An artist is not retried within 12 hours in the same server session. When an upstream lookup yields no usable image, the fetch attempt is recorded (`last_fetched`) so missing artists are not repeatedly retried.
+- Admin can monitor live queue/rate/error counters via `GET /api/v1/admin/artists/hydration-status` (used by the Admin → Artists status panel).
+- Admin can force-start hydration with `POST /api/v1/admin/artists/hydration-seed` (**Queue next 500** in Admin → Artists).
+- Admin counts separate **pending missing** artists (never tried yet) from **no image found** artists that were already checked upstream and returned nothing.
 
 ### Admin image repair workflow
 
@@ -199,7 +220,7 @@ For admin users, artist cards/rows include a flag action to mark an artist image
 - **No image found** queue: artists already checked upstream with no usable result; shown separately so the pending queue stays actionable.
 - **With image** queue: artists that already have an image, for manual quality review.
 - **Wrong** queue: artists flagged from the player as incorrect image.
-- Discogs candidate grid (multiple options) with direct apply.
+- Discogs and TheAudioDB candidate grids with direct apply.
 - Direct image URL apply for manual fixes, with a live preview before applying.
 - Admin route CSP explicitly allows external HTTPS image sources and `blob:` previews so Discogs/manual URL previews render correctly in the image repair workflow.
 - In **With image**, admins can quickly validate each portrait with **Yes: image is OK** or **No: mark wrong**.
@@ -208,31 +229,23 @@ For admin users, artist cards/rows include a flag action to mark an artist image
 
 When an image is applied, the wrong flag is cleared automatically.
 
-### Per-artist page (`viewArtistAlbums` + `renderAlbumGrid` / `viewArtistProfile2`)
+### Artist profile (`viewArtistProfile2`)
 
-Calls `POST /api/v1/db/artists-albums-multi` with all known variants of the artist name (from `artist_raw_variants`). The result is an album grid with:
+Loads `GET /api/v1/artists/profile`, `POST /api/v1/db/artist-folder-songs` and the Album Library (`GET /api/v1/albums/browse`) in parallel. The page shows the artist image (or a fanart hero), bio, genre/country/formed-year chips, similar artists, and two tabs:
 
-- **Series grouping** — albums nested two levels deep in the filesystem are grouped into a series card (stacked visual). Example: `12 inches A-Z/M/Madonna - Catalogue/CD01-On the Radio Part 1/` → L1 folder = `"12 inches A-Z"` → series card labelled `"12 inches A-Z"`.
-- **Duplicate-name fallback** — when multiple albums share the same tag name (e.g. 26 CDs all tagged `"Catalogue"`), the display label falls back to the last path segment of `normDir` (`"CD01-On the Radio Part 1"` etc.).
-- **Breadcrumb titles** — the page title builds up as you drill: `Propaganda` → `Propaganda – Albums` → `Propaganda – Albums – A Secret Wish`.
-- **Correct back-navigation** — pressing `<` returns to exactly the grid level you came from, not the top-level artist page.
-- **Category pills** — when the artist's albums fall into recognisable groups (CUE Albums, Series, etc.), filter pills appear above the grid. Selecting a pill filters the grid to that category. Pills are displayed horizontally (flexbox row spanning all grid columns via `grid-column: 1 / -1`). When you click into an album from a category and press back, the category pill and Albums tab are automatically restored to the state they were in when you left.
+**Albums tab.** The albums come from the Album Library (see [albums.md](albums.md)). An album appears on an artist's page when:
+- it belongs to a series whose name contains the artist **as a whole word** (`_nameContainsArtist`) — whole-word matters: "Black Sabbath" contains the letters "abba", and a plain substring check put Black Sabbath's albums on ABBA's page;
+- its majority `album_artist`/`artist` tag (`rawArtistTags`) matches one of the artist's variants; or
+- its top-level folder is the artist's name (`Artist`, `Artist - …`, `Artist (…`, `Artist-…`).
 
-**Albums tab matching.** An album appears on an artist's page when its `album_artist`/`artist` tags match one of the artist's variants, when its top-level folder is the artist's name (`Artist`, `Artist - …`, `Artist (…`), or when it belongs to a series whose name contains the artist **as a whole word** (`_nameContainsArtist`). Whole-word matters: "Black Sabbath" contains the letters "abba", and a plain substring check put Black Sabbath's albums on ABBA's page.
+Albums are sorted by year. When albums carry a category label, **category pills** appear above the grid (**Albums** = albums without a category, plus one pill per category). When you open an album and press back, the Albums tab and category are restored.
 
-**Songs tab.** Lists the artist's songs *outside* Albums-Only folders. If the whole library is Albums-Only, everything is reached through the Albums tab and the Songs tab is empty by design.
+**Songs tab.** Lists the artist's songs *outside* Albums-Only folders. If the whole library is Albums-Only, everything is reached through the Albums tab and the Songs tab is empty by design. Clicking a song adds it to the queue.
 
 **Profile data (`GET /api/v1/artists/profile`).** Releases are grouped as `Category/Release/…`. Songs directly inside an artist folder (`Artist/song.mp3`) form a release of their own, and loose files at the library root are grouped by album tag.
-
-### Series grouping detail
-
-`_seriesParent(dir)` returns the first path segment when `dir` has two or more segments, otherwise `null`. Albums sharing the same L1 segment form a series; the series card shows as many as 8 sub-albums but clicking it re-renders the grid with those sub-albums only (with `dir` cleared to prevent infinite re-nesting).
 
 ---
 
 ## Future work
 
-- **Biography panel** — displayed on the per-artist page; text populated from `artists_normalized.bio`, fetched from Last.fm/MusicBrainz on demand or automatically at scan time.
-- **Artist image** — stored in `image-cache/artists/` as a 400×400 JPEG; admin can upload a custom image or trigger an auto-fetch from Last.fm.
 - **Discography stats** — total songs, total albums, year range, top genres.
-- **Related artists** — from Last.fm similar-artists API (already used in Auto-DJ).

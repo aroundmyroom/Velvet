@@ -17,7 +17,6 @@ import Joi from 'joi';
 import { formatAutoDjPick } from '../util/autodj-log.js';
 import * as vpath from '../util/vpath.js';
 import * as db from '../db/manager.js';
-import * as config from '../state/config.js';
 import { joiValidate } from '../util/validation.js';
 import { getWrappedStats, getPeriodBounds } from '../db/wrapped-stats.mjs';
 import { indexFileOnDemand } from '../util/on-demand-index.js';
@@ -36,30 +35,17 @@ function _scheduleSpGen() {
 function resolveFileRow(filePath, user) {
   if (!filePath || /^https?:\/\//i.test(filePath)) return null;
   const pathInfo = vpath.getVPathInfo(filePath, user);
-  let result = db.findFileByPath(pathInfo.relativePath, pathInfo.vpath);
-  if (!result) {
-    const folders = config.program?.folders || {};
-    const myRoot  = folders[pathInfo.vpath]?.root.replace(/\/?$/, '/');
-    if (myRoot) {
-      for (const [parentKey, parentFolder] of Object.entries(folders)) {
-        if (parentKey === pathInfo.vpath) continue;
-        if (!user.vpaths.includes(parentKey)) continue;
-        const parentRoot = parentFolder.root.replace(/\/?$/, '/');
-        if (myRoot.startsWith(parentRoot) && myRoot !== parentRoot) {
-          const prefix = myRoot.slice(parentRoot.length);
-          result = db.findFileByPath(prefix + pathInfo.relativePath, parentKey);
-          if (result) break;
-        }
-      }
-    }
+  for (const c of vpath.dbLocationCandidates(pathInfo, user)) {
+    const row = db.findFileByPath(c.relPath, c.vpath);
+    if (row) return row;
   }
-  return result;
+  return null;
 }
 
 // ── play events (the web player's routes below, and Velvet Rooms) ───────────
 // user: { ...config.program.users[name], username }.
 
-export async function playStart(user, { filePath, sessionId, source, dj }) {
+export async function playStart(user, { filePath, sessionId, source, dj, notEventId }) {
   let fileRow = resolveFileRow(filePath, user);
   if (!fileRow) {
     try {
@@ -75,10 +61,11 @@ export async function playStart(user, { filePath, sessionId, source, dj }) {
   // Deduplicate page-reload resumes: find the most recent event for this
   // user+song within 10 minutes. If it was NOT completed (song was interrupted
   // by a reload or tab close), reuse that row. If it WAS completed, the user
-  // genuinely replayed the song — allow a new row.
+  // genuinely replayed the song — allow a new row. notEventId: the play the caller itself just ended (a room on
+  // repeat-one), never resumed.
   const DEDUP_WINDOW_MS = 10 * 60 * 1000;
   const recent = db.findRecentPlayEvent(userId, fileRow.hash, DEDUP_WINDOW_MS);
-  if (recent && !recent.completed) return { ok: true, eventId: recent.id };
+  if (recent && !recent.completed && recent.id !== notEventId) return { ok: true, eventId: recent.id, resumed: true };
 
   if (source === 'autodj' && dj) console.log(formatAutoDjPick(userId, fileRow, dj));
 

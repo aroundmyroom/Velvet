@@ -68,11 +68,10 @@ const I18N = (() => {
 
     let str = typeof val === 'string' ? val : key;
 
-    // Parameter interpolation: replace {{param}} placeholders
+    // Parameter interpolation: a replacer function, so '$&' or '$$' in a value
+    // (a song or playlist name) is inserted literally, not as a replacement pattern.
     if (params) {
-      Object.keys(params).forEach(p => {
-        str = str.replace(new RegExp('\\{\\{' + p + '\\}\\}', 'g'), params[p]);
-      });
+      str = str.replace(/\{\{(\w+)\}\}/g, (m, p) => (Object.hasOwn(params, p) ? String(params[p]) : m));
     }
 
     return str;
@@ -216,6 +215,14 @@ const I18N = (() => {
 
   // ── Language loader ───────────────────────────────────────────
   mod.loadLanguage = async (lang) => {
+    try {
+      return await loadLanguageOnce(lang);
+    } finally {
+      _resolveReady();
+    }
+  };
+
+  async function loadLanguageOnce(lang) {
     if (!lang) { lang = detectLanguage(); }
     if (!SUPPORTED.includes(lang)) { lang = DEFAULT_LANG; }
     const previousLang = currentLang;
@@ -252,7 +259,7 @@ const I18N = (() => {
     mod.translatePage();
     changeListeners.forEach(fn => { try { fn(lang); } catch (_) { /* noop */ } });
     return true;
-  };
+  }
 
   // ── Pub/Sub for language changes ──────────────────────────────
   // Returns an unsubscribe function.
@@ -261,11 +268,11 @@ const I18N = (() => {
     return () => changeListeners.delete(fn);
   };
 
-  // Promise that resolves after the first loadLanguage() completes.
+  // Promise that resolves after the first loadLanguage() attempt settles, also
+  // when it failed (the page then runs on whatever strings it has).
   // Useful for pages that build dynamic UI and need to await initial strings.
-  mod.ready = new Promise(resolve => {
-    const unsub = mod.onChange(() => { unsub(); resolve(); });
-  });
+  let _resolveReady;
+  mod.ready = new Promise(resolve => { _resolveReady = resolve; });
 
   // ── Static DOM translation ────────────────────────────────────
   // Scan data-i18n attributes and replace textContent (or an attribute).

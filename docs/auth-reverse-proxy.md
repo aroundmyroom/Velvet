@@ -20,9 +20,19 @@ Configure it under **Admin → Settings → Reverse-Proxy Login (SSO)**, or via
      configured **Trusted proxy IPs / CIDR ranges** list.
    - If a **shared-secret header** is configured (recommended), its value
      matches exactly.
-3. If both checks pass, Velvet reads the configured header as a username. If
-   a Velvet user with that name exists, the browser gets signed in — same
-   session cookie as a normal password login.
+3. If both checks pass, Velvet reads the configured header (default
+   `Remote-User`) as a username. If a Velvet user with that name exists, the
+   browser gets signed in — same `x-access-token` cookie (30 days) as a
+   normal password login.
+
+This check only runs on a request that carries no Velvet token yet. A
+request that already has a token (header, cookie or `Authorization: Bearer`)
+is handled as a normal login.
+
+Trusted proxy entries can be a single IPv4 or IPv6 address, or an IPv4 CIDR
+range (e.g. `172.18.0.0/16`). IPv6 ranges are not supported; list each IPv6
+proxy address on its own. An IPv4-mapped address such as
+`::ffff:172.18.0.5` matches the plain IPv4 entry.
 
 Velvet deliberately checks the raw socket's source IP, not `X-Forwarded-For`
 — a header any client can set for itself. That means **the trusted-proxy
@@ -38,7 +48,10 @@ and could try to spoof the header itself. The shared-secret header closes
 that gap — even if the IP allowlist is too broad (e.g. a whole Compose subnet
 CIDR), a request must also carry a secret value only your reverse-proxy
 config knows. Generate one from the admin card and configure your proxy to
-send it.
+send it. The secret is only checked when both the header name and the value
+are filled in. After saving, the admin card shows the value masked (first 4
+characters, then `*`); saving again with the masked value keeps the stored
+secret.
 
 ## Nginx Proxy Manager
 
@@ -75,9 +88,10 @@ Then in Velvet's admin card:
 
 ## Traefik (forward-auth)
 
-If you already run an `auth_request`/forward-auth middleware (Authelia,
-Authentik, tinyauth, ...), add the same two headers to the middleware's
-response-header pass-through, or add a second middleware that sets them:
+If you already run a forward-auth middleware (Authelia, Authentik,
+tinyauth, ...), let it pass the username header through (Traefik's
+`authResponseHeaders`, e.g. `Remote-User`), and add a second middleware that
+sets the shared secret:
 
 ```yaml
 http:
@@ -118,8 +132,10 @@ always goes through the proxy for that account from then on.
 ## Checking your setup is safe
 
 If **Reverse-proxy login** is on but no trusted proxies are configured, or
-Velvet is listening on `0.0.0.0`/`::` (all interfaces) rather than only where
-your reverse proxy can reach it, the admin card shows a warning. In that
+Velvet is listening on `0.0.0.0`/`::` (all interfaces — `::` is the default
+`address`) rather than only where your reverse proxy can reach it, the admin
+card shows a warning. With no trusted proxies configured, the header is
+never trusted at all. In that
 situation, confirm Velvet is not reachable directly on its port from outside
 your reverse proxy — otherwise anyone who can reach Velvet's port directly
 could set the header themselves and sign in as anyone.

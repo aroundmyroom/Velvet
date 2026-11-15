@@ -58,7 +58,7 @@ export function partsFamily(genre) {
   return majority(splitRaw(String(genre)).map(keywordFamily));
 }
 
-export function folderKey(vpath, filepath, depth) {
+function folderKey(vpath, filepath, depth) {
   return `${vpath}/${filepath.split('/').slice(0, depth).join('/')}`;
 }
 

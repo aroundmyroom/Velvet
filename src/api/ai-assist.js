@@ -21,7 +21,6 @@
  */
 import Joi from 'joi';
 import * as config from '../state/config.js';
-import * as admin from '../util/admin.js';
 import * as db from '../db/manager.js';
 import { joiValidate } from '../util/validation.js';
 import { mergeGenreRows } from '../util/genre-merge.js';
@@ -29,7 +28,7 @@ import { FAMILIES, RULE_FAMILIES, createFamilyResolver, folderStats, keywordFami
 import { allVpaths, genreRuleKey, invalidateGenreFamilyResolver } from '../util/genre-family-cache.js';
 import * as ai from '../util/ai-assist.js';
 import { NOTES_SCHEMA, NOTES_SYSTEM, NOTE_KINDS, digestLine, folderDigest } from '../util/ai-library-notes.js';
-import { aiDjContext, invalidateLibraryNotes } from './ai-queue.js';
+import { aiDjContext, invalidateLibraryNotes, invalidateLibraryProfiles } from './ai-queue.js';
 import { DEFAULT_VERSION_WORDS, VERSION_WORDS_SCHEMA, versionFamilies } from '../util/version-words.js';
 
 const FAMILY_GUIDE = `Families, chosen for DJ mixing compatibility:
@@ -236,7 +235,6 @@ function notesPlan({ force = false } = {}) {
   _plan = { at: Date.now(), value };
   return value;
 }
-export function invalidateNotesPlan() { _plan = null; }
 
 // What one full pass over this library would cost, shown before the admin
 // lets the model read it. Tokens per item measured on a 141,000-song library
@@ -327,7 +325,7 @@ async function runNotes({ force = false } = {}) {
     _plan = null;
   }
 }
-export function startNotesAnalysis(opts) {
+function startNotesAnalysis(opts) {
   if (notesAnalysis.running || analysis.running) return false;
   runNotes(opts);
   return true;
@@ -337,7 +335,7 @@ export function startNotesAnalysis(opts) {
 // or on request. Proposals only; nothing changes for Auto-DJ until approved.
 // The library notes follow in the same pass (new folders only).
 const analysis = { running: false, profile: null, startedAt: null, finishedAt: null, error: null, genres: 0, folders: 0 };
-export function startAnalysis(profile) {
+function startAnalysis(profile) {
   if (analysis.running || notesAnalysis.running) return false;
   Object.assign(analysis, { running: true, profile, startedAt: Date.now(), finishedAt: null, error: null, genres: 0, folders: 0 });
   (async () => {
@@ -410,11 +408,11 @@ function profileOf(req, res) {
 
 // null removes the admin's list, so the built-in defaults apply again.
 async function saveVersionWords(families) {
-  const loadConfig = await admin.loadFile(config.configFile);
-  const a = { ...(loadConfig.aiAssist || {}) };
-  if (families) a.versionWords = families; else delete a.versionWords;
-  loadConfig.aiAssist = a;
-  await admin.saveFile(loadConfig, config.configFile);
+  await config.updateConfigFile(c => {
+    const a = { ...c.aiAssist };
+    if (families) a.versionWords = families; else delete a.versionWords;
+    c.aiAssist = a;
+  });
   const live = { ...(config.program.aiAssist || {}) };
   if (families) live.versionWords = families; else delete live.versionWords;
   config.program.aiAssist = live;
@@ -444,9 +442,7 @@ export function setup(velvet) {
       analyse:          Joi.boolean().default(false),
     });
     const { value: { analyse, ...value } } = joiValidate(schema, req.body);
-    const loadConfig = await admin.loadFile(config.configFile);
-    loadConfig.aiAssist = { ...(loadConfig.aiAssist || {}), ...value };
-    await admin.saveFile(loadConfig, config.configFile);
+    await config.updateConfigFile(c => { c.aiAssist = { ...c.aiAssist, ...value }; });
     config.program.aiAssist = { ...(config.program.aiAssist || {}), ...value };
     _estimate = null;
     // The library is only read when the admin asked for it, having seen the estimate.
@@ -560,21 +556,21 @@ export function setup(velvet) {
 
   velvet.post('/api/v1/admin/ai/library-notes/analyse', (req, res) => {
     if (!gate(req, res)) return;
-    joiValidate(Joi.object({ force: Joi.boolean().default(false) }), req.body);
+    const { value } = joiValidate(Joi.object({ force: Joi.boolean().default(false) }), req.body);
     if (ai.settings().provider !== 'openai' && !ai.settings().apiKey) return res.status(409).json({ error: 'No API key configured', code: 'nokey' });
-    res.json({ started: startNotesAnalysis({ force: !!req.body.force }), analysis: notesAnalysis });
+    res.json({ started: startNotesAnalysis({ force: value.force }), analysis: notesAnalysis });
   });
 
   velvet.post('/api/v1/admin/ai/library-notes/edit', (req, res) => {
     if (!gate(req, res)) return;
-    joiValidate(Joi.object({
+    const { value } = joiValidate(Joi.object({
       key: Joi.string().max(600).required(),
       kind: Joi.string().valid(...NOTE_KINDS).required(),
       note: Joi.string().trim().allow('').max(600).required(),
       aliases: Joi.array().items(Joi.string().trim().max(40)).max(6).default([]),
       ask: Joi.string().trim().allow('').max(200).default(''),
     }), req.body);
-    const ok = db.editLibraryNote(req.body.key, { kind: req.body.kind, note: req.body.note, aliases: req.body.aliases.filter(Boolean), ask: req.body.ask });
+    const ok = db.editLibraryNote(value.key, { kind: value.kind, note: value.note, aliases: value.aliases.filter(Boolean), ask: value.ask });
     if (!ok) return res.status(404).json({ error: 'No such note' });
     invalidateLibraryNotes();
     res.json({ ok: true });
@@ -582,16 +578,16 @@ export function setup(velvet) {
 
   velvet.post('/api/v1/admin/ai/library-notes/delete', (req, res) => {
     if (!gate(req, res)) return;
-    joiValidate(Joi.object({ key: Joi.string().max(600).required() }), req.body);
-    if (!db.deleteLibraryNote(req.body.key)) return res.status(404).json({ error: 'No such note' });
+    const { value } = joiValidate(Joi.object({ key: Joi.string().max(600).required() }), req.body);
+    if (!db.deleteLibraryNote(value.key)) return res.status(404).json({ error: 'No such note' });
     invalidateLibraryNotes(); _plan = null;
     res.json({ ok: true });
   });
 
   velvet.post('/api/v1/admin/ai/library-notes/reset', (req, res) => {
     if (!gate(req, res)) return;
-    joiValidate(Joi.object({ keepEdited: Joi.boolean().default(true) }), req.body);
-    const removed = db.clearLibraryNotes({ keepEdited: req.body.keepEdited !== false });
+    const { value } = joiValidate(Joi.object({ keepEdited: Joi.boolean().default(true) }), req.body);
+    const removed = db.clearLibraryNotes({ keepEdited: value.keepEdited });
     invalidateLibraryNotes(); _plan = null;
     res.json({ removed });
   });
@@ -603,42 +599,42 @@ export function setup(velvet) {
 
   velvet.post('/api/v1/admin/ai/profiles', (req, res) => {
     if (!gate(req, res)) return;
-    joiValidate(Joi.object({ name: Joi.string().trim().min(1).max(60).required(), copyFrom: Joi.number().integer().optional() }), req.body);
-    const id = db.createGenreFamilyProfile(req.body.name.trim(), req.body.copyFrom || null);
+    const { value } = joiValidate(Joi.object({ name: Joi.string().trim().min(1).max(60).required(), copyFrom: Joi.number().integer().optional() }), req.body);
+    const id = db.createGenreFamilyProfile(value.name, value.copyFrom || null);
     res.json({ id, profiles: db.getGenreFamilyProfiles() });
   });
 
   velvet.post('/api/v1/admin/ai/profiles/activate', (req, res) => {
     if (!gate(req, res)) return;
-    joiValidate(Joi.object({ id: Joi.number().integer().required() }), req.body);
-    if (!db.getGenreFamilyProfiles().some(p => p.id === req.body.id)) return res.status(404).json({ error: 'No such profile' });
-    db.activateGenreFamilyProfile(req.body.id);
+    const { value } = joiValidate(Joi.object({ id: Joi.number().integer().required() }), req.body);
+    if (!db.getGenreFamilyProfiles().some(p => p.id === value.id)) return res.status(404).json({ error: 'No such profile' });
+    db.activateGenreFamilyProfile(value.id);
     invalidateGenreFamilyResolver();
-    res.json({ active: req.body.id, profiles: db.getGenreFamilyProfiles() });
+    res.json({ active: value.id, profiles: db.getGenreFamilyProfiles() });
   });
 
   velvet.post('/api/v1/admin/ai/profiles/rename', (req, res) => {
     if (!gate(req, res)) return;
-    joiValidate(Joi.object({ id: Joi.number().integer().required(), name: Joi.string().trim().min(1).max(60).required() }), req.body);
-    if (!db.renameGenreFamilyProfile(req.body.id, req.body.name.trim())) return res.status(404).json({ error: 'No such profile' });
+    const { value } = joiValidate(Joi.object({ id: Joi.number().integer().required(), name: Joi.string().trim().min(1).max(60).required() }), req.body);
+    if (!db.renameGenreFamilyProfile(value.id, value.name)) return res.status(404).json({ error: 'No such profile' });
     res.json({ profiles: db.getGenreFamilyProfiles() });
   });
 
   velvet.post('/api/v1/admin/ai/profiles/delete', (req, res) => {
     if (!gate(req, res)) return;
-    joiValidate(Joi.object({ id: Joi.number().integer().required() }), req.body);
-    if (req.body.id === db.activeGenreFamilyProfile()) return res.status(409).json({ error: 'The active profile cannot be deleted', code: 'active' });
-    if (!db.deleteGenreFamilyProfile(req.body.id)) return res.status(404).json({ error: 'No such profile' });
+    const { value } = joiValidate(Joi.object({ id: Joi.number().integer().required() }), req.body);
+    if (value.id === db.activeGenreFamilyProfile()) return res.status(409).json({ error: 'The active profile cannot be deleted', code: 'active' });
+    if (!db.deleteGenreFamilyProfile(value.id)) return res.status(404).json({ error: 'No such profile' });
     res.json({ profiles: db.getGenreFamilyProfiles() });
   });
 
   velvet.post('/api/v1/admin/ai/genre-families/propose', async (req, res) => {
     if (!gate(req, res)) return;
-    joiValidate(Joi.object({ kind: Joi.string().valid('genre', 'folder').required(), profile: Joi.number().integer().optional() }), req.body);
+    const { value } = joiValidate(Joi.object({ kind: Joi.string().valid('genre', 'folder').required(), profile: Joi.number().integer().optional() }), req.body);
     const profile = profileOf(req, res);
     if (!profile) return;
     try {
-      const proposed = req.body.kind === 'genre' ? await proposeGenres(profile) : await proposeFolders(profile);
+      const proposed = value.kind === 'genre' ? await proposeGenres(profile) : await proposeFolders(profile);
       res.json({ proposed, usage: ai.usage() });
     } catch (e) {
       if (e instanceof ai.AiAssistError) return res.status(409).json({ error: e.message, code: e.code });
@@ -657,25 +653,27 @@ export function setup(velvet) {
       })).min(1).max(5000).required(),
       profile: Joi.number().integer().optional(),
     });
-    joiValidate(schema, req.body);
+    const { value } = joiValidate(schema, req.body);
     const profile = profileOf(req, res);
     if (!profile) return;
-    db.approveGenreFamilyRules(req.body.items, profile);
+    db.approveGenreFamilyRules(value.items, profile);
     invalidateGenreFamilyResolver();
-    res.json({ applied: req.body.items.length });
+    invalidateLibraryProfiles();
+    res.json({ applied: value.items.length });
   });
 
   velvet.post('/api/v1/admin/ai/genre-families/reset', (req, res) => {
     if (!gate(req, res)) return;
-    joiValidate(Joi.object({
+    const { value } = joiValidate(Joi.object({
       kind:   Joi.string().valid('genre', 'folder').optional(),
       status: Joi.string().valid('proposed', 'approved').default('proposed'),
       profile: Joi.number().integer().optional(),
     }), req.body);
     const profile = profileOf(req, res);
     if (!profile) return;
-    const removed = db.deleteGenreFamilyRules({ kind: req.body.kind, status: req.body.status || 'proposed', profile });
+    const removed = db.deleteGenreFamilyRules({ kind: value.kind, status: value.status, profile });
     invalidateGenreFamilyResolver();
+    invalidateLibraryProfiles();
     res.json({ removed });
   });
 }

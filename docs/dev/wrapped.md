@@ -1,13 +1,17 @@
 # Velvet — Wrapped Implementation Plan
 
-> Read this before writing a single line of code.
-> One phase at a time. Approval required before starting each phase.
+> **Status: built.** All six phases are in the code. Some details differ from the plan;
+> see the **Built:** notes. Built later and not in this plan: pause counting
+> (`POST /api/v1/wrapped/pause`), radio and podcast listening
+> (`radio_play_events`, `podcast_play_events`, `/api/v1/wrapped/radio-*`,
+> `/api/v1/wrapped/podcast-*`), the 7-day history (`GET /api/v1/history`), and the admin
+> folder-metadata backfill (`/api/v1/admin/wrapped/backfill-folder-metadata[/preview]`).
 
 ---
 
 ## What we already have (relevant to this feature)
 
-### DB (SQLite only — LokiJS phased out)
+### DB (SQLite)
 - `files` table: `hash`, `title`, `artist`, `album`, `year`, `genre`, `duration` (seconds), `vpath`, `filepath`, `artist_id`, `album_id`
 - `user_metadata`: `hash`, `user`, `pc` (play count), `lp` (last played ms), `rating`, `starred`
 - Migration pattern: `CREATE TABLE IF NOT EXISTS` in `init()` + `ALTER TABLE … ADD COLUMN` try/catch blocks
@@ -17,6 +21,8 @@
 - `Player.playAt(idx)` — fires on every new track start. Already calls:
   - `api('POST', 'api/v1/db/stats/log-play', { filePath })` — immediately (no 30s delay)
   - Last.fm / ListenBrainz scrobble — after 30 s timeout
+  - Built: both log-play and wrapped play-start are now sent from `_reportTrackStart(s, handBackMs)`.
+    log-play is skipped when a song is taken back from a Velvet Room (the room already counted it).
 - `Player.next()` — called by skip button, `prev()`, `_onAudioEnded()` → natural end
 - `_onAudioEnded()` — fires when HTML audio element fires `ended` (natural completion)
 - `S.playSource` — tracks where a song came from: `null | { type:'playlist'|'smart-playlist'|'home'|'radio'|'podcast', name }`
@@ -96,6 +102,11 @@ CREATE TABLE IF NOT EXISTS listening_sessions (
 
 Index: `(user_id, started_at)` for per-period aggregation.
 
+**Built:** both tables as above. `play_events` also has `pause_count INTEGER DEFAULT 0`.
+Real indexes: `idx_pe_user_started`, `idx_pe_user_hash_started` (`user_id, file_hash, started_at DESC`),
+`idx_pe_file_hash`, `idx_pe_started_at`, `idx_pe_session`, `idx_pe_user_completed`,
+`idx_ls_user_started`.
+
 ### Migration strategy
 Same as all existing tables:
 1. Add `CREATE TABLE IF NOT EXISTS` blocks inside `init()` in `sqlite-backend.js`
@@ -103,10 +114,10 @@ Same as all existing tables:
 3. No ALTER TABLE needed on first rollout
 
 ### Design decisions
-- `play_events` is **append-only** — no UPDATE or DELETE except the admin purge
+- `play_events` is **append-only** — no DELETE except the admin purge (rows are updated by end/skip/stop/pause, and `file_hash` is rewritten when a file's hash changes)
 - `ended_at` / `played_ms` are set by separate `play_end` / `play_skip` / `play_stop` events (Phase 2)
 - `duration_ms` is stored at insert time from the DB row (no re-lookup later)
-- `file_hash` is the SHA256 hash already in `files.hash` — joins cleanly
+- `file_hash` is the MD5 content hash already in `files.hash` (`src/util/file-hash.js`) — joins cleanly
 - We do NOT store `title`/`artist` in `play_events` — always JOIN to `files` at query time so tag edits are reflected in stats automatically
 - `user_id` = `req.user.username` (same as `user_metadata.user`)
 
@@ -148,6 +159,16 @@ POST /api/v1/wrapped/session-end
 Note: `play_end` / `play_skip` / `play_stop` all differ only in what flags they set.  
 We can unify into one endpoint internally but keep semantic names for clarity.
 
+**Built** in `src/api/wrapped.js` (logic in exported `playStart()`, `playEnd()`,
+`playSkip()`, `playStop()`, `playPause()`, also used by Velvet Rooms). Differences:
+- play-start replies `{ ok: true, eventId }`. If the same song has an unfinished event
+  from the last 10 min (page reload), that event is reused: `{ ok: true, eventId, resumed: true }`.
+  It also takes an optional `dj` object (Auto-DJ pick trace for the server log).
+- `source` must be one of `manual`, `queue`, `shuffle`, `autodj`, `playlist`, `smart-playlist`.
+- play-skip always sets `skipped=1` (there is no 30 % check).
+- play-stop sets `completed=1` when at least 90 % was played.
+- Extra: `POST /api/v1/wrapped/pause` `{ eventId }` adds 1 to `pause_count`.
+
 ### Player changes (webapp/app.js)
 
 **Session management:**
@@ -186,6 +207,12 @@ function _wrappedSource() {
 - All wrapped API calls are `.catch(() => {})` — never block playback
 - `navigator.sendBeacon` for beforeunload (fire-and-forget, works on tab close)
 
+**Built:** `_wrappedSessionId` is a random 32-hex string per page load. play-skip is sent
+from `Player.playAt()` when the previous event did not end naturally;
+`_wrappedEndedNaturally = true` is set in the `ended` handler before play-end is sent.
+On `beforeunload` only `session-end` is sent with `sendBeacon`. Played time is measured
+from `_wrappedTrackStartOffset`. `_wrappedSource()` matches the code above.
+
 ---
 
 ## Phase 3 — Stats computation
@@ -196,9 +223,11 @@ Pure SQLite aggregation — no in-memory work.
 
 #### Main function signature
 ```js
-export async function getWrappedStats(userId, fromMs, toMs)
+export async function getWrappedStats(userId, fromMs, toMs, vpaths = [])
 ```
-Returns a single flat object (see below).
+Returns a single flat object (see below). Built: `vpaths` is used for `library_coverage_pct`.
+The DB side is `getWrappedDataInRange()` and `getWrappedSessionsInRange()` in
+`src/db/sqlite-backend.js`. Aggregation is done in JS in `wrapped-stats.mjs`, not in SQL.
 
 #### Period helper
 ```js
@@ -279,6 +308,13 @@ export function getPeriodBounds(period, offset = 0)
 }
 ```
 
+**Built:** all fields above exist. Differences and additions: `pause_count`;
+`new_discoveries` is a count and `new_discovery_list` holds up to 20 songs;
+`fun_facts.top_song_hours` is an object `{ song, artist, hours }`, not a string;
+`radio: { total_ms, total_sessions, top_stations }` and
+`podcast: { total_ms, shows_heard, episodes_played, episodes_completed, top_shows }`.
+`period_label`, `from_ms`, `to_ms`, `generated_at` are added by the route.
+
 #### Personality algorithm
 Simple rule-based, evaluated in priority order:
 1. `night_owl_score > 0.40` → **Night Owl** — "Most of your listening happens after 10 PM"
@@ -287,6 +323,9 @@ Simple rule-based, evaluated in priority order:
 4. `listening_by_hour[6..9] is dominant` → **Early Bird** — "Your day starts with music"
 5. `new_discoveries / total_plays > 0.30` → **Explorer** — "Always hunting for something new"
 6. fallback → **Consistent Listener**
+
+Built as above. "Early Bird" = plays in hours 6–9 are more than 30 % of all plays.
+Night owl window is 22:00–03:59.
 
 ---
 
@@ -305,6 +344,10 @@ GET  /api/v1/user/wrapped/periods
 ```
 
 Both are GET, JWT-protected, user sees only their own data.
+
+**Built:** `offset` is -260…0 (default 0), `period` defaults to `monthly`.
+`/periods` returns `{ periods: [ { year, month, play_count } ] }` — month buckets only,
+newest first, max 36 (`getWrappedPeriods()`).
 
 ---
 
@@ -331,6 +374,14 @@ POST /api/v1/admin/wrapped/purge
      body: { keepMonths: number }   min 1, max 60
      → { deleted: number }
 ```
+
+**Built** in `src/api/admin.js` and `wrapped-admin-view` (`webapp/admin/index.js`,
+side-nav item in `webapp/admin/index.html`). Differences:
+- Stats reply: `{ total_events, total_radio, total_podcast, storage_bytes, per_user: [ { user_id, event_count, total_played_ms, radio_sessions, total_radio_ms, podcast_episodes, total_podcast_ms } ] }`.
+  `storage_bytes` covers all four event/session tables.
+- Purge is per user and per time window, not "keep last N months":
+  body `{ userId, fromMs, toMs }` (400 if `toMs < fromMs`) → `{ ok: true, deleted }`.
+  It also deletes that user's radio and podcast events in the window and prunes empty sessions.
 
 ---
 
@@ -376,14 +427,23 @@ POST /api/v1/admin/wrapped/purge
 - Arrows disabled when no data available (from `/wrapped/periods` response)
 - "No data for this period" state when `total_plays === 0`
 
+Built: `viewWrapped()` in `webapp/app.js`. The back arrow is disabled only at offset
+-260 (not from `/periods`); there is also a jump-one-year button.
+
 #### Sidebar nav
 - New nav item "Wrapped" (waveform/chart icon) — same pattern as Subsonic, Albums, etc.
+
+Built: nav button `data-view="wrapped"` in `webapp/index.html`, labelled "Your Stats"
+(`player.nav.yourStats`).
 
 #### Heatmap implementation
 - Pure CSS grid — no canvas, no external library
 - 7 columns (days) × 24 rows (hours) — cells colored by play_count
 - 4 intensity levels: empty / light / medium / heavy
 - Responsive: collapses gracefully on mobile
+
+Not built as a 7×24 grid. The page shows two separate bar charts instead: plays by hour
+(`.wrapped-hour-chart`) and plays by weekday (`.wrapped-wd-chart`).
 
 ---
 
@@ -400,6 +460,10 @@ POST /api/v1/admin/wrapped/purge
    - `getPlayEventsInRange(userId, fromMs, toMs)` → raw events + joined file data (for stats computation)
    - `getWrappedAdminStats()` → admin overview
    - `purgePlayEvents(beforeMs)` → deleted count
+
+   Built names that differ: `getWrappedDataInRange()` (plus `getWrappedSessionsInRange()`),
+   `purgePlayEvents(userId, fromMs, toMs)`. Also built: `findRecentPlayEvent()`,
+   `getPlayEventById()`, `incrementPauseCount()`, `getTotalFileCount()`.
 3. `manager.js` — re-export all 8
 
 ### Phase 2 (Player hooks)
@@ -431,7 +495,7 @@ POST /api/v1/admin/wrapped/purge
 
 3. **Historical data**: No import. Stats start from the date Wrapped is first deployed (April 2026). The UI will note the data start date — e.g. "Stats available from April 2026".
 
-4. **Admin purge scope**: Per-user when users exist. In no-auth mode (single user), purge applies to the single `'velvet-user'` account.
+4. **Admin purge scope**: Per-user when users exist. In no-auth mode (single user), purge applies to the single `'velvet-user'` account. (Built: the admin picks the user and a from/to time window.)
 
 ---
 

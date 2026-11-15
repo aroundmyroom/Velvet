@@ -1,8 +1,8 @@
 # YouTube Download API
 
-*Requires the `youtube` permission enabled for the user in Admin → Users.*
+*Requires the user flag `allow-youtube-download` (set per user in Admin → Users).*
 
-All three endpoints return `403` immediately if `noUpload: true` is set in the server config.
+All three endpoints return `403` if `noUpload: true` is set in the server config. `metadata` and the download start also return `403` when the user lacks `allow-youtube-download`; `downloads` lets admins in without the flag (and shows them every user's jobs). `metadata` and the download start refuse a URL that is not http(s) or whose host resolves to a private or loopback address (`400`).
 
 ---
 
@@ -29,9 +29,11 @@ Fetch metadata for a YouTube URL without downloading anything.
 ```
 
 - `album` is always an empty string (YouTube has no album concept — fill it in the UI before downloading)
-- `thumbnail` is the highest-resolution thumbnail URL available, or `null`
-- `year` is the 4-digit upload year, or empty string if unavailable
-- `artist` is derived from the channel name or parsed from `"Artist - Title"` pattern in the video title
+- `thumbnail` is the thumbnail URL yt-dlp reports, or `null`
+- `year` is the release year, else the upload year, or empty string if unavailable
+- `artist` is parsed from an `"Artist - Title"` video title, else taken from yt-dlp's `artist` / uploader / channel; noise such as "(Official Video)" and "feat. …" is stripped from the title
+
+**Errors:** `400` for a missing/invalid URL, a URL on a private or loopback host ("That URL is not allowed"), or when yt-dlp fails.
 
 ---
 
@@ -78,14 +80,14 @@ Poll `GET /api/v1/ytdl/downloads` with this `jobId` to track progress and get th
 
 | Status | Meaning |
 |---|---|
-| 400 | Validation error, invalid URL, or no YouTube/recordings folder configured |
-| 403 | User does not have the `youtube` permission, or `noUpload` is set on the server |
+| 400 | Validation error, invalid URL, a URL on a private or loopback host, or no YouTube/recordings folder configured |
+| 403 | User does not have `allow-youtube-download`, or `noUpload` is set on the server |
 
 ---
 
 ## GET /api/v1/ytdl/downloads
 
-Returns all tracked download jobs (running + recently finished). Entries are automatically removed 10 minutes after completion.
+Returns the caller's own tracked download jobs (running + recently finished); an admin sees every user's jobs. Each job carries the `user` who started it. Jobs live in memory only; finished entries are removed (when the next download finishes) once they are older than 10 minutes.
 
 **Response:**
 
@@ -96,15 +98,18 @@ Returns all tracked download jobs (running + recently finished). Entries are aut
     "url": "https://www.youtube.com/watch?v=XXXX",
     "title": "Song Title",
     "started": 1714900000000,
+    "user": "alice",
     "finished": 1714900045000,
     "filePath": "Artist - Song Title.opus",
-    "vpath": "YouTube"
+    "vpath": "YouTube",
+    "filepath": "YouTube/Artist - Song Title.opus"
   },
   "2": {
     "status": "running",
     "url": "https://www.youtube.com/watch?v=YYYY",
     "title": "Another Song",
-    "started": 1714900100000
+    "started": 1714900100000,
+    "user": "alice"
   }
 }
 ```
@@ -114,7 +119,7 @@ Response is keyed by `jobId`. Possible `status` values:
 | Status | Meaning |
 |---|---|
 | `running` | Download in progress |
-| `done` | Completed — `filePath` and `vpath` are set |
+| `done` | Completed — `filePath` (file name), `vpath` and `filepath` (the DB/player path) are set |
 | `error` | Failed — `error` field contains the error message |
 
 The client should poll every 2 seconds until `status` is `done` or `error`. Maximum recommended poll duration is 10 minutes before treating a job as timed out.
@@ -126,7 +131,7 @@ The client should poll every 2 seconds until `status` is `done` or `error`. Maxi
 - All intermediate files (raw stream, thumbnail) are written to a private temp directory under the OS temp folder and deleted unconditionally after every download — nothing lands in the music folder until the final file is moved into place.
 - Files are saved to the first accessible folder of type `youtube` in the user's vpaths; if none exists, falls back to `type: recordings`. Returns 400 if neither is configured.
 - Filenames are sanitised and de-duplicated automatically (`Artist - Title.opus`, or `Artist - Title_1.opus` if a collision exists).
-- Album art embedding per format: MP3 uses ID3v2 attached picture; M4A uses video stream copy; Opus/OGG uses Vorbis `METADATA_BLOCK_PICTURE` (binary spec, base64-encoded) — see [youtube-download.md](../youtube-download.md) for details.
+- Tags are written with an ffmpeg codec copy (no re-encode). The YouTube thumbnail is embedded as cover: as an attached picture stream for MP3/M4A, and as a Vorbis `METADATA_BLOCK_PICTURE` (base64) for Opus/OGG — see [youtube-download.md](../youtube-download.md) for details.
 - Both yt-dlp and ffmpeg are managed automatically by Velvet — no manual installation required.
 - Note on format quality: YouTube streams are lossy (Opus ~160 kbps or AAC). Re-encoding to another format does not recover quality. `opus` is recommended as it copies the native stream without re-encoding.
 

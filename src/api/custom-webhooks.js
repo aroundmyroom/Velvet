@@ -1,10 +1,10 @@
-import fs from 'node:fs/promises';
 import https from 'node:https';
 import http from 'node:http';
 import Joi from 'joi';
 import winston from 'winston';
 import * as config from '../state/config.js';
 import { joiValidate } from '../util/validation.js';
+import WebError from '../util/web-error.js';
 import { findUserFile } from './scrobbler.js';
 
 // Maximum number of custom webhook slots the admin can configure.
@@ -34,7 +34,7 @@ function getSlots() {
  * POST a scrobble notification to the custom webhook at slotIndex.
  * Payload: { event, artist, album, track, username, timestamp }
  */
-export async function sendCustomWebhookScrobble(user, { artist, album, track }, slotIndex) {
+async function sendCustomWebhookScrobble(user, { artist, album, track }, slotIndex) {
   const slots = getSlots();
   const slot  = slots[slotIndex];
   if (!slot || !slot.enabled || !slot.url) return;
@@ -45,6 +45,7 @@ export async function sendCustomWebhookScrobble(user, { artist, album, track }, 
     winston.warn(`[custom-webhooks] slot ${slotIndex}: invalid URL, skipping`);
     return;
   }
+  // Private/LAN hosts are allowed on purpose (e.g. Home Assistant): only admins set this URL.
   if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
     winston.warn(`[custom-webhooks] slot ${slotIndex}: only http/https URLs are allowed`);
     return;
@@ -83,6 +84,7 @@ export async function sendCustomWebhookScrobble(user, { artist, album, track }, 
       winston.warn(`[custom-webhooks] slot ${slotIndex} POST failed: ${err.message}`);
       resolve();
     });
+    req.setTimeout(10000, () => req.destroy(new Error('timeout')));
     req.write(payload);
     req.end();
   });
@@ -127,20 +129,13 @@ export function setup(velvet) {
     });
     joiValidate(schema, req.body);
 
-    const slotIndex = req.body.slot;
-    const loadConfig = JSON.parse(await fs.readFile(config.configFile, 'utf-8'));
-    if (!loadConfig.users) loadConfig.users = {};
-    if (!loadConfig.users[req.user.username]) loadConfig.users[req.user.username] = {};
-    loadConfig.users[req.user.username][userKey(slotIndex, 'enabled')] = req.body.enabled;
-    if (req.body.nick !== undefined) {
-      loadConfig.users[req.user.username][userKey(slotIndex, 'nick')] = req.body.nick;
-    }
-    await fs.writeFile(config.configFile, JSON.stringify(loadConfig, null, 2), 'utf8');
+    // No-user mode has no account to store this on, and a password-less user entry would stop the next boot.
+    if (!config.program.users[req.user.username]) throw new WebError('Per-user settings need a user account', 403);
 
-    config.program.users[req.user.username][userKey(slotIndex, 'enabled')] = req.body.enabled;
-    if (req.body.nick !== undefined) {
-      config.program.users[req.user.username][userKey(slotIndex, 'nick')] = req.body.nick;
-    }
+    const slotIndex = req.body.slot;
+    const fields = { [userKey(slotIndex, 'enabled')]: req.body.enabled };
+    if (req.body.nick !== undefined) fields[userKey(slotIndex, 'nick')] = req.body.nick;
+    await config.updateUserFields(req.user.username, fields);
 
     res.json({});
   });

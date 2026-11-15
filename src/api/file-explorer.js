@@ -158,17 +158,17 @@ export function setup(velvet) {
   velvet.post("/api/v1/file-explorer/m3u", async (req, res) => {
     const pathInfo = vpath.getVPathInfo(req.body.path, req.user);
 
-    const playlistParentDir = path.dirname(req.body.path);
-    const songs = await m3u.readPlaylistSongs(pathInfo.fullPath);
+    const playlistDir = path.dirname(pathInfo.fullPath);
+    const songs = await m3u.readPlaylistSongs(pathInfo.fullPath, pathInfo.basePath);
     res.json({
       files: songs.flatMap((song) => {
         try {
-          const resolvedSongPath = resolvePathWithinRoot(playlistParentDir, song);
-          return [{
-            type: fileExplorer.getFileType(song),
-            name: path.basename(song),
-            path: resolvedSongPath.replaceAll('\\', '/')
-          }];
+          // Entries may climb out of the playlist's folder ('../Album/x.mp3'), but must stay
+          // in the vpath and be readable by this user (getVPathInfo throws otherwise).
+          const rel = path.relative(pathInfo.basePath, path.resolve(playlistDir, song)).split(path.sep).join('/');
+          const songPath = `${pathInfo.vpath}/${rel}`;
+          vpath.getVPathInfo(songPath, req.user);
+          return [{ type: fileExplorer.getFileType(song), name: path.basename(song), path: songPath }];
         } catch {
           return [];
         }

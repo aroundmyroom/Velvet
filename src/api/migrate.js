@@ -1,8 +1,7 @@
 import fsp from 'node:fs/promises';
 import fs from 'node:fs';
 import path from 'node:path';
-import os from 'node:os';
-import busboy from 'busboy';
+import crypto from 'node:crypto';
 import { ZipArchive } from 'archiver';
 import winston from 'winston';
 import * as config from '../state/config.js';
@@ -12,25 +11,43 @@ import { sendspinBackupFiles, restoreSendspinFiles } from './backup.js';
 import * as sendspinApi from './sendspin.js';
 import { restoreRoomsFromImport } from './rooms-import.js';
 
-const TMP_DIR = os.tmpdir();
 const IMPORT_ID_RE = /^velvet-import-\d+$/;
+const EXPORT_TTL_MS = 60 * 60 * 1000;
+
+// Exports carry the config (JWT secret, password hashes, API keys), so they are staged in an
+// owner-only folder next to the database, never in the shared system temp folder.
+function stagingDir() {
+  return path.join(config.program.storage.dbDirectory, '..', 'migrate');
+}
+
+async function ensureStagingDir() {
+  await fsp.mkdir(stagingDir(), { recursive: true, mode: 0o700 });
+  await fsp.chmod(stagingDir(), 0o700);
+  return stagingDir();
+}
 
 function getVpathRoots() {
-  const cfg = config.program;
-  return cfg.vpaths ? Object.keys(cfg.vpaths) : [];
+  return Object.keys(config.program.folders);
 }
 
 // ── Export ───────────────────────────────────────────────────────────────────
 
 async function createExportArchive(options = {}) {
+  const tempDir = await fsp.mkdtemp(path.join(await ensureStagingDir(), 'export-'));
+  try {
+    return await _buildExportArchive(tempDir, options);
+  } finally {
+    await fsp.rm(tempDir, { recursive: true, force: true });
+  }
+}
+
+async function _buildExportArchive(tempDir, options) {
   const {
     includeWaveforms = true,
     includeArtistImages = false
   } = options;
 
   const ts = new Date().toISOString().replaceAll(/[:.]/g, '-').slice(0, 16);
-  const tempDir = path.join(TMP_DIR, `velvet-migrate-${ts}`);
-  await fsp.mkdir(tempDir, { recursive: true });
 
   const manifest = {
     version: process.env.VELVET_VERSION || process.env.MSTREAM_VERSION || 'unknown',
@@ -50,21 +67,7 @@ async function createExportArchive(options = {}) {
   await fsp.copyFile(cfgFile, configDest);
 
   // 2. Export database (VACUUM INTO for clean SQLite copy)
-  const dbDir = config.program.storage.dbDirectory;
-  const dbFile = path.join(dbDir, 'velvet.sqlite');
-  let dbCopy = null;
-  
-  try {
-    await fsp.access(dbFile);
-    dbCopy = path.join(tempDir, 'velvet.sqlite');
-    dbManager.vacuumInto(dbCopy);
-    
-    // Wait a bit for vacuum to complete
-    await new Promise(resolve => setTimeout(resolve, 1000));
-  } catch (e) {
-    winston.error(`[migrate] Could not access DB file: ${e.message}`);
-    throw new Error('Database file not found');
-  }
+  dbManager.vacuumInto(path.join(tempDir, 'velvet.sqlite'));
 
   // 3. Export waveforms if requested
   if (includeWaveforms) {
@@ -102,103 +105,48 @@ async function createExportArchive(options = {}) {
   // 6. Write manifest
   await fsp.writeFile(path.join(tempDir, 'manifest.json'), JSON.stringify(manifest, null, 2));
 
-  // 6. Create ZIP
-  const zipFile = path.join(TMP_DIR, `velvet-export-${ts}.zip`);
-  const output = fs.createWriteStream(zipFile);
-  const archive = new ZipArchive({ zlib: { level: 6 } });
+  const filename = `velvet-export-${ts}-${crypto.randomBytes(4).toString('hex')}.zip`;
+  const zipFile = path.join(stagingDir(), filename);
 
-  return new Promise((resolve, reject) => {
-    output.on('close', async () => {
-      // Clean up temp directory
-      await fsp.rm(tempDir, { recursive: true, force: true }).catch(() => {});
-      resolve({ 
-        path: zipFile, 
-        filename: `velvet-export-${ts}.zip`,
-        manifest 
-      });
+  try {
+    await new Promise((resolve, reject) => {
+      const output = fs.createWriteStream(zipFile, { mode: 0o600 });
+      const archive = new ZipArchive({ zlib: { level: 6 } });
+      output.on('close', resolve);
+      output.on('error', reject);
+      archive.on('error', reject);
+      archive.pipe(output);
+      archive.directory(tempDir, false);
+      archive.finalize();
     });
-    
-    archive.on('error', async (err) => {
-      await fsp.rm(tempDir, { recursive: true, force: true }).catch(() => {});
-      reject(err);
-    });
-
-    archive.pipe(output);
-    
-    // Add all files from temp dir to zip
-    archive.directory(tempDir, false);
-    
-    archive.finalize();
-  });
+  } catch (e) {
+    await fsp.rm(zipFile, { force: true });
+    throw e;
+  }
+  return { path: zipFile, filename, manifest };
 }
 
 // ── Import ───────────────────────────────────────────────────────────────────
-
-async function handleImportUpload(req) {
-  const extractId = `velvet-import-${Date.now()}`;
-  const extractDir = path.join(TMP_DIR, extractId);
-  
-  await fsp.mkdir(extractDir, { recursive: true });
-  
-  return new Promise((resolve, reject) => {
-    const bb = busboy({ headers: req.headers });
-    let zipFile = null;
-    
-    bb.on('file', (fieldname, file, info) => {
-      if (fieldname !== 'file') {
-        file.resume();
-        return;
-      }
-      
-      zipFile = path.join(TMP_DIR, `upload-migrate-${extractId}.zip`);
-      const writeStream = fs.createWriteStream(zipFile);
-      
-      file.pipe(writeStream);
-      
-      // ZIP extraction is not implemented yet (docs/dev/todo.md, Import step 1).
-      // The old handler called a non-existent fs.Extract through require() in an
-      // ES module, which threw outside the promise and crashed the server.
-      writeStream.on('finish', async () => {
-        await fsp.rm(extractDir, { recursive: true, force: true }).catch(() => {});
-        await fsp.unlink(zipFile).catch(() => {});
-        reject(new Error('Import is not available yet'));
-      });
-      
-      writeStream.on('error', reject);
-    });
-    
-    bb.on('error', reject);
-    bb.on('finish', () => {
-      if (!zipFile) {
-        reject(new Error('No file uploaded'));
-      }
-    });
-    
-    req.pipe(bb);
-  });
-}
+// The upload step (unzip with entry/byte budgets) is not built yet (docs/dev/todo.md), so
+// apply only reads import folders inside the owner-only staging folder.
 
 async function applyImportData(extractId, options = {}) {
   const { keepUsers = true } = options;
   if (!IMPORT_ID_RE.test(String(extractId))) throw new Error('Invalid import id');
-  const extractDir = resolvePathWithinRoot(TMP_DIR, extractId);
+  const extractDir = resolvePathWithinRoot(stagingDir(), extractId);
   const manifestPath = path.join(extractDir, 'manifest.json');
-  
-  // Read manifest
+
   const manifest = JSON.parse(await fsp.readFile(manifestPath, 'utf8'));
-  
-  // 1. Restore configuration
-  const configSrc = path.join(extractDir, 'default.json');
-  const configDest = config.configFile;
-  
-  // Read the imported config to handle vpath remapping
-  const importedConfig = JSON.parse(await fsp.readFile(configSrc, 'utf8'));
-  const currentConfig = config.program;
-  
-  // Handle vpath remapping - this would need UI interaction
-  // For now, just restore config as-is
-  await fsp.copyFile(configSrc, configDest);
-  
+
+  // Throws on a corrupt config before it replaces the live one.
+  const imported = JSON.parse(await fsp.readFile(path.join(extractDir, 'default.json'), 'utf8'));
+  await config.updateConfigFile(current => {
+    const users = current.users ?? {};
+    for (const key of Object.keys(current)) delete current[key];
+    Object.assign(current, imported);
+    if (keepUsers) current.users = users;
+  });
+
   // Reload config
   await config.setup(config.configFile);
   
@@ -213,12 +161,13 @@ async function applyImportData(extractId, options = {}) {
   const dbDir = config.program.storage.dbDirectory;
   const dbDest = path.join(dbDir, 'velvet.sqlite');
   
-  // Close current DB
   dbManager.close();
-  
-  // Replace database file
-  await fsp.copyFile(dbFile, dbDest);
-  
+  try {
+    await fsp.copyFile(dbFile, dbDest);
+  } finally {
+    await dbManager.initDB();
+  }
+
   // 3. Restore waveforms if present
   const waveformSrc = path.join(extractDir, 'waveform-cache');
   const waveformDest = config.program.storage.waveformDirectory;
@@ -241,7 +190,10 @@ async function applyImportData(extractId, options = {}) {
     winston.warn(`[migrate] Artist images restore failed: ${e.message}`);
   }
   
-  await restoreRoomsFromImport(path.join(extractDir, 'sendspin'), { rooms: sendspinApi, restore: restoreSendspinFiles });
+  await restoreRoomsFromImport(path.join(extractDir, 'sendspin'), {
+    rooms: { stop: sendspinApi.stop, settingsChanged: sendspinApi.settingsChanged, applySettings: sendspinApi.applySettings },
+    restore: restoreSendspinFiles,
+  });
 
   // Clean up temp directory
   await fsp.rm(extractDir, { recursive: true, force: true }).catch(() => {});
@@ -258,7 +210,7 @@ async function applyImportData(extractId, options = {}) {
 const exportJobs = new Map(); // id → { status, createdAt, path?, filename?, sizeBytes?, error? }
 
 function pruneOldExportJobs() {
-  const cutoff = Date.now() - 60 * 60 * 1000; // 1 hour TTL
+  const cutoff = Date.now() - EXPORT_TTL_MS;
   for (const [id, job] of exportJobs) {
     if (job.createdAt < cutoff) {
       if (job.path) fsp.unlink(job.path).catch(() => {});
@@ -267,16 +219,39 @@ function pruneOldExportJobs() {
   }
 }
 
+// Export ZIPs and build folders left by a previous run belong to no job any more.
+async function removeStaleExports() {
+  let entries;
+  try {
+    entries = await fsp.readdir(stagingDir());
+  } catch (e) {
+    if (e.code === 'ENOENT') return;
+    throw e;
+  }
+  for (const name of entries) {
+    if (name.startsWith('export-') || name.startsWith('velvet-export-')) {
+      await fsp.rm(path.join(stagingDir(), name), { recursive: true, force: true });
+    }
+  }
+}
+
+let _pruneTimer = null;
+
 // ── API Setup ─────────────────────────────────────────────────────────────────
 
 export function setup(velvet) {
+  if (!_pruneTimer) {
+    removeStaleExports().catch(e => winston.warn(`[migrate] Could not clear old exports: ${e.message}`));
+    _pruneTimer = setInterval(pruneOldExportJobs, 10 * 60 * 1000);
+    _pruneTimer.unref();
+  }
 
   // POST: start background export build, returns { id }
   velvet.post('/api/v1/admin/migrate/export/start', (req, res) => {
     pruneOldExportJobs();
 
     const { includeWaveforms = true, includeArtistImages = false } = req.body ?? {};
-    const id = `export-${Date.now()}`;
+    const id = `export-${crypto.randomUUID()}`;
     exportJobs.set(id, { status: 'building', createdAt: Date.now() });
 
     createExportArchive({
@@ -332,26 +307,15 @@ export function setup(velvet) {
     });
   });
 
-  // Upload for import - Step 1
-  velvet.post('/api/v1/admin/migrate/upload', async (req, res) => {
-    try {
-      const result = await handleImportUpload(req);
-      
-      res.json({
-        id: result.id,
-        manifest: result.manifest,
-        message: 'ZIP uploaded and extracted. Review manifest and apply.'
-      });
-    } catch (e) {
-      winston.error(`[migrate] Upload failed: ${e.message}`);
-      res.status(500).json({ error: e.message });
-    }
+  velvet.post('/api/v1/admin/migrate/upload', (req, res) => {
+    req.resume();
+    res.status(501).json({ error: 'Import is not available yet' });
   });
 
   // Apply import - Step 2
   velvet.post('/api/v1/admin/migrate/apply', async (req, res) => {
     try {
-      const { id, keepUsers = true, pathMappings = {} } = req.body;
+      const { id, keepUsers = true } = req.body;
       
       if (!id) {
         return res.status(400).json({ error: 'No import ID provided' });
@@ -375,9 +339,9 @@ export function setup(velvet) {
     try {
       const { id } = req.params;
       if (!IMPORT_ID_RE.test(id)) return res.status(400).json({ error: 'Invalid import id' });
-      const extractDir = resolvePathWithinRoot(TMP_DIR, id);
+      const extractDir = resolvePathWithinRoot(stagingDir(), id);
       const manifestPath = path.join(extractDir, 'manifest.json');
-      
+
       try {
         const manifest = JSON.parse(await fsp.readFile(manifestPath, 'utf8'));
         res.json({ manifest, exists: true });
@@ -394,7 +358,7 @@ export function setup(velvet) {
     try {
       const { id } = req.params;
       if (!IMPORT_ID_RE.test(id)) return res.status(400).json({ error: 'Invalid import id' });
-      const extractDir = resolvePathWithinRoot(TMP_DIR, id);
+      const extractDir = resolvePathWithinRoot(stagingDir(), id);
       await fsp.rm(extractDir, { recursive: true, force: true });
       res.json({ success: true });
     } catch (e) {

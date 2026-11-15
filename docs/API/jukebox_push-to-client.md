@@ -1,60 +1,61 @@
 **Push Message To Jukebox Instance**
 ----
-  Send a message to a client running in Jukebox Mode
+  Send a command to a player running in Jukebox Mode. The server forwards it over
+  that player's WebSocket.
 
 * **URL**
 
-  /jukebox/push-to-client
+  `/api/v1/jukebox/push-to-client`
 
 * **Method:**
 
   `POST`
 
+* **Auth required:** Yes — any logged-in user (the remote page uses the Jukebox token it gets for the session code)
+
 *  **JSON Params**
 
    **Required:**
 
-   `code` - This is the code generated when starting Jukebox Mode<br/>
-   `command` - Command to push to client
+   `code` - The code generated when the player started Jukebox Mode<br/>
+   `command` - Command to push to the player
 
    **Optional:**
 
-   `file` - filepath for adding files to playlist
+   `file` - filepath, used by `addSong`
 
 * **JSON Example**
 
-  ```
+  ```json
   {
-    'code': '59305',
-    'command': 'addSong',
-    'file': '/path/to/file.flac'
+    "code": "aB3xYz9p",
+    "command": "addSong",
+    "file": "Music/Artist/Album/track.flac"
   }
   ```
 
 * **List Of Commands**
 
-  If the command does not match one of the following, the server will return an error
-
   - `next`
   - `previous`
   - `playPause`
   - `addSong`
-  - `getPlaylist` (not currently implemented)
-  - `removeSong` (not currently implemented)
+  - `getPlaylist`
+  - `removeSong`
+  - `getNowPlaying`
+  - `goToSong`
 
-  Users with Guest Codes will only have access to `addSong` and `getPlaylist`
-
+  The server only checks that the command is in this list; the player decides what to do with it.
 
 * **Success Response:**
 
   * **Code:** 200 <br />
-    **Content:**
+    **Content:** `{}`
 
-    ```
-      { status: 'done' }
-    ```
+* **Error Responses:**
 
-* **NOTES:**
-
-  - Additional functions to limit guest access will be added in the future
-  - Returns a 500 error if the client code could not be found
+  | Code | Body | Cause |
+  |---|---|---|
+  | 400 | `{ "error": "Command Not Recognized" }` | `command` is not in the list above |
+  | 400 | `{ "error": "<validation message>" }` | Missing `code` or `command` |
+  | 404 | `{ "error": "Code Not Found" }` | No connected player has this code |

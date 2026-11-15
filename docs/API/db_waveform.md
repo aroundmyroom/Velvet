@@ -3,9 +3,10 @@
 Returns a pre-computed waveform amplitude array for a track, used to render
 the waveform scrubber in the player.
 
-Requires FFmpeg to be enabled (`transcode.enabled: true`) the first time a
-waveform is generated for a given track.  Subsequent requests are served
-from the on-disk cache with no FFmpeg involvement.
+The first request for a track decodes it with Velvet's bundled ffmpeg
+(`bin/ffmpeg/`, see `src/util/ffmpeg-bootstrap.js`). Subsequent requests are
+served from the on-disk cache with no ffmpeg involvement. At most two ffmpeg
+waveform jobs run at the same time; requests for the same track share one job.
 
 ## Authentication
 
@@ -15,7 +16,8 @@ Required.
 
 | Parameter  | Required | Description |
 |------------|----------|-------------|
-| `filepath` | Yes      | Virtual path to the track, e.g. `rock/Bowie/Heroes.flac` |
+| `filepath` | Yes      | Player path to the track, starting with the vpath, e.g. `Music/Bowie/Heroes.flac` |
+| `prefetch` | No       | `1` queues the job at background priority (behind live requests) |
 
 ## Response
 
@@ -25,8 +27,9 @@ Required.
 }
 ```
 
-`waveform` is an array of **800** integers in the range `0–255`, representing
-normalised RMS amplitude sampled evenly across the full track duration.
+`waveform` is an array of **600** integers in the range `0–255`: RMS amplitude
+per segment of the track (mono, decoded at 4000 Hz), scaled to the 99th
+percentile and shaped with a 0.7 gamma curve.
 
 ## Error Responses
 
@@ -34,15 +37,16 @@ normalised RMS amplitude sampled evenly across the full track duration.
 |--------|---------|
 | `400`  | `filepath` query parameter missing |
 | `403`  | File not accessible by the requesting user |
-| `404`  | File not found on disk |
-| `503`  | FFmpeg not available — enable transcoding in config |
+| `404`  | File not in the DB and not found on disk |
+| `503`  | The ffmpeg binary is missing |
 
 ## Caching
 
 Waveform data is cached to disk in `storage.waveformDirectory` (default:
-`waveform-cache/`) as `wf-<hash>.json`.  The hash is the content hash stored
+`waveform-cache/`) as `wf2-<hash>.json`. The hash is the content hash stored
 in the database, so physically duplicate tracks across different folders share
-one cache entry.
+one cache entry (a file not yet in the DB uses a SHA-256 of its path). Older
+`wf-<hash>.json` files are deleted at startup.
 
-Orphaned cache files (tracks removed from the library) are deleted
-automatically after each scan completes.
+Cache files of tracks removed from the library are deleted when a folder scan
+finishes and in the orphan cleanup that runs once the task queue is idle.

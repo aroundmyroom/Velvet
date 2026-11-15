@@ -1,7 +1,7 @@
 import fsp from 'node:fs/promises';
 import fs from 'node:fs';
 import path from 'node:path';
-import os from 'node:os';
+import crypto from 'node:crypto';
 import { ZipArchive } from 'archiver';
 import winston from 'winston';
 import * as config from '../state/config.js';
@@ -15,54 +15,42 @@ function backupDir() {
 }
 
 async function ensureBackupDir() {
-  await fsp.mkdir(backupDir(), { recursive: true });
+  await fsp.mkdir(backupDir(), { recursive: true, mode: 0o700 });
 }
 
+async function _hasFile(file) {
+  try {
+    await fsp.access(file);
+    return true;
+  } catch (e) {
+    if (e.code === 'ENOENT') return false;
+    throw e;
+  }
+}
+
+// Backups hold the config (JWT secret, password hashes, API keys), so they are owner-only.
 async function createBackup() {
   await ensureBackupDir();
-  const ts = new Date().toISOString().replaceAll(/[:.]/g, '-').slice(0, 16);
+  const ts = new Date().toISOString().replaceAll(/[:.]/g, '-').slice(0, 19);
   const filename = `backup-${ts}.zip`;
   const filepath = path.join(backupDir(), filename);
-  const dbDir = config.program.storage.dbDirectory;
-  const cfgFile = config.configFile;
+  const filesToInclude = [{ src: config.configFile, name: 'default.json' }];
 
-  const filesToInclude = [{ src: cfgFile, name: 'default.json' }];
-
-  // Always include any db files that exist on disk — covers cases where the
-  // engine was switched (e.g. loki → sqlite) and both sets of files are present.
-
-  // SQLite — use VACUUM INTO for a safe hot-backup: produces a clean,
-  // fully-checkpointed, WAL-free snapshot without needing an exclusive lock.
-  // Raw file copy of a live WAL-mode database is unsafe: restoring the main
-  // file without a matching WAL silently rolls back all un-checkpointed data.
-  const dbFile = path.join(dbDir, 'velvet.sqlite');
+  // VACUUM INTO gives a consistent, WAL-free snapshot of the live database; a raw copy
+  // of a WAL-mode file would silently lose un-checkpointed data. A failure fails the backup.
+  const dbFile = path.join(config.program.storage.dbDirectory, 'velvet.sqlite');
   let sqliteTmp = null;
-  try {
-    await fsp.access(dbFile);
-    sqliteTmp = path.join(os.tmpdir(), `velvet-backup-${ts}.sqlite`);
+  if (await _hasFile(dbFile)) {
+    sqliteTmp = path.join(backupDir(), `.velvet-backup-${ts}-${crypto.randomUUID()}.sqlite`);
     dbManager.vacuumInto(sqliteTmp);
     filesToInclude.push({ src: sqliteTmp, name: 'velvet.sqlite' });
-  } catch {
-    // DB not open yet (loki engine) — skip
   }
-
-  // Loki — three separate .db files
-  for (const name of ['user-data.loki-v1.db', 'files.loki-v3.db', 'shared.loki-v1.db']) {
-    const src = path.join(dbDir, name);
-    try {
-      await fsp.access(src);
-      filesToInclude.push({ src, name });
-    } catch (e) {
-      // ENOENT is expected on SQLite-only installs where Loki files were never created.
-      if (e?.code !== 'ENOENT') console.debug('[velvet]', e?.message ?? e);
-    }
-  }
-
-  filesToInclude.push(...await sendspinBackupFiles());
 
   try {
+    filesToInclude.push(...await sendspinBackupFiles());
     await new Promise((resolve, reject) => {
-      const output = fs.createWriteStream(filepath);
+      const output = fs.createWriteStream(filepath, { mode: 0o600 });
+      output.on('error', reject);
       const archive = new ZipArchive({ zlib: { level: 6 } });
       output.on('close', resolve);
       archive.on('error', reject);
@@ -72,9 +60,11 @@ async function createBackup() {
       }
       archive.finalize();
     });
+  } catch (e) {
+    await fsp.rm(filepath, { force: true });
+    throw e;
   } finally {
-    // Always clean up the temp VACUUM file even if archiver fails
-    if (sqliteTmp) fsp.unlink(sqliteTmp).catch(() => {});
+    if (sqliteTmp) await fsp.rm(sqliteTmp, { force: true });
   }
 
   await pruneOldBackups();
@@ -150,7 +140,7 @@ async function listBackups() {
 
 // ── Weekly scheduler ──────────────────────────────────────────────────────────
 
-let _weeklyInterval = null;
+let _weeklyStarted = false;
 
 async function _checkWeekly() {
   const flagFile = path.join(backupDir(), '.last-weekly');
@@ -175,11 +165,12 @@ async function _checkWeekly() {
 }
 
 function _startWeeklyScheduler() {
-  if (_weeklyInterval) return;
+  if (_weeklyStarted) return;
+  _weeklyStarted = true;
   // Check on boot after 30s, then every hour
   setTimeout(() => {
     _checkWeekly().catch(() => {});
-    _weeklyInterval = setInterval(() => _checkWeekly().catch(() => {}), 60 * 60 * 1000);
+    setInterval(() => _checkWeekly().catch(() => {}), 60 * 60 * 1000);
   }, 30_000);
 }
 

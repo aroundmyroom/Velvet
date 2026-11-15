@@ -10,15 +10,27 @@ Every time you play a song, the player sends a lightweight event to the server:
 
 | Event | When | What it records |
 |---|---|---|
-| `play-start` | Immediately on song load | `file_hash`, `started_at`, `source`, `session_id` |
-| `play-end` | Track finishes naturally | `played_ms`, `completed = true` |
-| `play-skip` | You press Next before the track ends | `played_ms`, `skipped = true` |
-| `play-stop` | Tab/window closes | Best-effort `played_ms` via `sendBeacon` |
+| `play-start` | Immediately on song load | `file_hash`, `started_at`, `duration_ms`, `source`, `session_id` |
+| `play-end` | Track finishes naturally | `played_ms`; `completed = true` when `played_ms` ≥ 90 % of the track |
+| `play-skip` | Another track is started before this one ended (Next, a click in the queue, …) | `played_ms`, `skipped = true` |
+| `pause` | You pause the track | `pause_count + 1` |
+| `play-stop` | Playback stops, or the tab/window closes (via `sendBeacon`) | `played_ms`; `completed` when ≥ 90 % was heard |
 | `session-end` | Tab/window closes | `ended_at` on the session row |
 
-A **session** = one page load. All plays in that browser tab share a single `session_id` (UUID generated at load time).
+A **session** = one page load. All plays in that browser tab share a single `session_id` (random hex id generated at load time).
 
-All raw data is stored in two SQLite tables: `play_events` and `listening_sessions`.
+A `play-start` for the same song within 10 minutes of an earlier play that did
+not complete (for example after a page reload) re-uses that event instead of
+counting a new play.
+
+Radio and podcast listening are recorded separately (`radio-start`/`radio-stop`,
+`podcast-start`/`podcast-end`) and shown in their own cards.
+
+When you listen in a Velvet Room, the server records the play events for you,
+so the same statistics apply.
+
+All song data is stored in two SQLite tables: `play_events` and `listening_sessions`
+(radio and podcasts: `radio_play_events`, `podcast_play_events`).
 
 ---
 
@@ -38,16 +50,14 @@ Choose the time window at the top:
 | Half-Year | H1 (Jan–Jun) or H2 (Jul–Dec) |
 | Year | Full calendar year |
 
-Use **← Earlier** / **Later →** to navigate between period offsets.
+Use **← Earlier** / **Later →** to move one period at a time.
 
-- **Earlier** goes further back in time (up to 260 offsets).
+- **Earlier** goes further back in time (up to 260 periods back).
 - **Later** moves toward the current period.
-- For **Week**, this means week-by-week navigation (ISO weeks).
-- **⇐ (back 1 year)** and **⇒ (forward 1 year)** buttons allow jumping by one full year at a time (period-aware: 52 for weekly, 12 for monthly, 4 for quarterly, 2 for half-yearly, 1 for yearly).
-- The **Now** button (shown when not on the current period) jumps directly back to the present.
+- **⇐ (back 1 year)** and **⇒ (forward 1 year)** jump one full year at a time (52 weeks, 12 months, 4 quarters, 2 half-years or 1 year).
+- The **Now** button (shown when not on the current period) jumps back to the present.
 
-All labels in the Your Stats view (navigation, summary cards, headings, and fact blocks) are now language-key based via the i18n module, so they follow the active UI language.
-- All visible labels in this view are now translated through i18n keys (`player.wrapped.*`).
+All labels in this view use i18n keys (`player.wrapped.*`), so they follow the active UI language.
 
 ### Summary strip
 
@@ -56,37 +66,30 @@ All labels in the Your Stats view (navigation, summary cards, headings, and fact
 | Plays | Total songs started |
 | Listened | Sum of `played_ms` across all events |
 | Unique songs | Distinct tracks heard |
+| Pauses | Total pauses |
 | Skip rate | Skipped events ÷ total plays |
-| Library covered | Unique songs ÷ total files in your library |
+| Library covered | Unique songs ÷ total files in your libraries |
 
 ### Top Songs / Top Artists
 
 Top 10 by play count, with album art thumbnails.
 
-### Listening by Hour / Weekday
+### Listening by Hour / Listening by Day
 
-Bar charts showing when you listen most.  
-Intensity: lighter = fewer plays, stronger blue = more plays.
+Bar charts showing when you listen most.
 
-### Play History
+### Your Personality
 
-- The History view in the player shows a rolling 7-day timeline by default (`Today`, `Yesterday`, then weekday pills).
-- Hour chips inside a selected day are ordered latest-to-earliest.
-- The date picker lets you fetch any specific calendar day on demand (uses `fromMs`/`toMs` bounded queries).
-- Reset returns to the normal rolling week list and clears calendar override mode.
-- Playback recorded by the browser, Server Remote, Server Speaker, Sonos, and other authenticated clients uses the same user-scoped event ledger. Recently Played, play counts, Wrapped statistics, completion/skip rates, listening totals, and Auto-DJ history therefore stay aligned across clients.
-
-### Personality
-
-A rule-based type assigned from your listening patterns:
+A rule-based type assigned from your listening patterns (first match wins),
+with your completion rate and your longest and average session:
 
 | Type | Condition |
 |---|---|
 | Night Owl | >40 % of plays between 22:00–04:00 |
 | Album Completionist | Completion rate >85 % AND skip rate <10 % |
 | Restless Skipper | Skip rate >40 % |
-| Early Bird | >30 % of plays between 06:00–09:00 |
-| Explorer | >30 % of plays are first-time songs in the period |
+| Early Bird | >30 % of plays in the hours 06–09 |
+| Explorer | >30 % of plays are songs you never played before this period |
 | Consistent Listener | Fallback |
 
 ### Fun Facts
@@ -96,7 +99,22 @@ A rule-based type assigned from your listening patterns:
 - Most skipped artist (≥5 plays)
 - Most back-to-back replayed song
 - Earliest play time of day
+- Best day (most listening time)
 - New discoveries count
+
+### Radio / Podcasts / Unplayed Gems
+
+Radio and Podcasts cards appear when you listened to radio or podcasts in the
+period. **Unplayed Gems** shows how many songs you have never heard, with a
+**Browse** link.
+
+### Listening History
+
+- Sidebar → **History & Stats** → **Listening History** shows the last 7 days by default (`Today`, `Yesterday`, then weekday pills).
+- Hour chips inside a selected day are ordered latest-to-earliest.
+- The date picker fetches any specific calendar day on demand (`fromMs`/`toMs` on `GET /api/v1/history`).
+- Reset returns to the normal 7-day list.
+- Playback recorded by the browser, Server Remote, Server Speaker, Sonos, and other authenticated clients uses the same user-scoped event ledger. Recently Played, play counts, statistics, completion/skip rates, listening totals, and Auto-DJ history therefore stay aligned across clients.
 
 ---
 
@@ -104,7 +122,7 @@ A rule-based type assigned from your listening patterns:
 
 - **All data is local.** Play events are stored only in `save/db/velvet.sqlite`.
 - **No external calls.** The stats system makes no network requests.
-- **No data before April 2026.** Historical plays from `user_metadata.pc` are not imported — only events recorded since this feature was activated.
+- **No older data.** Historical play counts from `user_metadata.pc` are not imported — only events recorded since this feature was added.
 - Tags are never duplicated into `play_events` — stats always JOIN to the `files` table at query time, so tag edits are reflected automatically.
 
 ---
@@ -114,13 +132,23 @@ A rule-based type assigned from your listening patterns:
 Accessible from the admin sidebar → **Play Stats**.
 
 Shows:
-- Total play events (all users)
+- Song play events, radio sessions and podcast episodes (all users)
 - Estimated DB storage used
-- Per-user breakdown (event count, listening time)
+- Per-user breakdown (songs, song time, radio sessions and time, podcast episodes and time)
 
-### Purging old events
+### Deleting events
 
-Select a user and set **Keep months** (1–60), then click **Purge**. Events older than that threshold are deleted. Sessions with no remaining events are also cleaned up.
+Under **Delete Events in Range**, pick a user and a **From** / **To** date-time
+(quick select: last 1h, 6h, 12h, today, yesterday), then click **Delete events
+in range** and confirm. All song, radio and podcast events of that user in that
+window are deleted. Sessions with no remaining events are also cleaned up.
+
+### Fix Missing Metadata
+
+For files with no embedded tags at all, **Derive metadata from folder names**
+fills artist, album and title from the parent folder name (pattern
+`Artist - Release info`) in the Velvet database only. A preview shows how many
+files qualify first.
 
 ---
 
@@ -137,8 +165,9 @@ play_events (
   played_ms    INTEGER,              -- ms actually heard
   completed    INTEGER DEFAULT 0,    -- 1 if played_ms >= 90% of duration_ms
   skipped      INTEGER DEFAULT 0,    -- 1 if user skipped
-  source       TEXT,                 -- 'manual'|'shuffle'|'autodj'|'playlist'|'smart-playlist'
-  session_id   TEXT
+  source       TEXT,                 -- 'manual'|'queue'|'shuffle'|'autodj'|'playlist'|'smart-playlist'
+  session_id   TEXT,
+  pause_count  INTEGER DEFAULT 0
 )
 
 listening_sessions (
@@ -159,10 +188,13 @@ listening_sessions (
 ```
 POST /api/v1/wrapped/play-start
   body: { filePath, sessionId, source }
-  returns: { ok, eventId }
+  returns: { ok, eventId }        (resumed: true when an earlier event is re-used)
 
 POST /api/v1/wrapped/play-end
   body: { eventId, playedMs }
+
+POST /api/v1/wrapped/pause
+  body: { eventId }
 
 POST /api/v1/wrapped/play-skip
   body: { eventId, playedMs }
@@ -172,25 +204,38 @@ POST /api/v1/wrapped/play-stop
 
 POST /api/v1/wrapped/session-end
   body: { sessionId }
+
+POST /api/v1/wrapped/radio-start     body: { stationName, stationId?, sessionId }
+POST /api/v1/wrapped/radio-stop      body: { eventId, listenedMs }
+POST /api/v1/wrapped/podcast-start   body: { episodeId, feedId, sessionId }
+POST /api/v1/wrapped/podcast-end     body: { eventId, playedMs, completed }
 ```
 
 ### Stats endpoints (JWT-authenticated)
 
 ```
 GET /api/v1/user/wrapped?period=monthly&offset=0
+  period: weekly | monthly | quarterly | half-yearly | yearly
+  offset: -260 … 0
   → full stats object for the authenticated user
 
 GET /api/v1/user/wrapped/periods
-  → { periods: [ { year, month, play_count } ] }
+  → { periods: [ { year, month, play_count } ] }   (up to 36 months)
+
+GET /api/v1/history[?fromMs=&toMs=]
+  → { events: [...] }   (last 7 days by default)
 ```
 
 ### Admin endpoints (admin-only)
 
 ```
 GET  /api/v1/admin/wrapped/stats
-     → { total_events, storage_bytes, per_user: [...] }
+     → { total_events, total_radio, total_podcast, storage_bytes, per_user: [...] }
 
 POST /api/v1/admin/wrapped/purge
-     body: { userId, keepMonths }
+     body: { userId, fromMs, toMs }
      → { ok, deleted }
+
+GET  /api/v1/admin/wrapped/backfill-folder-metadata/preview
+POST /api/v1/admin/wrapped/backfill-folder-metadata
 ```

@@ -1,4 +1,3 @@
-import fs from 'node:fs/promises';
 import crypto from 'node:crypto';
 import https from 'node:https';
 import Joi from 'joi';
@@ -7,7 +6,7 @@ import * as config from '../state/config.js';
 import Scribble from '../state/lastfm.js';
 import * as db from '../db/manager.js';
 import { joiValidate } from '../util/validation.js';
-import { getVPathInfo } from '../util/vpath.js';
+import { getVPathInfo, dbLocationCandidates } from '../util/vpath.js';
 import WebError from '../util/web-error.js';
 import { artistLookupCandidates } from '../util/artist-credit.js';
 
@@ -157,10 +156,11 @@ export function setup(velvet) {
     );
   });
 
-  velvet.post('/api/v1/lastfm/scrobble-by-filepath', (req, res) => {
+  velvet.post('/api/v1/lastfm/scrobble-by-filepath', async (req, res) => {
     const schema = Joi.object({ filePath: Joi.string().required() });
     joiValidate(schema, req.body);
-    res.json(scrobbleByFilepath(req.user, req.body.filePath) ? {} : { scrobble: false });
+    if (!lastfmActive(req.user)) return res.json({ scrobbled: null });
+    await sendScrobbleOutcome(res, scrobbleByFilepath(req.user, req.body.filePath));
   });
 
   velvet.get('/api/v1/lastfm/similar-artists', async (req, res) => {
@@ -195,24 +195,6 @@ export function setup(velvet) {
         res.json({});
       }
     });
-  });
-
-  velvet.post('/api/v1/lastfm/test-login', async (req, res) => {
-    const schema = Joi.object({
-      username: Joi.string().required(),
-      password: Joi.string().required()
-    });
-    joiValidate(schema, req.body);
-
-    const token = crypto.createHash('md5').update(req.body.username + crypto.createHash('md5').update(req.body.password, 'utf8').digest("hex"), 'utf8').digest("hex"); // NOSONAR: Last.fm API requires MD5 per protocol specification
-    const cryptoString = `api_key${config.program.lastFM.apiKey}authToken${token}methodauth.getMobileSessionusername${req.body.username}${config.program.lastFM.apiSecret}`;
-    const hash = crypto.createHash('md5').update(cryptoString, 'utf8').digest("hex"); // NOSONAR: Last.fm API requires MD5 per protocol specification
-
-    await axios({
-      method: 'GET',
-      url: `https://ws.audioscrobbler.com/2.0/?method=auth.getMobileSession&username=${req.body.username}&authToken=${token}&api_key=${config.program.lastFM.apiKey}&api_sig=${hash}`
-    });
-    res.json({});
   });
 
   // ── Per-user self-service Last.fm endpoints ──────────────────
@@ -283,17 +265,11 @@ export function setup(velvet) {
     if (!sessionKey) { throw new WebError('Last.fm returned no session key', 502); }
 
     // Persist session key only — password is never written to disk
-    const loadConfig = JSON.parse(await fs.readFile(config.configFile, 'utf-8'));
-    if (!loadConfig.users) loadConfig.users = {};
-    if (!loadConfig.users[req.user.username]) loadConfig.users[req.user.username] = {};
-    loadConfig.users[req.user.username]['lastfm-user']    = req.body.lastfmUser;
-    loadConfig.users[req.user.username]['lastfm-session'] = sessionKey;
-    delete loadConfig.users[req.user.username]['lastfm-password'];
-    await fs.writeFile(config.configFile, JSON.stringify(loadConfig, null, 2), 'utf8');
-
-    config.program.users[req.user.username]['lastfm-user']    = req.body.lastfmUser;
-    config.program.users[req.user.username]['lastfm-session'] = sessionKey;
-    delete config.program.users[req.user.username]['lastfm-password'];
+    await editUserConfig(req.user.username, u => {
+      u['lastfm-user']    = req.body.lastfmUser;
+      u['lastfm-session'] = sessionKey;
+      delete u['lastfm-password'];
+    });
 
     Scrobbler.addUserWithSession(req.body.lastfmUser, sessionKey);
     res.json({ linkedUser: req.body.lastfmUser });
@@ -302,17 +278,11 @@ export function setup(velvet) {
   velvet.post('/api/v1/lastfm/disconnect', async (req, res) => {
     const lfmUser = req.user['lastfm-user'];
 
-    // Remove from config.json
-    const loadConfig = JSON.parse(await fs.readFile(config.configFile, 'utf-8'));
-    if (loadConfig.users?.[req.user.username]) {
-      delete loadConfig.users[req.user.username]['lastfm-user'];
-      delete loadConfig.users[req.user.username]['lastfm-session'];
-      delete loadConfig.users[req.user.username]['lastfm-password'];
-      await fs.writeFile(config.configFile, JSON.stringify(loadConfig, null, 2), 'utf8');
-    }
-    delete config.program.users[req.user.username]['lastfm-user'];
-    delete config.program.users[req.user.username]['lastfm-session'];
-    delete config.program.users[req.user.username]['lastfm-password'];
+    await editUserConfig(req.user.username, u => {
+      delete u['lastfm-user'];
+      delete u['lastfm-session'];
+      delete u['lastfm-password'];
+    });
 
     // Remove from runtime scrobbler
     if (lfmUser && Scrobbler.users[lfmUser]) delete Scrobbler.users[lfmUser];
@@ -492,11 +462,7 @@ export function setupListenBrainz(velvet) {
     if (req.user.admin !== true) return res.status(403).json({ error: 'Admin only' });
     const schema = Joi.object({ enabled: Joi.boolean().required() });
     joiValidate(schema, req.body);
-    const loadConfig = JSON.parse(await fs.readFile(config.configFile, 'utf-8'));
-    if (!loadConfig.listenBrainz) loadConfig.listenBrainz = {};
-    loadConfig.listenBrainz.enabled = req.body.enabled;
-    await fs.writeFile(config.configFile, JSON.stringify(loadConfig, null, 2), 'utf8');
-    config.program.listenBrainz.enabled = req.body.enabled;
+    await editListenBrainzConfig(lb => { lb.enabled = req.body.enabled; });
     res.json({});
   });
 
@@ -535,19 +501,9 @@ export function setupListenBrainz(velvet) {
     const username = req.user.username;
     if (username === 'velvet-user') {
       _noAuthLbToken = token;
-      const loadConfig = JSON.parse(await fs.readFile(config.configFile, 'utf-8'));
-      if (!loadConfig.listenBrainz) loadConfig.listenBrainz = {};
-      loadConfig.listenBrainz.noAuthToken = token;
-      await fs.writeFile(config.configFile, JSON.stringify(loadConfig, null, 2), 'utf8');
-      if (!config.program.listenBrainz) config.program.listenBrainz = {};
-      config.program.listenBrainz.noAuthToken = token;
+      await editListenBrainzConfig(lb => { lb.noAuthToken = token; });
     } else {
-      const loadConfig = JSON.parse(await fs.readFile(config.configFile, 'utf-8'));
-      if (!loadConfig.users) loadConfig.users = {};
-      if (!loadConfig.users[username]) loadConfig.users[username] = {};
-      loadConfig.users[username]['listenbrainz-token'] = token;
-      await fs.writeFile(config.configFile, JSON.stringify(loadConfig, null, 2), 'utf8');
-      config.program.users[username]['listenbrainz-token'] = token;
+      await editUserConfig(username, u => { u['listenbrainz-token'] = token; });
     }
     res.json({ linked: true, lbUsername: vtJson.user_name || null });
   });
@@ -556,19 +512,9 @@ export function setupListenBrainz(velvet) {
     const username = req.user.username;
     if (username === 'velvet-user') {
       _noAuthLbToken = null;
-      const loadConfig = JSON.parse(await fs.readFile(config.configFile, 'utf-8'));
-      if (loadConfig.listenBrainz) {
-        delete loadConfig.listenBrainz.noAuthToken;
-        await fs.writeFile(config.configFile, JSON.stringify(loadConfig, null, 2), 'utf8');
-      }
-      if (config.program.listenBrainz) delete config.program.listenBrainz.noAuthToken;
+      await editListenBrainzConfig(lb => { delete lb.noAuthToken; });
     } else {
-      const loadConfig = JSON.parse(await fs.readFile(config.configFile, 'utf-8'));
-      if (loadConfig.users?.[username]) {
-        delete loadConfig.users[username]['listenbrainz-token'];
-        await fs.writeFile(config.configFile, JSON.stringify(loadConfig, null, 2), 'utf8');
-      }
-      if (config.program.users[username]) delete config.program.users[username]['listenbrainz-token'];
+      await editUserConfig(username, u => { delete u['listenbrainz-token']; });
     }
     res.json({});
   });
@@ -581,28 +527,39 @@ export function setupListenBrainz(velvet) {
   });
 
   // ── Scrobble ────────────────────────────────────────────────────────────────
-  velvet.post('/api/v1/listenbrainz/scrobble-by-filepath', (req, res) => {
+  velvet.post('/api/v1/listenbrainz/scrobble-by-filepath', async (req, res) => {
     const schema = Joi.object({ filePath: Joi.string().required() });
     joiValidate(schema, req.body);
-    res.json(lbScrobbleByFilepath(req.user, req.body.filePath) ? {} : { scrobble: false });
+    if (!lbActive(req.user)) return res.json({ scrobbled: null });
+    await sendScrobbleOutcome(res, lbScrobbleByFilepath(req.user, req.body.filePath));
   });
 }
 
+// { scrobbled: true } sent, false when the file is unknown to the user or the service refused it
+// (null = not linked, answered by the caller). outcome: null for an unknown file, else a promise of true/false.
+async function sendScrobbleOutcome(res, outcome) {
+  res.json({ scrobbled: outcome === null ? false : await outcome === true });
+}
+
+// One edit applied to the user's entry in the config file (serialised, atomic write) and in memory.
+async function editUserConfig(username, edit) {
+  await config.updateConfigFile(c => { if (c.users?.[username]) edit(c.users[username]); });
+  if (config.program.users[username]) edit(config.program.users[username]);
+}
+
+async function editListenBrainzConfig(edit) {
+  await config.updateConfigFile(c => {
+    c.listenBrainz ??= {};
+    edit(c.listenBrainz);
+  });
+  config.program.listenBrainz ??= {};
+  edit(config.program.listenBrainz);
+}
+
 function _lookupFileWithChildFallback(pathInfo, user) {
-  let fileInfo = db.findFileByPath(pathInfo.relativePath, pathInfo.vpath);
-  if (fileInfo) return fileInfo;
-  const folders = config.program?.folders || {};
-  const myRoot  = folders[pathInfo.vpath]?.root.replace(/\/?$/, '/');
-  if (!myRoot) return null;
-  for (const [parentKey, parentFolder] of Object.entries(folders)) {
-    if (parentKey === pathInfo.vpath) continue;
-    if (!user.vpaths.includes(parentKey)) continue;
-    const parentRoot = parentFolder.root.replace(/\/?$/, '/');
-    if (myRoot.startsWith(parentRoot) && myRoot !== parentRoot) {
-      const prefix = myRoot.slice(parentRoot.length);
-      fileInfo = db.findFileByPath(prefix + pathInfo.relativePath, parentKey);
-      if (fileInfo) return fileInfo;
-    }
+  for (const c of dbLocationCandidates(pathInfo, user)) {
+    const row = db.findFileByPath(c.relPath, c.vpath);
+    if (row) return row;
   }
   return null;
 }

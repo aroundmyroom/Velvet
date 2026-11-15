@@ -17,19 +17,19 @@ import {
   createPairingAttempt, decodePskToken, assertTokenForClient, parseSupportedPairMethods, chooseCodeMethod, pairingActivation,
 } from './pairing.js';
 
-export const DEFAULT_PORT = 8927;
-export const DEFAULT_PATH = '/sendspin';
-export const DEFAULT_CLIENT_PORT = 8928;
+const DEFAULT_PORT = 8927;
+const DEFAULT_PATH = '/sendspin';
+const DEFAULT_CLIENT_PORT = 8928;
 
 const DEFAULT_RECONNECT = Object.freeze({ minMs: 1000, maxMs: 30_000, concurrentMs: 60_000, stableMs: 60_000, watchMs: 30_000 });
 export const KNOWN_DEVICES_FILE = 'known-devices.json';
-export const PAIRING_STATUS_TTL_MS = 60_000;
-export const MAX_KNOWN_DEVICES = 256;
-export const MAX_UNTRUSTED_CLIENTS = 16;
-export const CLOSE_GRACE_MS = 1_500;
+const PAIRING_STATUS_TTL_MS = 60_000;
+const MAX_KNOWN_DEVICES = 256;
+const MAX_UNTRUSTED_CLIENTS = 16;
+const CLOSE_GRACE_MS = 1_500;
 export const MAX_PENDING_PER_ADDRESS = 4;
 export const MAX_UNTRUSTED_PER_ADDRESS = 4;
-export const INIT_TIMEOUT_MS = 5_000;
+const INIT_TIMEOUT_MS = 5_000;
 const OTHER_SERVER_GOODBYES = new Set(['another_server', 'concurrent_attempt']);
 // A speaker that left for one of these reasons is not called back by the watchdog.
 const STAY_AWAY_GOODBYES = new Set(['another_server', 'user_request', 'unauthorized', 'unpaired', 'pairing_required']);
@@ -242,11 +242,9 @@ export class SendspinServer extends EventEmitter {
     this.#discovery = d;
     d.on('found', this.#guard('mDNS found', (svc, prevUrl) => {
       if (prevUrl) this.disconnectFrom(prevUrl);
-      this.emit('discovered', svc);
       this.connectTo(svc.url, { source: 'mdns' });
     }));
     d.on('lost', this.#guard('mDNS lost', (svc) => {
-      this.emit('discovery-lost', svc);
       const dial = this.#dials.get(svc.url);
       if (dial && !dial.conn) this.disconnectFrom(svc.url);
       else if (dial) dial.wanted = false;
@@ -342,12 +340,7 @@ export class SendspinServer extends EventEmitter {
       if (state.available) conn.left = false;
       this.emit('state', conn, state, prev);
     });
-    conn.on('time', (t) => this.emit('time', conn, t));
-    conn.on('command', (cmd) => this.emit('command', conn, cmd));
-    conn.on('leave', () => {
-      conn.left = true;
-      this.emit('leave', conn);
-    });
+    conn.on('leave', () => { conn.left = true; });
     conn.on('goodbye', (reason) => this.emit('goodbye', conn, reason));
     conn.on('message', (type, payload) => {
       if (PAIRING_MESSAGE_TYPES.has(type)) this.#onPairingMessage(conn, type, payload);

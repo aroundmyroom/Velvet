@@ -5,8 +5,8 @@ protocol ("works with Sendspin speakers"). This page is the contract between
 `src/api/sendspin.js` and the UI (`webapp/admin/index.js`, `webapp/app.js`).
 Design background: `docs/dev/sendspin-plan.md` ("Phase 1 design").
 
-All routes need a valid token (`x-access-token` header or `?token=`). JSON in,
-JSON out. Field names below are exact.
+All routes need a valid token (`x-access-token` header or `?token=`), except the
+Sonos stream (see [Sonos followers](#sonos-followers)). JSON in, JSON out. Field names below are exact.
 
 ## Conventions
 
@@ -45,8 +45,11 @@ an error, so this call never answers 404 for it. Admins may call every player ro
 | 422 | `invalid_code` | Code is not 6 / 8 digits after stripping spaces and hyphens. |
 | 409 | `not_seekable` | `seek` while `canSeek` is false. |
 | 429 | `cooldown` | Code submitted during the device's back-off; adds `retryAfterMs`. |
-| 429 | `rate_limited` | Too many pairing calls (20 / min per admin for token/start/submit/cancel, 180 / min for status polls); adds `retryAfterMs`. |
+| 429 | `rate_limited` | Too many pairing calls (20 / min per admin for `pair-token`, `pair-code/start`/`submit`/`cancel` and `devices/add`; 180 / min for status polls); adds `retryAfterMs`. |
+| 409 | `sonos_disabled` | `POST …/sonos` while Sonos is disabled in Velvet. |
+| 409 | `pairing_required` / `not_approved` / `not_allowed` / `unavailable` | Line-in source checks (see `devices/source`, `devices/source-auto`, `line-in`). |
 | 503 | `not_running` | Sendspin listener not running. |
+| 500 | `server_error` | Unexpected failure (logged on the server). |
 
 Error messages are never shown verbatim as markup; the UI maps `code` to a
 translated string and falls back to `error` as plain text.
@@ -220,7 +223,6 @@ states (`paired`, `aborted`) stay readable for 60 s after they occur.
 | `canSeek` | boolean | |
 | `playable` | boolean | At least one member can play now (online, trusted for playback). |
 | `lineIn` | `{ clientId, name } \| null` | The room plays a source device's input instead of its queue. Then `state` is `playing`, `current` is `{ filepath: null, title: "Line-in — <name>", durationMs: null, … }`, `canSeek` is false and the queue (with `index`/`positionMs`) waits underneath, paused. |
-
 | `sonos` | object[] | Sonos speakers following the room: `{ id: "sonos:<uuid>", uuid, name, trimMs, leadMs, volume, muted, state, error }`. `trimMs`: the fine-tune set by hand (−1000 to 1000). `leadMs`: the lead Velvet measured from the Sonos's position, `null` until the first measurement. `state`: `idle` (room not playing), `starting` (Velvet is telling the Sonos to play), `waiting` (told, not listening right now), `streaming` (pulling the stream), `error` (the Sonos did not answer; `error` says why). `volume`/`muted` `null` until read. Use `id` as `clientId` for the per-speaker volume/mute routes. A Sonos counts as `playable` while Sonos is enabled in Velvet; while it is off the entries stay but are dormant (not driven, no added delay, not `playable`). |
 | `eq` | `RoomEq` | The room's equalizer (see [Room EQ](#room-eq)). Default `{ enabled: true, gains: [0×8], preset: null }`. |
 | `autoDj` | boolean | The room's own Auto-DJ: when its last song starts, Velvet picks and adds the next one on the server, exactly like the web player's Auto-DJ (its settings and DJ state are handed over). Queue entries it added carry `dj: true`. |
@@ -238,7 +240,9 @@ A room does on the server what the web player does around its own playback, with
 
 ### QueueEntry
 
-`{ "filepath": string, "title": string|null, "artist": string|null, "album": string|null, "year": number|null, "aaFile": string|null, "durationMs": number|null }`
+`{ "filepath": string, "title": string|null, "artist": string|null, "album": string|null, "year": number|null, "aaFile": string|null, "durationMs": number|null, "dj"?: true }`
+
+`dj: true` is present only on entries the Auto-DJ picked (or that the client marked with `djs`).
 
 ## Admin routes (admin only)
 
@@ -279,8 +283,8 @@ whose approval is revoked or that is unpaired leaves its room.
 | `DELETE` | `/api/v1/rooms/:id` | — | `{ ok: true }`. Stops the room; every member returns to its own solo room. 409 `solo_room` for a one-member room. |
 | `GET` | `/api/v1/rooms/:id/state` | — | `Room`. **Remote UI polls this ~1 s** while a room is active and the page is visible; back off to ≥ 5 s when hidden or idle. Cheap: no DB access beyond the cached current entry. |
 | `GET` | `/api/v1/rooms/:id/queue` | — | `{ queueVersion, index, songs: QueueEntry[] }` |
-| `POST` | `/api/v1/rooms/:id/play` | `{ songs: string[], index?: integer = 0, positionMs?: integer = 0, paused?: boolean = false, rgEnabled?, rgMode?, rgPreamp?, rgClip? }` | `Room` + `skipped: number`. Replaces the room queue (server-side queue from now on), starts at `index`/`positionMs`. 400 if no entry survives resolution. 409 `not_playable`. |
-| `POST` | `/api/v1/rooms/:id/add` | `{ songs: string[], next?: boolean = false, queueVersion?, rgEnabled?, rgMode?, rgPreamp?, rgClip? }` | `{ ok: true, queueLength, queueVersion, skipped }`. `next: true` inserts after the current track. Starts playback if the room was idle (not while a line-in plays: then it only appends). With `queueVersion`, 409 `queue_changed` when the queue changed meanwhile (checked after the songs are resolved) — Auto-DJ uses this so two tabs never both top up. |
+| `POST` | `/api/v1/rooms/:id/play` | `{ songs: string[], djs?: boolean[], index?: integer = 0, positionMs?: integer = 0, paused?: boolean = false, rgEnabled?, rgMode?, rgPreamp?, rgClip? }` (`djs[i]: true` marks `songs[i]` as an Auto-DJ pick) | `Room` + `skipped: number`. Replaces the room queue (server-side queue from now on), starts at `index`/`positionMs`. 400 if no entry survives resolution. 409 `not_playable`. |
+| `POST` | `/api/v1/rooms/:id/add` | `{ songs: string[], djs?: boolean[], next?: boolean = false, queueVersion?, rgEnabled?, rgMode?, rgPreamp?, rgClip? }` | `{ ok: true, queueLength, queueVersion, skipped }`. `next: true` inserts after the current track. Starts playback if the room's queue was empty (not while a line-in plays: then it only appends). With `queueVersion`, 409 `queue_changed` when the queue changed meanwhile (checked after the songs are resolved). |
 | `POST` | `/api/v1/rooms/:id/jump` | `{ index }` | `Room`. Play the queue entry at `index` from 0 ms. |
 | `POST` | `/api/v1/rooms/:id/remove` | `{ indexes: integer[], queueVersion? }` | `Room`. Removes the entries at `indexes` (queue order). Removing **upcoming** entries while playing never interrupts the current track (the read-ahead is re-spliced as for `add … next`, gapless). Removing the **current** entry behaves like `next` (next surviving entry in play order, from 0 ms; nothing left → `stopped`; on a paused room the cursor moves and it stays paused). Removing every entry → `idle`. The shuffle order of the entries that stay is kept. While a line-in plays, `remove`/`move`/`reorder` only edit the queue underneath (removing its paused entry moves the cursor); the line-in keeps playing. |
 | `POST` | `/api/v1/rooms/:id/move` | `{ from, to, queueVersion? }` | `Room`. Moves the entry at `from` so it ends up at index `to` (`splice` semantics). Entries keep their identity: moving the current entry, or anything else, never interrupts playback; `index` follows the current entry. Without shuffle the new queue order is the play order; with shuffle the play order is kept. |
@@ -299,7 +303,7 @@ whose approval is revoked or that is unpaired leaves its room.
 | `POST` | `/api/v1/rooms/:id/shuffle` | `{ shuffle: boolean }` | `Room`. |
 | `GET` / `PUT` | `/api/v1/rooms/:id/eq` | `RoomEq` | See [Room EQ](#room-eq). |
 | `GET` | `/api/v1/rooms/:id/autodj` | — | `{ on, state }`: whether the room's Auto-DJ is on and its DJ state (see below), for a player taking playback back. |
-| `PUT` | `/api/v1/rooms/:id/autodj` | `{ on: boolean, settings?, state?, rgEnabled?, rgMode?, rgPreamp? }` | `Room`. Switches the room's Auto-DJ, picking with the calling user's folders. `settings` = the web player's Auto-DJ settings: `{ similar, bpmContinuity, bpmBase, bpmTolerance, filterWords[], genreFilter: { mode: whitelist\|blacklist, genres[] (expanded) } \| null, scope: { ignoreVPaths[], filepathPrefix, excludeFilepathPrefixes[{vpath,prefix}], minRating, minDuration, maxDuration, allowUnknownDuration } }` (the same scope as `POST /api/v1/db/random-songs`). `state` = the DJ state to continue from: `{ artistHistory[], bpmHistory[], yearHistory[], genreHistory[], familyHistory[], seedFamily, lastPickFree, similarFor, similarArtists[], rankMap, similarSource }`; without `state` the room keeps its own. Kept in `rooms.json`. 400 on a missing `on` or a malformed setting; 404 unknown room. |
+| `PUT` | `/api/v1/rooms/:id/autodj` | `{ on: boolean, settings?, state?, rgEnabled?, rgMode?, rgPreamp?, rgClip? }` | `Room`. Switches the room's Auto-DJ, picking with the calling user's folders. `settings` = the web player's Auto-DJ settings: `{ similar, bpmContinuity, bpmBase, bpmTolerance, filterWords[], genreFilter: { mode: whitelist\|blacklist, genres[] (expanded) } \| null, scope: { ignoreVPaths[], filepathPrefix, excludeFilepathPrefixes[{vpath,prefix}], includeFilepathPrefixes[{vpath,prefix}], minRating, minDuration, maxDuration, allowUnknownDuration } }` (the same scope as `POST /api/v1/db/random-songs`). `state` = the DJ state to continue from: `{ artistHistory[], bpmHistory[], yearHistory[], genreHistory[], familyHistory[], seedFamily, lastPickFree, similarFor, similarArtists[], rankMap, similarSource }`; without `state` the room keeps its own. Kept in `rooms.json`. 400 on a missing `on` or a malformed setting; 404 unknown room. |
 
 ### Sonos followers
 
@@ -314,6 +318,7 @@ All routes need the player permission; adding needs Sonos enabled in Velvet (`co
 | `PATCH` | `/api/v1/rooms/:id/sonos/:uuid` | `{ trimMs: -1000–1000 }` | `Room`. The fine-tune; takes effect immediately on a running stream. |
 | `DELETE` | `/api/v1/rooms/:id/sonos/:uuid` | — | `Room`. Ends the stream; the Sonos gets `Stop` only if it still plays this room. |
 | `GET` | `/api/v1/rooms/sonos-stream/:token.mp3` | — | **No login** (registered before auth). The stream the Sonos pulls: `audio/mpeg`, endless, paced in real time; ICY titles when asked (`Icy-MetaData: 1`). `token` = 32 random URL-safe chars, valid only while that Sonos is a member with a running session. 404 otherwise; 403 for peers outside private IPv4 (loopback included: only the test suite, `NODE_ENV=test`, may fetch from loopback). |
+| `GET` | `/api/v1/rooms/sonos-stream/:token.jpg` | — | **No login**, same token and peer rules as the `.mp3`. The cover of the song the room plays now, served from the album-art folder only (`Cache-Control: no-cache, no-store`). 404 when the token is unknown or the song has no cached cover. |
 
 Group `volume`/`mute` include the Sonos speakers (UPnP RenderingControl).
 
@@ -408,12 +413,13 @@ always capped so the stored peak stays ≤ 0 dBFS (no peak known → never above
   `queueVersion` it was computed from. Requests run one at a time. A
   `409 queue_changed` refetches the room queue and shows it. *Clear* keeps the
   room's current entry unless the room has stopped.
-- **Auto-DJ.** With Auto-DJ on, the browser watches the polled state: when the
-  room plays its last entry (`upcoming === 0`, `repeat` not `one`) it picks
-  the next song exactly as for local playback and sends `add` with the
-  `queueVersion` it saw, once per `queueVersion`. Auto-DJ logic stays in the
-  browser: a room only keeps being topped up while a tab with that room active
-  is open.
+- **Auto-DJ.** The browser does not pick songs for a room. Switching Auto-DJ
+  on or off while a room is active (or starting a room with Auto-DJ on) sends
+  `PUT …/autodj` with the player's Auto-DJ settings, its DJ state and its
+  ReplayGain fields; a later settings change sends them again without the
+  state. The room then picks on the server when its last song starts, so it
+  keeps going with no tab open. Taking playback back reads `GET …/autodj` to
+  continue from the room's DJ state.
 - **Room editing.** The player's output picker has an edit button next to
   *Velvet Rooms*: rename (any room), move a speaker to another room or to its
   own room (`PATCH` with the full member list), split up (`DELETE`), and create

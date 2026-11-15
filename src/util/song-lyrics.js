@@ -77,12 +77,22 @@ export function lyricsFromTags(tags) {
   return out;
 }
 
-// Same key as GET /api/v1/lyrics (src/api/lyrics.js), which the web player
-// calls with the DB artist, title and duration.
+// Shared with GET /api/v1/lyrics (src/api/lyrics.js), which fills the cache
+// with the DB artist, title and duration; changing it orphans every cached file.
+export function lyricsCacheKey(artist, title, duration) {
+  return crypto.createHash('sha256')
+    .update(`${String(artist || '').trim()}||${String(title || '').trim()}||${Math.round(Number(duration) || 0)}`)
+    .digest('hex');
+}
+
+export function lyricsCacheDir(dbDirectory) {
+  return path.join(dbDirectory, '..', 'lyrics');
+}
+
 export function readLyricsCache(cacheDir, artist, title, duration) {
   if (!cacheDir || !title) return null;
   for (const dur of new Set([Math.round(Number(duration) || 0), 0])) {
-    const key = crypto.createHash('sha256').update(`${String(artist || '').trim()}||${String(title).trim()}||${dur}`).digest('hex');
+    const key = lyricsCacheKey(artist, title, dur);
     try {
       const hit = JSON.parse(fs.readFileSync(path.join(cacheDir, `${key}.json`), 'utf8'));
       const lines = (hit?.lines || []).filter(l => l?.text != null);

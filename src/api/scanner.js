@@ -7,6 +7,7 @@ import * as scanProgress from '../state/scan-progress.js';
 import * as dlnaApi from './dlna.js';
 import * as taskQueue from '../db/task-queue.js';
 import { resolveChildPath, resolvePathWithinRoot } from '../util/path-security.js';
+import { childPrefixWithin } from '../util/vpath.js';
 
 // Returns true when the directory cover image has been replaced since it was
 // last scanned. Two cases:
@@ -105,15 +106,10 @@ function _albumOnlyPrefixes(vpathName) {
   const vpathCfg = config.program.folders[vpathName];
   if (!vpathCfg) return [];
   if (vpathCfg.albumsOnly) return null; // vpath itself is albumsOnly — all files apply
-  const vpathRoot = vpathCfg.root;
-  const prefixes = [];
-  for (const [, cfg] of Object.entries(config.program.folders)) {
-    if (!cfg.albumsOnly) continue;
-    if (!cfg.root.startsWith(vpathRoot + '/')) continue;
-    const rel = path.relative(vpathRoot, cfg.root).replaceAll('\\', '/');
-    prefixes.push(rel + '/');
-  }
-  return prefixes;
+  return Object.entries(config.program.folders)
+    .filter(([, cfg]) => cfg.albumsOnly)
+    .map(([name]) => childPrefixWithin(vpathName, name))
+    .filter(prefix => prefix !== null);
 }
 
 export function setup(velvet) {
@@ -122,43 +118,9 @@ export function setup(velvet) {
     next();
   });
 
-  velvet.post('/api/v1/scanner/get-file', async (req, res) => {
-    if (req.body.scanId) { scanProgress.tick(req.body.scanId, req.body.filepath); }
-    const dbFileInfo = db.findFileByPath(req.body.filepath, req.body.vpath);
-
-    if (!dbFileInfo) return res.json({});
-
-    if (req.body.modTime !== dbFileInfo.modified) {
-      db.removeFileByPath(req.body.filepath, req.body.vpath);
-      return res.json({ ..._makeStaleResult(dbFileInfo), _oldHash: dbFileInfo.hash || null });
-    }
-
-    if (dbFileInfo.hash === null || dbFileInfo.hash === undefined) {
-      db.removeFileByPath(req.body.filepath, req.body.vpath);
-      return res.json(_makeStaleResult(dbFileInfo));
-    }
-
-    db.updateFileScanId(dbFileInfo, req.body.scanId);
-    const flags = await _buildFileFlags(dbFileInfo, req.body.vpath, req.body.scanId);
-
-    if (Object.keys(flags).length > 0) {
-      return res.json({ ...flags, filepath: dbFileInfo.filepath, vpath: dbFileInfo.vpath });
-    }
-    res.json(dbFileInfo);
-  });
-
   velvet.post('/api/v1/scanner/set-expected', (req, res) => {
     if (req.body.scanId && req.body.expected > 0) {
       scanProgress.setExpected(req.body.scanId, req.body.expected);
-    }
-    res.json({});
-  });
-
-  // Incremental pre-count update — called every 5 000 files during the
-  // first-scan pre-count walk so the UI shows a growing "Counting…" counter.
-  velvet.post('/api/v1/scanner/counting-update', (req, res) => {
-    if (req.body.scanId && req.body.found > 0) {
-      scanProgress.updateCountingFound(req.body.scanId, req.body.found);
     }
     res.json({});
   });
@@ -182,13 +144,12 @@ export function setup(velvet) {
         if (!dbFileInfo) { results[item.filepath] = {}; return; }
         if (dbFileInfo.sID === scanId) { results[item.filepath] = { _alreadyDone: true }; return; }
 
+        // A stale row stays in place until add-files replaces it, so an interrupted scan loses nothing.
         if (item.modTime !== dbFileInfo.modified) {
-          db.removeFileByPath(item.filepath, vpath);
           results[item.filepath] = { ..._makeStaleResult(dbFileInfo), _oldHash: dbFileInfo.hash || null };
           return;
         }
-        if (dbFileInfo.hash === null || dbFileInfo.hash === undefined) {
-          db.removeFileByPath(item.filepath, vpath);
+        if (dbFileInfo.hash === null || dbFileInfo.hash === undefined || dbFileInfo.sID === db.ON_DEMAND_SCAN_ID) {
           results[item.filepath] = _makeStaleResult(dbFileInfo);
           return;
         }
@@ -271,29 +232,19 @@ export function setup(velvet) {
     res.json({});
   });
 
-  // Called by the scanner worker when it detects a likely mount failure
-  // (hasBaseline=true but 0 files found). Cleans up progress state without
-  // touching the database — existing rows are preserved.
+  // Called by the scanner worker when a mount guard or the directory integrity
+  // check fails. Rows already written by this scan stay; nothing is pruned.
   velvet.post('/api/v1/scanner/abort-scan', (req, res) => {
     const { scanId, vpath, reason } = req.body || {};
     if (scanId) scanProgress.finish(scanId);
     // Delete the resume checkpoint — a mount-failure abort should not be resumed
     if (vpath) taskQueue.deleteScanState(vpath);
-    const msg = `Scan aborted for vpath "${vpath || '?'}": ${reason || 'unknown reason'}. Database was NOT modified.`;
-    console.error(`[scanner] ${msg}`);
-    try {
-      if (_txActive) db.rollbackTransactionStrict();
-    } catch (e) {
-      console.error('[scanner] Failed to rollback scanner transaction on abort: ' + (e?.message ?? e));
-    }
-    _txActive = false;
-    _txBatch = 0;
+    console.error(`[scanner] Scan aborted for vpath "${vpath || '?'}": ${reason || 'unknown reason'}. No files were removed from the database.`);
     res.json({ ok: true, aborted: true, reason });
   });
 
   velvet.post('/api/v1/scanner/finish-scan', (req, res) => {
     const scanFinishedAt = Math.floor(Date.now() / 1000);
-    const scanStartTs = Number(req.body.scanStartTs || scanFinishedAt);
     scanProgress.finish(req.body.scanId);
     if (req.body.vpath) taskQueue.deleteScanState(req.body.vpath);
 
@@ -315,34 +266,12 @@ export function setup(velvet) {
       }
     } catch (e) { console.debug('[velvet]', e?.message ?? e); }
 
-    try {
-      const rootDir = config.program.folders[req.body.vpath]?.root;
-      if (rootDir) _pruneExcludedVchilds(req.body.vpath, rootDir);
-    } catch (e) { console.debug('[velvet]', e?.message ?? e); }
+    try { _pruneExcludedVchilds(req.body.vpath); } catch (e) { console.debug('[velvet]', e?.message ?? e); }
 
     if (req.body.scanStartTs) {
       try { db.clearResolvedErrors(req.body.vpath, req.body.scanStartTs); } catch (e) { console.debug('[velvet]', e?.message ?? e); }
     }
     try { db.recordCompletedScan(req.body.vpath, req.body.scanId, req.body.scanStartTs, scanFinishedAt); } catch (e) { console.debug('[velvet]', e?.message ?? e); }
-
-    // Refresh the duplicate-content-hash set so the Subsonic layer keeps emitting
-    // exact-file ("<hash>@<rowid>") ids for files added/removed during this scan.
-    try { db.refreshDuplicateHashes(); } catch (e) { console.debug('[velvet]', e?.message ?? e); }
-
-    db.saveFilesDB();
-    if (_txActive) {
-      try {
-        db.commitTransactionStrict();
-        _txActive = false;
-        _txBatch = 0;
-      } catch (e) {
-        console.error('[scanner] Failed to finalize scanner transaction: ' + (e?.message ?? e));
-        try { db.rollbackTransactionStrict(); } catch (rollbackErr) { console.debug('[velvet]', rollbackErr?.message ?? rollbackErr); }
-        _txActive = false;
-        _txBatch = 0;
-        return res.status(500).json({ error: 'Failed to finalize scanner transaction', details: String(e?.message ?? e) });
-      }
-    }
 
     try {
       const rootDir = config.program.folders[req.body.vpath]?.root;
@@ -368,60 +297,39 @@ export function setup(velvet) {
     res.json({});
   });
 
-  // Batch scan inserts into explicit SQLite transactions (500 at a time).
-  // Without batching, every insertFile() is its own auto-commit which causes
-  // an fsync/WAL flush per file.  On HDD/SD that takes 20-200 ms each,
-  // blocking the Node.js event loop and starving the audio stream of bytes
-  // — causing the browser to pause playback mid-song.
-  // 500 batches = ~276 commits for 138K files instead of 2760 — fewer WAL fsyncs.
-  let _txBatch = 0;
-  let _txActive = false;
-  const TX_BATCH_SIZE = 500;
-
-  velvet.post('/api/v1/scanner/add-file', (req, res) => {
+  // The scanner sends its parsed rows in batches and each batch is written in
+  // one short transaction inside this request: one WAL commit per batch instead
+  // of one fsync per file, and no transaction ever stays open between requests
+  // on the shared connection (other writers would join it or fail on BEGIN).
+  velvet.post('/api/v1/scanner/add-files', (req, res) => {
+    const { files } = req.body || {};
+    if (!Array.isArray(files) || !files.length) return res.status(400).json({ error: 'Invalid batch request' });
+    const failed = [];
+    db.beginTransactionStrict();
     try {
-      if (!_txActive) {
-        db.beginTransactionStrict();
-        _txActive = true;
-        _txBatch = 0;
+      for (const file of files) {
+        db.savepoint('scan_file');
+        try {
+          db.removeFileByPath(file.filepath, file.vpath);
+          db.insertFile(file);
+          // Migrate play counts / ratings / history if the file hash changed (e.g. tag rewrite changed bytes)
+          if (file._oldHash && file.hash && file._oldHash !== file.hash) db.migrateHash(file._oldHash, file.hash);
+          db.confirmScanErrorOk(file.filepath, file.vpath);
+          db.releasePoint('scan_file');
+        } catch (e) {
+          db.rollbackToPoint('scan_file');
+          db.releasePoint('scan_file');
+          failed.push({ filepath: file.filepath, error: String(e?.message ?? e) });
+        }
       }
-      db.insertFile(req.body);
-      // Migrate play counts / ratings / history if the file hash changed (e.g. tag rewrite changed bytes)
-      if (req.body._oldHash && req.body.hash && req.body._oldHash !== req.body.hash) {
-        db.migrateHash(req.body._oldHash, req.body.hash);
-      }
-      scanProgress.tickInsert(req.body.sID);
-      _txBatch++;
-      if (_txBatch >= TX_BATCH_SIZE) {
-        db.commitTransactionStrict();
-        _txActive = false;
-        _txBatch = 0;
-      }
-      res.json({});
+      db.commitTransactionStrict();
     } catch (e) {
-      console.error('[scanner] Database write failed in add-file: ' + (e?.message ?? e));
-      try {
-        if (_txActive) db.rollbackTransactionStrict();
-      } catch (rollbackErr) {
-        console.debug('[velvet]', rollbackErr?.message ?? rollbackErr);
-      }
-      _txActive = false;
-      _txBatch = 0;
-      res.status(500).json({ error: 'Scanner database write failed', details: String(e?.message ?? e) });
+      db.rollbackTransactionStrict();
+      console.error('[scanner] Database write failed in add-files: ' + (e?.message ?? e));
+      return res.status(500).json({ error: 'Scanner database write failed', details: String(e?.message ?? e) });
     }
-  });
-
-  velvet.post('/api/v1/admin/db/purge-orphaned-vpaths', (req, res) => {
-    if (!req.user?.admin) return res.status(403).json({ error: 'Admin required' });
-    try {
-      const known = new Set(Object.keys(config.program.folders || {}));
-      const orphaned = db.getOrphanedVpaths(known);
-      if (req.body.dryRun) return res.json({ orphaned, deleted: 0 });
-      const deleted = db.deleteOrphanedVpathRows(orphaned);
-      res.json({ orphaned, deleted });
-    } catch (e) {
-      res.status(500).json({ error: e?.message ?? String(e) });
-    }
+    scanProgress.tickInsert(files[0].sID, files.length - failed.length);
+    res.json({ failed });
   });
 }
 
@@ -498,13 +406,10 @@ function _cleanWaveformCache(vpath, scanId) {
   } catch (e) { console.debug('[velvet]', e?.message ?? e); }
 }
 
-function _pruneExcludedVchilds(vpath, rootDir) {
+function _pruneExcludedVchilds(vpath) {
   for (const [vk, vf] of Object.entries(config.program.folders)) {
-    if (vk === vpath || vf.type !== 'excluded') continue;
-    const childRoot  = vf.root.replace(/\/?$/, '/');
-    const parentRoot = rootDir.replace(/\/?$/, '/');
-    if (!childRoot.startsWith(parentRoot)) continue;
-    const relPrefix = path.relative(rootDir, vf.root);
-    if (relPrefix) db.removeFilesByPrefix(vpath, relPrefix + '/');
+    if (vf.type !== 'excluded') continue;
+    const prefix = childPrefixWithin(vpath, vk);
+    if (prefix) db.removeFilesByPrefix(vpath, prefix);
   }
 }

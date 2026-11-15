@@ -1,13 +1,16 @@
-**Last.fm — Similar Artists** *(GitHub Copilot, 2026-03-04)*
+**Last.fm — Similar Artists**
 ----
 
-Returns artists similar to a given artist via the Last.fm API. Used by the
-Auto-DJ "Similar Artists" mode to bias random song selection.
+Returns artists similar to a given artist via the Last.fm API, resolved to the
+artist names that exist in your library. Used by the Auto-DJ "Similar Artists"
+mode to bias song selection.
 
-A built-in Last.fm API key is included; no configuration is required.
+Needs a Last.fm API key (`lastFM.apiKey` in the config, set in Admin → Last.fm).
+Without a key the endpoint returns `{ "artists": [] }`.
 
 * **URL:** `/api/v1/lastfm/similar-artists`
 * **Method:** `GET`
+* **Auth required:** Yes — any logged-in user
 * **Query Parameters**
 
   | Param | Required | Description |
@@ -17,13 +20,26 @@ A built-in Last.fm API key is included; no configuration is required.
 * **Success Response:** 200
 
   ```json
-  { "artists": ["Iggy Pop", "Lou Reed", "T. Rex", "Queen"] }
+  {
+    "artists": ["Iggy Pop", "Iggy & The Stooges", "Lou Reed"],
+    "displayArtists": ["Iggy Pop", "Lou Reed"],
+    "displayVariantMap": { "Iggy Pop": ["Iggy Pop", "Iggy & The Stooges"], "Lou Reed": ["Lou Reed"] },
+    "variantRankMap": { "Iggy Pop": 1, "Iggy & The Stooges": 1, "Lou Reed": 2 }
+  }
   ```
 
-  Up to 20 artists, ordered by similarity score descending.
-  Returns `{ "artists": [] }` when no results are found or the artist is unknown to Last.fm.
+  | Field | Description |
+  |---|---|
+  | `artists` | Every library artist name that matches one of Last.fm's similar artists (up to 50 from Last.fm). |
+  | `displayArtists` | Last.fm names, in similarity order, that have at least one album in the user's vpaths. |
+  | `displayVariantMap` | Last.fm name → library variants, for the names in `displayArtists`. |
+  | `variantRankMap` | Library variant → 1-based Last.fm rank (lower = more similar). |
+
+  When Last.fm knows nothing about the exact credit, the server retries with the
+  parts of a collaboration credit (e.g. "A feat. B"). Returns empty lists when
+  nothing matches. Results are cached (6 h for Last.fm data, 30 min for the
+  library resolution).
 
 * **Notes**
-  - Artist names must match Last.fm's database. Exact tag spelling matters.
-  - Scrobbling (POST `/api/v1/lastfm/scrobble-by-filepath`) requires per-user
-    Last.fm credentials set in the user config (`lastfm-user`, `lastfm-password`).
+  - Scrobbling (POST `/api/v1/lastfm/scrobble-by-filepath`) needs the user to link a
+    Last.fm account (`POST /api/v1/lastfm/connect`); see [lastfm.md](lastfm.md).

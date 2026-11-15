@@ -1,11 +1,9 @@
 # DLNA / UPnP Media Server
 
-> **Introduced in v6.12.0-velvet** — *"Going Back to My Roots"*
-
 Velvet can act as a **UPnP ContentDirectory MediaServer (DMS-1.50)** that advertises your
 music library on the local network.  Smart TVs, AV receivers, NAS players, VLC, BubbleUPnP, and
 any DLNA-certified device can discover and stream your music without installing a special app,
-without an Velvet account, and without touching HTTPS or JWT tokens.
+without a Velvet account, and without touching HTTPS or JWT tokens.
 
 ---
 
@@ -16,13 +14,12 @@ In the early 2000s home NAS devices shipped with **Twonky**, **TwonkyVision**, a
 stored on the NAS.  The killer feature was **zero configuration on the playback device**: the TV
 simply listed available servers and you pressed play.
 
-Modern setups moved to web-based players and apps, but DLNA never died — every Samsung, LG, Sony,
-and Panasonic smart TV still supports it out of the box.  AV receivers from Denon, Marantz, Yamaha,
-and Pioneer all include a DLNA renderer.  The protocol (UPnP ContentDirectory 1.0 with SOAP browse
-and SSDP discovery) is 20+ years old, intentionally simple, and universally understood.
+Modern setups moved to web-based players and apps, but DLNA never died — most smart TVs and
+network AV receivers still support it out of the box.  The protocol (UPnP ContentDirectory 1.0
+with SOAP browse and SSDP discovery) is 20+ years old, intentionally simple, and widely understood.
 
-Velvet v6.12.0 brings that experience back: **enable one toggle in the admin panel**, and
-within seconds your music collection appears on every screen in the house.
+Velvet brings that experience back: **enable one toggle in the admin panel**, pick which folders
+to share, and your music appears on every screen in the house.
 
 ---
 
@@ -30,7 +27,7 @@ within seconds your music collection appears on every screen in the house.
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│             Velvet server                           │
+│             Velvet server                                   │
 │                                                             │
 │  ┌──────────────────────────────────────────────────┐      │
 │  │  Main HTTPS server  (port 3000)                  │      │
@@ -40,8 +37,8 @@ within seconds your music collection appears on every screen in the house.
 │  ┌──────────────────────────────────────────────────┐      │
 │  │  DLNA HTTP server  (port 10293, plain HTTP)      │      │
 │  │  SSDP advertisement · UPnP device XML            │      │
-│  │  ContentDirectory SOAP control                   │      │
-│  │  Static media serving per vpath (no auth)        │      │
+│  │  ContentDirectory + ConnectionManager SOAP       │      │
+│  │  Media serving per vpath (no auth)               │      │
 │  └──────────────────────────────────────────────────┘      │
 └─────────────────────────────────────────────────────────────┘
 
@@ -50,39 +47,50 @@ within seconds your music collection appears on every screen in the house.
         ◄─────────────────────────────────
         GET /dlna/description.xml
 
-        POST /dlna/cd/control  (SOAP Browse)
+        POST /dlna/control/content-directory  (SOAP Browse / Search)
         ◄─────────────────────────────────
-        DIDL-Lite XML  (albums / songs)
+        DIDL-Lite XML  (folders / songs)
 
         GET /media/Music/Albums/Top%20700/Ring%20My%20Bell.flac
         ──────────────────────────────────────────────────────►  stream
 ```
 
-1. **SSDP multicast** — on startup the DLNA server sends `ssdp:alive` on `239.255.255.250:1900` so
-   devices auto-discover Velvet.  No need to type an IP address on the TV.
+1. **SSDP multicast** — when the DLNA server starts it advertises itself on `239.255.255.250:1900`
+   (via the `@lvcabral/node-ssdp` package) as `upnp:rootdevice`, `MediaServer:1`,
+   `ContentDirectory:1` and `ConnectionManager:1`, so devices auto-discover Velvet.
 2. **Device description** — devices fetch `/dlna/description.xml` to learn what services are
-   offered (MediaServer:1 / ContentDirectory:1 / DMS-1.50).
-3. **ContentDirectory SOAP control** — devices send `Browse` SOAP requests to `/dlna/cd/control`
-   and receive DIDL-Lite XML describing the folder hierarchy.
+   offered (MediaServer:1 with ContentDirectory:1 and ConnectionManager:1, DMS-1.50).
+3. **ContentDirectory SOAP control** — devices send `Browse` / `Search` SOAP requests to
+   `/dlna/control/content-directory` and receive DIDL-Lite XML describing the folder hierarchy.
 4. **Media streaming** — the device fetches each audio file directly from `/media/<vpath>/<path>`.
-   Files are served in their original format — no transcoding.  All common audio formats are
-   served with correct `Content-Type` headers.
-5. **Album art** — served from `/album-art/<filename>`, sourced from the Velvet art cache.
+   Files are served in their original format.  Supported `Content-Type`s: mp3, flac, wav, m4a/m4b,
+   aac, ogg, opus, wma (anything else is sent as `audio/mpeg`).
+5. **Time-seek** — if a renderer sends a `TimeSeekRange.dlna.org: npt=…` header, Velvet starts the
+   stream at that position with ffmpeg: MP3 files are copied without re-encoding, every other
+   format is transcoded to MP3 at 192 kbit/s.  `HEAD` requests with that header return only the
+   headers, so renderers can check seek support first.
+6. **Album art** — served from `/album-art/<filename>`, sourced from the Velvet art cache
+   (`storage.albumArtDirectory`).
 
-The DLNA server runs **completely independently** from the main Velvet HTTPS server.  Plain HTTP
-is required because DLNA devices cannot handle HTTPS or JWT authentication.
+The DLNA server runs on its own plain-HTTP listener, separate from the main Velvet HTTPS server,
+because DLNA devices cannot handle HTTPS or JWT authentication.  The base URL in all DIDL and
+device XML is `http://<first non-loopback IPv4 address>:<port>`.
 
 ---
 
 ## Enabling DLNA
 
 1. Open **Admin panel → DLNA / UPnP** (sidebar).
-2. Toggle **Enable**.
-3. Status badge changes to **● Running** within one second.
-4. On your TV / AV receiver, open the media-source or network-audio list and look for
+2. Click **Enable**.
+3. The status badge shows **● Running** once the server has started.
+4. Open **Admin → Directories** and click **DLNA/UPnP: Off** on each folder you want to share
+   (it turns into **DLNA/UPnP: On**).  See [Which folders appear?](#which-folders-appear) below.
+5. On your TV / AV receiver, open the media-source or network-audio list and look for
    **Velvet** (or whatever name you set).
 
-The setting is saved in `save/conf/default.json` under the `dlna` key.
+The settings are saved in `save/conf/default.json` under the `dlna` key.  If DLNA is enabled when
+Velvet boots, the server starts automatically (with one retry after 5 seconds if the port is still
+busy from the previous process).
 
 ### Firewall note
 
@@ -99,8 +107,8 @@ If your server has a firewall (`ufw`, `iptables`, `firewalld`), make sure:
 | Setting | Default | Description |
 |---------|---------|-------------|
 | **Enabled** | `false` | Toggle the DLNA server on/off live |
-| **HTTP Port** | `10293` | Port the plain-HTTP DLNA server listens on.  After changing the port, toggle off → on to apply. |
-| **Server Name** | `Velvet` | Friendly name shown on the TV's source list and in device scanners |
+| **HTTP Port** | `10293` | Port the plain-HTTP DLNA server listens on (1024–65535).  After changing the port, toggle off → on to apply. |
+| **Server Name** | `Velvet` | Friendly name shown on the TV's source list and in device scanners (max 64 characters) |
 
 ### config file representation
 
@@ -112,16 +120,19 @@ If your server has a firewall (`ufw`, `iptables`, `firewalld`), make sure:
 }
 ```
 
+There is no browse-mode setting: the tree is always the folder tree described below. An old
+`browse` key left in the config file is ignored.
+
 ---
 
 ## Browse Hierarchy
 
-The DLNA server exposes a **full folder-tree** mirroring your filesystem — exactly as you would see it in a
+The DLNA server exposes a **folder tree** mirroring your filesystem — exactly as you would see it in a
 classic NAS DLNA server.  Songs are **never** grouped by ID3 album tag; the folder name is the album.
 
 ```
 Root  (id=0)
-├── Albums  ←  one container per albumsOnly vpath
+├── Albums  ←  one container per DLNA-enabled vpath
 │   ├── -= Top 700 =-          ←  real folder name, not an ID3 tag
 │   │   ├── Ring My Bell.flac
 │   │   ├── 9 to 5.flac
@@ -137,21 +148,30 @@ Root  (id=0)
 │   │   │   └── …
 │   │   └── …
 │   └── …
-└── Disco   ←  second albumsOnly vpath (if configured)
+└── Disco   ←  second DLNA-enabled vpath (if configured)
     └── …
 ```
 
+Folders are sorted by name (case-insensitive).  Each folder uses the album art of the first file
+inside it that has art.  Folders in an `audio-books` vpath are marked as audio books.
+
 ### Which folders appear?
 
-Only folders from vpaths marked `albumsOnly: true` in the config are exposed.  This is the same
-set used by the **Album Library** in the player UI — so whatever you see in the Albums screen is
-exactly what DLNA devices see.  The 130,000+ random files in non-album folders are never visible.
+Each vpath has its own **DLNA/UPnP** flag (`dlnaEnabled` in the folder config), set with the
+**DLNA/UPnP: On / Off** button in **Admin → Directories**.  Only vpaths with `dlnaEnabled: true` appear
+at the root.  Folders of type `recordings`, `youtube` and `excluded` can never be shared.
 
-To mark a folder as `albumsOnly`, set it in **Admin → Directory Flags** or edit `default.json`.
+**Fallback:** if no folder has a `dlnaEnabled` key at all (older configs), Velvet uses the vpaths
+marked `albumsOnly: true` instead.
+
+A child vpath (one whose root is inside another vpath) is shown with its own name, but its files are
+read from the parent vpath in the database, filtered by the child's sub-folder.
+
+Folder listings are cached in memory for 5 minutes; the cache is cleared after each scan.
 
 ### Sub-folders (series / CD sets)
 
-The browse is **unlimited depth** — a folder like `Disconet/Vol 3/Side A/` is browseable one
+The browse has **unlimited depth** — a folder like `Disconet/Vol 3/Side A/` is browseable one
 level at a time, just like a file manager.  DLNA clients that show a tree (BubbleUPnP, VLC) will
 show the full hierarchy.
 
@@ -159,15 +179,45 @@ show the full hierarchy.
 
 ## Supported SOAP / UPnP Actions
 
+### ContentDirectory
+
 | Action | Status | Notes |
 |--------|--------|-------|
-| `Browse BrowseDirectChildren` | ✅ Full | Pagination (`StartingIndex`, `RequestedCount`) respected |
-| `Browse BrowseMetadata` | ✅ Full | Returns container or item metadata |
-| `GetSystemUpdateID` | ✅ | Returns static `1` |
-| `GetSearchCapabilities` | ✅ | Returns empty (no Search support) |
-| `GetSortCapabilities` | ✅ | Returns empty |
-| `SUBSCRIBE` / `UNSUBSCRIBE` | Stub | Accepted, not tracked (read-only server, no real eventing needed) |
-| `Search` | ❌ | Not implemented |
+| `Browse` `BrowseDirectChildren` | ✅ | Pagination (`StartingIndex`, `RequestedCount`) respected; max 5000 items per response (`RequestedCount=0` means 5000) |
+| `Browse` `BrowseMetadata` | ✅ | Returns container or item metadata |
+| `Search` | ✅ | See [Search](#search) |
+| `GetSystemUpdateID` | ✅ | Starts at `1` and goes up by one after every finished scan |
+| `GetSearchCapabilities` | ✅ | `dc:title,dc:creator,upnp:artist,upnp:album,upnp:genre,upnp:class,upnp:originalTrackNumber` |
+| `GetSortCapabilities` | ✅ | `±dc:title`, `±dc:creator`, `±upnp:artist`, `±upnp:album`, `±upnp:genre`, `±upnp:originalTrackNumber`, `±dc:date` |
+| `X_GetFeatureList` | ✅ | Samsung `BASICVIEW` feature list |
+
+### ConnectionManager
+
+| Action | Notes |
+|--------|-------|
+| `GetProtocolInfo` | Lists the source formats (MP3, FLAC, AAC, OGG, Opus, WAV); sink is empty |
+| `GetCurrentConnectionIDs` | Always `0` |
+| `GetCurrentConnectionInfo` | Static answer (`Direction=Output`, `Status=OK`) |
+
+### Eventing (GENA)
+
+`SUBSCRIBE` / `UNSUBSCRIBE` on `/dlna/events/content-directory` are real subscriptions: each subscriber
+gets an SID, a timeout (default and maximum 1800 s, renewable), an initial event, and a `NOTIFY` with the new
+`SystemUpdateID` after every scan.  At most 256 subscribers are kept (the oldest is dropped).
+The callback URL must be `http://` on the subscribing device's own IP address; any other callback is
+refused with `412`, so events never go to a host the subscriber picked.
+The ConnectionManager event URL accepts `SUBSCRIBE` but never sends events.
+
+### Search
+
+`Search` filters tracks in memory.  Supported properties: `dc:title`, `dc:creator`, `upnp:artist`,
+`upnp:album`, `upnp:genre`, `upnp:originalTrackNumber`, `upnp:class`.  Supported operators: `=`, `!=`,
+`contains`, `doesNotContain`, `startsWith`, `exists`, `derivedfrom`, combined with `and` / `or`.
+`SearchCriteria="*"` returns everything.  `SortCriteria` is applied; the default sort is by title.
+
+Search only covers the DLNA-enabled folders: the whole tree for `ContainerID=0`, one folder for a
+`src_…` or `dir_…` container. `BrowseMetadata` on a track outside those folders answers
+`701 No Such Object`.
 
 ---
 
@@ -177,30 +227,23 @@ show the full hierarchy.
 |---------|-------------------|---------------------|---------|----------------------|
 | Discovery | ✅ SSDP multicast | ✅ SSDP | ✅ SSDP | ✅ SSDP |
 | Folder-tree browse | ✅ Real filesystem folders | ✅ | ✅ | ✅ |
-| Transcoding | ❌ (original format only) | ✅ | ✅ | ❌ |
+| Transcoding | Only for time-seek (to MP3) | ✅ | ✅ | ❌ |
 | Album art in browse | ✅ from art cache | ✅ | ✅ | Limited |
-| albumsOnly filter | ✅ (no junk folders) | ❌ shows everything | ❌ | ❌ |
+| Per-folder sharing | ✅ DLNA flag per vpath | — | — | — |
 | Integrated with streaming server | ✅ shares DB & art | ❌ separate | ❌ separate | ❌ separate |
 | Admin UI toggle | ✅ one click | Requires install | Requires install | Requires install |
 | Auth required | ❌ LAN only (by design) | ❌ | ❌ | ❌ |
-| Open-source | ✅ MIT | ❌ | ❌ | ✅ LGPL |
+| Open-source | ✅ GPL-3.0 | ❌ | ❌ | ✅ GPL |
 | Separate install | ❌ built in | Requires separate app | Requires separate app | Requires separate install |
 
 ---
 
 ## Supported Clients
 
-| Client | Platform | Result |
-|--------|----------|--------|
-| **VLC** | Desktop (Windows/Linux/macOS) | ✅ SSDP discovery, full folder browse, gapless playback |
-| **Samsung Smart TV** (Tizen) | TV | ✅ Discovers via SSDP, folder browse, plays FLAC/MP3/Opus |
-| **LG Smart TV** (WebOS) | TV | ✅ SSDP discovery, folder browse |
-| **BubbleUPnP** | Android | ✅ Full tree browse, album art, play |
-| **Kodi** | All platforms | ✅ DLNA source, browse, play |
-| **Windows Media Player** | Windows | ✅ Shows up as media server |
-| **Foobar2000** (UPnP plugin) | Windows | ✅ Browse + stream |
-| **Hi-Fi Cast** | Android | ✅ Discovers and browses |
-| AV receivers (Denon / Marantz) | Hardware | ✅ Expected to work (UPnP standard) |
+Any client that speaks UPnP ContentDirectory should work: for example VLC, Kodi, BubbleUPnP,
+Foobar2000 (UPnP plugin), Windows Media Player, smart TVs (Samsung, LG) and network AV receivers.
+The device XML includes Samsung-specific fields (`sec:X_ProductCap`, `X_GetFeatureList`) for
+Samsung TVs.
 
 ---
 
@@ -211,8 +254,13 @@ show the full hierarchy.
 DLNA devices have no concept of user accounts, JWT tokens, or HTTPS.  This is a fundamental
 property of the UPnP/DLNA specification — not a limitation of Velvet's implementation.
 
-**All audio files in `albumsOnly` vpaths are accessible without any login** to anyone who can
-reach port 10293.
+Anyone who can reach port 10293 can, without any login:
+
+- browse and search the DLNA-enabled folders,
+- **download any file in those folders** at `/media/<vpath>/<path>` if they know or guess the path.
+  Paths are checked to stay inside the vpath root, and a file outside the DLNA-enabled folders
+  answers `404`.
+- fetch cached covers under `/album-art/`.
 
 ### What to do
 
@@ -231,7 +279,7 @@ reach port 10293.
 
 ### `GET /api/v1/admin/dlna/config`
 
-Returns current DLNA configuration and running state.  Requires admin JWT.
+Returns current DLNA configuration and running state.  Requires an admin JWT (403 otherwise).
 
 **Response:**
 ```json
@@ -254,8 +302,10 @@ Returns current DLNA configuration and running state.  Requires admin JWT.
 
 ### `POST /api/v1/admin/dlna/config`
 
-Update one or more settings.  Changes take effect **immediately** — no restart needed.
-Passing `enabled: true` starts the server; `enabled: false` stops it.
+Update one or more settings (at least one field is required).  Requires an admin JWT.
+The values are saved to the config file right away.  Passing `enabled: true` starts the server;
+`enabled: false` stops it.  A new `port` or `name` takes effect the next time the server starts
+(toggle off → on).
 
 **Request body** (any subset):
 ```json
@@ -264,10 +314,23 @@ Passing `enabled: true` starts the server; `enabled: false` stops it.
 { "enabled": false }
 ```
 
+| Field | Type | Rules |
+|-------|------|-------|
+| `enabled` | boolean | |
+| `port` | integer | 1024–65535 |
+| `name` | string | max 64 characters, may be empty |
+
+Any other field (such as the old `browse`) answers `400`.
+
 **Response:**
 ```json
 { "running": true }
 ```
+
+### Per-folder flag
+
+`PATCH /api/v1/admin/directory/flags` (admin) with `{ "vpath": "Music", "dlnaEnabled": true }` turns DLNA on or
+off for one folder (see [admin_directory-flags](API/admin_directory-flags.md)).
 
 ---
 
@@ -277,12 +340,17 @@ These endpoints are served on the dedicated DLNA HTTP port (default 10293) with 
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `GET` | `/dlna/description.xml` | UPnP root device descriptor (required by all DLNA devices on discovery) |
-| `GET` | `/dlna/cd.xml` | ContentDirectory:1 service descriptor — lists supported SOAP actions |
-| `ALL` | `/dlna/cd/events` | SSDP event subscription stub (SUBSCRIBE accepted, not tracked) |
-| `POST` | `/dlna/cd/control` | ContentDirectory SOAP control endpoint — handles `Browse`, `GetSystemUpdateID`, `GetSearchCapabilities`, `GetSortCapabilities` |
-| `GET` | `/media/:vpath/*` | Audio file streaming — served via `express.static` from the vpath root |
-| `GET` | `/album-art/:filename` | Album art served from the Velvet art cache directory |
+| `GET` | `/dlna/description.xml` | UPnP root device descriptor (fetched by devices on discovery) |
+| `GET` | `/dlna/scpd/content-directory.xml` | ContentDirectory:1 service descriptor |
+| `GET` | `/dlna/scpd/connection-manager.xml` | ConnectionManager:1 service descriptor |
+| `POST` | `/dlna/control/content-directory` | ContentDirectory SOAP control — `Browse`, `Search`, `GetSystemUpdateID`, `GetSearchCapabilities`, `GetSortCapabilities`, `X_GetFeatureList` |
+| `POST` | `/dlna/control/connection-manager` | ConnectionManager SOAP control — `GetProtocolInfo`, `GetCurrentConnectionIDs`, `GetCurrentConnectionInfo` |
+| `SUBSCRIBE` / `UNSUBSCRIBE` | `/dlna/events/content-directory` | GENA event subscription |
+| `SUBSCRIBE` | `/dlna/events/connection-manager` | GENA stub (no events) |
+| `GET` / `HEAD` | `/media/<vpath>/<path>` | Audio file streaming (with time-seek support); only files in DLNA-enabled folders, `404` otherwise |
+| `GET` | `/album-art/<filename>` | Album art from the Velvet art cache directory |
+
+SOAP bodies are limited to 512 KB.
 
 ### Object-ID scheme
 
@@ -291,9 +359,9 @@ DLNA object IDs are opaque base64url strings:
 | Prefix | Represents | Example decoded |
 |--------|-----------|----------------|
 | `0` | Root container | — |
-| `src_<b64>` | albumsOnly source (vpath name) | `src_QWxidW1z` → `Albums` |
+| `src_<b64>` | DLNA-enabled source (vpath name) | `src_QWxidW1z` → `Albums` |
 | `dir_<b64>` | Sub-directory | `dir_...` → `Music\x00Albums/Top 700` |
-| `itm_<b64>` | Audio track item | `itm_...` → `Music\x00Albums/Top 700/Ring My Bell.flac` |
+| `track-<b64>` | Audio track item | `track-...` → `Music\x00Albums/Top 700/Ring My Bell.flac` |
 
 ---
 
@@ -315,7 +383,7 @@ you will hit two problems:
 | **Put server and clients on the same VLAN** | Simplest fix — no special network config required |
 | **Inter-VLAN routing** | Enable routing between VLANs on your router/firewall and add a firewall rule allowing TCP 10293 and UDP 1900 from the client VLAN to the server VLAN |
 | **IGMP proxy / multicast routing** | Configure your router to proxy SSDP multicast between VLANs (supported by pfSense, OPNsense, UniFi) — allows discovery without full inter-VLAN routing |
-| **Manual server entry** | Some clients (VLC: *Media → Open Network Stream*; BubbleUPnP: *Add renderer by IP*) let you enter `http://<server-ip>:10293/dlna/description.xml` directly, bypassing discovery |
+| **Manual server entry** | Some clients let you enter `http://<server-ip>:10293/dlna/description.xml` directly, bypassing discovery |
 
 ### UniFi / pfSense / OPNsense
 
@@ -330,8 +398,8 @@ upstream/downstream interfaces.
 | Symptom | Likely cause | Fix |
 |---------|-------------|-----|
 | TV doesn't find the server | SSDP port 1900 UDP blocked, or different VLAN | Open UDP 1900 in firewall; check VLAN routing (see above); or manually enter the server IP on the TV |
-| Server found but no folders | DLNA port TCP blocked | Open port 10293 in firewall |
-| Folders show but songs don't play | Media port blocked, wrong IP, or VLAN routing missing | Check firewall; verify LAN IP auto-detected correctly in server logs; check VLAN routes |
+| Server found but no folders | DLNA port TCP blocked, or no folder has DLNA turned on | Open port 10293 in firewall; turn on **DLNA/UPnP** for a folder in Admin → Directories |
+| Folders show but songs don't play | Media port blocked, wrong IP, or VLAN routing missing | Check firewall; check the `[DLNA] started → http://<ip>:<port>/…` line in the server log shows the right LAN IP; check VLAN routes |
 | Client on different VLAN, discovery works but stream fails | Multicast proxied but unicast TCP blocked | Allow TCP 10293 from client VLAN to server VLAN in firewall |
-| Only 1 album folder shown | `albumsOnly` not configured | Set `albumsOnly: true` on the desired vpaths in Admin → Directory Flags |
-| Art doesn't show | Art cache not populated | Run a full scan with Discogs/embedded art enabled |
+| Wrong folders shown | DLNA flag set on the wrong vpaths | Change the **DLNA/UPnP** buttons in Admin → Directories |
+| Art doesn't show | Art cache not populated | Run a scan so embedded/folder art is cached |

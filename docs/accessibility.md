@@ -6,22 +6,45 @@ accessibility features added in **v0.1.0**.
 
 ## Keyboard shortcuts
 
-Shortcuts are active anywhere in the player **except** while typing in a text
-field. Press **`?`** at any time to open an in-app cheat-sheet of this list.
+Shortcuts are global: they work anywhere in the player **except** while focus
+is inside a text input, textarea or editable field (the search box, a playlist
+rename field), so typing is never affected. Press **`?`** at any time to open
+an in-app cheat-sheet of this list.
+
+### Playback
 
 | Key | Action |
 |---|---|
 | `Space` | Play / pause |
 | `←` / `→` | Seek backward / forward 5 seconds |
 | `Shift` + `←` / `→` | Previous / next track |
+
+### Volume
+
+| Key | Action |
+|---|---|
 | `↑` / `↓` | Volume up / down 5% |
-| `M` | Mute / unmute |
+| `M` | Mute / unmute (un-muting restores the previous volume) |
+
+### Queue & UI
+
+| Key | Action |
+|---|---|
 | `S` | Toggle shuffle |
 | `R` | Cycle repeat mode (off → all → one) |
 | `/` | Jump to Search and focus the search box |
 | `Ctrl` / `⌘` + `K` | Open the command palette — fuzzy jump to any view or transport action |
-| `?` | Show / hide this keyboard-shortcuts overlay |
-| `Esc` | Close the open dialog, menu, command palette, or the Now-Playing / visualizer view |
+| `?` | Show / hide the keyboard-shortcuts overlay |
+| `Esc` | Close the open dialog, menu, command palette, or the Now-Playing / visualizer view; clears a queue selection |
+
+Notes:
+
+- Arrow keys without `Shift` always control **seek and volume** — they never
+  skip tracks by accident. Use `Shift` + `←` / `→` to skip.
+- Keys are matched by physical position (`KeyboardEvent.code`), so `/` and `?`
+  are the US-layout slash key (`?` = `Shift` + that key).
+- The shortcuts live in `webapp/app.js`, in the `// Keyboard shortcuts` block
+  near the bottom of the file.
 
 ## Screen-reader & focus features
 
@@ -48,10 +71,10 @@ field. Press **`?`** at any time to open an in-app cheat-sheet of this list.
 ## Themes & contrast
 
 Five themes are available from the sidebar switcher: **Velvet** (default), **Dark**,
-**Light**, **High contrast**, and **Colorblind-safe**. The choice persists per user.
+**Light**, **High contrast**, and **Colourblind** (a colourblind-safe palette). The choice persists per user.
 
 - **WCAG AA** — normal text meets the 4.5:1 contrast minimum in Velvet, Dark and
-  Light. **High contrast** pushes well past AAA (pure black/white). **Colorblind-safe**
+  Light. **High contrast** pushes well past AAA (pure black/white). **Colourblind**
   uses a blue/orange palette that never relies on red↔green distinctions
   (deuteranopia/protanopia friendly).
 
@@ -62,9 +85,3 @@ Velvet honours the operating-system *“reduce motion”* preference
 transitions are neutralised, and the auto-triggered JavaScript animations — the
 Auto-DJ dice throw and the scrolling-title marquee — are skipped. Loading
 **skeleton** placeholders still render, just without their shimmer sweep.
-
-## Notes
-
-- The shortcuts never fire while a text input, textarea, or editable field has
-  focus, so typing a search term or playlist name is unaffected.
-- `?` is `Shift` + `/` on most keyboard layouts.
