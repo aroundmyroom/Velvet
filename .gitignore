@@ -44,7 +44,9 @@ save/db/*.db
 save/db/*.json
 save/db/*.sqlite
 
-# temporary query/debug scripts
+# temporary query/debug scripts: nothing in the project root is a .cjs/.mjs script
+/*.cjs
+/*.mjs
 check-*.cjs
 check-*.mjs
 testsonos/
