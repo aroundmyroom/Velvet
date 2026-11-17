@@ -16,6 +16,7 @@ const storageJoi = Joi.object({
   waveformDirectory: Joi.string().default(path.join(__dirname, '../../waveform-cache')),
   dbDirectory: Joi.string().default(path.join(__dirname, '../../save/db')),
   logsDirectory: Joi.string().default(path.join(__dirname, '../../save/logs')),
+  skinsDirectory: Joi.string().default(path.join(__dirname, '../../save/skins')),
 });
 
 const scanOptions = Joi.object({
@@ -229,6 +230,7 @@ const schema = Joi.object({
   sendspin: sendspinOptions.default(() => sendspinOptions.validate({}).value),
   extAuth: extAuthOptions.default(extAuthOptions.validate({}).value),
   ui: Joi.string().valid('velvet', 'velvet-dark', 'velvet-light').default('velvet'),
+  skin: Joi.string().pattern(/^[a-z0-9_-]{1,40}$/).allow('').default(''),
   instanceId: Joi.string().optional(),
 });
 

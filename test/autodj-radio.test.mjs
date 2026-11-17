@@ -135,15 +135,28 @@ describe('Auto-DJ candidate pool', () => {
     assert.equal(pool.songs.filter(r => r.artist === 'Small').length, 3);
   });
 
-  it('drops the cooldown, then the similar filter, before giving up', () => {
+  it('widens past the similar filter before it lets a recent artist back in', () => {
     const rows = [row({ artist: 'A', title: 'a' }), row({ artist: 'B', title: 'b' })];
     let pool = batchCandidatePool(source(rows), { artists: ['A'], ignoreArtists: ['A'] });
-    assert.deepEqual(pool.songs.map(r => r.artist), ['A']);
-    assert.match(pool.note, /cooldown list \(1\) dropped/);
-    pool = batchCandidatePool(source(rows), { artists: ['Nobody'], ignoreArtists: ['A'] });
     assert.deepEqual(pool.songs.map(r => r.artist), ['B']);
     assert.match(pool.note, /similar filter dropped/);
+    pool = batchCandidatePool(source(rows), { artists: ['Nobody'], ignoreArtists: ['A'] });
+    assert.deepEqual(pool.songs.map(r => r.artist), ['B']);
+    pool = batchCandidatePool(source([row({ artist: 'A', title: 'a' })]), { artists: ['A'], ignoreArtists: ['A'] });
+    assert.deepEqual(pool.songs.map(r => r.artist), ['A'], 'only when the whole scope is recent may the artist repeat');
+    assert.match(pool.note, /cooldown list \(1\) dropped/);
     assert.equal(batchCandidatePool(() => [], {}), null);
+  });
+
+  it('keeps an artist in cooldown inside collaborations', () => {
+    const rows = [
+      row({ artist: 'Armin van Buuren vs Shapov', title: 'la resistance' }),
+      row({ artist: 'Dimitri Vegas & Like Mike, Armin van Buuren, W&W', title: 'repeat after me' }),
+      row({ artist: 'Marco Borsato, Armin van Buuren, Davina Michelle', title: 'hoe het danst' }),
+      row({ artist: 'Ferry Corsten', title: 'out of the blue' }),
+    ];
+    const pool = batchCandidatePool(source(rows), { ignoreArtists: ['Armin van Buuren & AVIRA feat. Sam Martin'] });
+    assert.deepEqual(pool.songs.map(r => r.artist), ['Ferry Corsten']);
   });
 
   it('caps the pool', () => {

@@ -1,5 +1,5 @@
 'use strict';
-const VELVET_VERSION = '0.10.0';
+const VELVET_VERSION = '0.10.1';
 // ── SERVER IDENTITY GUARD ────────────────────────────────────────────────────
 // Detects when this browser's localStorage belongs to a different Velvet
 // instance (fresh install, IP change, reverse-proxy swap, second server).
@@ -2775,12 +2775,11 @@ function _djImportState(st) {
 // one (ties broken randomly). Returns null when nothing at all is available.
 //
 // DJ_ARTIST_HARD_FLOOR is a hard (non-scored) exclusion, unlike the 10%
-// diversity bonus in _djScoreSong. It exists because _batchRandomSongs
-// (src/api/db.js) can drop the ignoreArtists cooldown list entirely when the
-// similar-artist pool is too narrow to satisfy both filters at once — that
-// fallback can legitimately hand back an artist played only 1-3 songs ago.
-// Falls back to the full candidate list if it would empty the pool, so
-// Auto-DJ never stalls.
+// diversity bonus in _djScoreSong. The server already drops recent artists
+// (collaborations included) and widens the pool first; this is the backstop
+// for a library so small that the server had to allow a recent artist. If it
+// would empty the pool, the pick is retried without the similar-artist list,
+// and only then may a recent artist come back, so Auto-DJ never stalls.
 const DJ_ARTIST_HARD_FLOOR = 3; // never repeat the same artist within this many songs
 const DJ_ARTIST_PART_MIN = 3;
 const DJ_ARTIST_PART_STOP = new Set(['the', 'and', 'of', 'de', 'la', 'le', 'les', 'los', 'las', 'van', 'von', 'fire', 'wind', 'earth']);
@@ -2805,10 +2804,10 @@ function _djArtistKeys(name) {
   // must not hide the main artist.
   const credit = String(name || '').replace(/^[A-Z]?\d{1,3}\.\s*/, '');
   add(credit);
-  const chunks = credit.split(/\s+(?:feat\.?|ft\.?|fe\.|featuring|vs\.?|pres\.?|presents?\b|\bx\b)\s+/i);
+  const chunks = credit.split(/\s*;\s*|\s+(?:feat\.?|ft\.?|fe\.|featuring|vs\.?|pres\.?|presents?\b|\bx\b)\s+/i);
   for (const chunk of chunks) {
     add(chunk);
-    for (const part of chunk.split(/\s+(?:&|and)\s+/i)) add(part);
+    for (const part of chunk.split(/\s*,\s*|\s+(?:&|and)\s+/i)) add(part);
   }
   return out;
 }
@@ -2834,6 +2833,9 @@ async function _djPickSong(escapeOpts = {}) {
       return !floorArtists.some(keys => _djArtistsOverlap(candidateKeys, keys));
     });
     if (beyondFloor.length > 0) candidates = beyondFloor;
+    // Every candidate is a just-played artist (a narrow similar-artist pool):
+    // widen to the whole scope before allowing a repeat.
+    else if (!escapeOpts.dropArtistFilter) return _djPickSong({ ...escapeOpts, dropArtistFilter: true });
   }
   // Genre-drift soft escape: prefer candidates outside the overrepresented genre.
   if (escapeOpts.escapeGenre) {
@@ -16000,6 +16002,26 @@ async function viewUserSettings() {
       <div class="playback-section">
         <div class="playback-section-hdr">
           <div class="playback-section-icon">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3a9 9 0 1 0 0 18c1.1 0 1.6-.8 1.6-1.6 0-.5-.2-.8-.5-1.2-.3-.3-.5-.7-.5-1.2 0-.9.7-1.6 1.6-1.6H16a5 5 0 0 0 5-5c0-4-4-7.4-9-7.4z"/><circle cx="7.5" cy="11" r="1.2"/><circle cx="10.5" cy="7" r="1.2"/><circle cx="15" cy="7.5" r="1.2"/></svg>
+          </div>
+          <div>
+            <div class="playback-section-title">${t('player.userSettings.skinTitle')}</div>
+            <div class="playback-section-desc">${t('player.userSettings.skinDesc')}</div>
+          </div>
+        </div>
+        <div class="playback-row">
+          <label class="playback-row-label" for="us-skin"><div class="playback-row-name">${t('player.userSettings.skinLabel')}</div></label>
+          <select class="settings-select" id="us-skin">
+            <option value="default">${t('player.userSettings.skinDefault', { skin: S.defaultSkin || t('player.userSettings.skinNone') })}</option>
+            <option value="none">${t('player.userSettings.skinNone')}</option>
+            ${(S.skins || []).map(s => `<option value="${esc(s.id)}">${esc(s.id)}</option>`).join('')}
+          </select>
+        </div>
+      </div>
+
+      <div class="playback-section">
+        <div class="playback-section-hdr">
+          <div class="playback-section-icon">
             <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="2" width="14" height="20" rx="2"/><line x1="12" y1="18" x2="12.01" y2="18"/></svg>
           </div>
           <div>
@@ -16014,6 +16036,13 @@ async function viewUserSettings() {
       </div>
 
     </div>`);
+
+  const skinSel = document.getElementById('us-skin');
+  if (skinSel) {
+    const own = localStorage.getItem(_uKey('skin'));
+    skinSel.value = own && [...skinSel.options].some(o => o.value === own) ? own : 'default';
+    skinSel.addEventListener('change', () => setSkinChoice(skinSel.value));
+  }
 
   const changePwBtn = document.getElementById('us-change-pw-btn');
   const pwStatus    = document.getElementById('us-pw-status');
@@ -22327,6 +22356,7 @@ function _collectPrefs() {
   const u = S.username || '';
   return {
     theme:             localStorage.getItem('ms2_theme_'          + u),
+    skin:              localStorage.getItem('ms2_skin_'           + u),
     bar_top:           localStorage.getItem('ms2_bar_top_'        + u),
     auto_resume:       localStorage.getItem('ms2_auto_resume_'    + u),
     dyn_color:         localStorage.getItem('ms2_dyn_color_'      + u),
@@ -22405,6 +22435,7 @@ function _applyServerSettings(data) {
   const ls    = (k, v) => (v == null || v === '') ? localStorage.removeItem(k) : localStorage.setItem(k, v);
 
   if (prefs.theme         != null) { ls('ms2_theme_' + u, prefs.theme); applyTheme(prefs.theme, false); }
+  if (prefs.skin          != null) { ls('ms2_skin_' + u, prefs.skin); applySkin(); }
   if (prefs.bar_top       != null) { ls('ms2_bar_top_' + u, prefs.bar_top); S.barTop = prefs.bar_top === '1'; applyBarPos(S.barTop); }
   if (prefs.auto_resume   != null) { ls('ms2_auto_resume_' + u, prefs.auto_resume); S.autoResume = prefs.auto_resume === '1'; }
   if (prefs.dyn_color     != null) { ls('ms2_dyn_color_' + u, prefs.dyn_color); S.dynColor = prefs.dyn_color !== '0'; }
@@ -23071,6 +23102,9 @@ function showApp() {
     if (d.defaultTheme && !localStorage.getItem(_uKey('theme'))) {
       applyTheme(d.defaultTheme, false);
     }
+    S.skins = d.skins || [];
+    S.defaultSkin = d.defaultSkin || '';
+    applySkin();
     if (d.supportedAudioFiles) S.supportedAudioFiles = d.supportedAudioFiles;
     // Per-user permission to record radio streams
     S.allowRadioRecording = d.allowRadioRecording === true;
@@ -25704,6 +25738,41 @@ _osDark.addEventListener('change', e => {
 document.querySelectorAll('.theme-seg-btn').forEach(btn => {
   btn.addEventListener('click', () => applyTheme(btn.dataset.theme));
 });
+
+// ── SKIN ──────────────────────────────────────────────────────
+// A skin is a skin.css loaded after style.css (docs/skins.md). The user's own
+// choice (_uKey('skin'): a skin name, 'none', or 'default'/unset for the server
+// default) wins over the admin's default from /api/v1/ping.
+function _skinChoice() {
+  const own = localStorage.getItem(_uKey('skin'));
+  const id = own === null || own === 'default' ? (S.defaultSkin || '') : own === 'none' ? '' : own;
+  return (S.skins || []).find(s => s.id === id) || null;
+}
+function applySkin() {
+  if (!S.skins) return;
+  const skin = _skinChoice();
+  let link = document.getElementById('skin-css');
+  if (!skin) {
+    link?.remove();
+    delete document.documentElement.dataset.skin;
+    localStorage.removeItem('ms2_skin');
+  } else {
+    if (!link) { link = document.createElement('link'); link.id = 'skin-css'; link.rel = 'stylesheet'; }
+    const href = `/skins/${skin.id}/skin.css?v=${skin.v}`;
+    if (link.getAttribute('href') !== href) link.href = href;
+    document.head.appendChild(link);
+    document.documentElement.dataset.skin = skin.id;
+    localStorage.setItem('ms2_skin', `${skin.id}|${skin.v}`);
+  }
+  _themeColorCache = null;
+  requestAnimationFrame(() => requestAnimationFrame(_updateBadgeFg));
+  requestAnimationFrame(_drawWaveform);
+}
+function setSkinChoice(choice) {
+  localStorage.setItem(_uKey('skin'), choice);
+  _syncPrefs();
+  applySkin();
+}
 
 // ── EASTER EGG ──────────────────────────────────────────────
 // Invisible 6×6 pixel at sidebar/content/player corner.

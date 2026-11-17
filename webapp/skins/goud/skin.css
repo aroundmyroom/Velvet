@@ -1,0 +1,20 @@
+/* Goud: zwart met goud. Velvet's built-in example skin — see docs/skins.md. */
+:root[data-skin] {
+  --bg: #0d0d0f;  --surface: #141416;  --raised: #1d1c20;  --card: #18181b;
+  --border: #2a2722;  --border2: #3a352c;
+  --hover: rgba(255, 255, 255, .05);  --active: rgba(212, 168, 75, .14);
+  --primary: #d4a84b;  --primary-h: #c0943a;
+  --primary-d: rgba(212, 168, 75, .14);  --primary-g: rgba(212, 168, 75, .4);
+  --accent: #f0d58c;  --focus: #f0d58c;
+  --t1: #f4efe4;  --t2: #aaa293;  --t3: #8d867a;  --t4: #3a352c;
+}
+:root[data-skin] .q-dj-tag {
+  color: #f0d58c;
+  background: rgba(212, 168, 75, .12);
+  border-color: rgba(212, 168, 75, .4);
+}
+:root[data-skin] .play-main {
+  background: linear-gradient(145deg, #f0d58c, #b8862f);
+  color: #141416 !important;
+  box-shadow: 0 0 0 6px rgba(212, 168, 75, .12), 0 6px 18px rgba(212, 168, 75, .25);
+}

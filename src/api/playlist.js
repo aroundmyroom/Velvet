@@ -9,6 +9,7 @@ import { isEnabled as transcodeEnabled } from './transcode.js';
 import { createRequire } from 'node:module';
 import { access as fsAccess } from 'node:fs/promises';
 import { constants as FS } from 'node:fs';
+import { listSkins } from '../util/skins.js';
 const _require = createRequire(import.meta.url);
 const _pkg = _require('../../package.json');
 
@@ -68,6 +69,8 @@ export function setup(velvet) {
     returnThis.allowMpvCast = mpvEnabled && canCastToServer(req.user);
     returnThis.version = _pkg.version;
     returnThis.defaultTheme = (config.program.ui || 'velvet').replace(/^velvet-/, '') || 'velvet';
+    returnThis.skins = listSkins();
+    returnThis.defaultSkin = config.program.skin || '';
 
     res.json(returnThis);
   });

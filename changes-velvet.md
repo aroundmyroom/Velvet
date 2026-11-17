@@ -1,3 +1,32 @@
+## v0.10.1 (2026-11-17)
+
+Skins, and an Auto-DJ that keeps collaborations apart
+
+### Added
+
+- **Skins.** A skin is one `skin.css` in its own folder that restyles the web
+  player, usually by setting Velvet's colour variables. Put your own in
+  `save/skins/<name>/`; it shows up without a restart, and updates never touch
+  it. Users pick a skin under User Settings → Skin, which follows them to other
+  browsers. Admins set the default under Settings → User Interface → Default
+  Skin (config `skin`, `POST /api/v1/admin/config/skin`). Velvet ships one
+  example, **goud** (black and gold). See `docs/skins.md`.
+
+### Changed
+
+- **Pair a Device** mentions Home Assistant, which pairs the same way.
+
+### Fixed
+
+- **Auto-DJ repeated an artist through collaborations.** A credit such as
+  "Marco Borsato, Armin van Buuren, Davina Michelle" counted as a different
+  artist from "Armin van Buuren", so the same artist could come back three times
+  in a row. Comma- and semicolon-separated credits are now split, the server
+  cooldown matches artists inside collaborations, the similar-artist lookup
+  falls back to the main artist when a full credit has too few matches, and the
+  pool widens past the similar-artist filter before it lets a recent artist
+  back in.
+
 ## v0.10.0 (2026-11-15)
 
 Blueprint: reviewed code, hardened security, accurate docs

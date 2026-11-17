@@ -79,7 +79,7 @@ GET /media/<vpath>/<path/to/song.mp3>?token=<jwt>
 | `GET` | `/assets/fav/site.webmanifest` | Web app manifest for desktop browsers. |
 | `GET` | `/robots.txt` | `Disallow: /` for all crawlers. |
 | `GET` | `/api` | API version discovery — returns `{ server, apiVersions }` |
-| `GET` | `/api/v1/ping` | Bootstrap payload: `{ vpaths, noUpload, supportedAudioFiles, transcode, vpathMetaData, allowRadioRecording, allowYoutubeDownload, allowUpload, allowServerRemote, allowMpvCast, version, defaultTheme }`. `transcode` is `{ defaultCodec, defaultBitrate, defaultAlgorithm }` when transcoding is enabled and ffmpeg is ready, else `false`. `vpathMetaData[vpath]` is `{ type, parentVpath, filepathPrefix, allowRecordDelete, albumsOnly }`. `allowMpvCast` is true when Server Audio is on and the user is an admin or has `allow-mpv-cast`. For admin users also includes `vpathWriteAccess: { [vpathName]: bool }` (filesystem write-access check). Auth required. |
+| `GET` | `/api/v1/ping` | Bootstrap payload: `{ vpaths, noUpload, supportedAudioFiles, transcode, vpathMetaData, allowRadioRecording, allowYoutubeDownload, allowUpload, allowServerRemote, allowMpvCast, version, defaultTheme, skins, defaultSkin }`. `skins` is `[{ id, v }]` (folder name and a cache-buster from the file time), `defaultSkin` the admin's default (`""` for none). `transcode` is `{ defaultCodec, defaultBitrate, defaultAlgorithm }` when transcoding is enabled and ffmpeg is ready, else `false`. `vpathMetaData[vpath]` is `{ type, parentVpath, filepathPrefix, allowRecordDelete, albumsOnly }`. `allowMpvCast` is true when Server Audio is on and the user is an admin or has `allow-mpv-cast`. For admin users also includes `vpathWriteAccess: { [vpathName]: bool }` (filesystem write-access check). Auth required. |
 | `GET` | `/api/v1/ping/public` | Unauthenticated. Returns `{ status: 'ok', instanceId, hasUsers }` — used by the client to detect cross-instance localStorage contamination, and to decide whether to probe `/db/status` for no-auth-server detection without producing a spurious 401. *(Velvet)* |
 
 ---
@@ -666,6 +666,7 @@ small local window for instant boot, then lazy-loads the rest from here.
 | `POST` | `/api/v1/admin/config/log-retention` | `{ logRetention: "1d"\|"3d"\|"7d"\|"14d"\|"30d" }` | How long log files are kept. |
 | `POST` | `/api/v1/admin/config/max-request-size` | `{ maxRequestSize: "50MB" }` | Set max request body size. |
 | `POST` | `/api/v1/admin/config/theme` | `{ ui: "velvet"\|"velvet-dark"\|"velvet-light" }` | Set the default theme. |
+| `POST` | `/api/v1/admin/config/skin` | `{ skin: "goud"\|"" }` | Set the default skin (`""` = none). The skin must exist; see [skins.md](skins.md). 400 for an unknown skin. |
 
 ---
 

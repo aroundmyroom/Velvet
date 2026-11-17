@@ -41,7 +41,9 @@
     "allowServerRemote": false,
     "allowMpvCast": false,
     "version": "0.9.3",
-    "defaultTheme": "velvet"
+    "defaultTheme": "velvet",
+    "skins": [{ "id": "goud", "v": "m3x9k2a1" }],
+    "defaultSkin": ""
   }
   ```
 
@@ -59,6 +61,8 @@
   | `allowMpvCast` | `boolean` | Server Audio (MPV) is enabled and the user is an admin or has `allow-mpv-cast: true`. |
   | `version` | `string` | Server version from `package.json`. |
   | `defaultTheme` | `string` | Server default theme (config `ui`, without a `velvet-` prefix). |
+  | `skins` | `object[]` | Installed skins: `{ id, v }`, the folder name and a cache-buster from the file time. See [skins.md](../skins.md). |
+  | `defaultSkin` | `string` | Server default skin (config `skin`), `""` for none. |
 
   **`vpathMetaData[vpath]` fields:**
 

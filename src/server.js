@@ -275,6 +275,9 @@ export async function serveIt(configFile) {
   // Before the static mount, so /server-remote shows the "not enabled" page while Server Audio is off
   serverPlaybackApi.setupBeforeAuth(velvet);
 
+  // The admin's own skins win over the built-in ones in webapp/skins/ (served by the mount below)
+  velvet.use('/skins', express.static(config.program.storage.skinsDirectory));
+
   // Give access to public folder
   velvet.use('/', express.static(config.program.webAppDirectory));
 

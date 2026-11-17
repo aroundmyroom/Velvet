@@ -110,6 +110,7 @@ export async function startServer(opts = {}) {
       albumArtDirectory:   path.join(tmpDir, 'image-cache'),
       dbDirectory:         path.join(tmpDir, 'db'),
       logsDirectory:       path.join(tmpDir, 'logs'),
+      skinsDirectory:      path.join(tmpDir, 'skins'),
     },
     ...extraConfig,
   };

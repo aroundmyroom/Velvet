@@ -1,8 +1,8 @@
 # Pair a Device
 
-Sign a device in — a Samsung TV, a kiosk, anything with an awkward
-keyboard — without typing a password on it. The device shows a short code;
-you approve it from a phone or computer that's already signed in.
+Sign a device in — Home Assistant, a Samsung TV, a kiosk, anything with an
+awkward keyboard — without typing a password on it. The device shows a short
+code; you approve it from a phone or computer that's already signed in.
 
 This is separate from [Passkeys](#passkeys-vs-pairing) (WebAuthn), which
 Velvet also supports — see below for which one to use where.
@@ -12,8 +12,10 @@ Velvet also supports — see below for which one to use where.
 ## On the device you're signing in (e.g. the TV)
 
 Pairing is offered on the sign-in screen of the **Velvet TV** app (Samsung
-Tizen) and the mobile web app (`/mobile`). The main web player's sign-in
-form has no pairing option.
+Tizen), the mobile web app (`/mobile`) and the **Home Assistant** integration
+(choose *Approve a code in Velvet* when adding Velvet; see
+[Home Assistant](home-assistant.md)). The main web player's sign-in form has
+no pairing option.
 
 1. Open the sign-in screen. Enter the **Server URL** as usual — you still
    need this, since the device has to know which Velvet server to talk to.

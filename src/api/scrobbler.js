@@ -49,8 +49,9 @@ function _similarArtistNames(artistName) {
 /**
  * Last.fm similar artists for a credited artist, resolved to library artist
  * variants. Tries the exact credit, then collaboration halves, then duo parts
- * (util/artist-credit.js) and moves on when Last.fm knows nothing or none of
- * the names are in the library. variantRankMap: library variant → 1-based
+ * (util/artist-credit.js) and moves on while Last.fm knows nothing or fewer than
+ * SIMILAR_MIN_IN_LIBRARY of the names are in the library (keeping the best
+ * list found as the fallback). variantRankMap: library variant → 1-based
  * Last.fm rank (lower = more similar). Used by the browser Auto-DJ (route
  * below) and the server-side radio (src/autodj/radio.js).
  */
@@ -72,41 +73,53 @@ function _emptySimilar() {
   return { artists: [], displayArtists: [], displayVariantMap: {}, variantRankMap: {}, via: null };
 }
 
+// A collaboration credit ("Armin van Buuren & AVIRA feat. Sam Martin") can be a
+// Last.fm artist of its own whose similar artists are barely in the library;
+// such a thin list locks Auto-DJ onto the same few artists, so the next name
+// in the credit is tried until the library holds enough of them.
+const SIMILAR_MIN_IN_LIBRARY = 5;
+
 async function _resolveSimilarArtists(originalArtist, vpaths) {
   const parts = artistLookupCandidates(String(originalArtist).trim());
   let failed = false;
+  let best = null;
   for (const artistName of parts) {
     const rawNames = await _similarArtistNames(artistName);
     if (rawNames == null) failed = true;
     if (!rawNames?.length) continue;
     const nameVariantsMap = new Map();
-    const allVariantsSet = new Set();
     for (const name of rawNames) {
       const variants = db.resolveArtistNamesForDJ([name]);
-      if (variants.length > 0) {
-        nameVariantsMap.set(name, variants);
-        for (const v of variants) allVariantsSet.add(v);
-      }
+      if (variants.length > 0) nameVariantsMap.set(name, variants);
     }
     console.log(`[autodj] similar-artists "${originalArtist}" → ${rawNames.length} from Last.fm${artistName === originalArtist ? '' : ` via "${artistName}"`}, ${nameVariantsMap.size} in library`);
-    if (allVariantsSet.size === 0) continue;
-    const hasAlbumsSet = db.artistsWithAlbums([...allVariantsSet], vpaths);
-    const displayArtists = [];
-    const displayVariantMap = {};
-    const variantRankMap = {};
-    for (const [i, name] of rawNames.entries()) {
-      const variants = nameVariantsMap.get(name);
-      if (!variants) continue;
-      for (const v of variants) variantRankMap[v] = i + 1;
-      if (variants.some(v => hasAlbumsSet.has(v))) {
-        displayArtists.push(name);
-        displayVariantMap[name] = variants;
-      }
-    }
-    return { failed, result: { artists: [...allVariantsSet], displayArtists, displayVariantMap, variantRankMap, via: artistName } };
+    if (nameVariantsMap.size === 0) continue;
+    if (!best || nameVariantsMap.size > best.nameVariantsMap.size) best = { artistName, rawNames, nameVariantsMap };
+    if (nameVariantsMap.size >= SIMILAR_MIN_IN_LIBRARY) break;
   }
-  console.log(`[autodj] similar-artists "${originalArtist}" → 0 (tried: ${parts.map(p => `"${p}"`).join(', ')}) — pick falls back to bpm/key/genre/year`);
-  return { failed, result: _emptySimilar() };
+  if (!best) {
+    console.log(`[autodj] similar-artists "${originalArtist}" → 0 (tried: ${parts.map(p => `"${p}"`).join(', ')}) — pick falls back to bpm/key/genre/year`);
+    return { failed, result: _emptySimilar() };
+  }
+  return { failed, result: _similarResult(best, vpaths) };
+}
+
+function _similarResult({ artistName, rawNames, nameVariantsMap }, vpaths) {
+  const allVariants = [...new Set([...nameVariantsMap.values()].flat())];
+  const hasAlbumsSet = db.artistsWithAlbums(allVariants, vpaths);
+  const displayArtists = [];
+  const displayVariantMap = {};
+  const variantRankMap = {};
+  for (const [i, name] of rawNames.entries()) {
+    const variants = nameVariantsMap.get(name);
+    if (!variants) continue;
+    for (const v of variants) variantRankMap[v] = i + 1;
+    if (variants.some(v => hasAlbumsSet.has(v))) {
+      displayArtists.push(name);
+      displayVariantMap[name] = variants;
+    }
+  }
+  return { artists: allVariants, displayArtists, displayVariantMap, variantRankMap, via: artistName };
 }
 
 /** Last.fm top tracks for an artist as [{ title, artist, rank }], [] when unknown. */

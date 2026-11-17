@@ -137,10 +137,10 @@ function computeArtistKeys(name) {
   // must not hide the main artist.
   const credit = String(name || '').replace(/^[A-Z]?\d{1,3}\.\s*/, '');
   add(credit);
-  const chunks = credit.split(/\s+(?:feat\.?|ft\.?|fe\.|featuring|vs\.?|pres\.?|presents?\b|\bx\b)\s+/i);
+  const chunks = credit.split(/\s*;\s*|\s+(?:feat\.?|ft\.?|fe\.|featuring|vs\.?|pres\.?|presents?\b|\bx\b)\s+/i);
   for (const chunk of chunks) {
     add(chunk);
-    for (const part of chunk.split(/\s+(?:&|and)\s+/i)) add(part);
+    for (const part of chunk.split(/\s*,\s*|\s+(?:&|and)\s+/i)) add(part);
   }
   return out;
 }

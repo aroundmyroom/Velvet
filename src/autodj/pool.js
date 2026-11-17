@@ -3,6 +3,8 @@
 // genre are scored, never filtered. Shared by POST /api/v1/db/random-songs
 // (returnAll, the browser Auto-DJ) and the server-side radio (src/autodj/radio.js).
 
+import { artistKeys, artistsOverlap } from './scoring.js';
+
 // Bounds the payload / scoring cost on very large similar-artist pools; not a
 // quality filter.
 export const RANDOM_SONGS_BATCH_CAP = 500;
@@ -42,23 +44,34 @@ export function batchCandidatePool(fetchRows, body, rng = Math.random) {
   };
   const ignoreArtists = Array.isArray(body.ignoreArtists) ? body.ignoreArtists : undefined;
 
-  let batch = fetchRows({
+  // The SQL cooldown only matches whole credits; this also catches the same
+  // artist inside a collaboration ("Armin van Buuren vs Shapov",
+  // "Marco Borsato, Armin van Buuren, Davina Michelle").
+  const cooldownKeys = (ignoreArtists || []).map(artistKeys).filter(k => k.size > 0);
+  const outsideCooldown = rows => (cooldownKeys.length
+    ? rows.filter(r => { const k = artistKeys(r.artist); return !cooldownKeys.some(c => artistsOverlap(k, c)); })
+    : rows);
+
+  let batch = outsideCooldown(fetchRows({
     ...baseOpts,
     artists: hasArtistFilter ? body.artists : undefined,
     ignoreArtists,
-  });
+  }));
   let balanceByArtist = hasArtistFilter;
   // One line for the server log: which scope the pool came from and which
   // fallback widened it.
   const note = [hasArtistFilter ? `similar filter: ${body.artists.length} artists` : 'no similar filter'];
-  if (hasArtistFilter && batch.length === 0 && ignoreArtists?.length > 0) {
-    batch = fetchRows({ ...baseOpts, artists: body.artists });
-    note.push(`cooldown list (${ignoreArtists.length}) dropped — every similar artist was in it`);
-  }
+  // Widen the pool before allowing a recent artist again: a repeat is the last resort.
   if (hasArtistFilter && batch.length === 0) {
-    batch = fetchRows({ ...baseOpts, ignoreArtists });
+    batch = outsideCooldown(fetchRows({ ...baseOpts, ignoreArtists }));
     balanceByArtist = false;
-    note.push('similar filter dropped — none of those artists in the Auto-DJ scope');
+    note.push('similar filter dropped — every similar artist was played recently or is not in the Auto-DJ scope');
+  }
+  if (batch.length === 0 && ignoreArtists?.length > 0) {
+    batch = fetchRows({ ...baseOpts, artists: hasArtistFilter ? body.artists : undefined });
+    balanceByArtist = hasArtistFilter;
+    if (hasArtistFilter && batch.length === 0) { batch = fetchRows(baseOpts); balanceByArtist = false; }
+    note.push(`cooldown list (${ignoreArtists.length}) dropped — the whole scope was played recently`);
   }
   if (batch.length === 0) return null;
   const inScope = batch.length;

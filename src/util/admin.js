@@ -171,6 +171,10 @@ export function editUi(val) {
   return _setTopLevel('ui', val);
 }
 
+export function editSkin(val) {
+  return _setTopLevel('skin', val);
+}
+
 export async function editAddress(val) {
   await config.updateConfigFile(c => { c.address = val; });
   VelvetServer.reboot();

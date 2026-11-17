@@ -2998,7 +2998,7 @@
   "player.passkey.statusCancelled": "Geannuleerd.",
   "player.passkey.statusFailed": "Passkey toevoegen mislukt.",
   "player.pair.title": "Apparaat koppelen",
-  "player.pair.desc": "Keur een inlogcode goed die op een ander apparaat wordt getoond — een Samsung TV, kiosk, of overal waar typen met een afstandsbediening onhandig is — zonder daar iets te hoeven typen.",
+  "player.pair.desc": "Keur een inlogcode goed die op een ander apparaat wordt getoond — Home Assistant, een Samsung TV, een kiosk, of overal waar een wachtwoord typen onhandig is — zonder daar iets te hoeven typen.",
   "player.pair.codeLabel": "Koppelcode",
   "player.pair.codePlaceholder": "Voer de code in die op het andere apparaat staat",
   "player.pair.approveBtn": "Goedkeuren",
@@ -4155,7 +4155,7 @@
   "mobile.you.quality": "Kwaliteit",
   "mobile.you.qualityOriginal": "Origineel",
   "mobile.you.pairTitle": "Apparaat koppelen",
-  "mobile.you.pairHint": "Keur een aanmeldcode goed die op een ander apparaat (zoals een tv) staat, zodat het zonder wachtwoord kan aanmelden.",
+  "mobile.you.pairHint": "Keur een aanmeldcode goed die op een ander apparaat (zoals Home Assistant of een tv) staat, zodat het zonder wachtwoord kan aanmelden.",
   "mobile.you.codePlaceholder": "Code",
   "mobile.you.approve": "Goedkeuren",
   "mobile.you.enterCode": "Vul de code in die op het andere apparaat staat.",
@@ -4190,5 +4190,14 @@
   "tizen.autodj.picking": "Nummer kiezen…",
   "tizen.autodj.noSongs": "Geen nummers gevonden.",
   "tizen.autodj.retrying": "Fout bij ophalen van nummer. Opnieuw proberen…",
-  "tizen.viz.exitHint": "Druk op een toets om af te sluiten"
+  "tizen.viz.exitHint": "Druk op een toets om af te sluiten",
+  "player.userSettings.skinTitle": "Skin",
+  "player.userSettings.skinDesc": "Geef Velvet een ander uiterlijk. Je beheerder kan skins toevoegen.",
+  "player.userSettings.skinLabel": "Skin",
+  "player.userSettings.skinDefault": "Serverstandaard ({{skin}})",
+  "player.userSettings.skinNone": "Geen",
+  "admin.settings.labelDefaultSkin": "Standaard skin",
+  "admin.settings.skinNone": "Geen",
+  "admin.settings.skinHint": "Skins zijn mappen met een skin.css in save/skins/ (eigen skins) of webapp/skins/ (meegeleverd). Gebruikers kunnen zelf kiezen onder User Settings. Zie docs/skins.md.",
+  "admin.settings.toastSkinUpdated": "Standaard skin bijgewerkt"
 }

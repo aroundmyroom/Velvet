@@ -65,7 +65,10 @@ const GENRES = ['Disco', 'House', 'Deep House', 'Pop', 'Rock', 'Ambient', 'Hards
 const FAMILIES = [null, null, null, 'disco', 'electronic', 'soft'];
 const ARTISTS = ['Chic', 'Sister Sledge', 'Donna Summer', 'Cerrone', 'Eric Prydz', 'Eric Prydz & Steve Angello',
   'Mel & Kim', 'Mel & Kim vs. Frantique', 'Clean Bandit Fe. Mabel', '04. Clean Bandit', 'Daft Punk x Pharrell',
-  'Tiësto', 'The Weather Girls', 'Earth, Wind & Fire', 'A1. Donna Summer', '02.Donna Summer', null];
+  'Tiësto', 'The Weather Girls', 'Earth, Wind & Fire', 'A1. Donna Summer', '02.Donna Summer',
+  'Armin van Buuren & AVIRA feat. Sam Martin', 'Armin van Buuren vs Shapov',
+  'Dimitri Vegas & Like Mike, Armin van Buuren, W&W', 'Marco Borsato, Armin van Buuren, Davina Michelle',
+  'Artist A; Artist B', null];
 
 function pick(rng, arr) { return arr[Math.floor(rng() * arr.length)]; }
 function maybe(rng, v, p = 0.8) { return rng() < p ? v : null; }
@@ -209,5 +212,10 @@ describe('Auto-DJ scoring: browser and server agree', () => {
     for (const a of ARTISTS) assert.deepEqual([...server.artistKeys(a)], [...client.keys(a)]);
     assert.ok(server.artistsOverlap(server.artistKeys('Clean Bandit Fe. Mabel'), server.artistKeys('04. Clean Bandit')));
     assert.ok(server.artistsOverlap(server.artistKeys('A1. Donna Summer'), server.artistKeys('02.Donna Summer')));
+    const armin = server.artistKeys('Armin van Buuren & AVIRA feat. Sam Martin');
+    for (const collab of ['Armin van Buuren vs Shapov', 'Dimitri Vegas & Like Mike, Armin van Buuren, W&W', 'Marco Borsato, Armin van Buuren, Davina Michelle']) {
+      assert.ok(server.artistsOverlap(armin, server.artistKeys(collab)), collab);
+    }
+    assert.ok(!server.artistsOverlap(server.artistKeys('Earth, Wind & Fire'), server.artistKeys('Fire')), 'stop words keep band names apart');
   });
 });

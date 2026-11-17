@@ -29,6 +29,7 @@ import { VALID_RETENTIONS } from '../logger.js';
 import { writeTags } from '../util/ffmpeg-tags.js';
 import { ffmpegBin, ffprobeBin } from '../util/ffmpeg-bootstrap.js';
 import { signUserToken, setTokenCookie } from './auth.js';
+import { listSkins, SKIN_NAME } from '../util/skins.js';
 
 // A vpath is a URL segment (/media/<vpath>/) and the first segment of every song path, so no slashes.
 // eslint-disable-next-line no-control-regex
@@ -1030,8 +1031,20 @@ export function setup(velvet) {
       ssl: config.program.ssl,
       storage: config.program.storage,
       maxRequestSize: config.program.maxRequestSize,
-      ui: config.program.ui || 'velvet'
+      ui: config.program.ui || 'velvet',
+      skin: config.program.skin || '',
+      skins: listSkins()
     });
+  });
+
+  velvet.post("/api/v1/admin/config/skin", async (req, res) => {
+    const schema = Joi.object({ skin: Joi.string().pattern(SKIN_NAME).allow('').required() });
+    joiValidate(schema, req.body);
+    if (req.body.skin && !listSkins().some(s => s.id === req.body.skin)) {
+      throw new WebError(`Skin "${req.body.skin}" not found`, 400);
+    }
+    await admin.editSkin(req.body.skin);
+    res.json({});
   });
 
   velvet.post("/api/v1/admin/config/theme", async (req, res) => {

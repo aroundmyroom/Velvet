@@ -2992,7 +2992,7 @@
   "player.passkey.statusCancelled": "Anulowano.",
   "player.passkey.statusFailed": "Nie udało się dodać klucza dostępu.",
   "player.pair.title": "Pair a Device",
-  "player.pair.desc": "Approve a sign-in code shown on another device — a Samsung TV, kiosk, or anywhere typing a password is awkward — without typing anything there.",
+  "player.pair.desc": "Approve a sign-in code shown on another device — Home Assistant, a Samsung TV, a kiosk, or anywhere typing a password is awkward — without typing anything there.",
   "player.pair.codeLabel": "Pairing code",
   "player.pair.codePlaceholder": "Enter the code shown on the other device",
   "player.pair.approveBtn": "Approve",
@@ -4149,7 +4149,7 @@
   "mobile.you.quality": "Quality",
   "mobile.you.qualityOriginal": "Original",
   "mobile.you.pairTitle": "Pair a Device",
-  "mobile.you.pairHint": "Approve a sign-in code shown on another device (like a TV) so it can sign in without a password.",
+  "mobile.you.pairHint": "Approve a sign-in code shown on another device (like Home Assistant or a TV) so it can sign in without a password.",
   "mobile.you.codePlaceholder": "Code",
   "mobile.you.approve": "Approve",
   "mobile.you.enterCode": "Enter the code shown on the other device.",
@@ -4184,5 +4184,14 @@
   "tizen.autodj.picking": "Picking a track…",
   "tizen.autodj.noSongs": "No songs found.",
   "tizen.autodj.retrying": "Error fetching track. Retrying…",
-  "tizen.viz.exitHint": "Press any key to exit"
+  "tizen.viz.exitHint": "Press any key to exit",
+  "player.userSettings.skinTitle": "Skin",
+  "player.userSettings.skinDesc": "Give Velvet a different look. Your admin can add skins.",
+  "player.userSettings.skinLabel": "Skin",
+  "player.userSettings.skinDefault": "Server default ({{skin}})",
+  "player.userSettings.skinNone": "None",
+  "admin.settings.labelDefaultSkin": "Default Skin",
+  "admin.settings.skinNone": "None",
+  "admin.settings.skinHint": "Skins are folders with a skin.css in save/skins/ (your own) or webapp/skins/ (built in). Users can pick their own under User Settings. See docs/skins.md.",
+  "admin.settings.toastSkinUpdated": "Default skin updated"
 }

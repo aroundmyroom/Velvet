@@ -2640,6 +2640,7 @@ const advancedView = Vue.component('advanced-view', {
       params: ADMINDATA.serverParams,
       paramsTS: ADMINDATA.serverParamsUpdated,
       uiSelect: ADMINDATA.serverParams.ui || 'velvet',
+      skinSelect: ADMINDATA.serverParams.skin || '',
       extAuth: {
         enabled: false,
         headerName: 'Remote-User',
@@ -2689,9 +2690,19 @@ const advancedView = Vue.component('advanced-view', {
                         </select>
                       </td>
                     </tr>
+                    <tr>
+                      <td><b>{{ t('admin.settings.labelDefaultSkin') }}</b></td>
+                      <td>
+                        <select v-model="skinSelect" v-on:change="setSkin(skinSelect)" style="width:auto;padding:4px 8px">
+                          <option value="">{{ t('admin.settings.skinNone') }}</option>
+                          <option v-for="s in (params.skins || [])" :key="s.id" :value="s.id">{{ s.id }}</option>
+                        </select>
+                      </td>
+                    </tr>
                   </tbody>
                 </table>
                 <p style="color:#888;font-size:12px;margin-top:8px">{{ t('admin.settings.themeHint') }}</p>
+                <p style="color:#888;font-size:12px;margin-top:4px">{{ t('admin.settings.skinHint') }}</p>
               </div>
             </div>
           </div>
@@ -2887,6 +2898,20 @@ const advancedView = Vue.component('advanced-view', {
         iziToast.success({ title: this.t('admin.settings.toastThemeUpdated'), position: 'topCenter', timeout: 3000 });
       }).catch(() => {
         this.uiSelect = ADMINDATA.serverParams.ui || 'velvet';
+        iziToast.error({ title: this.t('admin.common.failed'), position: 'topCenter', timeout: 3000 });
+      });
+    },
+    setSkin: function(skin) {
+      API.axios({
+        method: 'POST',
+        url: `${API.url()}/api/v1/admin/config/skin`,
+        data: { skin }
+      }).then(() => {
+        Vue.set(ADMINDATA.serverParams, 'skin', skin);
+        this.skinSelect = skin;
+        iziToast.success({ title: this.t('admin.settings.toastSkinUpdated'), position: 'topCenter', timeout: 3000 });
+      }).catch(() => {
+        this.skinSelect = ADMINDATA.serverParams.skin || '';
         iziToast.error({ title: this.t('admin.common.failed'), position: 'topCenter', timeout: 3000 });
       });
     },

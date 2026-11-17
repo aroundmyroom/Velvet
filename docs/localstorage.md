@@ -164,6 +164,8 @@ Inline keys with the `ms2_<name>_<username>` pattern: `time_flipped`
 |---|---|---|
 | `ms2_home_order_<username>` | JSON array of strings | Saved shelf order for the Home view. Populated by drag-to-reorder; missing IDs are appended in default order on next load. |
 | `ms2_home_hidden_<username>` | JSON array of strings | IDs of cards the user has deselected in Customize mode. Format: `'rs:<id>'` (radio station), `'pf:<id>'` (podcast), `'ic:vp:<name>'` (folder), `'ic:pl:<name>'` (playlist). Absent = all cards visible. |
+| `ms2_skin_<username>` | `'default'` \| `'none'` \| skin name | The user's skin choice (User Settings → Skin). Absent or `'default'` = the server's default skin. Synced with the other user settings. |
+| `ms2_skin` | `'<name>\|<v>'` | Last skin applied in this browser, so `player-shell.js` can load it before the first paint. Removed when no skin applies. |
 
 ---
 
