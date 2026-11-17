@@ -1,3 +1,33 @@
+## v0.10.2 (2026-11-17)
+
+Home vibe, a new play button and a record behind the cover
+
+### Changed
+
+- **Home: Keep the vibe going.** Under the greeting, four album covers lie
+  fanned out next to "More like *song*" for the song you are playing (or the
+  last one you played), with its artist and similar artists. With Auto-DJ off,
+  one round play button starts Auto-DJ from there; with Auto-DJ on, the block
+  says so with a pulsing dot. It follows the theme, the album-colour accent
+  and the active skin.
+- **Home shelves show covers first.** Larger covers with rounded corners and a
+  soft shadow; hovering lifts the cover and shows a round play button with the
+  same glow as the player's play button. Each shelf shows exactly one full row.
+  Shortcuts keeps its current look.
+- **A new play button.** The play/pause button is now a knob in a thin ring.
+  While music plays the ring lights up in the accent colour with a soft glow,
+  and each new song sends one ring pulse outward. Skins can colour the knob
+  with `--play-bg` and `--play-fg`; the goud skin now has a gold knob.
+- **Playing Now: a record behind the cover.** A vinyl record, a CD or a
+  cassette slides out from behind the cover and turns while music plays, with
+  the cover as its label; on pause it slides back in. In Auto, Velvet picks
+  per song: mixes and radio recordings get a tape, vinyl rips, 12-inch folders
+  and songs from before 1988 get vinyl, CD folders and newer songs get a CD.
+  Choose Auto, Vinyl, CD, Tape or Cover only under User Settings → Playing
+  Now, or click the cover to step through them; the choice is remembered and
+  follows you to other browsers. Live radio, podcasts and audiobooks keep the
+  plain cover. See `docs/playing-now.md`.
+
 ## v0.10.1 (2026-11-17)
 
 Skins, and an Auto-DJ that keeps collaborations apart

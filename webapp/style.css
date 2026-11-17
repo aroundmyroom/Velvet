@@ -413,9 +413,7 @@ body.sidebar-collapsed .footer-link,body.sidebar-collapsed .footer-action{justif
 :root.light .ctx-menu{background:#f2f2fa;box-shadow:0 8px 32px rgba(0,0,0,.2);}
 :root.light .toast{box-shadow:0 4px 20px rgba(0,0,0,.15);}
 :root.light #login-screen{background:radial-gradient(ellipse 80% 50% at 50% -10%,rgba(109,60,230,.15),transparent),var(--bg);}
-:root.light .play-main{box-shadow:0 2px 12px rgba(109,60,230,.35);}
-:root.light .play-main:hover{box-shadow:0 0 0 8px var(--primary-d),0 4px 18px rgba(109,60,230,.4);}
-:root.light .np-play-main:hover{box-shadow:0 0 0 10px var(--primary-d),0 6px 24px rgba(109,60,230,.45)!important;}
+:root.light .play-main{--pm-drop:0 4px 12px rgba(0,0,0,.14);}
 :root.light .prog-track{background:rgba(0,0,0,.18);}
 :root.light .cue-tick::after{box-shadow:0 2px 10px rgba(0,0,0,.18);}
 /* Song rows — slightly tinted on hover for readability */
@@ -1307,20 +1305,29 @@ body.vu-needle-mode .eq-panel{bottom:calc(var(--player) + 8px);}
 /* keep generic ctrl-sm for EQ/viz/queue utility buttons */
 .ctrl-sm{width:40px;height:40px;opacity:1;}
 
-/* main play/pause button */
+/* main play/pause button: a knob in a thin ring; the ring lights up in the accent colour while music plays.
+   Skins may set --play-bg / --play-fg on .play-main. */
 .play-main{
+  --pm-gap:color-mix(in srgb,var(--surface) 50%,var(--raised));
+  --pm-drop:0 6px 14px rgba(0,0,0,.35);
   width:56px;height:56px;
-  background:var(--primary);
-  color:#fff!important;
+  background:var(--play-bg,radial-gradient(circle at 50% 30%,color-mix(in srgb,var(--raised) 78%,var(--t3)),var(--surface) 70%));
+  color:var(--play-fg,var(--t1))!important;
   border-radius:50%;
-  box-shadow:0 0 0 0 var(--primary-g);
-  transition:background .15s,box-shadow .2s,transform .1s;
+  box-shadow:0 0 0 1px var(--border2),0 0 0 4px var(--pm-gap),0 0 0 5px var(--border),var(--pm-drop);
+  transition:box-shadow .5s,filter .15s,transform .1s;
 }
-.play-main:hover{
-  background:var(--primary-h);
-  box-shadow:0 0 0 8px var(--primary-d),0 4px 18px rgba(139,92,246,.45);
+.play-main:hover{filter:brightness(1.15);box-shadow:0 0 0 1px var(--border2),0 0 0 4px var(--pm-gap),0 0 0 5px var(--border2),var(--pm-drop);}
+.play-main:active{transform:scale(.92);}
+.audio-playing .play-main,.audio-playing .play-main:hover{
+  box-shadow:0 0 0 1px var(--border2),0 0 0 4px var(--pm-gap),0 0 0 5px var(--primary),0 0 26px color-mix(in srgb,var(--primary) 65%,transparent),var(--pm-drop);
 }
-.play-main:active{transform:scale(.9);box-shadow:0 0 0 4px var(--primary-d);}
+.play-main.pm-drop{animation:pm-ring 1.1s cubic-bezier(.2,.8,.2,1);}
+@keyframes pm-ring{
+  0%{box-shadow:0 0 0 1px var(--border2),0 0 0 4px var(--pm-gap),0 0 0 5px var(--primary),0 0 0 5px color-mix(in srgb,var(--primary) 70%,transparent),var(--pm-drop);}
+  100%{box-shadow:0 0 0 1px var(--border2),0 0 0 4px var(--pm-gap),0 0 0 5px var(--primary),0 0 0 24px transparent,var(--pm-drop);}
+}
+@media (prefers-reduced-motion:reduce){.play-main{transition:none;}.play-main.pm-drop{animation:none;}}
 /* Progress timeline — cols 1-2 (not VU col), row 2 */
 .player-progress{
   grid-column:1/3;
@@ -2000,8 +2007,7 @@ body.room-remote #vu-spec-row{opacity:.35;}
 .np-progress span:last-child{text-align:right;}
 .np-controls{display:flex;align-items:center;justify-content:center;gap:20px;}
 .np-controls .ctrl-nav{width:54px;height:54px;opacity:.9;}
-.np-play-main{width:68px!important;height:68px!important;box-shadow:0 0 0 0 var(--primary-g);}
-.np-play-main:hover{box-shadow:0 0 0 10px var(--primary-d),0 6px 24px rgba(139,92,246,.5)!important;}
+.np-play-main{width:68px!important;height:68px!important;}
 /* Metadata table */
 .np-meta{
   width:100%;border-top:1px solid var(--border);padding-top:16px;
@@ -2684,6 +2690,60 @@ body.room-remote #vu-spec-row{opacity:.35;}
 /* empty shelves hidden outside edit mode */
 .home-shelf.hs-empty{display:none;}
 .home-editing .home-shelf.hs-empty{display:block;}
+/* ── home: keep the vibe going ── */
+.home-vibe{margin:0 0 32px;container:hv / inline-size;}
+.home-vibe-in{position:relative;display:flex;align-items:center;min-height:196px;padding:26px 28px;border:1px solid var(--border);border-radius:var(--r2);overflow:hidden;
+  background:linear-gradient(115deg,color-mix(in srgb,var(--primary) 18%,var(--surface)) 0,color-mix(in srgb,var(--primary) 6%,var(--surface)) 48%,var(--surface) 100%);}
+.home-vibe-glow{position:absolute;right:-40px;top:50%;width:460px;height:460px;transform:translateY(-50%);background:center/cover no-repeat;filter:blur(60px) saturate(1.4);opacity:.32;pointer-events:none;}
+.home-vibe-tx{position:relative;z-index:1;max-width:48%;display:flex;flex-direction:column;align-items:flex-start;gap:6px;min-width:0;}
+.home-vibe-kicker{display:flex;align-items:center;gap:7px;font-size:.75rem;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--t2);}
+.home-vibe.is-on .home-vibe-kicker{color:var(--primary);}
+.home-vibe-dot{width:7px;height:7px;border-radius:50%;background:var(--primary);animation:hv-pulse 1.8s ease-out infinite;}
+.home-vibe:not(.is-on) .home-vibe-dot{display:none;}
+@keyframes hv-pulse{0%{box-shadow:0 0 0 0 var(--primary-g);}100%{box-shadow:0 0 0 8px transparent;}}
+.home-vibe-title{margin:0;font-size:1.45rem;font-weight:700;line-height:1.2;color:var(--t1);overflow-wrap:anywhere;display:-webkit-box;-webkit-line-clamp:2;line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;}
+.home-vibe-artists{margin:0;font-size:.85rem;color:var(--t2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%;}
+.home-vibe-go{display:inline-flex;align-items:center;gap:12px;margin-top:12px;padding:0 18px 0 0;border:0;background:none;color:var(--t1);font:inherit;font-size:.85rem;font-weight:700;cursor:pointer;}
+.home-vibe.is-on .home-vibe-go{display:none;}
+.home-vibe-go .hv-btn{width:48px;height:48px;border-radius:50%;display:grid;place-items:center;background:var(--primary);color:#fff;box-shadow:0 0 0 6px var(--primary-d),0 6px 22px var(--primary-g);transition:background .15s,box-shadow .2s,transform .1s;}
+.home-vibe-go:hover .hv-btn{background:var(--primary-h);box-shadow:0 0 0 9px var(--primary-d),0 6px 28px var(--primary-g);}
+.home-vibe-go:active .hv-btn{transform:scale(.92);}
+.home-vibe-go:focus-visible{outline:2px solid var(--focus);outline-offset:4px;border-radius:999px;}
+.home-vibe-stack{position:absolute;right:44px;top:50%;width:350px;height:170px;transform:translateY(-50%);}
+.home-vibe-cv{position:absolute;top:8px;width:150px;height:150px;border-radius:var(--r);background:var(--raised) center/cover no-repeat;box-shadow:0 12px 30px -10px rgba(0,0,0,.6),0 0 0 1px var(--border);transition:transform .5s cubic-bezier(.2,.8,.2,1);}
+.home-vibe-cv:nth-child(1){left:0;transform:rotate(-9deg);}
+.home-vibe-cv:nth-child(2){left:66px;transform:rotate(-3deg) translateY(-6px);}
+.home-vibe-cv:nth-child(3){left:132px;transform:rotate(4deg);}
+.home-vibe-cv:nth-child(4){left:198px;transform:rotate(10deg) translateY(8px);}
+.home-vibe:hover .home-vibe-cv:nth-child(1){transform:rotate(-13deg) translateX(-14px);}
+.home-vibe:hover .home-vibe-cv:nth-child(2){transform:rotate(-5deg) translate(-4px,-10px);}
+.home-vibe:hover .home-vibe-cv:nth-child(3){transform:rotate(6deg) translate(4px,-4px);}
+.home-vibe:hover .home-vibe-cv:nth-child(4){transform:rotate(14deg) translate(14px,8px);}
+@container hv (max-width:640px){.home-vibe-stack{right:-120px;opacity:.55;}.home-vibe-tx{max-width:62%;}}
+@container hv (max-width:500px){
+  .home-vibe-in{flex-direction:column;align-items:stretch;padding:22px 20px;}
+  .home-vibe-glow{right:auto;left:50%;top:0;transform:translateX(-50%);width:320px;height:320px;}
+  .home-vibe-stack{order:-1;position:relative;right:auto;top:auto;transform:none;width:252px;height:124px;margin:0 auto 14px;opacity:1;}
+  .home-vibe-cv{width:110px;height:110px;}
+  .home-vibe-cv:nth-child(2){left:48px;}.home-vibe-cv:nth-child(3){left:96px;}.home-vibe-cv:nth-child(4){left:142px;}
+  .home-vibe-tx{max-width:none;}
+}
+/* ── home: shelves show covers first ── */
+.home-main .home-row{grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:20px 18px;}
+.home-main .home-row>.hc.hc-over{display:none;}
+.home-main .hc{overflow:visible;border-radius:0;}
+.home-main .hc:hover{background:transparent;box-shadow:none;}
+.home-main .hc-art{border-radius:var(--r);box-shadow:0 8px 22px -12px rgba(0,0,0,.7),0 0 0 1px var(--border);transition:transform .25s cubic-bezier(.2,.8,.2,1),box-shadow .25s;}
+.home-main .hc:hover .hc-art{transform:translateY(-4px);box-shadow:0 18px 32px -14px rgba(0,0,0,.8),0 0 0 1px var(--border2);}
+.home-main .hc-info{padding:9px 1px 0;}
+.home-main .hc-title{font-size:.8rem;}
+.home-main .hc-sub{font-size:.72rem;margin-top:2px;}
+.home-main .hc-count-badge{left:7px;right:auto;bottom:7px;}
+.hc-play{display:none;}
+.home-main .hc-play{position:absolute;right:9px;bottom:9px;z-index:3;width:40px;height:40px;border-radius:50%;display:grid;place-items:center;background:var(--primary);color:#fff;
+  box-shadow:0 0 0 5px var(--primary-d),0 6px 18px var(--primary-g);opacity:0;transform:translateY(6px);transition:opacity .18s,transform .18s,background .15s;pointer-events:none;}
+.home-main .hc:hover .hc-play{opacity:1;transform:none;}
+@media (prefers-reduced-motion:reduce){.home-vibe-cv,.home-main .hc-art,.home-main .hc-play{transition:none;}.home-vibe-dot{animation:none;}}
 
 
 /* ── Album Library ─────────────────────────────────────────────────────────── */
@@ -2966,6 +3026,57 @@ body.audiobook-mode #ab-speed-btn{color:var(--primary);}
 }
 :root.light .pnow-art{ box-shadow:0 8px 28px rgba(0,0,0,.22); }
 .pnow-art img{width:100%;height:100%;object-fit:cover;object-position:top;display:block;}
+
+/* Playing Now record: a vinyl, CD or tape that slides out from behind the cover and turns while audio plays */
+.pnow-art-wrap{position:relative;flex-shrink:0;z-index:1;}
+.pnow-art-wrap[role="button"]{cursor:pointer;}
+.pnow-art-wrap[role="button"]:focus-visible{outline:2px solid var(--focus);outline-offset:4px;border-radius:var(--r2);}
+body.vinyl-mode .pnow-art-wrap[role="button"]{cursor:default;}
+.pnow-art-wrap.pnow-has-rec{padding-right:92px;}
+.pnow-art-wrap.pnow-rec-tape{padding-right:156px;}
+.pnow-rec{position:absolute;left:0;bottom:0;width:180px;height:180px;z-index:0;pointer-events:none;
+  transform:translateX(18%);transition:transform .9s cubic-bezier(.3,.9,.25,1);}
+.audio-playing .pnow-rec{transform:translateX(50%);}
+.pnow-rec-tape .pnow-rec{transform:translateX(26%);}
+.audio-playing .pnow-rec-tape .pnow-rec{transform:translateX(86%);}
+.pnow-rec.is-tucked{transform:translateX(2%)!important;transition:none;}
+.pnow-rec-spin{display:block;animation:pnow-spin var(--rev,1.8s) linear infinite;animation-play-state:paused;}
+.audio-playing .pnow-rec-spin{animation-play-state:running;}
+@keyframes pnow-spin{to{transform:rotate(360deg);}}
+.pnow-rec-label{background:var(--raised) center/cover no-repeat;}
+.pnow-disc{position:absolute;inset:5px;border-radius:50%;}
+.pnow-disc .pnow-rec-spin{position:absolute;inset:0;border-radius:50%;}
+.pnow-disc-sheen{position:absolute;inset:0;border-radius:50%;}
+.pnow-disc.vinyl .pnow-rec-spin{--rev:1.8s;background:
+  radial-gradient(circle,transparent 0 33%,#0a0a0a 33.4% 36%,transparent 36.4%),
+  repeating-radial-gradient(circle,#101010 0 1.1px,#1a1a1a 1.6px 2.6px),#111;
+  box-shadow:0 0 0 1px #262626,0 14px 30px -10px rgba(0,0,0,.9);}
+.pnow-disc.vinyl .pnow-rec-label{position:absolute;inset:33%;border-radius:50%;box-shadow:0 0 0 2px #0a0a0a;}
+.pnow-disc.vinyl .pnow-rec-label::after{content:'';position:absolute;inset:46%;border-radius:50%;background:#050505;}
+.pnow-disc.vinyl .pnow-disc-sheen{background:conic-gradient(from 20deg,transparent 0 8%,rgba(255,255,255,.10) 12%,transparent 18% 50%,rgba(255,255,255,.07) 62%,transparent 68%);
+  -webkit-mask:radial-gradient(circle,transparent 0 33%,#000 34%);mask:radial-gradient(circle,transparent 0 33%,#000 34%);}
+.pnow-disc.cd .pnow-rec-spin{--rev:2.6s;background:conic-gradient(from 0deg,#cfd5dd,#f3f3f6,#b7c1cc,#e6d2ef,#c4e3f2,#efefd6,#cfd5dd);
+  box-shadow:0 0 0 1px rgba(255,255,255,.25),0 14px 30px -10px rgba(0,0,0,.9);}
+.pnow-disc.cd .pnow-rec-label{position:absolute;inset:5%;border-radius:50%;
+  -webkit-mask:radial-gradient(circle,transparent 0 17%,#000 17.5%);mask:radial-gradient(circle,transparent 0 17%,#000 17.5%);}
+.pnow-cd-hub{display:none;}
+.pnow-disc.cd .pnow-cd-hub{display:block;position:absolute;inset:40.5%;border-radius:50%;background:radial-gradient(circle,#0d0d0d 0 36%,rgba(255,255,255,.55) 37% 44%,rgba(210,220,230,.35) 45% 100%);}
+.pnow-disc.cd .pnow-disc-sheen{background:conic-gradient(from 200deg,transparent 0 10%,rgba(255,255,255,.22) 14%,transparent 20% 60%,rgba(255,255,255,.14) 66%,transparent 72%);}
+.pnow-tape{position:absolute;left:4px;right:-6px;top:32px;height:116px;border-radius:9px;
+  background:linear-gradient(180deg,#2b2a2e,#1c1b1f);box-shadow:0 0 0 1px #3a393f,0 14px 30px -10px rgba(0,0,0,.9);}
+.pnow-tape-sticker{position:absolute;left:6%;right:6%;top:8%;height:64%;border-radius:4px;overflow:hidden;}
+.pnow-tape-sticker .pnow-rec-label{position:absolute;inset:0;opacity:.92;}
+.pnow-tape-sticker span{position:absolute;left:5px;top:3px;font-size:11px;font-weight:800;line-height:1;color:#fff;text-shadow:0 1px 2px rgba(0,0,0,.8);}
+.pnow-tape-win{position:absolute;left:24%;right:24%;top:26%;height:30%;border-radius:999px;background:rgba(12,12,14,.88);box-shadow:inset 0 0 0 1px rgba(255,255,255,.12);}
+.pnow-tape-reel{--rev:2.2s;position:absolute;top:41%;width:24%;aspect-ratio:1;transform:translateY(-50%);border-radius:50%;}
+.pnow-tape-reel .pnow-rec-spin{position:absolute;inset:0;border-radius:50%;
+  background:radial-gradient(circle,#0c0c0e 0 22%,transparent 23%),repeating-conic-gradient(#e9e4da 0 8deg,transparent 8deg 60deg),radial-gradient(circle,transparent 0 46%,#e9e4da 47% 54%,transparent 55%);}
+.pnow-tape-reel.l{left:12%;box-shadow:0 0 0 7px #3b2a20;}
+.pnow-tape-reel.r{right:12%;box-shadow:0 0 0 3px #3b2a20;}
+.pnow-tape-head{position:absolute;left:22%;right:22%;bottom:0;height:20%;background:#151417;clip-path:polygon(8% 0,92% 0,100% 100%,0 100%);}
+body.vinyl-mode .pnow-rec{display:none;}
+body.vinyl-mode .pnow-art-wrap{padding-right:0;}
+@media (prefers-reduced-motion:reduce){.pnow-rec{transition:none;}.pnow-rec-spin{animation:none;}}
 
 /* Playing-Now art → spinning vinyl on an SL-1200-style deck (body.vinyl-mode) */
 body.vinyl-mode .pnow-art,

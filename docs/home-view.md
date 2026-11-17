@@ -10,8 +10,10 @@ The player has two landing views in the left nav:
 Both views fetch fresh data from the server on every visit. Audiobook
 libraries are left out of the song shelves.
 
-The number of cards per shelf is worked out at load time from the width of
-`content-body` (130 px per card): at least 6 on Home, at least 4 on Shortcuts.
+The number of cards fetched per shelf is worked out at load time from the width
+of `content-body`: 158 px per card on Home (at least 6), 130 px on Shortcuts (at
+least 4). On Home each shelf then shows exactly one full row of covers, also
+after the window is resized.
 
 ---
 
@@ -21,13 +23,15 @@ From top to bottom:
 
 | Section | Content |
 |---|---|
-| Greeting | "Good morning / afternoon / evening, *name*", plus a stats strip: songs played today, this week, and the listening streak in days (shown from 2 days). A one-time tip strip can appear below it until dismissed. |
+| Greeting | "Good morning / afternoon / evening, *name*", plus a stats strip: songs played today, this week, and the listening streak in days (shown from 2 days). |
+| Keep the vibe going | Four album covers fanned out like a hand of cards: the playing song first, then covers from Recently Added and Continue Listening. Next to them "More like *song*", the artist and up to two similar Auto-DJ artists. When nothing plays, the first Continue Listening song is used. With Auto-DJ off, the round play button starts Auto-DJ from that song (or plays the Continue Listening song first). With Auto-DJ on, the label reads "Auto-DJ is keeping the vibe" with a pulsing dot and there is no button. The block follows the playing song and the theme, album-colour accent and skin. A one-time tip strip can appear below it until dismissed. |
 | Recently Added | Recently added songs grouped by album folder (a `CD1`/`Disc 2` sub-folder counts as its album), with a **NEW** badge. Click opens the album with the new songs marked. |
 | Continue Listening | Recently played songs, one per album. |
 | Yesterday / Last Week, Same Day / Last Month, Same Day / Last Year, Same Day | Up to 10 songs you played on that day (`GET /api/v1/db/home-summary`). A section only appears once your play history is at least that old (1, 7, 30, 365 days). |
 | Nostalgia / Current Favourites | Your most played songs, split by year: songs from more than 10 years ago are Nostalgia, the rest Current Favourites. Each needs at least 3 songs; if neither has 3, a plain **Most Played** shelf is shown instead. |
 
-Empty sections are not shown. Clicking a song card plays it.
+Empty sections are not shown. Shelves show large covers; hovering one lifts it
+and shows a round play button. Clicking a song card plays it.
 
 ---
 

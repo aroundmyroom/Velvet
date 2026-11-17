@@ -152,6 +152,7 @@ Written by `_uKey`: `autodj` (`'1'` = Auto-DJ was on when the page closed),
 | `bar_top` | `'1'` / absent | absent | Player bar at the top |
 | `show_genres`, `show_decades` | `'0'` / absent | absent (shown) | Hide the Genres / Decades views |
 | `queue_aa_artist` | `'1'` / absent | absent | Show album artist in the queue |
+| `record` | `'auto'` \| `'vinyl'` \| `'cd'` \| `'tape'` \| `'off'` / absent | absent (Auto) | What slides out from behind the Playing Now cover (User Settings → Playing Now → Record). See [playing-now.md](playing-now.md) |
 
 Inline keys with the `ms2_<name>_<username>` pattern: `time_flipped`
 (elapsed/remaining toggle), `pinned_view`, `album_click_mode`, `alb_sort`,

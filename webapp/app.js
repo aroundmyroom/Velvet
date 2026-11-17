@@ -1,5 +1,5 @@
 'use strict';
-const VELVET_VERSION = '0.10.1';
+const VELVET_VERSION = '0.10.2';
 // ── SERVER IDENTITY GUARD ────────────────────────────────────────────────────
 // Detects when this browser's localStorage belongs to a different Velvet
 // instance (fresh install, IP change, reverse-proxy swap, second server).
@@ -788,6 +788,8 @@ function toastError(msg, ms) {
 let _similarStripT = null;
 let _djSimilarFor = '';            // artist we searched Last.fm for
 let _djSimilarSource = '';         // artist the current list actually came from (differs when kept after a miss)
+let _playPulseFp = '';
+let _homeVibeKey = '';
 let _djSimilarArtists = [];        // raw DB variants (for SQL IN filter)
 let _djSimilarDisplayArtists = []; // clean Last.fm names (for display)
 let _djVariantRankMap = {};        // DB artist variant → 1-indexed Last.fm rank (lower = more similar)
@@ -1994,6 +1996,8 @@ const Player = {
     if (_sonosFav) return; // the Sonos-Favourite poll owns the bar while external content plays
     const s = S.queue[S.idx];
     if (!s) return;
+    if (S.view === 'home') _renderHomeVibe();
+    if (s.filepath !== _playPulseFp) { _playPulseFp = s.filepath; _pulsePlayButtons(); }
     // Reset progress bar immediately on song change
     const _fillEl  = document.getElementById('prog-fill');
     const _thumbEl = document.getElementById('prog-thumb');
@@ -2064,6 +2068,7 @@ const Player = {
       const _pnBg  = document.getElementById('pnow-bg');
       if (_pnArt) _pnArt.innerHTML = u ? `<img src="${u}" alt="" data-err="noart">` : noArtHtml();
       if (_pnBg)  _pnBg.style.backgroundImage = u ? `url(${u})` : '';
+      _pnowRecordArt(u);
     }
 
     // On-demand art: if the file has no album-art yet (not scanned), ask the
@@ -2093,6 +2098,7 @@ const Player = {
             const pnowBg  = document.getElementById('pnow-bg');
             if (pnowArt) pnowArt.innerHTML = `<img src="${nu}" alt="" data-err="noart">`;
             if (pnowBg)  pnowBg.style.backgroundImage = `url(${nu})`;
+            _pnowRecordArt(nu);
           }
         })
         .catch(() => {});
@@ -3086,6 +3092,7 @@ function setAutoDJ(on, skipAutoStart) {
   document.getElementById('dj-light').classList.toggle('dj-inactive', !on);
   _syncPrefs();
   _syncQueueLabel();
+  if (S.view === 'home') _renderHomeVibe();
   // update autodj page if visible
   const btn = document.querySelector('.autodj-toggle');
   if (btn) { btn.classList.toggle('on', on); btn.textContent = on ? t('player.autodj.btnStop') : t('player.autodj.btnStart'); }
@@ -11287,6 +11294,102 @@ let _pnowArtist        = null;  // artist string currently rendered
 let _pnowViewActive    = false; // true while this view is shown
 let _pnowLastCueArtist = '';    // last CUE chapter artist shown in pnow — avoids redundant re-fetches
 
+// ── Playing Now record: vinyl, CD or tape behind the cover ───────────────────
+// Auto picks per song from the folder names, year, length and library type; the first matching rule wins.
+const _REC_MIX_DIR   = /\b(mega ?mix(es|en)?|mixed by|mix ?club|mixen|jaarmix\w*|master ?mix(dj)?|in the mix|dj[ -]?mix\w*|continuous mix|full set|live set|radio ?show|the tapes)\b/i;
+const _REC_MIX_FILE  = /\b(mega ?mix|mixed by|dj[ -]?mix|continuous mix|full set|live set|in the mix|jaarmix\w*)\b/i;
+const _REC_MIX_ALBUM = /\b(mixed by|mix cut|continuous mix|dj[ -]?mix)\b/i;
+const _REC_VINYL_SRC = /(vinyl|\bLP\b|\b45 ?rpm\b)/i;
+const _REC_CD        = /(\bCD[MS]?s?(?![-\w])|\bCD ?\d{1,2}\b|\b\d ?CD\b|\bCD-(FLAC|rip)\b|\bon CD\b|\bdis[ck] ?\d+\b)/i;
+const _REC_VINYL_FMT = /(\b(12|10|7) ?(inch|inches|"|''|in\b)|\bmaxi\b)/i;
+const _REC_SIDE      = /^[A-D][1-9]\d?[ .\-_]/;
+const _REC_YEAR      = /\b(19[5-9]\d|20[0-4]\d)\b/;
+const _REC_VINYL_BEFORE = 1988;
+const _REC_KINDS = ['vinyl', 'cd', 'tape'];
+
+function _recordLibraryType(fp) {
+  for (const [name, meta] of Object.entries(S.vpathMeta || {})) {
+    if (meta.type !== 'recordings' && meta.type !== 'youtube') continue;
+    if (fp.startsWith(name + '/')) return meta.type;
+    if (meta.parentVpath && meta.filepathPrefix && fp.startsWith(meta.parentVpath + '/' + meta.filepathPrefix)) return meta.type;
+  }
+  return 'music';
+}
+
+function _recordAuto(s) {
+  const parts = (s.filepath || '').split('/');
+  const file = parts.pop() || '';
+  const dirs = parts.slice(1).join('/');
+  const dur = Number(s.duration) || 0;
+  if (_recordLibraryType(s.filepath || '') !== 'music') return 'tape';
+  if (dur >= 1800) return 'tape';
+  if (_REC_MIX_DIR.test(dirs) || _REC_MIX_ALBUM.test(s.album || '') || (dur >= 600 && _REC_MIX_FILE.test(file))) return 'tape';
+  if (_REC_VINYL_SRC.test(dirs)) return 'vinyl';
+  if (_REC_CD.test(dirs)) return 'cd';
+  if (_REC_VINYL_FMT.test(dirs) || _REC_SIDE.test(file)) return 'vinyl';
+  const years = [Number(s.year) || 0, Number((dirs.match(_REC_YEAR) || [])[1]) || 0].filter(y => y >= 1900);
+  if (!years.length) return 'cd';
+  return Math.min(...years) < _REC_VINYL_BEFORE ? 'vinyl' : 'cd';
+}
+
+const _REC_CHOICES = ['auto', 'vinyl', 'cd', 'tape', 'off'];
+function _recordChoice() {
+  const own = localStorage.getItem(_uKey('record'));
+  return _REC_CHOICES.includes(own) ? own : 'auto';
+}
+
+// null = plain cover (radio, podcasts, audiobooks, or the user chose cover only)
+function _recordKind(s) {
+  if (!s || s.isPodcast || !_isMusicSong(s)) return null;
+  const own = _recordChoice();
+  if (own === 'off') return null;
+  return _REC_KINDS.includes(own) ? own : _recordAuto(s);
+}
+
+function _pnowRecordHtml(kind, artU) {
+  const label = `<div class="pnow-rec-label"${artU ? ` style="background-image:url('${artU}')"` : ''}></div>`;
+  if (kind === 'tape') {
+    return `<div class="pnow-rec is-tucked" aria-hidden="true"><div class="pnow-tape">
+      <div class="pnow-tape-sticker">${label}<span>A</span></div>
+      <div class="pnow-tape-win"></div>
+      <div class="pnow-tape-reel l"><i class="pnow-rec-spin"></i></div><div class="pnow-tape-reel r"><i class="pnow-rec-spin"></i></div>
+      <div class="pnow-tape-head"></div></div></div>`;
+  }
+  return `<div class="pnow-rec is-tucked" aria-hidden="true"><div class="pnow-disc ${kind}">
+    <div class="pnow-rec-spin">${label}<i class="pnow-cd-hub"></i></div><i class="pnow-disc-sheen"></i></div></div>`;
+}
+
+function _pnowRecordArt(u) {
+  document.querySelectorAll('.pnow-rec-label').forEach(el => { el.style.backgroundImage = u ? `url('${u}')` : ''; });
+}
+
+// Swaps only the record behind the Playing Now cover, so the rest of the view is not rebuilt.
+function _pnowRecordRefresh() {
+  const wrap = document.querySelector('.pnow-art-wrap');
+  const s = S.queue[S.idx];
+  if (!wrap || !s) return;
+  const rec = _recordKind(s);
+  wrap.className = 'pnow-art-wrap' + (rec ? ' pnow-has-rec pnow-rec-' + rec : '');
+  wrap.querySelector('.pnow-rec')?.remove();
+  if (!rec) return;
+  wrap.insertAdjacentHTML('afterbegin', _pnowRecordHtml(rec, artUrl(s['album-art'], 'l')));
+  requestAnimationFrame(() => requestAnimationFrame(() => wrap.querySelector('.pnow-rec')?.classList.remove('is-tucked')));
+}
+
+function setRecordChoice(choice) {
+  localStorage.setItem(_uKey('record'), choice);
+  _syncPrefs();
+  if (S.view === 'playing-now') _pnowRecordRefresh();
+}
+
+const _REC_CHOICE_KEYS = { auto: 'recordAuto', vinyl: 'recordVinyl', cd: 'recordCd', tape: 'recordTape', off: 'recordOff' };
+function _pnowCycleRecord() {
+  if (document.body.classList.contains('vinyl-mode')) return;
+  const next = _REC_CHOICES[(_REC_CHOICES.indexOf(_recordChoice()) + 1) % _REC_CHOICES.length];
+  setRecordChoice(next);
+  toast(t('player.toast.recordChoice', { choice: t('player.userSettings.' + _REC_CHOICE_KEYS[next]) }));
+}
+
 async function viewPlayingNow() {
   setTitle(t('player.nav.playingNow'));
   setBack(null);
@@ -11333,6 +11436,8 @@ async function _renderPlayingNow(fade) {
   _pnowLastCueArtist = ''; // reset so first CUE chapter fetch always fires
 
   const artU = artUrl(s['album-art'], 'l');
+  const rec = _recordKind(s);
+  const recOk = !s.isPodcast && _isMusicSong(s);
   const artHtml = artU
     ? `<img src="${artU}" alt="" data-err="noart">`
     : noArtHtml();
@@ -11370,7 +11475,7 @@ async function _renderPlayingNow(fade) {
   body.innerHTML = `<div class="pnow-view pnow-fading">
     <div class="pnow-hero">
       <div class="pnow-hero-bg" id="pnow-bg" ${artU ? `style="background-image:url(${artU})"` : ''}></div>
-      <div class="pnow-art">${artHtml}</div>
+      <div class="pnow-art-wrap${rec ? ' pnow-has-rec pnow-rec-' + rec : ''}"${recOk ? ` role="button" tabindex="0" title="${esc(t('player.pnow.recordHint'))}"` : ''}>${rec ? _pnowRecordHtml(rec, artU) : ''}<div class="pnow-art">${artHtml}</div></div>
       <div class="pnow-hero-info">
         <div class="pnow-label">
           <span>${t('player.pnow.nowPlaying')}</span>
@@ -11401,10 +11506,17 @@ async function _renderPlayingNow(fade) {
     </div>
   </div>`;
 
+  const recWrap = body.querySelector('.pnow-art-wrap[role="button"]');
+  recWrap?.addEventListener('click', _pnowCycleRecord);
+  recWrap?.addEventListener('keydown', e => {
+    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); _pnowCycleRecord(); }
+  });
+
   // Fade in
   requestAnimationFrame(() => {
     const el = body.querySelector('.pnow-view');
     if (el) { el.classList.remove('pnow-fading'); el.classList.add('pnow-visible'); }
+    requestAnimationFrame(() => el?.querySelector('.pnow-rec')?.classList.remove('is-tucked'));
   });
 
   // Async: load artist bio + similar artists + library albums in parallel
@@ -11666,6 +11778,93 @@ function _pnowOnSongChange() {
   _renderPlayingNow(true);
 }
 
+// One ring pulse on the play buttons when a new song starts.
+function _pulsePlayButtons() {
+  document.querySelectorAll('.play-main').forEach(b => {
+    b.classList.remove('pm-drop');
+    void b.offsetWidth;
+    b.classList.add('pm-drop');
+  });
+}
+
+const _HOME_PLAY_SVG = '<svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><polygon points="7,4 20,12 7,20"/></svg>';
+const _HC_PLAY = `<span class="hc-play">${_HOME_PLAY_SVG}</span>`;
+
+// "Keep the vibe going": seeded by the playing song, or by the first Continue Listening card when nothing plays.
+function _renderHomeVibe() {
+  const home = document.querySelector('#content-body .home-main');
+  if (!home) return;
+  const cur = S.queue[S.idx];
+  const live = cur && _isMusicSong(cur) && (cur.title || cur.artist) ? cur : null;
+  const seedCard = live ? null : home.querySelector('#home-continue-slot .home-song');
+  const title = live ? (live.title || live.artist) : seedCard?.querySelector('.hc-title')?.textContent;
+  let el = home.querySelector(':scope > .home-vibe');
+  if (!title) { el?.remove(); _homeVibeKey = ''; return; }
+
+  const covers = [];
+  const seen = new Set();
+  const add = u => {
+    if (!u || covers.length >= 4) return;
+    const id = u.split('?')[0];
+    if (seen.has(id)) return;
+    seen.add(id);
+    covers.push(u.replace('compress=s', 'compress=l'));
+  };
+  add(live ? artUrl(live['album-art'], 'l') : seedCard.querySelector('.hc-art img')?.getAttribute('src'));
+  home.querySelectorAll('#home-continue-slot .hc-art img, #home-recent-added-slot .hc-art img').forEach(i => add(i.getAttribute('src')));
+
+  const names = live ? [live.artist, ..._djSimilarArtists] : [seedCard.querySelector('.hc-sub')?.textContent];
+  const artists = names.filter(Boolean).map(String)
+    .filter((a, i, l) => l.findIndex(b => b.toLowerCase() === a.toLowerCase()) === i).slice(0, 3);
+  const on = !!S.autoDJ;
+  const key = [title, on, ...artists, ...covers].join('|');
+  if (el && key === _homeVibeKey) return;
+  _homeVibeKey = key;
+
+  if (!el) {
+    el = document.createElement('section');
+    el.className = 'home-vibe';
+    el.innerHTML = `<div class="home-vibe-in"><div class="home-vibe-glow"></div>
+      <div class="home-vibe-tx">
+        <div class="home-vibe-kicker"><span class="home-vibe-dot"></span><span class="home-vibe-label"></span></div>
+        <h2 class="home-vibe-title"></h2>
+        <p class="home-vibe-artists"></p>
+        <button type="button" class="home-vibe-go"><span class="hv-btn">${_HOME_PLAY_SVG}</span><span>${t('player.home.vibeStart')}</span></button>
+      </div>
+      <div class="home-vibe-stack" aria-hidden="true"></div></div>`;
+    el.querySelector('.home-vibe-go').addEventListener('click', () => {
+      const s = S.queue[S.idx];
+      if (s && _isMusicSong(s)) { setAutoDJ(true); return; }
+      const card = home.querySelector('#home-continue-slot .home-song');
+      if (!card) return;
+      card.click();
+      setAutoDJ(true, true);
+    });
+    home.querySelector(':scope > #home-greeting-slot').after(el);
+  }
+  const bg = u => `url("${u.replace(/"/g, '%22')}")`;
+  el.classList.toggle('is-on', on);
+  el.querySelector('.home-vibe-label').textContent = t(on ? 'player.home.vibeOn' : 'player.home.vibeKicker');
+  el.querySelector('.home-vibe-title').textContent = t('player.home.vibeTitle', { title });
+  el.querySelector('.home-vibe-artists').textContent = artists.join(' · ');
+  el.querySelector('.home-vibe-glow').style.backgroundImage = covers[0] ? bg(covers[0]) : '';
+  el.querySelector('.home-vibe-stack').replaceChildren(...covers.map(u => {
+    const cv = document.createElement('span');
+    cv.className = 'home-vibe-cv';
+    cv.style.backgroundImage = bg(u);
+    return cv;
+  }));
+}
+
+// Each Home shelf shows one full row; the shelves' item counts don't follow the window width.
+// 140 + 18 mirror the .home-main .home-row grid (minmax(140px,1fr), 18px column gap).
+function _homeFitRows(home) {
+  home.querySelectorAll('.home-row').forEach(row => {
+    const cols = Math.max(1, Math.floor((row.clientWidth + 18) / 158));
+    [...row.children].forEach((c, i) => c.classList.toggle('hc-over', i >= cols));
+  });
+}
+
 function _homeSongCard(s, showCount) {
   const url = artUrl(s['album-art'], 's');
   const artInner = url
@@ -11675,7 +11874,7 @@ function _homeSongCard(s, showCount) {
     ? `${esc(s.artist || '')}${s.artist ? ' · ' : ''}${s._playCount}×`
     : esc(s.artist || '');
   return `<div class="hc home-song" data-fp="${esc(s.filepath)}">
-    <div class="hc-art">${artInner}</div>
+    <div class="hc-art">${artInner}${_HC_PLAY}</div>
     <div class="hc-info">
       <div class="hc-title">${esc(s.title || s.filepath.split('/').pop())}</div>
       ${sub ? `<div class="hc-sub">${sub}</div>` : ''}
@@ -11726,7 +11925,7 @@ async function viewHome() {
   const sig = _navCancel();
   const abEx = _audioBookExclusions();
   const _cw    = (document.getElementById('content-body')?.clientWidth || 800) - 32;
-  const _limit = Math.max(6, Math.floor((_cw + 10) / 130));
+  const _limit = Math.max(6, Math.floor((_cw + 18) / 158));
   const base = {
     limit: _limit,
     ...(abEx.ignoreVPaths.length            ? { ignoreVPaths:            abEx.ignoreVPaths }            : {}),
@@ -11744,7 +11943,7 @@ async function viewHome() {
     return name.charAt(0).toLocaleUpperCase() + name.slice(1);
   })();
 
-  setBody(`<div class="home-view">
+  setBody(`<div class="home-view home-main">
     <div id="home-greeting-slot"><div class="home-greeting">
       <div class="home-greeting-text">${t(greetKey, { name: esc(homeDisplayName) })}</div>
     </div></div>
@@ -11756,6 +11955,10 @@ async function viewHome() {
   </div>`);
 
   const body = document.getElementById('content-body');
+  const _home = body?.querySelector('.home-main');
+  _homeVibeKey = '';
+  _renderHomeVibe();
+  if (_home) new ResizeObserver(() => _homeFitRows(_home)).observe(_home);
   const _allSongs = [];
   let _recentAlbumGroups = [];
 
@@ -11770,7 +11973,7 @@ async function viewHome() {
     const fp0 = group._artFp || group.songs[0]?.filepath || '';
     const countBadge = group.songs.length > 1 ? `<span class="hc-count-badge">${group.songs.length}</span>` : '';
     return `<div class="hc home-album" data-group-idx="${idx}" data-fp="${esc(fp0)}">
-      <div class="hc-art">${artInner}${countBadge}</div>
+      <div class="hc-art">${artInner}${countBadge}${_HC_PLAY}</div>
       <div class="hc-info">
         <div class="hc-title">${esc(group.label)}</div>
         ${group._artists?.size > 1 ? `<div class="hc-sub">${t('player.home.variousArtists')}</div>` : group.artist ? `<div class="hc-sub">${esc(group.artist)}</div>` : ''}
@@ -11889,7 +12092,7 @@ async function viewHome() {
     const html = continueItems.length
       ? strip(t('player.home.shelfContinue'), continueItems.map(s => _homeSongCard(s, false)).join('')) : '';
     const slot = _slot('home-continue-slot');
-    if (slot && html) { slot.innerHTML = html; _bindSongCards(slot); _onDemandArt(continueItems); }
+    if (slot && html) { slot.innerHTML = html; _bindSongCards(slot); _onDemandArt(continueItems); _renderHomeVibe(); }
   });
 
   // 3. Recently-added (~256ms) → Recently Added albums shelf
@@ -11935,7 +12138,7 @@ async function viewHome() {
     const html = _recentAlbumGroups.length
       ? strip(t('player.home.shelfRecentAdded'), _recentAlbumGroups.map((g, i) => albumCard(g, i)).join(''), t('player.home.badgeNew')) : '';
     const slot = _slot('home-recent-added-slot');
-    if (slot && html) { slot.innerHTML = html; _bindAlbumCards(slot); _onDemandArt(recentlyAdded); }
+    if (slot && html) { slot.innerHTML = html; _bindAlbumCards(slot); _onDemandArt(recentlyAdded); _renderHomeVibe(); }
   });
 
   // 4. Home-summary (~258ms) → stats strip + temporal sections
@@ -16022,6 +16225,28 @@ async function viewUserSettings() {
       <div class="playback-section">
         <div class="playback-section-hdr">
           <div class="playback-section-icon">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="3"/></svg>
+          </div>
+          <div>
+            <div class="playback-section-title">${t('player.userSettings.recordTitle')}</div>
+            <div class="playback-section-desc">${t('player.userSettings.recordDesc')}</div>
+          </div>
+        </div>
+        <div class="playback-row">
+          <label class="playback-row-label" for="us-record"><div class="playback-row-name">${t('player.userSettings.recordLabel')}</div></label>
+          <select class="settings-select" id="us-record">
+            <option value="auto">${t('player.userSettings.recordAuto')}</option>
+            <option value="vinyl">${t('player.userSettings.recordVinyl')}</option>
+            <option value="cd">${t('player.userSettings.recordCd')}</option>
+            <option value="tape">${t('player.userSettings.recordTape')}</option>
+            <option value="off">${t('player.userSettings.recordOff')}</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="playback-section">
+        <div class="playback-section-hdr">
+          <div class="playback-section-icon">
             <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="2" width="14" height="20" rx="2"/><line x1="12" y1="18" x2="12.01" y2="18"/></svg>
           </div>
           <div>
@@ -16042,6 +16267,11 @@ async function viewUserSettings() {
     const own = localStorage.getItem(_uKey('skin'));
     skinSel.value = own && [...skinSel.options].some(o => o.value === own) ? own : 'default';
     skinSel.addEventListener('change', () => setSkinChoice(skinSel.value));
+  }
+  const recSel = document.getElementById('us-record');
+  if (recSel) {
+    recSel.value = _recordChoice();
+    recSel.addEventListener('change', () => setRecordChoice(recSel.value));
   }
 
   const changePwBtn = document.getElementById('us-change-pw-btn');
@@ -22357,6 +22587,7 @@ function _collectPrefs() {
   return {
     theme:             localStorage.getItem('ms2_theme_'          + u),
     skin:              localStorage.getItem('ms2_skin_'           + u),
+    record:            localStorage.getItem('ms2_record_'         + u),
     bar_top:           localStorage.getItem('ms2_bar_top_'        + u),
     auto_resume:       localStorage.getItem('ms2_auto_resume_'    + u),
     dyn_color:         localStorage.getItem('ms2_dyn_color_'      + u),
@@ -22436,6 +22667,7 @@ function _applyServerSettings(data) {
 
   if (prefs.theme         != null) { ls('ms2_theme_' + u, prefs.theme); applyTheme(prefs.theme, false); }
   if (prefs.skin          != null) { ls('ms2_skin_' + u, prefs.skin); applySkin(); }
+  if (prefs.record        != null) { ls('ms2_record_' + u, prefs.record); if (S.view === 'playing-now') _pnowRecordRefresh(); }
   if (prefs.bar_top       != null) { ls('ms2_bar_top_' + u, prefs.bar_top); S.barTop = prefs.bar_top === '1'; applyBarPos(S.barTop); }
   if (prefs.auto_resume   != null) { ls('ms2_auto_resume_' + u, prefs.auto_resume); S.autoResume = prefs.auto_resume === '1'; }
   if (prefs.dyn_color     != null) { ls('ms2_dyn_color_' + u, prefs.dyn_color); S.dynColor = prefs.dyn_color !== '0'; }

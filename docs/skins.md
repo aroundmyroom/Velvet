@@ -49,6 +49,7 @@ Most of the work is setting Velvet's colour variables:
 | `--t1`, `--t2`, `--t3`, `--t4` | Text: main, secondary, muted, faint |
 | `--green`, `--red`, `--yellow` | Status colours |
 | `--r`, `--r2` | Corner radius: small and large |
+| `--play-bg`, `--play-fg` | Play button: knob background and icon colour. Set them on `.play-main`; the ring and its glow follow `--primary` |
 
 The example skin, `webapp/skins/goud/skin.css`:
 
@@ -68,9 +69,8 @@ The example skin, `webapp/skins/goud/skin.css`:
   border-color: rgba(212, 168, 75, .4);
 }
 :root[data-skin] .play-main {
-  background: linear-gradient(145deg, #f0d58c, #b8862f);
-  color: #141416 !important;
-  box-shadow: 0 0 0 6px rgba(212, 168, 75, .12), 0 6px 18px rgba(212, 168, 75, .25);
+  --play-bg: radial-gradient(circle at 50% 30%, #f0d58c, #b8862f 75%);
+  --play-fg: #141416;
 }
 ```
 
