@@ -19,7 +19,7 @@ selling you anything.
 [![Samsung TV](https://img.shields.io/badge/Samsung%20TV-Tizen%20app-1428A0?logo=samsung&logoColor=white&style=for-the-badge)](https://github.com/aroundmyroom/Velvet/blob/main/docs/tizen-tv.md)
 [![Home Assistant](https://img.shields.io/badge/Home%20Assistant-HACS-18BCF2?logo=homeassistant&logoColor=white&style=for-the-badge)](docs/home-assistant.md)
 
-> **Before you continue:** This project was built with AI assistance. If that bothers you, the exit is right there. If you're still reading - welcome, you're going to be fine. Probably. [Read the full disclaimer →](docs/responsible-disclosure.md)
+> **Before you continue:** Velvet is a fork of an existing self-hosted music server that its original developer has written and maintained since 2015. That foundation is the work of a real programmer, built by hand over many years (see [Credits](#credits)). Velvet grew from it with the help of AI assistance: the new interface and most of the features added since the fork were developed that way. [Read the full disclaimer →](docs/responsible-disclosure.md)
 
 ---
 
