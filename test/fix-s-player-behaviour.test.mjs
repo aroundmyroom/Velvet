@@ -98,3 +98,18 @@ describe('meter and waveform colours are cached (P061)', () => {
     assert.doesNotMatch(topLevelSource('_drawWaveformBars'), /getComputedStyle/);
   });
 });
+
+describe('VU meters after a reload while casting', () => {
+  const graphBuild = () => {
+    const start = appSrc.indexOf('function _buildAudioGraph()');
+    return appSrc.slice(start, appSrc.indexOf('_audioGraphBuilt = true;', start));
+  };
+
+  it('moves a restored cast mute from the element onto the gain node when the graph is built', () => {
+    assert.match(graphBuild(), /_setCastMute\(S\.castingToMpv \|\| S\.castingToSonos\);/);
+  });
+
+  it('builds the meter graph on the first gesture while a cast is mirrored', () => {
+    assert.match(appSrc, /if \(!_audioGraphBuilt && \(S\.castingToSonos \|\| S\.castingToMpv \|\| !audioEl\.paused\)\) VIZ\.initAudio\(\);/);
+  });
+});

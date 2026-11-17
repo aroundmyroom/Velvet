@@ -1,3 +1,31 @@
+## v0.10.3 (2026-11-17)
+
+Lyrics and Visualizer in Playing Now, plus two fixes
+
+### Added
+
+- **Playing Now: Lyrics and Visualizer.** Two buttons under the cover open a
+  panel with synced lyrics or Velvet's visualizer (Milkdrop, Spectrum,
+  AudioMotion, VoltViz). Nothing shows until you press one; the panel closes
+  when you leave Playing Now. Both can go full screen, which stays on across
+  song changes. See `docs/playing-now.md`.
+
+### Fixed
+
+- **CD singles showed a record instead of a CD.** Folders marked `_CDM_`
+  (with underscores) or `CDM-1995` were missed, so a CD single inside a
+  12-inch folder got vinyl. CDM and CDS now count however they are written,
+  in the folder name or the album tag, and win over a 12-inch folder, a mix
+  word in the folder name and the 30-minute rule. The word "vinyl" inside an
+  artist name no longer counts as a vinyl rip; `VinylRip`, `[Vinyl]` and
+  `Vinyl FLAC` still do.
+- **VU meters stayed still after a reload while Sonos played.** The browser
+  mirrors the song silently to feed the meters. After a reload the cast was
+  restored before the audio chain existed, so the mirror was muted at the
+  source and the meters got silence until you switched to web playback and
+  back. The mute now moves to the right place when the chain is built, and
+  the first click or key press builds the chain if it is still missing.
+
 ## v0.10.2 (2026-11-17)
 
 Home vibe, a new play button and a record behind the cover

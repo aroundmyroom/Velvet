@@ -1,5 +1,5 @@
 'use strict';
-const VELVET_VERSION = '0.10.2';
+const VELVET_VERSION = '0.10.3';
 // ── SERVER IDENTITY GUARD ────────────────────────────────────────────────────
 // Detects when this browser's localStorage belongs to a different Velvet
 // instance (fresh install, IP change, reverse-proxy swap, second server).
@@ -788,6 +788,7 @@ function toastError(msg, ms) {
 let _similarStripT = null;
 let _djSimilarFor = '';            // artist we searched Last.fm for
 let _djSimilarSource = '';         // artist the current list actually came from (differs when kept after a miss)
+const _pnowPanel = { kind: null, full: false, fsOwned: false, lyFp: null, lines: [], synced: false, idx: -2, raf: 0, vizHome: null, vizObs: null };
 let _playPulseFp = '';
 let _homeVibeKey = '';
 let _djSimilarArtists = [];        // raw DB variants (for SQL IN filter)
@@ -3748,6 +3749,7 @@ function highlightRow() {
 // ── VIEW HELPERS ──────────────────────────────────────────────
 function setTitle(t)  { document.getElementById('content-title').textContent = t; }
 function setBody(html) {
+  _pnowPanelClose(); // leaving Playing Now closes its Lyrics / Visualizer panel
   // #content-body is shared by every view; Shortcuts binds delegated listeners on
   // it, which must not keep firing once another view's markup replaces it.
   _shortcutsAC?.abort();
@@ -6760,10 +6762,11 @@ const VIZ = (() => {
     // silencing browser output (when casting to MPV) does NOT suppress the
     // analyser taps — VU meters keep working even when cast-mode is active.
     _castMuteGain = audioCtx.createGain();
-    _castMuteGain.gain.value = (S.castingToMpv || S.castingToSonos) ? 0 : 1;
     _pannerNode.connect(_castMuteGain);
     _castMuteGain.connect(audioCtx.destination);
-    _setCastKeepAlive(S.castingToMpv || S.castingToSonos); // graph built while already casting (page reload)
+    // Graph built while already casting (page reload): a cast restored before this point muted the element
+    // itself, which would feed silence into the analysers. _setCastMute moves the mute onto the gain node.
+    _setCastMute(S.castingToMpv || S.castingToSonos);
     _pannerNode.connect(splitter);        // post-pan L+R tap
     splitter.connect(analyserL, 0);       // left  channel (balance-aware)
     splitter.connect(analyserR, 1);       // right channel (balance-aware)
@@ -11299,11 +11302,14 @@ let _pnowLastCueArtist = '';    // last CUE chapter artist shown in pnow — avo
 const _REC_MIX_DIR   = /\b(mega ?mix(es|en)?|mixed by|mix ?club|mixen|jaarmix\w*|master ?mix(dj)?|in the mix|dj[ -]?mix\w*|continuous mix|full set|live set|radio ?show|the tapes)\b/i;
 const _REC_MIX_FILE  = /\b(mega ?mix|mixed by|dj[ -]?mix|continuous mix|full set|live set|in the mix|jaarmix\w*)\b/i;
 const _REC_MIX_ALBUM = /\b(mixed by|mix cut|continuous mix|dj[ -]?mix)\b/i;
-const _REC_VINYL_SRC = /(vinyl|\bLP\b|\b45 ?rpm\b)/i;
-const _REC_CD        = /(\bCD[MS]?s?(?![-\w])|\bCD ?\d{1,2}\b|\b\d ?CD\b|\bCD-(FLAC|rip)\b|\bon CD\b|\bdis[ck] ?\d+\b)/i;
-const _REC_VINYL_FMT = /(\b(12|10|7) ?(inch|inches|"|''|in\b)|\bmaxi\b)/i;
+// Format markers use letter/digit boundaries instead of \b, so "_CDM_" counts as well as "(CDM)".
+// "CDS 2334" / "CDS-2229" are catalogue numbers, but "CDM-1995" is CDM plus a year.
+const _REC_CD_SINGLE = /(?<![a-z0-9])CD[MS]s?(?:(?![a-z0-9]|[- ]?\d)|(?=[- ](?:19|20)\d\d(?!\d)))/i;
+const _REC_VINYL_SRC = /(vinyl ?rip|[[(]\s*vinyl|vinyl\s*[\])]|vinyl (flac|wav|mp3|aiff|\d)|from vinyl|(?<![a-z0-9])LP(?![a-z0-9])|45 ?rpm)/i;
+const _REC_CD        = /((?<![a-z0-9])CD(?![a-z0-9]|-\d)|(?<![a-z0-9])CD ?\d{1,2}(?!\d)|(?<![a-z0-9])\d ?CD(?![a-z0-9])|(?<![a-z0-9])on CD(?![a-z0-9])|(?<![a-z0-9])dis[ck] ?\d+)/i;
+const _REC_VINYL_FMT = /((?<![a-z0-9])(12|10|7) ?(inch|inches|"|''|in(?![a-z0-9]))|(?<![a-z0-9])maxi(?![a-z0-9]))/i;
 const _REC_SIDE      = /^[A-D][1-9]\d?[ .\-_]/;
-const _REC_YEAR      = /\b(19[5-9]\d|20[0-4]\d)\b/;
+const _REC_YEAR      = /(?<!\d)(19[5-9]\d|20[0-4]\d)(?!\d)/;
 const _REC_VINYL_BEFORE = 1988;
 const _REC_KINDS = ['vinyl', 'cd', 'tape'];
 
@@ -11322,8 +11328,10 @@ function _recordAuto(s) {
   const dirs = parts.slice(1).join('/');
   const dur = Number(s.duration) || 0;
   if (_recordLibraryType(s.filepath || '') !== 'music') return 'tape';
+  if (_REC_CD_SINGLE.test(dirs) || _REC_CD_SINGLE.test(s.album || '')) return 'cd';
+  if (_REC_MIX_DIR.test(dirs) || _REC_MIX_ALBUM.test(s.album || '')) return 'tape';
   if (dur >= 1800) return 'tape';
-  if (_REC_MIX_DIR.test(dirs) || _REC_MIX_ALBUM.test(s.album || '') || (dur >= 600 && _REC_MIX_FILE.test(file))) return 'tape';
+  if (dur >= 600 && _REC_MIX_FILE.test(file)) return 'tape';
   if (_REC_VINYL_SRC.test(dirs)) return 'vinyl';
   if (_REC_CD.test(dirs)) return 'cd';
   if (_REC_VINYL_FMT.test(dirs) || _REC_SIDE.test(file)) return 'vinyl';
@@ -11382,6 +11390,205 @@ function setRecordChoice(choice) {
   if (S.view === 'playing-now') _pnowRecordRefresh();
 }
 
+// ── Playing Now: Lyrics / Visualizer panel ───────────────────────────────────
+// Opens under the hero only when the user presses a button; closes when the view is left.
+// Full screen puts the whole document in fullscreen and pins the panel over it, so the
+// re-render on every song change does not drop out of fullscreen.
+const _PNOW_SVG_FULL = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg>';
+const _PNOW_SVG_SHRINK = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M9 4v5H4M15 4v5h5M9 20v-5H4M15 20v-5h5"/></svg>';
+
+// One panel element for the whole session: it sits in the page's slot, or on <body> while full screen
+// (.content-body uses contain:layout, so a fixed panel inside it could not cover the window).
+let _pnowPanelNode = null;
+function _pnowPanelEl() {
+  if (_pnowPanelNode) return _pnowPanelNode;
+  const el = document.createElement('section');
+  el.className = 'pnow-panel';
+  el.id = 'pnow-panel';
+  el.hidden = true;
+  el.innerHTML = `<div class="pnow-panel-bg"></div>
+    <div class="pnow-panel-body"></div>
+    <div class="pnow-panel-tag"></div>
+    <div class="pnow-panel-tools">
+      <button type="button" class="pnow-panel-btn" data-act="full"></button>
+      <button type="button" class="pnow-panel-btn" data-act="close"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" aria-hidden="true"><line x1="6" y1="6" x2="18" y2="18"/><line x1="18" y1="6" x2="6" y2="18"/></svg></button>
+    </div>
+    <div class="pnow-panel-meta"><i></i><div><b></b><span></span></div></div>`;
+  el.querySelector('[data-act="close"]').addEventListener('click', () => _pnowPanelClose());
+  el.querySelector('[data-act="full"]').addEventListener('click', _pnowPanelToggleFull);
+  _pnowPanelNode = el;
+  return el;
+}
+
+function _pnowPanelBind(root) {
+  root.querySelectorAll('.pnow-feat').forEach(b => b.addEventListener('click', () => {
+    _pnowPanel.kind = _pnowPanel.kind === b.dataset.feat ? null : b.dataset.feat;
+    if (!_pnowPanel.kind) _pnowPanel.full = false;
+    _pnowPanelSync();
+  }));
+}
+
+function _pnowPanelSync() {
+  const slot = document.querySelector('#content-body .pnow-panel-slot');
+  if (!slot) _pnowPanel.kind = null;
+  const kind = _pnowPanel.kind;
+  if (!kind) _pnowPanel.full = false;
+  document.querySelectorAll('.pnow-feat').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.feat === kind)));
+  if (kind !== 'viz') _pnowVizHome();
+  if (kind !== 'lyrics') _pnowLyricsStop();
+  if (!_pnowPanel.full && _pnowPanel.fsOwned) {
+    _pnowPanel.fsOwned = false;
+    if (document.fullscreenElement === document.documentElement) document.exitFullscreen().catch(() => {});
+  }
+  const panel = _pnowPanelEl();
+  const host = _pnowPanel.full ? document.body : slot;
+  if (host && panel.parentElement !== host) host.appendChild(panel);
+  if (!host) panel.remove();
+  panel.hidden = !kind;
+  panel.classList.toggle('is-full', !!kind && _pnowPanel.full);
+  if (!kind) { if (!slot) panel.remove(); return; }
+  panel.dataset.kind = kind;
+  const s = S.queue[S.idx];
+  const closeBtn = panel.querySelector('[data-act="close"]');
+  closeBtn.title = t('player.pnow.panelClose');
+  closeBtn.setAttribute('aria-label', closeBtn.title);
+  const fullBtn = panel.querySelector('[data-act="full"]');
+  fullBtn.innerHTML = _pnowPanel.full ? _PNOW_SVG_SHRINK : _PNOW_SVG_FULL;
+  fullBtn.title = t(_pnowPanel.full ? 'player.pnow.panelExitFull' : 'player.pnow.panelFull');
+  fullBtn.setAttribute('aria-label', fullBtn.title);
+  const u = s ? artUrl(s['album-art'], 'l') : null;
+  panel.querySelector('.pnow-panel-bg').style.backgroundImage = u ? `url('${u}')` : '';
+  panel.querySelector('.pnow-panel-meta i').style.backgroundImage = u ? `url('${u}')` : '';
+  panel.querySelector('.pnow-panel-meta b').textContent = s?.title || s?.filepath?.split('/').pop() || '';
+  panel.querySelector('.pnow-panel-meta span').textContent = s?.artist || '';
+  if (kind === 'lyrics') _pnowLyricsStart(panel);
+  else _pnowVizInto(panel);
+}
+
+function _pnowPanelClose() {
+  if (!_pnowPanel.kind && !_pnowPanel.vizHome && !_pnowPanelNode?.isConnected) return;
+  _pnowPanel.kind = null;
+  _pnowPanel.full = false;
+  _pnowPanelSync();
+}
+
+function _pnowPanelToggleFull() {
+  _pnowPanel.full = !_pnowPanel.full;
+  if (_pnowPanel.full && !document.fullscreenElement) {
+    _pnowPanel.fsOwned = true;
+    document.documentElement.requestFullscreen?.().catch(() => {});
+  }
+  _pnowPanelSync();
+  if (_pnowPanel.kind === 'viz') requestAnimationFrame(() => VIZ.open());
+}
+
+document.addEventListener('fullscreenchange', () => {
+  if (document.fullscreenElement || !_pnowPanel.full || !_pnowPanel.fsOwned) return;
+  _pnowPanel.full = false;
+  _pnowPanelSync();
+  if (_pnowPanel.kind === 'viz') requestAnimationFrame(() => VIZ.open());
+});
+
+// Lyrics: the same /api/v1/lyrics lookup as the visualizer's lyric mode, drawn as centred lines.
+async function _pnowLyricsStart(panel) {
+  const body = panel.querySelector('.pnow-panel-body');
+  const tag = panel.querySelector('.pnow-panel-tag');
+  const s = S.queue[S.idx];
+  if (body.querySelector('.pnow-ly') && _pnowPanel.lyFp === s?.filepath) return;
+  _pnowLyricsStop();
+  const msg = key => { body.innerHTML = `<div class="pnow-ly-msg">${esc(t(key))}</div>`; };
+  tag.textContent = t('player.ctrl.lyrics');
+  if (!s) { msg('player.lyrics.noTrack'); return; }
+  const fp = s.filepath;
+  _pnowPanel.lyFp = fp;
+  msg('player.lyrics.loading');
+  let data = null;
+  try {
+    const q = new URLSearchParams({ artist: s.artist || '', title: s.title || fp.split('/').pop() || '', duration: String(Math.round(s.duration || 0)), filepath: fp });
+    const r = await fetch(`/api/v1/lyrics?${q}`, { headers: { 'x-access-token': S.token } });
+    data = await r.json();
+  } catch { data = null; }
+  if (_pnowPanel.kind !== 'lyrics' || _pnowPanel.lyFp !== fp || !body.isConnected) return;
+  if (!data || data.notFound || !data.lines?.length) { msg('player.lyrics.none'); return; }
+  _pnowPanel.lines = data.lines;
+  _pnowPanel.synced = !!data.synced;
+  _pnowPanel.idx = -2;
+  if (_pnowPanel.synced) tag.innerHTML = `${esc(t('player.ctrl.lyrics'))} <b>${esc(t('player.pnow.lyricsSynced'))}</b>`;
+  body.innerHTML = `<div class="pnow-ly${_pnowPanel.synced ? '' : ' is-static'}"><div class="pnow-ly-track">${
+    data.lines.map(l => `<div class="pnow-ly-line">${esc(l.text || '♪')}</div>`).join('')}</div></div>`;
+  if (_pnowPanel.synced) _pnowLyricsTick();
+}
+
+function _pnowLyricsTick() {
+  _pnowPanel.raf = requestAnimationFrame(_pnowLyricsTick);
+  const track = document.querySelector('#pnow-panel .pnow-ly-track');
+  if (!track) return;
+  const now = audioEl.currentTime - 0.2;
+  let idx = -1;
+  for (let i = 0; i < _pnowPanel.lines.length; i++) {
+    if (_pnowPanel.lines[i].time <= now) idx = i; else break;
+  }
+  const size = track.clientWidth + 'x' + track.parentElement.clientHeight; // full screen and resizes move every line
+  if (idx === _pnowPanel.idx && size === _pnowPanel.lySize) return;
+  _pnowPanel.idx = idx;
+  _pnowPanel.lySize = size;
+  const els = track.children;
+  for (let i = 0; i < els.length; i++) {
+    els[i].classList.toggle('now', i === idx);
+    els[i].classList.toggle('near', i !== idx && Math.abs(i - Math.max(idx, 0)) <= 1);
+  }
+  const cur = els[Math.max(idx, 0)];
+  if (cur) track.style.transform = `translateY(${-(cur.offsetTop + cur.offsetHeight / 2)}px)`;
+}
+
+function _pnowLyricsStop() {
+  if (_pnowPanel.raf) cancelAnimationFrame(_pnowPanel.raf);
+  _pnowPanel.raf = 0;
+  _pnowPanel.lyFp = null;
+}
+
+// Visualizer: Velvet's own overlay moves into the panel while it is open and back afterwards.
+function _pnowVizInto(panel) {
+  const ov = document.getElementById('viz-overlay');
+  const body = panel.querySelector('.pnow-panel-body');
+  panel.querySelector('.pnow-panel-tag').textContent = '';
+  if (!ov) return;
+  const moved = ov.parentElement !== body;
+  if (moved) {
+    if (!_pnowPanel.vizHome) _pnowPanel.vizHome = { parent: ov.parentElement, next: ov.nextSibling };
+    body.replaceChildren(ov);
+  }
+  ov.classList.add('pnow-viz');
+  ov.classList.remove('pnow-viz-parked');
+  if (moved || ov.classList.contains('hidden')) VIZ.open();
+  if (!_pnowPanel.vizObs) {
+    _pnowPanel.vizObs = new MutationObserver(() => {
+      if (ov.classList.contains('hidden') && ov.classList.contains('pnow-viz') && !ov.classList.contains('pnow-viz-parked')) _pnowPanelClose();
+    });
+    _pnowPanel.vizObs.observe(ov, { attributes: true, attributeFilter: ['class'] });
+  }
+}
+
+// Puts the visualizer back where index.html has it, still running (the caller decides whether to close it).
+function _pnowVizPark() {
+  const ov = document.getElementById('viz-overlay');
+  if (!ov || !_pnowPanel.vizHome) return;
+  ov.classList.add('pnow-viz-parked');
+  const { parent, next } = _pnowPanel.vizHome;
+  parent.insertBefore(ov, next?.parentNode === parent ? next : null);
+}
+
+function _pnowVizHome() {
+  const ov = document.getElementById('viz-overlay');
+  if (!ov || !_pnowPanel.vizHome) return;
+  _pnowPanel.vizObs?.disconnect();
+  _pnowPanel.vizObs = null;
+  _pnowVizPark();
+  _pnowPanel.vizHome = null;
+  ov.classList.remove('pnow-viz', 'pnow-viz-parked');
+  if (!ov.classList.contains('hidden')) VIZ.close();
+}
+
 const _REC_CHOICE_KEYS = { auto: 'recordAuto', vinyl: 'recordVinyl', cd: 'recordCd', tape: 'recordTape', off: 'recordOff' };
 function _pnowCycleRecord() {
   if (document.body.classList.contains('vinyl-mode')) return;
@@ -11396,6 +11603,7 @@ async function viewPlayingNow() {
   setNavActive('playing-now');
   S.view = 'playing-now';
   _pnowViewActive = true;
+  _pnowPanelClose();
   await _renderPlayingNow();
 }
 
@@ -11410,6 +11618,7 @@ async function _renderPlayingNow(fade) {
   if (!s || s.isRadio) {
     _pnowSongFp = null;
     _pnowArtist = null;
+    _pnowPanelClose();
     body.innerHTML = `<div class="pnow-view pnow-visible">
       <div class="pnow-empty">
         <svg width="56" height="56" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
@@ -11475,7 +11684,13 @@ async function _renderPlayingNow(fade) {
   body.innerHTML = `<div class="pnow-view pnow-fading">
     <div class="pnow-hero">
       <div class="pnow-hero-bg" id="pnow-bg" ${artU ? `style="background-image:url(${artU})"` : ''}></div>
-      <div class="pnow-art-wrap${rec ? ' pnow-has-rec pnow-rec-' + rec : ''}"${recOk ? ` role="button" tabindex="0" title="${esc(t('player.pnow.recordHint'))}"` : ''}>${rec ? _pnowRecordHtml(rec, artU) : ''}<div class="pnow-art">${artHtml}</div></div>
+      <div class="pnow-left">
+        <div class="pnow-art-wrap${rec ? ' pnow-has-rec pnow-rec-' + rec : ''}"${recOk ? ` role="button" tabindex="0" title="${esc(t('player.pnow.recordHint'))}"` : ''}>${rec ? _pnowRecordHtml(rec, artU) : ''}<div class="pnow-art">${artHtml}</div></div>
+        <div class="pnow-feats">
+          <button type="button" class="pnow-feat" data-feat="lyrics" aria-pressed="false" aria-controls="pnow-panel"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><line x1="4" y1="6" x2="20" y2="6"/><line x1="4" y1="12" x2="16" y2="12"/><line x1="4" y1="18" x2="12" y2="18"/></svg>${esc(t('player.ctrl.lyrics'))}</button>
+          <button type="button" class="pnow-feat" data-feat="viz" aria-pressed="false" aria-controls="pnow-panel"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><line x1="4" y1="20" x2="4" y2="12"/><line x1="9" y1="20" x2="9" y2="6"/><line x1="14" y1="20" x2="14" y2="10"/><line x1="19" y1="20" x2="19" y2="4"/></svg>${esc(t('player.ctrl.visualizer'))}</button>
+        </div>
+      </div>
       <div class="pnow-hero-info">
         <div class="pnow-label">
           <span>${t('player.pnow.nowPlaying')}</span>
@@ -11488,6 +11703,7 @@ async function _renderPlayingNow(fade) {
       </div>
     </div>
     ${pills ? `<div class="pnow-pills">${pills}</div>` : ''}
+    <div class="pnow-panel-slot"></div>
     <div class="pnow-body">
       <div class="pnow-main">
         <div class="pnow-section-title" id="pnow-bio-title"></div>
@@ -11505,6 +11721,9 @@ async function _renderPlayingNow(fade) {
       </div>
     </div>
   </div>`;
+
+  _pnowPanelBind(body);
+  _pnowPanelSync();
 
   const recWrap = body.querySelector('.pnow-art-wrap[role="button"]');
   recWrap?.addEventListener('click', _pnowCycleRecord);
@@ -21622,8 +21841,13 @@ function _stopWaveformRaf() {
 // Track real user gestures so the post-boot autoplay guard in _onAudioPlay can
 // distinguish "user clicked play" (allow) from "code called play()" (block).
 // Uses capture-phase so it runs before any handler can stop propagation.
+// A gesture also lets the AudioContext start: build the meter graph now if music is already
+// coming out (a mirrored Sonos/MPV cast restored after a reload, or autoplay without one).
 ['pointerdown', 'keydown', 'touchstart'].forEach(ev => {
-  document.addEventListener(ev, () => { _lastUserGestureAt = Date.now(); }, { capture: true, passive: true });
+  document.addEventListener(ev, () => {
+    _lastUserGestureAt = Date.now();
+    if (!_audioGraphBuilt && (S.castingToSonos || S.castingToMpv || !audioEl.paused)) VIZ.initAudio();
+  }, { capture: true, passive: true });
 });
 
 // Firefox throttles CSS transitions and requestAnimationFrame in background tabs.
@@ -26719,6 +26943,7 @@ document.addEventListener('keydown', e => {
 
   switch (e.code) {
     case 'Escape':
+      if (_pnowPanel.full) { _pnowPanelToggleFull(); break; }
       hideNPModal(); hideCtxMenu(); VIZ.close();
       if (_qvsSelected.size) {
         _qvsSelected.clear(); _qvsLastClick = -1;

@@ -219,7 +219,7 @@ describe('Shortcuts listeners end with the view (N010) and dead Home controller 
     const ac = new AbortController();
     const b = fakeEl({ innerHTML: '', offsetWidth: 1 });
     const ctx = loadFns(['setBody'], {
-      document: { getElementById: () => b }, $vars: { _shortcutsAC: null },
+      document: { getElementById: () => b }, $vars: { _shortcutsAC: null }, _pnowPanelClose() {},
     });
     ctx.$._shortcutsAC = ac;
     ctx.setBody('<p>x</p>');
