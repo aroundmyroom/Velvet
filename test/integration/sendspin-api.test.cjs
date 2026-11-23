@@ -284,7 +284,7 @@ describe('Velvet Rooms REST', async () => {
     assert.equal(r.status, 200);
     await waitFile(f => f.rooms.find(x => x.id === id)?.listener === 'caster');
     const st = await poll(() => call('caster', 'GET', `/api/v1/rooms/${id}/state`), s => s.body.scrobble, 'the scrobble state');
-    assert.deepEqual(st.body.scrobble, { lastfm: 'off', listenbrainz: 'off' }, 'nothing linked: both off');
+    assert.deepEqual(st.body.scrobble, { lastfm: 'off', listenbrainz: 'off', multiscrobbler: 'off' }, 'nothing linked: all off');
     const history = () => call('caster', 'GET', '/api/v1/history').then(h => h.body.events.find(e => e.filepath === C));
     const ev = await poll(history, Boolean, 'the Wrapped play');
     assert.equal(ev.title, 'Tone C');

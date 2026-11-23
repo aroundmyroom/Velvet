@@ -91,6 +91,7 @@ const S = {
   lastfmEnabled:       false,
   listenbrainzEnabled: false,
   listenbrainzLinked:  false,
+  multiScrobblerEnabled: false,
 };
 
 /* ── SCROBBLE STATUS ─────────────────────────────────────────────────────── */
@@ -104,6 +105,10 @@ async function _loadScrobbleStatus() {
     S.listenbrainzEnabled = lb?.serverEnabled === true;
     S.listenbrainzLinked  = lb?.linked === true;
   } catch { S.listenbrainzEnabled = false; S.listenbrainzLinked = false; }
+  try {
+    const ms = await API.get('/api/v1/multi-scrobbler/status');
+    S.multiScrobblerEnabled = ms?.serverEnabled === true && ms?.enabled === true;
+  } catch { S.multiScrobblerEnabled = false; }
 }
 
 /* ── WAVEFORM ─────────────────────────────────────────────────────────────── */
@@ -399,12 +404,15 @@ const PLAYER = {
     PLAYSTATS.start(t);
     clearTimeout(this._scrobbleTimer);
     const lb = S.listenbrainzEnabled && S.listenbrainzLinked;
-    if (S.lastfmEnabled || lb) {
+    const ms = S.multiScrobblerEnabled;
+    if (S.lastfmEnabled || lb || ms) {
       const fp = t.filepath;
       if (lb) API.post('/api/v1/listenbrainz/playing-now', { filePath: fp }).catch(() => {});
+      if (ms) API.post('/api/v1/multi-scrobbler/playing-now', { filePath: fp }).catch(() => {});
       this._scrobbleTimer = setTimeout(() => {
-        if (S.lastfmEnabled) API.post('/api/v1/lastfm/scrobble-by-filepath',      { filePath: fp }).catch(() => {});
-        if (lb)              API.post('/api/v1/listenbrainz/scrobble-by-filepath', { filePath: fp }).catch(() => {});
+        if (S.lastfmEnabled) API.post('/api/v1/lastfm/scrobble-by-filepath',          { filePath: fp }).catch(() => {});
+        if (lb)              API.post('/api/v1/listenbrainz/scrobble-by-filepath',     { filePath: fp }).catch(() => {});
+        if (ms)              API.post('/api/v1/multi-scrobbler/scrobble-by-filepath', { filePath: fp }).catch(() => {});
       }, 30000);
     }
   },

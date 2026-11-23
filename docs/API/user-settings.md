@@ -108,11 +108,11 @@ Sets the authenticated user's own Subsonic password.
 
 ## POST `/api/v1/user/subsonic-scrobble`
 
-Sets whether plays from Subsonic clients are forwarded to Last.fm / ListenBrainz for this user. Stored in the config as `subsonic-scrobble-lastfm` / `subsonic-scrobble-lb`.
+Sets whether plays from Subsonic clients are forwarded to Last.fm / ListenBrainz / multi-scrobbler for this user. Stored in the config as `subsonic-scrobble-lastfm` / `subsonic-scrobble-lb` / `subsonic-scrobble-ms`. With `subsonic-scrobble-ms` the client's now-playing report is forwarded to multi-scrobbler too.
 
-**Body** — `{ "scrobbleLastfm"?: boolean, "scrobbleLb"?: boolean }`. **Response** — `{}`
+**Body** — `{ "scrobbleLastfm"?: boolean, "scrobbleLb"?: boolean, "scrobbleMs"?: boolean }`. **Response** — `{}`
 
-The current values (and whether each service is available) come from `GET /api/v1/subsonic/scrobble-settings`.
+The current values (and whether each service is available) come from `GET /api/v1/subsonic/scrobble-settings`: `{ lastfmAvailable, lbAvailable, msAvailable, scrobbleLastfm, scrobbleLb, scrobbleMs }`.
 
 ---
 

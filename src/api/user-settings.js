@@ -6,11 +6,12 @@ import * as admin from '../util/admin.js';
 import WebError from '../util/web-error.js';
 import { joiValidate } from '../util/validation.js';
 
-async function saveSubsonicScrobble(username, { scrobbleLastfm, scrobbleLb }) {
+async function saveSubsonicScrobble(username, { scrobbleLastfm, scrobbleLb, scrobbleMs }) {
   if (!config.program.users[username]) { throw new WebError('Per-user settings need a user account', 403); }
   const fields = {};
   if (scrobbleLastfm !== undefined) fields['subsonic-scrobble-lastfm'] = scrobbleLastfm;
   if (scrobbleLb     !== undefined) fields['subsonic-scrobble-lb']     = scrobbleLb;
+  if (scrobbleMs     !== undefined) fields['subsonic-scrobble-ms']     = scrobbleMs;
   await config.updateUserFields(username, fields);
 }
 
@@ -53,6 +54,7 @@ export function setup(velvet) {
     joiValidate(Joi.object({
       scrobbleLastfm: Joi.boolean().optional(),
       scrobbleLb:     Joi.boolean().optional(),
+      scrobbleMs:     Joi.boolean().optional(),
     }), req.body);
     await saveSubsonicScrobble(req.user.username, req.body);
     res.json({});

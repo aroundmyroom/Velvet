@@ -1,5 +1,5 @@
 'use strict';
-const VELVET_VERSION = '0.10.3';
+const VELVET_VERSION = '0.10.4';
 // ── SERVER IDENTITY GUARD ────────────────────────────────────────────────────
 // Detects when this browser's localStorage belongs to a different Velvet
 // instance (fresh install, IP change, reverse-proxy swap, second server).
@@ -93,6 +93,8 @@ const S = {
   lastfmLinked: false,
   listenbrainzEnabled: false,
   listenbrainzLinked: false,
+  msServerEnabled: false,
+  msActive: false,
   discordWebhookServerEnabled: false,
   discordWebhookEnabled: false,
   customWebhooksServerEnabled: false,   // true if at least one slot is admin-enabled
@@ -11136,6 +11138,7 @@ const VIEW_ROUTES = {
   'play-history':     { open: () => viewPlayHistory() },
   lastfm:             { open: () => viewLastFM() },
   listenbrainz:       { open: () => viewListenBrainz() },
+  multiscrobbler:     { open: () => viewMultiScrobbler() },
   webhooks:           { open: () => viewWebhooks() },
   discogs:            { open: () => viewDiscogs() },
   subsonic:           { open: () => viewSubsonic() },
@@ -11171,11 +11174,12 @@ let _scrobbleState = {
   filepath: '',
   lastfm: 'off',
   listenbrainz: 'off',
+  ms: 'off',
 };
 
 function _initScrobbleState(song) {
   if (!song || song.isRadio || song.isPodcast) {
-    _scrobbleState = { filepath: '', lastfm: 'off', listenbrainz: 'off' };
+    _scrobbleState = { filepath: '', lastfm: 'off', listenbrainz: 'off', ms: 'off' };
   } else {
     const lfmActive = !!(S.lastfmEnabled && S.lastfmHasApiKey && S.lastfmLinked);
     const lbActive  = !!(S.listenbrainzEnabled && S.listenbrainzLinked);
@@ -11183,6 +11187,7 @@ function _initScrobbleState(song) {
       filepath: song.filepath,
       lastfm:       lfmActive ? 'pending' : 'off',
       listenbrainz: lbActive     ? 'pending' : 'off',
+      ms:           S.msActive   ? 'pending' : 'off',
     };
   }
 }
@@ -11196,6 +11201,7 @@ function _renderPnowScrobbleBadges() {
 
   const lfmState = _scrobbleState.lastfm;
   const lbState  = _scrobbleState.listenbrainz;
+  const msState  = _scrobbleState.ms || 'off';
 
   const lfmTitle = lfmState === 'ok' ? t('player.pnow.scrobbledLastfm')
                  : lfmState === 'err' ? t('player.pnow.scrobbleFailedLastfm')
@@ -11207,12 +11213,19 @@ function _renderPnowScrobbleBadges() {
                  : lbState === 'pending' ? t('player.pnow.scrobblePendingLb')
                  : t('player.pnow.scrobbleDisabledLb');
 
+  const msTitle  = msState === 'ok' ? t('player.pnow.scrobbledMs')
+                 : msState === 'err' ? t('player.pnow.scrobbleFailedMs')
+                 : msState === 'pending' ? t('player.pnow.scrobblePendingMs')
+                 : t('player.pnow.scrobbleDisabledMs');
+
   const lfmLabel = 'Last.fm' + (lfmState === 'ok' ? ' ✓' : lfmState === 'err' ? ' ✗' : '');
   const lbLabel  = 'ListenBrainz' + (lbState === 'ok' ? ' ✓' : lbState === 'err' ? ' ✗' : '');
+  const msLabel  = t('player.nav.multiscrobbler') + (msState === 'ok' ? ' ✓' : msState === 'err' ? ' ✗' : '');
 
   return `<div class="pnow-scrobble-badges" id="pnow-scrobble-badges">
     <span class="pnow-scrobble-badge pnow-scrobble-badge--${lfmState}" title="${esc(lfmTitle)}">${esc(lfmLabel)}</span>
     <span class="pnow-scrobble-badge pnow-scrobble-badge--${lbState}" title="${esc(lbTitle)}">${esc(lbLabel)}</span>
+    ${S.msServerEnabled ? `<span class="pnow-scrobble-badge pnow-scrobble-badge--${msState}" title="${esc(msTitle)}">${esc(msLabel)}</span>` : ''}
   </div>`;
 }
 
@@ -11224,6 +11237,8 @@ function _updateScrobbleUI() {
     else if (_scrobbleState.lastfm === 'err') msgs.push('Last.fm: ' + t('player.misc.failed'));
     if (_scrobbleState.listenbrainz === 'ok') msgs.push('ListenBrainz ✓');
     else if (_scrobbleState.listenbrainz === 'err') msgs.push('ListenBrainz: ' + t('player.misc.failed'));
+    if (_scrobbleState.ms === 'ok') msgs.push(t('player.nav.multiscrobbler') + ' ✓');
+    else if (_scrobbleState.ms === 'err') msgs.push(t('player.nav.multiscrobbler') + ': ' + t('player.misc.failed'));
 
     if (msgs.length) {
       const ok = msgs.every(m => m.endsWith('✓'));
@@ -11241,7 +11256,7 @@ function _updateScrobbleUI() {
   }
 }
 
-// The Last.fm and ListenBrainz scrobble routes answer { scrobbled: true | false | null };
+// The Last.fm, ListenBrainz and multi-scrobbler scrobble routes answer { scrobbled: true | false | null };
 // null means the user has no linked account.
 function _scrobbleOutcome(r) {
   if (r?.scrobbled === false) return 'err';
@@ -11256,9 +11271,12 @@ function _scheduleScrobble(s, fromMs = 0) {
   _initScrobbleState(s);
   _updateScrobbleUI();
 
-  if ((S.lastfmEnabled || (S.listenbrainzEnabled && S.listenbrainzLinked) || S.discordWebhookEnabled || S.customWebhooksEnabled.some(Boolean)) && !s.isRadio && !s.isPodcast) {
+  if ((S.lastfmEnabled || (S.listenbrainzEnabled && S.listenbrainzLinked) || S.msActive || S.discordWebhookEnabled || S.customWebhooksEnabled.some(Boolean)) && !s.isRadio && !s.isPodcast) {
     if (S.listenbrainzEnabled && S.listenbrainzLinked) {
       api('POST', 'api/v1/listenbrainz/playing-now', { filePath: s.filepath }).catch(() => {});
+    }
+    if (S.msActive) {
+      api('POST', 'api/v1/multi-scrobbler/playing-now', { filePath: s.filepath }).catch(() => {});
     }
     scrobbleTimer = setTimeout(async () => {
       if (_scrobbleState.lastfm !== 'off') {
@@ -11275,6 +11293,14 @@ function _scheduleScrobble(s, fromMs = 0) {
           _scrobbleState.listenbrainz = _scrobbleOutcome(r);
         } catch (_) {
           _scrobbleState.listenbrainz = 'err';
+        }
+      }
+      if (S.msActive) {
+        try {
+          const r = await api('POST', 'api/v1/multi-scrobbler/scrobble-by-filepath', { filePath: s.filepath });
+          _scrobbleState.ms = _scrobbleOutcome(r);
+        } catch (_) {
+          _scrobbleState.ms = 'err';
         }
       }
       if (S.discordWebhookEnabled) {
@@ -16139,6 +16165,110 @@ async function viewListenBrainz() {
   });
 }
 
+// ── MULTI-SCROBBLER ───────────────────────────────────────────
+function _msLastLine(last) {
+  if (!last) return '';
+  if (last.ok) return t('player.multiscrobbler.lastOk', { time: new Date(last.at).toLocaleString(I18N.getLanguage(), { dateStyle: 'medium', timeStyle: 'short' }) });
+  if (last.message === 'token') return t('player.multiscrobbler.lastToken');
+  if (last.message === 'unreachable') return t('player.multiscrobbler.lastUnreachable');
+  return t('player.multiscrobbler.lastError', { message: last.message || '' });
+}
+
+async function viewMultiScrobbler() {
+  setTitle(t('player.title.multiscrobbler')); setBack(null); setNavActive('multiscrobbler'); S.view = 'multiscrobbler';
+  S.curSongs = [];
+  document.getElementById('play-all-btn').onclick = null;
+  document.getElementById('add-all-btn').onclick  = null;
+
+  let st = { serverEnabled: false, enabled: false, ownToken: false, canEdit: false, last: null };
+  try { st = { ...st, ...(await api('GET', 'api/v1/multi-scrobbler/status')) }; } catch(_) {}
+  S.msServerEnabled = st.serverEnabled === true;
+  S.msActive = S.msServerEnabled && st.enabled === true;
+  const lastLine = _msLastLine(st.last);
+
+  setBody(`
+    <div class="playback-panel">
+      <div class="playback-section">
+        <div class="playback-section-hdr">
+          <div class="playback-section-icon">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="12" r="3"/><circle cx="18" cy="5" r="3"/><circle cx="18" cy="19" r="3"/><path d="M8.6 10.5l6.8-4M8.6 13.5l6.8 4"/></svg>
+          </div>
+          <div>
+            <div class="playback-section-title">${t('player.multiscrobbler.title')}</div>
+            <div class="playback-section-desc">${t('player.multiscrobbler.desc')}</div>
+          </div>
+        </div>
+
+        ${st.canEdit ? `
+        <div class="playback-row">
+          <label class="playback-row-label" for="ms-enabled">
+            <div class="playback-row-name">${t('player.multiscrobbler.enableLabel')}</div>
+          </label>
+          <label class="toggle-switch">
+            <input type="checkbox" id="ms-enabled" ${st.enabled ? 'checked' : ''}>
+            <span class="toggle-slider"></span>
+          </label>
+        </div>
+
+        <div class="playback-row" style="flex-direction:column;align-items:stretch;gap:10px">
+          <label class="playback-row-label" for="ms-token">
+            <div class="playback-row-name">${t('player.multiscrobbler.tokenLabel')}</div>
+            <div class="playback-row-hint">${t('player.multiscrobbler.tokenHint')}</div>
+            ${st.ownToken ? `<div class="playback-row-hint">${t('player.multiscrobbler.ownTokenSet')}</div>` : ''}
+          </label>
+          <input type="password" id="ms-token" class="settings-input" style="max-width:none;width:100%" placeholder="${t('player.multiscrobbler.tokenPlaceholder')}" autocomplete="new-password" data-form-type="other" data-lpignore="true" data-1p-ignore data-bwignore>
+        </div>
+
+        <div class="playback-row" style="justify-content:flex-end;gap:8px">
+          ${st.ownToken ? `<button class="btn-danger" id="ms-clear-btn">${t('player.multiscrobbler.clearToken')}</button>` : ''}
+          <button class="btn-primary" id="ms-save-btn">${t('player.multiscrobbler.save')}</button>
+        </div>` : `
+        <div class="playback-row">
+          <div class="playback-row-label">
+            <div class="playback-row-hint">${t('player.multiscrobbler.noAuthNote')}</div>
+          </div>
+        </div>`}
+
+        ${lastLine ? `
+        <div class="playback-row">
+          <div class="playback-row-label">
+            <div class="playback-row-hint" style="color:${st.last.ok ? 'var(--green)' : 'var(--red)'}">${esc(lastLine)}</div>
+          </div>
+        </div>` : ''}
+      </div>
+    </div>`);
+
+  const save = async (body) => {
+    const btn = document.getElementById('ms-save-btn');
+    if (btn) btn.disabled = true;
+    try {
+      await api('POST', 'api/v1/multi-scrobbler/settings', body);
+      S.msActive = S.msServerEnabled && body.enabled === true;
+      _updateScrobbleUI();
+      toast(t('player.toast.multiscrobblerSaved'));
+      viewMultiScrobbler();
+    } catch(_) {
+      toast(t('player.toast.multiscrobblerFailed'));
+      if (btn) btn.disabled = false;
+    }
+  };
+
+  document.getElementById('ms-save-btn')?.addEventListener('click', () => {
+    const body = { enabled: document.getElementById('ms-enabled').checked };
+    const token = document.getElementById('ms-token').value.trim();
+    if (token) body.msToken = token;
+    save(body);
+  });
+
+  document.getElementById('ms-clear-btn')?.addEventListener('click', () => {
+    save({ enabled: document.getElementById('ms-enabled').checked, msToken: '' });
+  });
+
+  document.getElementById('ms-token')?.addEventListener('keydown', e => {
+    if (e.key === 'Enter') document.getElementById('ms-save-btn')?.click();
+  });
+}
+
 // ── WEBHOOKS ──────────────────────────────────────────────────
 async function viewWebhooks() {
   setTitle(t('player.title.webhooks')); setBack(null); setNavActive('webhooks'); S.view = 'webhooks';
@@ -16239,12 +16369,12 @@ async function viewSubsonic() {
   document.getElementById('add-all-btn').onclick  = null;
 
   // Fetch scrobble settings (Last.fm + LB availability + current user prefs)
-  let scrobble = { lastfmAvailable: false, lbAvailable: false, scrobbleLastfm: false, scrobbleLb: false };
+  let scrobble = { lastfmAvailable: false, lbAvailable: false, msAvailable: false, scrobbleLastfm: false, scrobbleLb: false, scrobbleMs: false };
   try { scrobble = await api('GET', 'api/v1/subsonic/scrobble-settings'); } catch(_) {}
 
   function scrobbleSection() {
     // Don't show section at all if neither service is linked
-    if (!scrobble.lastfmAvailable && !scrobble.lbAvailable) return '';
+    if (!scrobble.lastfmAvailable && !scrobble.lbAvailable && !scrobble.msAvailable) return '';
     const rows = [];
     if (scrobble.lastfmAvailable) {
       rows.push(`
@@ -16268,6 +16398,18 @@ async function viewSubsonic() {
           </div>
           <label class="toggle-switch">
             <input type="checkbox" id="subsonic-scrobble-lb" ${scrobble.scrobbleLb ? 'checked' : ''}>
+            <span class="toggle-slider"></span>
+          </label>
+        </div>`);
+    }
+    if (scrobble.msAvailable) {
+      rows.push(`
+        <div class="playback-row">
+          <div class="playback-row-label">
+            <div class="playback-row-name">${t('player.subsonic.scrobbleMs')}</div>
+          </div>
+          <label class="toggle-switch">
+            <input type="checkbox" id="subsonic-scrobble-ms" ${scrobble.scrobbleMs ? 'checked' : ''}>
             <span class="toggle-slider"></span>
           </label>
         </div>`);
@@ -16370,6 +16512,9 @@ async function viewSubsonic() {
   });
   document.getElementById('subsonic-scrobble-lb')?.addEventListener('change', e => {
     _saveScrobblePref('scrobbleLb', e.target.checked);
+  });
+  document.getElementById('subsonic-scrobble-ms')?.addEventListener('change', e => {
+    _saveScrobblePref('scrobbleMs', e.target.checked);
   });
 }
 
@@ -19329,8 +19474,9 @@ function _roomScrobbleSync(st) {
   if (!sc && _scrobbleState.filepath === fp) return;
   const lastfm = sc?.lastfm || 'off';
   const listenbrainz = sc?.listenbrainz || 'off';
-  if (_scrobbleState.filepath === fp && _scrobbleState.lastfm === lastfm && _scrobbleState.listenbrainz === listenbrainz) return;
-  _scrobbleState = { filepath: fp, lastfm, listenbrainz };
+  const ms = sc?.multiscrobbler || 'off';
+  if (_scrobbleState.filepath === fp && _scrobbleState.lastfm === lastfm && _scrobbleState.listenbrainz === listenbrainz && _scrobbleState.ms === ms) return;
+  _scrobbleState = { filepath: fp, lastfm, listenbrainz, ms };
   _updateScrobbleUI();
 }
 
@@ -23050,14 +23196,14 @@ function _applyServerSettings(data) {
 }
 
 // ── AUTH ──────────────────────────────────────────────────────
-const _FEATURE_STATUS_ROUTES = ['api/v1/lastfm/status', 'api/v1/listenbrainz/status', 'api/v1/discord-webhook/status', 'api/v1/custom-webhooks/status', 'api/v1/radio/enabled'];
+const _FEATURE_STATUS_ROUTES = ['api/v1/lastfm/status', 'api/v1/listenbrainz/status', 'api/v1/discord-webhook/status', 'api/v1/custom-webhooks/status', 'api/v1/radio/enabled', 'api/v1/multi-scrobbler/status'];
 
 // keepOnError: a background refresh leaves a flag as it was when its status call fails.
 async function _loadFeatureFlags({ probeAdmin = true, keepOnError = false } = {}) {
   if (probeAdmin) {
     try { await api('GET', 'api/v1/admin/directories'); S.isAdmin = true; } catch(_) { S.isAdmin = false; }
   }
-  const [dc, ls, lb, dw, cw, rd] = await Promise.all([
+  const [dc, ls, lb, dw, cw, rd, ms] = await Promise.all([
     S.isAdmin ? api('GET', 'api/v1/admin/discogs/config').catch(() => null) : null,
     ..._FEATURE_STATUS_ROUTES.map(r => api('GET', r).catch(() => null)),
   ]);
@@ -23088,6 +23234,10 @@ async function _loadFeatureFlags({ probeAdmin = true, keepOnError = false } = {}
     S.customWebhooksEnabled = [0, 1].map(i => cws[i]?.serverEnabled === true && cws[i]?.userEnabled === true);
   });
   apply(rd, d => { S.radioEnabled = d?.enabled === true; });
+  apply(ms, d => {
+    S.msServerEnabled = d?.serverEnabled === true;
+    S.msActive        = S.msServerEnabled && d?.enabled === true;
+  });
   // Similar-artists needs a Last.fm API key; drop a saved "on" so Auto-DJ does not try to use it
   if (ls && !S.lastfmHasApiKey && S.djSimilar) { S.djSimilar = false; localStorage.removeItem(_uKey('dj_similar')); }
   S.feedsEnabled = true; // Podcasts always available — user needs the section to add their first feed
@@ -23098,6 +23248,7 @@ function _syncFeatureNav() {
   show('discogs-nav-btn', S.isAdmin && S.discogsEnabled);
   show('lastfm-nav-btn', S.lastfmEnabled);
   show('listenbrainz-nav-btn', S.listenbrainzEnabled);
+  show('multiscrobbler-nav-btn', S.msServerEnabled);
   show('webhooks-nav-btn', S.discordWebhookServerEnabled || S.customWebhooksServerEnabled);
   show('radio-nav-btn', S.radioEnabled);
 }
@@ -23283,6 +23434,7 @@ function showApp() {
   }
   if (S.lastfmEnabled) document.getElementById('lastfm-nav-btn').classList.remove('hidden');
   if (S.listenbrainzEnabled) document.getElementById('listenbrainz-nav-btn')?.classList.remove('hidden');
+  if (S.msServerEnabled) document.getElementById('multiscrobbler-nav-btn')?.classList.remove('hidden');
   // Show "For You" section if ML smart playlist is enabled on the server
   api('GET', 'api/v1/smartplaylist/generated').then(() => {
     document.getElementById('ml-playlist-nav-btn')?.classList.remove('hidden');

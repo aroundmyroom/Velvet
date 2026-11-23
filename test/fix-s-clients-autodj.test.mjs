@@ -136,10 +136,22 @@ describe('Tizen scrobbles like the web player (P054)', () => {
   };
 
   it('reads the same status routes as the web player', async () => {
-    const { ctx } = load({ 'api/v1/lastfm/status': { serverEnabled: true }, 'api/v1/listenbrainz/status': { serverEnabled: true, linked: true } });
+    const { ctx } = load({ 'api/v1/lastfm/status': { serverEnabled: true }, 'api/v1/listenbrainz/status': { serverEnabled: true, linked: true }, 'api/v1/multi-scrobbler/status': { serverEnabled: true, enabled: false } });
     ctx._loadScrobbleStatus();
     await tick();
-    assert.deepEqual(plain(ctx.S), { lastfmEnabled: true, listenbrainzEnabled: true, listenbrainzLinked: true });
+    assert.deepEqual(plain(ctx.S), { lastfmEnabled: true, listenbrainzEnabled: true, listenbrainzLinked: true, multiScrobblerEnabled: false });
+  });
+
+  it('sends multi-scrobbler playing-now at once and its scrobble after 30 s when active', () => {
+    const { ctx, calls, timers } = load({});
+    Object.assign(ctx.S, { lastfmEnabled: false, listenbrainzEnabled: false, listenbrainzLinked: false, multiScrobblerEnabled: true });
+    ctx._scheduleScrobble('Music/a.mp3');
+    assert.deepEqual(calls.map(c => c.path), ['api/v1/multi-scrobbler/playing-now']);
+    assert.equal(timers.timers[0].ms, 30000);
+    timers.fire();
+    assert.deepEqual(calls.slice(1), [
+      { method: 'POST', path: 'api/v1/multi-scrobbler/scrobble-by-filepath', body: { filePath: 'Music/a.mp3' } },
+    ]);
   });
 
   it('sends ListenBrainz playing-now at once and both scrobbles after 30 s', () => {
@@ -242,11 +254,11 @@ describe('Server Remote queue moves share one path', () => {
 describe('mobile ListenBrainz like the web player (P054)', () => {
   it('stores the switch and the link separately', async () => {
     const S = {};
-    const API = { get: p => Promise.resolve(p.includes('listenbrainz') ? { serverEnabled: true, linked: false } : { serverEnabled: true }) };
+    const API = { get: p => Promise.resolve(p.includes('listenbrainz') ? { serverEnabled: true, linked: false } : p.includes('multi-scrobbler') ? { serverEnabled: true, enabled: true } : { serverEnabled: true }) };
     const ctx = vm.createContext({ S, API });
     mobileFns(['_loadScrobbleStatus'], ctx);
     await ctx._loadScrobbleStatus();
-    assert.deepEqual(plain(S), { lastfmEnabled: true, listenbrainzEnabled: true, listenbrainzLinked: false });
+    assert.deepEqual(plain(S), { lastfmEnabled: true, listenbrainzEnabled: true, listenbrainzLinked: false, multiScrobblerEnabled: true });
   });
 
   it('sends playing-now and scrobbles ListenBrainz only when linked', () => {
@@ -254,6 +266,14 @@ describe('mobile ListenBrainz like the web player (P054)', () => {
     assert.match(block, /const lb = S\.listenbrainzEnabled && S\.listenbrainzLinked;/);
     assert.match(block, /if \(lb\) API\.post\('\/api\/v1\/listenbrainz\/playing-now', \{ filePath: fp \}\)/);
     assert.match(block, /if \(lb\)\s+API\.post\('\/api\/v1\/listenbrainz\/scrobble-by-filepath'/);
+  });
+
+  it('sends multi-scrobbler playing-now and scrobble only when active', () => {
+    const block = mobileSrc.slice(mobileSrc.indexOf('clearTimeout(this._scrobbleTimer);'), mobileSrc.indexOf('}, 30000);'));
+    assert.match(block, /const ms = S\.multiScrobblerEnabled;/);
+    assert.match(block, /if \(S\.lastfmEnabled \|\| lb \|\| ms\)/);
+    assert.match(block, /if \(ms\) API\.post\('\/api\/v1\/multi-scrobbler\/playing-now', \{ filePath: fp \}\)/);
+    assert.match(block, /if \(ms\)\s+API\.post\('\/api\/v1\/multi-scrobbler\/scrobble-by-filepath'/);
   });
 });
 

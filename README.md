@@ -365,6 +365,7 @@ Playlists built from filters, updated every time you open them:
 |---|---|
 | **Last.fm** | Scrobbling, now playing, and similar artists for Auto-DJ. A session per user, and you can see in Playing Now whether a scrobble went through. |
 | **ListenBrainz** | Now playing and scrobbles. A token per user, works next to Last.fm. [Docs](docs/listenbrainz.md) |
+| **multi-scrobbler** | Sends your plays to a self-hosted multi-scrobbler, which forwards them to ListenBrainz, Maloja, Koito, Libre.fm, teal.fm and more. Each user opts in. [Docs](docs/multi-scrobbler.md) |
 | **Discogs** | Artist photos, genre suggestions and album art. Needs API credentials. |
 | **Sonos** | Finds your speakers, plays the current song, follows the queue, pause and resume from either side, hi-res transcoding, and plays your Sonos favourites (Spotify, Apple Music, TuneIn). [Docs](docs/sonos.md) |
 | **DLNA / UPnP** | Browse and stream on your network to smart TVs, Kodi, BubbleUPnP and AV receivers. [Docs](docs/dlna.md) |
@@ -486,6 +487,7 @@ publish 8927 and add speakers by IP address. [Details](docs/rooms.md#network-req
 | YouTube downloads | [docs/youtube-download.md](docs/youtube-download.md) |
 | Samsung TV app | [docs/tizen-tv.md](docs/tizen-tv.md) |
 | ListenBrainz | [docs/listenbrainz.md](docs/listenbrainz.md) |
+| multi-scrobbler | [docs/multi-scrobbler.md](docs/multi-scrobbler.md) |
 | Keyboard shortcuts and accessibility | [docs/accessibility.md](docs/accessibility.md) |
 | Security | [docs/frontend-security.md](docs/frontend-security.md) |
 | Pair a Device | [docs/login-pairing.md](docs/login-pairing.md) |

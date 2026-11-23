@@ -15,6 +15,8 @@ Radio streams and podcast episodes are not sent.
 
 ListenBrainz and Last.fm can be active simultaneously: if both are configured, both receive every event. The Now Playing view shows a badge per service (for example "ListenBrainz ✓" after a successful scrobble, "ListenBrainz ✗" after a failure).
 
+To reach other services (Maloja, Koito, Libre.fm, teal.fm, …), or a self-hosted ListenBrainz-compatible server, use [multi-scrobbler](multi-scrobbler.md). It receives the same listens as ListenBrainz.
+
 When a song plays in a [Velvet Room](rooms.md), the server sends both events itself for the user who started the song, so they also arrive when no browser is open.
 
 ## Admin Setup
@@ -51,7 +53,7 @@ Tokens survive server restarts in both modes.
 | `POST` | `/api/v1/listenbrainz/connect` | Any authenticated user — body: `{ lbToken }` — returns `{ linked: true, lbUsername }`, or 401 when ListenBrainz rejects the token |
 | `POST` | `/api/v1/listenbrainz/disconnect` | Any authenticated user — returns `{}` |
 | `POST` | `/api/v1/listenbrainz/playing-now` | Any authenticated user — body: `{ filePath }` — sends the Listening Now ping; returns `{ sent }` (`false` when there is no token or the file is unknown) |
-| `POST` | `/api/v1/listenbrainz/scrobble-by-filepath` | Any authenticated user — body: `{ filePath }` — records the listen; returns `{}`, or `{ scrobble: false }` when there is no token or the file is unknown |
+| `POST` | `/api/v1/listenbrainz/scrobble-by-filepath` | Any authenticated user — body: `{ filePath }` — records the listen; returns `{ scrobbled }`: `true` when ListenBrainz accepted it, `false` when the file is unknown or ListenBrainz refused it, `null` when ListenBrainz is off or the user is not linked |
 
 The player calls the last two only when the admin switch is on and the user is linked.
 
@@ -61,4 +63,4 @@ The player calls the last two only when the admin switch is on and the user is l
 - **Listening Now ping:** `POST https://api.listenbrainz.org/1/submit-listens` with `listen_type: "playing_now"` — no `listened_at` field; sent at track start
 - **Scrobble:** `POST https://api.listenbrainz.org/1/submit-listens` with `listen_type: "single"` — includes `listened_at` Unix timestamp; sent after 30 s
 
-Each submission includes artist, title and album (when present), with `submission_client` and `media_player` set to `Velvet`. Requests time out after 8 seconds.
+Each submission includes artist, title and album (when present), with `submission_client` and `media_player` set to `Velvet` and `submission_client_version` set to the Velvet version. When the file has them, `additional_info` also carries `duration_ms`, `tracknumber`, `release_artist_name` (the album artist) and `recording_mbid` (the MusicBrainz recording ID), which helps ListenBrainz link the listen to the right recording. Requests time out after 8 seconds.

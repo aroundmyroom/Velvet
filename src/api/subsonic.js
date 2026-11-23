@@ -20,6 +20,7 @@ import sharp from 'sharp';
 import * as config from '../state/config.js';
 import * as db from '../db/manager.js';
 import * as scrobblerApi from './scrobbler.js';
+import * as multiScrobblerApi from './multi-scrobbler.js';
 import { Scrobbler } from './scrobbler.js';
 import * as dbQueue from '../db/task-queue.js';
 import * as scanProgress from '../state/scan-progress.js';
@@ -1426,6 +1427,7 @@ export function setup(velvet) {
       const playerName = req.query.c || req.body?.c || 'Unknown';
       const playerId   = req.query.c || req.body?.c || 'Unknown';
       nowPlayingStore.set(req.subsonicUser, { id, playerName, playerId, startedAt: Date.now() });
+      _forwardNowPlaying(db, req.subsonicUser, id);
     }
 
     if (submission) {
@@ -2624,11 +2626,20 @@ function _fetchAlbumListRows(db, vp, user, type, limit, pfx, req) {
   return [];
 }
 
-function _dispatchScrobble(doLastfm, doLb, userObj, username, row) {
-  if (!row || (!doLastfm && !doLb)) return;
+function _dispatchScrobble(doLastfm, doLb, doMs, userObj, username, row) {
+  if (!row || (!doLastfm && !doLb && !doMs)) return;
   const meta = { artist: row.artist, album: row.album, track: row.title };
   if (doLastfm) scrobblerApi.scrobbleLastfmForUser(userObj, meta);
-  if (doLb)     scrobblerApi.scrobbleLbForUser(username, meta);
+  if (doLb)     scrobblerApi.scrobbleLbForUser(username, scrobblerApi.listenMetaOf(row));
+  if (doMs)     multiScrobblerApi.scrobbleMsForUser(username, scrobblerApi.listenMetaOf(row));
+}
+
+// A Subsonic client reporting a song that starts: the multi-scrobbler now-playing, when the user forwards there.
+function _forwardNowPlaying(db, username, id) {
+  if (config.program.users?.[username]?.['subsonic-scrobble-ms'] !== true) return;
+  const { hash, cue } = decodeSongId(id);
+  if (!hash || cue) return;
+  multiScrobblerApi.msPlayingNowForUser(username, db.getSongsByHashes([hash], username).get(hash));
 }
 
 function _processScrobble(db, ids, username, nowPlayingStore) {
@@ -2636,6 +2647,7 @@ function _processScrobble(db, ids, username, nowPlayingStore) {
   const userObj  = config.program.users[username];
   const doLastfm = userObj?.['subsonic-scrobble-lastfm'] === true;
   const doLb     = userObj?.['subsonic-scrobble-lb']     === true;
+  const doMs     = userObj?.['subsonic-scrobble-ms']     === true;
 
   // Pre-resolve all content hashes to avoid per-item DB lookups in hot scrobble
   // paths. decodeSongId strips any "@<rowid>" disambiguator and CUE wrapper so the
@@ -2679,12 +2691,13 @@ function _processScrobble(db, ids, username, nowPlayingStore) {
       try {
         db.insertPlayEvent({ user_id: username, file_hash: storageHash, started_at: Date.now(), duration_ms: null, source: 'subsonic', session_id: null });
       } catch (e) { console.debug('[velvet]', e?.message ?? e); }
-      if (doLastfm || doLb) {
+      if (doLastfm || doLb || doMs) {
         if (scrobbleMeta) {
           if (doLastfm) scrobblerApi.scrobbleLastfmForUser(userObj, scrobbleMeta);
           if (doLb)     scrobblerApi.scrobbleLbForUser(username, scrobbleMeta);
+          if (doMs)     multiScrobblerApi.scrobbleMsForUser(username, scrobbleMeta);
         } else {
-          _dispatchScrobble(doLastfm, doLb, userObj, username, songMap.get(storageHash));
+          _dispatchScrobble(doLastfm, doLb, doMs, userObj, username, songMap.get(storageHash));
         }
       }
     }

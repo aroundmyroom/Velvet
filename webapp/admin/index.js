@@ -6131,6 +6131,134 @@ const listenBrainzView = Vue.component('listenbrainz-view', {
   }
 });
 
+const multiScrobblerView = Vue.component('multiscrobbler-view', {
+  data() {
+    return {
+      enabled: false,
+      url: '',
+      token: '',
+      hasToken: false,
+      pending: false,
+      testing: false,
+      testResult: null,
+      setupExample: '[{"name":"velvet","enable":true,"data":{"token":"<your token>"}}]',
+    };
+  },
+  template: `
+    <div class="container">
+      <div class="row">
+        <div class="col s12">
+          <div class="card">
+            <div class="card-content">
+              <span class="card-title">{{ t('admin.multiscrobbler.title') }}</span>
+              <p style="margin-bottom:.75rem;">{{ t('admin.multiscrobbler.desc1') }}</p>
+              <p style="margin-bottom:.75rem;">{{ t('admin.multiscrobbler.desc2') }}</p>
+              <p style="margin-bottom:1rem;"><a href="https://docs.multi-scrobbler.app/" target="_blank" rel="noopener">{{ t('admin.multiscrobbler.docsLink') }}</a></p>
+              <table><tbody>
+                <tr>
+                  <td style="width:140px"><b>{{ t('admin.multiscrobbler.labelEnable') }}</b></td>
+                  <td><input type="checkbox" v-model="enabled" style="margin:0;width:auto;height:auto;" /> {{ t('admin.multiscrobbler.checkboxEnable') }}</td>
+                </tr>
+                <tr>
+                  <td><b>{{ t('admin.multiscrobbler.labelUrl') }}</b></td>
+                  <td><input v-model="url" type="text" :placeholder="t('admin.multiscrobbler.placeholderUrl')" autocomplete="off" data-form-type="other" data-lpignore="true" data-1p-ignore spellcheck="false" style="margin:0;width:100%;max-width:520px" /></td>
+                </tr>
+                <tr>
+                  <td></td>
+                  <td style="font-size:0.82rem;color:#999;">{{ t('admin.multiscrobbler.urlHint') }}</td>
+                </tr>
+                <tr>
+                  <td><b>{{ t('admin.multiscrobbler.labelToken') }}</b></td>
+                  <td><input v-model="token" type="password" :placeholder="t('admin.multiscrobbler.placeholderToken')" autocomplete="new-password" data-form-type="other" data-lpignore="true" data-1p-ignore spellcheck="false" style="margin:0;width:100%;max-width:520px" /></td>
+                </tr>
+                <tr v-if="hasToken">
+                  <td></td>
+                  <td style="font-size:0.82rem;">
+                    {{ t('admin.multiscrobbler.tokenSaved') }}
+                    <button type="button" class="btn-small btn-flat" v-on:click="clearToken()" :disabled="pending">{{ t('admin.multiscrobbler.clearToken') }}</button>
+                  </td>
+                </tr>
+                <tr>
+                  <td></td>
+                  <td style="font-size:0.82rem;color:#999;">{{ t('admin.multiscrobbler.tokenHint') }}</td>
+                </tr>
+              </tbody></table>
+              <div v-if="testResult" role="status" style="margin-top:1rem;font-size:.9rem;">
+                <template v-if="testResult.reachable">
+                  <div style="color:var(--green);">{{ testResult.version ? t('admin.multiscrobbler.testReachable', { version: testResult.version }) : t('admin.multiscrobbler.testReachableNoVersion') }}</div>
+                  <div :style="{ color: testResult.healthy ? 'var(--green)' : 'var(--red)' }">{{ testResult.healthy ? t('admin.multiscrobbler.testHealthy') : t('admin.multiscrobbler.testUnhealthy', { status: testResult.healthStatus }) }}</div>
+                  <div :style="{ color: testResult.endpointSource ? 'var(--green)' : 'var(--red)' }">{{ testResult.endpointSource ? t('admin.multiscrobbler.testEndpoint') : t('admin.multiscrobbler.testNoEndpoint') }}</div>
+                </template>
+                <div v-else style="color:var(--red);">{{ t('admin.multiscrobbler.testUnreachable') }}</div>
+              </div>
+              <details class="vr-advanced">
+                <summary>{{ t('admin.multiscrobbler.setupTitle') }}</summary>
+                <p style="margin:.5rem 0;">{{ t('admin.multiscrobbler.setupDesc') }}</p>
+                <pre style="background:var(--raised);border:1px solid var(--border);border-radius:6px;padding:.65rem .9rem;font-size:.78rem;color:var(--t2);margin:0;overflow-x:auto;">{{ setupExample }}</pre>
+              </details>
+            </div>
+            <div class="card-action">
+              <button class="btn" v-on:click="save()" :disabled="pending">
+                {{ pending ? t('admin.common.saving') : t('admin.multiscrobbler.btnSave') }}
+              </button>
+              <button class="btn btn-flat" v-on:click="test()" :disabled="testing">
+                {{ testing ? t('admin.multiscrobbler.testing') : t('admin.multiscrobbler.btnTest') }}
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>`,
+  async mounted() {
+    try {
+      const res = await API.axios({ method: 'GET', url: `${API.url()}/api/v1/admin/multi-scrobbler/config` });
+      this.enabled = res.data.enabled === true;
+      this.url = res.data.url || '';
+      this.hasToken = res.data.hasToken === true;
+    } catch (e) { console.debug('[velvet]', e?.message ?? e); }
+  },
+  methods: {
+    persist: async function(data) {
+      this.pending = true;
+      try {
+        await API.axios({ method: 'POST', url: `${API.url()}/api/v1/admin/multi-scrobbler/config`, data });
+        if (data.msToken !== undefined) { this.hasToken = data.msToken !== ''; this.token = ''; }
+        iziToast.success({ title: this.t('admin.multiscrobbler.toastSaved'), position: 'topCenter', timeout: 3000 });
+      } catch {
+        iziToast.error({ title: this.t('admin.multiscrobbler.toastFailed'), position: 'topCenter', timeout: 3000 });
+      } finally { this.pending = false; }
+    },
+    save: function() {
+      const url = this.url.trim();
+      if (this.enabled && !url) {
+        iziToast.warning({ title: this.t('admin.multiscrobbler.urlRequired'), position: 'topCenter', timeout: 3000 });
+        return;
+      }
+      const data = { enabled: this.enabled, url };
+      if (this.token.trim()) data.msToken = this.token.trim();
+      return this.persist(data);
+    },
+    clearToken: function() {
+      return this.persist({ enabled: this.enabled, url: this.url.trim(), msToken: '' });
+    },
+    test: async function() {
+      const url = this.url.trim();
+      if (!url) {
+        iziToast.warning({ title: this.t('admin.multiscrobbler.urlRequired'), position: 'topCenter', timeout: 3000 });
+        return;
+      }
+      this.testing = true;
+      this.testResult = null;
+      try {
+        const res = await API.axios({ method: 'POST', url: `${API.url()}/api/v1/admin/multi-scrobbler/test`, data: { url } });
+        this.testResult = res.data;
+      } catch {
+        this.testResult = { reachable: false };
+      } finally { this.testing = false; }
+    }
+  }
+});
+
 const customWebhooksView = Vue.component('custom-webhooks-view', {
   data() {
     return {
@@ -12180,6 +12308,7 @@ const vm = new Vue({
     'wrapped-admin-view': wrappedAdminView,
     'lastfm-view': lastFMView,
     'listenbrainz-view': listenBrainzView,
+    'multiscrobbler-view': multiScrobblerView,
     'custom-webhooks-view': customWebhooksView,
     'discogs-view': discogsView,
     'lyrics-view': lyricsView,

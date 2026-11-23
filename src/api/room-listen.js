@@ -7,6 +7,7 @@ import {
   scrobbleByFilepath, lbPlayingNow, lbScrobbleByFilepath, lastfmEnabled, lastfmActive, lbActive,
 } from './scrobbler.js';
 import { discordScrobbleByFilepath } from './discord-webhook.js';
+import { msActive, msPlayingNow, msScrobbleByFilepath } from './multi-scrobbler.js';
 import { customWebhookScrobbleByFilepath, CUSTOM_WEBHOOK_SLOTS } from './custom-webhooks.js';
 import * as wrapped from './wrapped.js';
 
@@ -57,7 +58,9 @@ export const roomListen = {
     }).catch((e) => console.debug('[velvet]', e?.message ?? e));
     const lb = lbActive(user);
     if (lb) safe(() => lbPlayingNow(user, fp));
-    return { lastfm: lastfmActive(user) ? 'pending' : 'off', listenbrainz: lb ? 'pending' : 'off' };
+    const ms = msActive(user);
+    if (ms) safe(() => msPlayingNow(user, fp));
+    return { lastfm: lastfmActive(user) ? 'pending' : 'off', listenbrainz: lb ? 'pending' : 'off', multiscrobbler: ms ? 'pending' : 'off' };
   },
 
   async scrobble(ctx) {
@@ -66,11 +69,13 @@ export const roomListen = {
     const fp = ctx.item.filepath;
     const lfm = lastfmEnabled() ? safe(() => scrobbleByFilepath(user, fp)) : null;
     const lb = lbActive(user) ? safe(() => lbScrobbleByFilepath(user, fp)) : null;
+    const ms = msActive(user) ? safe(() => msScrobbleByFilepath(user, fp)) : null;
     safe(() => discordScrobbleByFilepath(user, fp));
     for (let slot = 0; slot < CUSTOM_WEBHOOK_SLOTS; slot++) safe(() => customWebhookScrobbleByFilepath(user, fp, slot));
     return {
       lastfm: lastfmActive(user) ? await outcome(lfm) : 'off',
       listenbrainz: lbActive(user) ? await outcome(lb) : 'off',
+      multiscrobbler: msActive(user) ? await outcome(ms) : 'off',
     };
   },
 

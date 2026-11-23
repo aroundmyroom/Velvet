@@ -13,7 +13,7 @@
   <script defer src="../assets/js/lib/butterchurn.min.js"></script>
   <script defer src="../assets/js/lib/audiomotion-analyzer.js"></script>
   <script defer src="../assets/js/lib/qr.js"></script>
-  <link rel="stylesheet" href="/style.css?v=0.10.3-ac9e8399">
+  <link rel="stylesheet" href="/style.css?v=0.10.4-ac9e8399">
   <script src="/assets/js/lib/simplewebauthn-browser.js"></script>
   <script src="/assets/js/i18n.js"></script>
 </head>
@@ -27,7 +27,7 @@
       <h1>Velvet</h1>
       <p data-i18n="player.login.tagline">a music server — evolved.</p>
       <p data-i18n="player.login.tagline2">Enter the danger zone.</p>
-      <p id="login-version" class="login-version-tag">v0.10.3</p>
+      <p id="login-version" class="login-version-tag">v0.10.4</p>
     </div>
     <form id="login-form">
       <label class="field-label" for="l-user" data-i18n="player.login.username">Username</label>
@@ -623,6 +623,10 @@
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>
           <span data-i18n="player.nav.listenbrainz">ListenBrainz</span>
         </button>
+        <button class="nav-btn hidden" id="multiscrobbler-nav-btn" data-view="multiscrobbler" data-i18n="player.nav.multiscrobbler" data-i18n-attr="title">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="12" r="3"/><circle cx="18" cy="5" r="3"/><circle cx="18" cy="19" r="3"/><path d="M8.6 10.5l6.8-4M8.6 13.5l6.8 4"/></svg>
+          <span data-i18n="player.nav.multiscrobbler">multi-scrobbler</span>
+        </button>
         <button class="nav-btn hidden" id="webhooks-nav-btn" data-view="webhooks" data-i18n="player.nav.webhooks" data-i18n-attr="title">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 16.98h-5.99c-1.1 0-1.95.94-2.48 1.9A4 4 0 0 1 2 17c.01-.7.2-1.4.57-2"/><path d="m6 17 3.13-5.78c.53-.97.1-2.18-.5-3.1a4 4 0 1 1 6.89-4.06"/><path d="m12 6 3.13 5.73C15.66 12.7 16.9 13 18 13a4 4 0 0 1 0 8"/></svg>
           <span data-i18n="player.nav.webhooks">Webhooks</span>
@@ -1120,7 +1124,7 @@
 
 <div id="tip-box"></div>
 <script src="/assets/js/player-locale.js"></script>
-  <script src="/app.js?v=0.10.3-ace31b5b"></script>
+  <script src="/app.js?v=0.10.4-c9004428"></script>
 
 </body>
 </html>

@@ -16,6 +16,7 @@ var S = {
   lastfmEnabled:       false,
   listenbrainzEnabled: false,
   listenbrainzLinked:  false,
+  multiScrobblerEnabled: false,
   currentView: 'home',
   albumCache:  null,
   artistCache: null,
@@ -1443,16 +1444,22 @@ function _loadScrobbleStatus() {
     S.listenbrainzEnabled = d.serverEnabled === true;
     S.listenbrainzLinked  = d.linked === true;
   }).catch(function() { S.listenbrainzEnabled = false; S.listenbrainzLinked = false; });
+  api('GET', '/api/v1/multi-scrobbler/status').then(function(d) {
+    S.multiScrobblerEnabled = d.serverEnabled === true && d.enabled === true;
+  }).catch(function() { S.multiScrobblerEnabled = false; });
 }
 
 function _scheduleScrobble(fp) {
   clearTimeout(_scrobbleTimer);
   var lb = S.listenbrainzEnabled && S.listenbrainzLinked;
-  if (!S.lastfmEnabled && !lb) return;
+  var ms = S.multiScrobblerEnabled;
+  if (!S.lastfmEnabled && !lb && !ms) return;
   if (lb) api('POST', '/api/v1/listenbrainz/playing-now', { filePath: fp }).catch(function() {});
+  if (ms) api('POST', '/api/v1/multi-scrobbler/playing-now', { filePath: fp }).catch(function() {});
   _scrobbleTimer = setTimeout(function() {
     if (S.lastfmEnabled) api('POST', '/api/v1/lastfm/scrobble-by-filepath', { filePath: fp }).catch(function() {});
     if (lb) api('POST', '/api/v1/listenbrainz/scrobble-by-filepath', { filePath: fp }).catch(function() {});
+    if (ms) api('POST', '/api/v1/multi-scrobbler/scrobble-by-filepath', { filePath: fp }).catch(function() {});
   }, 30000);
 }
 

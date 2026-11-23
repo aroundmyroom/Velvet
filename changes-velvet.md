@@ -1,3 +1,34 @@
+## v0.10.4 (2026-11-23)
+
+multi-scrobbler support
+
+### Added
+
+- **multi-scrobbler.** Velvet can send your plays to a self-hosted
+  multi-scrobbler server, which forwards them to the services set up there:
+  ListenBrainz, Maloja, Koito, Libre.fm, teal.fm, Rocksky, Last.fm and more.
+  Velvet posts to its ListenBrainz endpoint source: *playing now* when a song
+  starts, the listen after 30 seconds. The admin enters the URL and a server
+  token under **Admin panel → multi-scrobbler**, with a **Test connection**
+  button that checks reachability, health and the endpoint source. Each user
+  switches it on in the player's **multi-scrobbler** page and can enter a
+  personal token, so their plays go to their own accounts; the page shows
+  whether the last play was accepted. Subsonic apps forward plays and
+  now-playing with a separate **Forward to multi-scrobbler** switch, and
+  Velvet Rooms send too. Useful now that a Last.fm API key needs Last.fm Pro
+  from 1 December 2026: every other service keeps working without it.
+  `docs/multi-scrobbler.md` is a full setup guide: config folder rights,
+  Docker compose, endpoint source, clients, connecting Velvet, checking that
+  it works and common setup problems.
+
+### Changed
+
+- **Richer ListenBrainz listens.** Listens now also carry the Velvet
+  version, duration, track number, album artist and the MusicBrainz
+  recording ID when the file has one, so ListenBrainz links them to the
+  right recording more often. Subsonic plays sent to ListenBrainz carry them
+  too.
+
 ## v0.10.3 (2026-11-17)
 
 Lyrics and Visualizer in Playing Now, plus two fixes

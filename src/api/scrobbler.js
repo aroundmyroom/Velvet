@@ -1,5 +1,7 @@
 import crypto from 'node:crypto';
+import http from 'node:http';
 import https from 'node:https';
+import { createRequire } from 'node:module';
 import Joi from 'joi';
 import axios from 'axios';
 import * as config from '../state/config.js';
@@ -9,6 +11,7 @@ import { joiValidate } from '../util/validation.js';
 import { getVPathInfo, dbLocationCandidates } from '../util/vpath.js';
 import WebError from '../util/web-error.js';
 import { artistLookupCandidates } from '../util/artist-credit.js';
+import { msActive } from './multi-scrobbler.js';
 
 const Scrobbler = new Scribble();
 
@@ -236,11 +239,14 @@ export function setup(velvet) {
         ? _noAuthLbToken
         : req.user['listenbrainz-token'])
     );
+    const msAvailable = msActive(req.user);
     res.json({
       lastfmAvailable,
       lbAvailable,
+      msAvailable,
       scrobbleLastfm: lastfmAvailable && req.user['subsonic-scrobble-lastfm'] === true,
       scrobbleLb:     lbAvailable     && req.user['subsonic-scrobble-lb']     === true,
+      scrobbleMs:     msAvailable     && req.user['subsonic-scrobble-ms']     === true,
     });
   });
 
@@ -368,15 +374,19 @@ export function scrobbleLastfmForUser(userObj, { artist, album, track }) {
  * Submit a ListenBrainz scrobble on behalf of a username string.
  * No-op if the user hasn't linked LB or LB is disabled.
  */
-export function scrobbleLbForUser(username, { artist, album, track }) {
+export function scrobbleLbForUser(username, meta) {
   const token = username === 'velvet-user'
     ? _noAuthLbToken
     : config.program.users?.[username]?.['listenbrainz-token'];
   if (!token) return;
-  lbSubmit(token, artist, track, album, Math.floor(Date.now() / 1000)).catch(() => {});
+  lbSubmit({ base: LB_API, token }, meta, Math.floor(Date.now() / 1000)).catch(() => {});
 }
 
 // ── ListenBrainz ─────────────────────────────────────────────────────────────
+
+const LB_API = 'https://api.listenbrainz.org';
+const LB_TIMEOUT_MS = 8000;
+const VELVET_VERSION = createRequire(import.meta.url)('../../package.json').version;
 
 // In no-auth mode there is no persistent user object, so the token is stored
 // under config.program.listenBrainz.noAuthToken in default.json.
@@ -389,15 +399,28 @@ export function lbActive(user) {
   return config.program.listenBrainz?.enabled === true && Boolean(lbToken(user));
 }
 
-function lbSend(user, filePath, listenedAt) {
-  const token = lbToken(user);
-  if (!token) return null;
+/** The listen fields of a library row (files table). */
+export function listenMetaOf(file) {
+  return {
+    artist: file.artist, track: file.title, album: file.album,
+    albumArtist: file.album_artist, trackNumber: file.track, duration: file.duration, recordingMbid: file.mbid,
+  };
+}
+
+// target: { base, token } of a ListenBrainz-compatible server. -> null when the file is unknown, else a promise of the outcome.
+function lbSendFile(target, user, filePath, listenedAt) {
   const file = findUserFile(filePath, user);
   if (!file) return null;
-  return lbSubmit(token, file.artist, file.title, file.album, listenedAt).then(() => true, (e) => {
+  return lbSubmit(target, listenMetaOf(file), listenedAt).then(() => true, (e) => {
     console.debug('[velvet]', e?.message ?? e);
     return false;
   });
+}
+
+function lbSend(user, filePath, listenedAt) {
+  const token = lbToken(user);
+  if (!token) return null;
+  return lbSendFile({ base: LB_API, token }, user, filePath, listenedAt);
 }
 
 /** ListenBrainz now-playing for a song that starts. -> null when not sent (no token / unknown file), else a promise of the outcome. */
@@ -410,55 +433,59 @@ export function lbScrobbleByFilepath(user, filePath) {
   return lbSend(user, filePath);
 }
 
-/**
- * Submit a listen to ListenBrainz.
- * listen_type: 'single' (scrobble) or 'playing_now' (now-playing ping).
- * https://listenbrainz.readthedocs.io/en/latest/users/api/index.html
- */
-function lbSubmit(token, artist, track, release, listenedAt) {
+/** The submit-listens body: listen_type 'single' (scrobble) or 'playing_now' (now-playing ping). */
+export function lbListenBody(meta, listenedAt) {
   const isNowPlaying = listenedAt === 'playing_now';
-  return new Promise((resolve, reject) => {
-    const trackMeta = {
-      artist_name: artist || '',
-      track_name:  track  || '',
-      ...(release ? { release_name: release } : {}),
-      additional_info: { submission_client: 'Velvet', media_player: 'Velvet' },
-    };
-    const listenEntry = isNowPlaying
+  const info = { submission_client: 'Velvet', submission_client_version: VELVET_VERSION, media_player: 'Velvet' };
+  if (meta.duration > 0) info.duration_ms = Math.round(meta.duration * 1000);
+  if (meta.trackNumber) info.tracknumber = meta.trackNumber;
+  if (meta.albumArtist) info.release_artist_name = meta.albumArtist;
+  if (meta.recordingMbid) info.recording_mbid = meta.recordingMbid;
+  const trackMeta = {
+    artist_name: meta.artist || '',
+    track_name: meta.track || '',
+    ...(meta.album ? { release_name: meta.album } : {}),
+    additional_info: info,
+  };
+  return {
+    listen_type: isNowPlaying ? 'playing_now' : 'single',
+    payload: [isNowPlaying
       ? { track_metadata: trackMeta }
-      : { listened_at: listenedAt || Math.floor(Date.now() / 1000), track_metadata: trackMeta };
-    const payload = JSON.stringify({
-      listen_type: isNowPlaying ? 'playing_now' : 'single',
-      payload: [listenEntry],
-    });
-    const req = https.request({
-      hostname: 'api.listenbrainz.org',
-      path: '/1/submit-listens',
-      method: 'POST',
+      : { listened_at: listenedAt || Math.floor(Date.now() / 1000), track_metadata: trackMeta }],
+  };
+}
+
+/** One request to a ListenBrainz-compatible server (api.listenbrainz.org, multi-scrobbler, …). -> { status, body } */
+export function lbRequest(target, method, apiPath, body) {
+  const url = new URL(target.base.replace(/\/+$/, '') + apiPath);
+  const transport = url.protocol === 'http:' ? http : https;
+  const payload = body === undefined ? null : JSON.stringify(body);
+  return new Promise((resolve, reject) => {
+    const req = transport.request(url, {
+      method,
       headers: {
-        'Authorization': `Token ${token}`,
-        'Content-Type': 'application/json',
-        'Content-Length': Buffer.byteLength(payload),
+        ...(target.token ? { 'Authorization': `Token ${target.token}` } : {}),
+        ...(payload ? { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) } : {}),
       },
     }, res => {
       let data = '';
       res.on('data', c => { data += c; });
-      res.on('end', () => {
-        if (res.statusCode === 200) { resolve(true); }
-        else {
-          const contentType = res.headers['content-type'] ?? '';
-          const body = contentType.includes('text/html')
-            ? data.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 120)
-            : data.slice(0, 200);
-          reject(new Error(`ListenBrainz ${res.statusCode}: ${body}`));
-        }
-      });
+      res.on('end', () => resolve({ status: res.statusCode, body: data, type: res.headers['content-type'] ?? '' }));
     });
     req.on('error', reject);
-    req.setTimeout(8000, () => { req.destroy(); reject(new Error('ListenBrainz timeout')); });
-    req.write(payload);
+    req.setTimeout(LB_TIMEOUT_MS, () => { req.destroy(); reject(new Error(`${url.host} timeout`)); });
+    if (payload) req.write(payload);
     req.end();
   });
+}
+
+async function lbSubmit(target, meta, listenedAt) {
+  const r = await lbRequest(target, 'POST', '/1/submit-listens', lbListenBody(meta, listenedAt));
+  if (r.status === 200) return true;
+  const body = r.type.includes('text/html')
+    ? r.body.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 120)
+    : r.body.slice(0, 200);
+  throw new Error(`${new URL(target.base).host} ${r.status}: ${body}`);
 }
 
 export function setupListenBrainz(velvet) {
@@ -495,15 +522,7 @@ export function setupListenBrainz(velvet) {
     const token = req.body.lbToken.trim();
 
     // Validate the token by calling the LB validate-token endpoint
-    const vtRes = await new Promise((resolve) => {
-      https.get({
-        hostname: 'api.listenbrainz.org',
-        path: `/1/validate-token`,
-        headers: { 'Authorization': `Token ${token}` },
-      }, r => {
-        let d = ''; r.on('data', c => { d += c; }); r.on('end', () => resolve({ status: r.statusCode, body: d }));
-      }).on('error', () => resolve({ status: 0, body: '' }));
-    });
+    const vtRes = await lbRequest({ base: LB_API, token }, 'GET', '/1/validate-token').catch(() => ({ status: 0, body: '' }));
     let vtJson;
     try { vtJson = JSON.parse(vtRes.body); } catch { vtJson = {}; }
     if (vtRes.status !== 200 || !vtJson.valid) {
@@ -555,7 +574,7 @@ async function sendScrobbleOutcome(res, outcome) {
 }
 
 // One edit applied to the user's entry in the config file (serialised, atomic write) and in memory.
-async function editUserConfig(username, edit) {
+export async function editUserConfig(username, edit) {
   await config.updateConfigFile(c => { if (c.users?.[username]) edit(c.users[username]); });
   if (config.program.users[username]) edit(config.program.users[username]);
 }

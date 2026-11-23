@@ -55,6 +55,12 @@ const listenBrainzOptions = Joi.object({
   enabled: Joi.boolean().default(false),
 });
 
+const multiScrobblerOptions = Joi.object({
+  enabled: Joi.boolean().default(false),
+  url:     Joi.string().allow('').default(''),
+  token:   Joi.string().allow('').default(''),
+});
+
 const aiAssistOptions = Joi.object({
   enabled:          Joi.boolean().default(false),
   apiKey:           Joi.string().allow('').default(''),
@@ -175,6 +181,7 @@ const schema = Joi.object({
   }),
   lastFM: lastFMOptions.default(lastFMOptions.validate({}).value),
   listenBrainz: listenBrainzOptions.default(listenBrainzOptions.validate({}).value),
+  multiScrobbler: multiScrobblerOptions.default(multiScrobblerOptions.validate({}).value),
   aiAssist: aiAssistOptions.default(aiAssistOptions.validate({}).value),
   discordWebhook: discordWebhookOptions.default(discordWebhookOptions.validate({}).value),
   discogs: discogsOptions.default(discogsOptions.validate({}).value),
@@ -209,6 +216,8 @@ const schema = Joi.object({
       'lastfm-password': Joi.string().optional(),
       'lastfm-session': Joi.string().optional(),
       'listenbrainz-token': Joi.string().allow('').optional(),
+      'ms-enabled': Joi.boolean().optional(),
+      'ms-token': Joi.string().allow('').optional(),
       'discord-webhook-enabled': Joi.boolean().optional(),
       'discord-webhook-nick': Joi.string().allow('').max(64).optional(),
       'allow-radio-recording': Joi.boolean().optional(),

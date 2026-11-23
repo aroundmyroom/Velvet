@@ -347,6 +347,9 @@ The user enters their Last.fm username and password once. Velvet authenticates a
 | `lastfm-session` | Session key obtained from Last.fm on connect — replaces password |
 | `lastfm-password` | Legacy field. Stored in old configs before the session-key flow was introduced. Still functional but replaced on next connect. |
 | `listenbrainz-token` | ListenBrainz user token. Set automatically when the user links their account on the player's ListenBrainz page. |
+| `ms-enabled` | `true` when the user sends their plays to multi-scrobbler (player → multi-scrobbler page). See [multi-scrobbler](#multi-scrobbler-server-level). |
+| `ms-token` | Optional personal token for the user's own multi-scrobbler ListenBrainz endpoint source. Without it the server `multiScrobbler.token` is used. |
+| `subsonic-scrobble-lastfm`, `subsonic-scrobble-lb`, `subsonic-scrobble-ms` | Forward plays from Subsonic apps to Last.fm, ListenBrainz or multi-scrobbler. Set by the user on the player's Subsonic page. |
 | `admin` | `true` gives the user admin rights (default `false`). |
 | `allow-radio-recording` | When `true`, this user can record live radio streams to a Recordings folder. Granted per-user via Admin → Users. |
 | `allow-youtube-download` | When `true`, this user can use YouTube downloads. |
@@ -512,7 +515,31 @@ Controls whether users can link their ListenBrainz accounts for scrobbling and N
 }
 ```
 
-Users link their own token via Admin → ListenBrainz. The token is stored per-user as `listenbrainz-token` in the `users` object.
+Users link their own token on the player's ListenBrainz page. The token is stored per-user as `listenbrainz-token` in the `users` object.
+
+## multi-scrobbler (server-level)
+
+Sends plays to the ListenBrainz endpoint source of a self-hosted [multi-scrobbler](https://github.com/FoxxMD/multi-scrobbler) server, which forwards them to its own clients. Set via Admin panel → multi-scrobbler. See [multi-scrobbler.md](multi-scrobbler.md).
+
+> **Opt-in behaviour:** off by default. When on, each user still opts in on the player's multi-scrobbler page; in no-auth mode every play is sent.
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `enabled` | `false` | Let users send their plays to multi-scrobbler. Needs `url`. |
+| `url` | `""` | Root address of multi-scrobbler, e.g. `http://192.168.1.10:9078` (`http` or `https`, a reverse-proxy subpath is fine). Not the path of a source. |
+| `token` | `""` | Token of the ListenBrainz endpoint source. Used for users without their own `ms-token`. |
+
+```json
+{
+  "multiScrobbler": {
+    "enabled": true,
+    "url": "http://192.168.1.10:9078",
+    "token": "velvet-secret"
+  }
+}
+```
+
+Per user: `ms-enabled`, `ms-token` and `subsonic-scrobble-ms` in the `users` object (see [LastFM Scrobbling](#lastfm-scrobbling)).
 
 ## Lyrics
 

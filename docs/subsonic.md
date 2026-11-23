@@ -234,7 +234,7 @@ Song results in `search2`/`search3` match the query against **title, artist, or 
 | `getCoverArt` | ✅ | Serves from albumArtDirectory; `?size=` makes a thumbnail (≤160 → 92 px, ≤320 → 256 px, larger → rounded up to a multiple of 32, max 1200 px; made in the background, the full image is served until it exists); artist IDs (`ar-<id>`); SVG folder icon fallback |
 | `getLyrics` | ✅ | Legacy v1: finds the song by `artist` + `title` and returns its lyrics as plain text |
 | `getLyricsBySongId` | ✅ | OpenSubsonic `songLyrics` extension — sidecar `.lrc`/`.txt`, then lyrics embedded in the file (SYLT, USLT, Vorbis `LYRICS`; LRC text is returned synced), then the web player's LRCLIB cache. Synced first; cached per content hash |
-| `scrobble` | ✅ | Updates play count + last played (stored in milliseconds, like plays from the web player, so Subsonic plays sort correctly in Recently Played) and records a play event for Your Stats; forwards to Last.fm / ListenBrainz |
+| `scrobble` | ✅ | Updates play count + last played (stored in milliseconds, like plays from the web player, so Subsonic plays sort correctly in Recently Played) and records a play event for Your Stats; forwards to Last.fm / ListenBrainz / multi-scrobbler |
 | `reportPlayback` | ✅ | Available to explicit callers but not advertised; updates timeline state and honours `ignoreScrobble`. Clients use classic `scrobble` for reliable play counts and Last.fm/ListenBrainz forwarding. |
 | `setRating` | ✅ | 1–5 stars, stored as Velvet's 2–10 rating in user_metadata; `0` removes the rating |
 | `getAvatar` | ✅ | Returns 404 (no avatar storage) |
@@ -372,7 +372,7 @@ Clients then navigate deeper using `getMusicDirectory?id=<dirId>`.
 
 ### Your own password and scrobble switches
 
-A user does not need an admin for this. On the Subsonic API page in the player, a user sets their own Subsonic password and turns forwarding of Subsonic plays to Last.fm and ListenBrainz on or off. The player uses `POST /api/v1/user/subsonic-password` (`{ password }`) and `POST /api/v1/user/subsonic-scrobble` (`{ scrobbleLastfm?, scrobbleLb? }`). An admin can still set any user's Subsonic password (and manage their API keys) under Admin → Users; the scrobble switches are only set by the user.
+A user does not need an admin for this. On the Subsonic API page in the player, a user sets their own Subsonic password and turns forwarding of Subsonic plays to Last.fm, ListenBrainz and [multi-scrobbler](multi-scrobbler.md) on or off (multi-scrobbler also gets the app's now-playing report). The player uses `POST /api/v1/user/subsonic-password` (`{ password }`) and `POST /api/v1/user/subsonic-scrobble` (`{ scrobbleLastfm?, scrobbleLb?, scrobbleMs? }`). An admin can still set any user's Subsonic password (and manage their API keys) under Admin → Users; the scrobble switches are only set by the user.
 
 ---
 

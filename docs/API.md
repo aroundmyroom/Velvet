@@ -416,7 +416,7 @@ Admin only. Finds albums (folders) with no cover art, fetches suggestions, and w
 | `GET` | `/api/v1/user/settings` | — | Get the user's saved UI preferences and optional queue. Returns `{ prefs, queue? }`. |
 | `POST` | `/api/v1/user/settings` | `{ prefs?, queue? }` | Save UI preferences and/or queue state. |
 | `POST` | `/api/v1/user/subsonic-password` | `{ password }` | Set the caller's own Subsonic password. Returns `{}`. |
-| `POST` | `/api/v1/user/subsonic-scrobble` | `{ scrobbleLastfm?, scrobbleLb? }` | Turn the caller's own Subsonic scrobble forwarding on or off. Returns `{}`. |
+| `POST` | `/api/v1/user/subsonic-scrobble` | `{ scrobbleLastfm?, scrobbleLb?, scrobbleMs? }` | Turn the caller's own Subsonic scrobble forwarding (Last.fm, ListenBrainz, multi-scrobbler) on or off. Returns `{}`. |
 
 ---
 
@@ -457,6 +457,19 @@ small local window for instant boot, then lazy-loads the rest from here.
 | `POST` | `/api/v1/listenbrainz/disconnect` | — | Unlink ListenBrainz. |
 | `POST` | `/api/v1/listenbrainz/playing-now` | `{ filePath }` | Send a now-playing notification. |
 | `POST` | `/api/v1/listenbrainz/scrobble-by-filepath` | `{ filePath }` | Scrobble a completed track. Returns `{ scrobbled: true }` when ListenBrainz accepted it, `false` when the file is unknown to the caller or ListenBrainz refused it, and `null` when ListenBrainz is off or the user is not linked. |
+
+---
+
+## Scrobbling — multi-scrobbler *(Velvet)*
+
+> Sends listens to the ListenBrainz endpoint source (`endpointlz`) of a self-hosted multi-scrobbler server, which forwards them to its own clients. Same listen body and 30 s timing as ListenBrainz. The admin enables it and sets the URL and an optional server token; each user opts in and may set a personal token. See [multi-scrobbler.md](multi-scrobbler.md).
+
+| Method | Endpoint | Body | Description |
+|---|---|---|---|
+| `GET` | `/api/v1/multi-scrobbler/status` | — | Returns `{ serverEnabled, enabled, ownToken, serverToken, canEdit, last }`. `serverEnabled`: admin switch on and URL set. `enabled`: the caller opted in (always `true` in no-auth mode). `ownToken`: a personal token is saved. `canEdit`: `false` in no-auth mode. `last`: result of the caller's last listen since the server started, `{ at, ok, message? }` or `null`; `message` is `"token"` (409), `"unreachable"` or `"<status> <body>"`. |
+| `POST` | `/api/v1/multi-scrobbler/settings` | `{ enabled, msToken? }` | Save the caller's opt-in. A non-empty `msToken` sets the personal token, `""` removes it, leaving it out keeps it. `400` in no-auth mode. Returns `{}`. |
+| `POST` | `/api/v1/multi-scrobbler/playing-now` | `{ filePath }` | Send a playing-now listen. Returns `{ sent }` (`false` when off, not opted in or the file is unknown). |
+| `POST` | `/api/v1/multi-scrobbler/scrobble-by-filepath` | `{ filePath }` | Send a listen for a track played 30 s. Returns `{ scrobbled: true }` when multi-scrobbler accepted it, `false` when the file is unknown to the caller or multi-scrobbler refused it, and `null` when multi-scrobbler is off or the caller has not opted in. |
 
 ---
 
@@ -795,8 +808,18 @@ The DLNA port also serves the audio itself under `/media/<vpath>/<path>` and cac
 |---|---|---|---|
 | `GET` | `/api/v1/admin/lastfm/config` | — | Get Last.fm server API key config. |
 | `POST` | `/api/v1/admin/lastfm/config` | `{ apiKey, apiSecret?, enabled? }` | Set Last.fm API key. |
-| `GET` | `/api/v1/admin/listenbrainz/config` | — | Get ListenBrainz config: `{ enabled, userToken? }`. |
-| `POST` | `/api/v1/admin/listenbrainz/config` | `{ enabled?, userToken? }` | Update ListenBrainz config. |
+| `GET` | `/api/v1/admin/listenbrainz/config` | — | Get ListenBrainz config: `{ enabled }`. |
+| `POST` | `/api/v1/admin/listenbrainz/config` | `{ enabled }` | Turn ListenBrainz on or off server-wide. Returns `{}`. |
+
+---
+
+## Admin — multi-scrobbler Config *(Velvet)*
+
+| Method | Endpoint | Body | Description |
+|---|---|---|---|
+| `GET` | `/api/v1/admin/multi-scrobbler/config` | — | Get config: `{ enabled, url, hasToken }`. The server token itself is never returned. |
+| `POST` | `/api/v1/admin/multi-scrobbler/config` | `{ enabled, url, msToken? }` | Save config. `url` must be `http` or `https` (or `""`) and is required when `enabled`; trailing slashes are stripped. `msToken` (named so because a body `token` is read as the login token): `""` removes it, leaving it out keeps it. Returns `{}`. |
+| `POST` | `/api/v1/admin/multi-scrobbler/test` | `{ url? }` | Probe a multi-scrobbler server (default: the saved URL). Returns `{ reachable, version, healthy, healthStatus, endpointSource }`: `healthy` = `/api/health` answered 200 (`healthStatus` holds its status, 500 = a source or client has issues, 503 = safe mode); `endpointSource` = a ListenBrainz endpoint source exists (the token is not checked). 6 s timeout per request. |
 
 ---
 
@@ -906,7 +929,7 @@ The DLNA port also serves the audio itself under `/media/<vpath>/<path>` and cac
 | `POST` | `/api/v1/rooms` | `{ name, members[] }` | Create a room from speakers (they leave their old rooms). |
 | `PATCH` | `/api/v1/rooms/:id` | `{ name?, members? }` | Rename / set members (moves speakers). |
 | `DELETE` | `/api/v1/rooms/:id` | — | Dissolve a room; members return to solo rooms. |
-| `GET` | `/api/v1/rooms/:id/state` | — | Room state; polled ~1 s by the remote UI. Includes `scrobble: { lastfm, listenbrainz } \| null`, the current song's scrobble state (rooms scrobble, count plays and record Wrapped statistics on the server for the user who last controlled them — see [API/rooms.md](API/rooms.md#listening-scrobbles-play-counts-statistics)). |
+| `GET` | `/api/v1/rooms/:id/state` | — | Room state; polled ~1 s by the remote UI. Includes `scrobble: { lastfm, listenbrainz, multiscrobbler } \| null`, the current song's scrobble state (rooms scrobble, count plays and record Wrapped statistics on the server for the user who last controlled them — see [API/rooms.md](API/rooms.md#listening-scrobbles-play-counts-statistics)). |
 | `GET` | `/api/v1/rooms/:id/queue` | — | `{ queueVersion, index, songs[] }`. |
 | `POST` | `/api/v1/rooms/:id/play` | `{ songs[], index?, positionMs?, paused?, rgEnabled?, rgMode?, rgPreamp?, rgClip? }` | Hand a queue to the room (replaces its queue); `skipped` counts unresolvable songs. |
 | `POST` | `/api/v1/rooms/:id/add` | `{ songs[], next?, queueVersion?, rgEnabled?, rgMode?, rgPreamp?, rgClip? }` | Append (or insert after current with `next`). `queueVersion` → `409 queue_changed` if the queue changed meanwhile. |
@@ -1294,7 +1317,7 @@ Base URL: `/rest/`
 
 | Method | Endpoint | Body | Description |
 |---|---|---|---|
-| `GET` | `/api/v1/subsonic/scrobble-settings` | — | Get the user's Subsonic scrobble settings. |
+| `GET` | `/api/v1/subsonic/scrobble-settings` | — | Get the user's Subsonic scrobble settings: `{ lastfmAvailable, lbAvailable, msAvailable, scrobbleLastfm, scrobbleLb, scrobbleMs }`. `msAvailable` = multi-scrobbler is enabled and the user opted in; `scrobbleMs` = Subsonic plays and now-playing are forwarded there. Set them with `POST /api/v1/user/subsonic-scrobble`. |
 | `GET` | `/api/v1/admin/users/subsonic-apikeys` | `?username=` | **Admin.** List the API keys of a user (default: the admin's own). |
 | `POST` | `/api/v1/admin/users/subsonic-apikeys` | `{ username?, label? }` | **Admin.** Generate a new Subsonic API key for a user. Returns `{ apiKey, label, created }`. |
 | `DELETE` | `/api/v1/admin/users/subsonic-apikeys/:id` | `?username=` | **Admin.** Revoke an API key by ID. |
