@@ -6259,6 +6259,285 @@ const multiScrobblerView = Vue.component('multiscrobbler-view', {
   }
 });
 
+const similarArtistsView = Vue.component('similar-artists-view', {
+  data() {
+    return {
+      loaded: false,
+      source: 'listenbrainz',
+      savedSource: 'listenbrainz',
+      ready: { listenbrainz: true, tidal: false, lastfm: false },
+      listenbrainzAlgorithm: '',
+      defaultAlgorithm: '',
+      lbToken: '',
+      hasListenbrainzToken: false,
+      topTracksToken: null,
+      tidalClientId: '',
+      tidalSecret: '',
+      hasTidalSecret: false,
+      tidalCountry: 'US',
+      hasLastfmKey: false,
+      pending: false,
+      testArtist: '',
+      testing: false,
+      testResult: null,
+      clearing: false,
+    };
+  },
+  computed: {
+    sources() {
+      return [
+        { id: 'listenbrainz', name: 'ListenBrainz', desc: this.t('admin.similar.lbDesc'), recommended: true },
+        { id: 'tidal', name: 'TIDAL', desc: this.t('admin.similar.tidalDesc') },
+        { id: 'lastfm', name: 'Last.fm', desc: this.t('admin.similar.lastfmDesc') },
+        { id: 'off', name: this.t('admin.similar.offName'), desc: this.t('admin.similar.offDesc') },
+      ];
+    },
+    topTracksText() {
+      if (this.topTracksToken === 'own') return this.t('admin.similar.topTracksOwn');
+      if (this.topTracksToken === 'user') return this.t('admin.similar.topTracksUser');
+      return this.t('admin.similar.topTracksNone');
+    },
+    testError() {
+      const r = this.testResult;
+      if (!r || r.ok) return '';
+      if (r.error === 'not-configured') return this.t('admin.similar.notConfigured');
+      return r.error || this.t('admin.similar.testFailed');
+    },
+  },
+  template: `
+    <div class="container">
+      <div class="row">
+        <div class="col s12">
+          <div class="card">
+            <div class="card-content">
+              <span class="card-title">{{ t('admin.similar.title') }}</span>
+              <p style="margin-bottom:.75rem;">{{ t('admin.similar.intro1') }}</p>
+              <p style="margin-bottom:1rem;">{{ t('admin.similar.intro2') }}</p>
+              <div role="radiogroup" :aria-label="t('admin.similar.sourceLabel')">
+                <label v-for="s in sources" :key="s.id" :style="{ display:'flex', gap:'.6rem', alignItems:'flex-start', padding:'.65rem .8rem', marginBottom:'.5rem', border:'1px solid ' + (source === s.id ? 'var(--primary)' : 'var(--border)'), borderRadius:'6px', background: source === s.id ? 'var(--raised)' : 'transparent', cursor:'pointer' }">
+                  <input type="radio" name="similar-source" :value="s.id" v-model="source" style="margin:.2rem 0 0;width:auto;height:auto;accent-color:var(--primary);" />
+                  <span style="flex:1;">
+                    <b>{{ s.name }}</b>
+                    <span v-if="s.recommended" style="font-size:.78rem;color:var(--t2);"> · {{ t('admin.similar.recommended') }}</span>
+                    <span v-if="s.id !== 'off' && loaded" :style="{ marginLeft:'.5rem', fontSize:'.72rem', padding:'1px 8px', borderRadius:'20px', border:'1px solid ' + (ready[s.id] ? 'var(--green)' : 'var(--yellow)'), color: ready[s.id] ? 'var(--green)' : 'var(--yellow)' }">{{ ready[s.id] ? t('admin.similar.statusReady') : t('admin.similar.statusNeedsSettings') }}</span>
+                    <span v-if="s.id === savedSource && loaded" style="margin-left:.5rem;font-size:.72rem;color:var(--t2);">{{ t('admin.similar.active') }}</span>
+                    <div style="font-size:.85rem;color:var(--t2);margin-top:.2rem;">{{ s.desc }}</div>
+                  </span>
+                </label>
+              </div>
+
+              <div v-if="source === 'listenbrainz'" style="margin-top:1rem;">
+                <p style="margin-bottom:.5rem;font-size:.9rem;" :style="{ color: topTracksToken ? 'var(--green)' : 'var(--t2)' }">{{ topTracksText }}</p>
+                <table class="sim-form"><tbody>
+                  <tr>
+                    <td style="width:200px"><b>{{ t('admin.similar.labelLbToken') }}</b></td>
+                    <td><input v-model="lbToken" type="password" :placeholder="t('admin.similar.placeholderLbToken')" autocomplete="new-password" data-form-type="other" data-lpignore="true" data-1p-ignore spellcheck="false" style="margin:0;width:100%;max-width:520px" /></td>
+                  </tr>
+                  <tr v-if="hasListenbrainzToken">
+                    <td></td>
+                    <td style="font-size:0.82rem;">
+                      {{ t('admin.similar.tokenSaved') }}
+                      <button type="button" class="btn-small btn-flat" v-on:click="removeSecret('lbToken')" :disabled="pending">{{ t('admin.similar.removeToken') }}</button>
+                    </td>
+                  </tr>
+                  <tr>
+                    <td></td>
+                    <td style="font-size:0.82rem;color:#999;">{{ t('admin.similar.lbTokenHint') }}</td>
+                  </tr>
+                </tbody></table>
+                <details class="vr-advanced">
+                  <summary>{{ t('admin.similar.advanced') }}</summary>
+                  <table class="sim-form" style="margin-top:.5rem;"><tbody>
+                    <tr>
+                      <td style="width:200px"><b>{{ t('admin.similar.labelAlgorithm') }}</b></td>
+                      <td><input v-model="listenbrainzAlgorithm" type="text" :placeholder="defaultAlgorithm" autocomplete="off" data-form-type="other" data-lpignore="true" data-1p-ignore spellcheck="false" style="margin:0;width:100%;max-width:520px" /></td>
+                    </tr>
+                    <tr>
+                      <td></td>
+                      <td style="font-size:0.82rem;color:#999;">{{ t('admin.similar.algorithmHint') }}</td>
+                    </tr>
+                  </tbody></table>
+                </details>
+              </div>
+
+              <div v-if="source === 'tidal'" style="margin-top:1rem;">
+                <p style="margin-bottom:.5rem;font-size:.9rem;">{{ t('admin.similar.tidalSetup') }} <a href="https://developer.tidal.com/dashboard" target="_blank" rel="noopener">{{ t('admin.similar.tidalLink') }}</a></p>
+                <table class="sim-form"><tbody>
+                  <tr>
+                    <td style="width:200px"><b>{{ t('admin.similar.labelClientId') }}</b></td>
+                    <td><input v-model="tidalClientId" type="text" autocomplete="off" data-form-type="other" data-lpignore="true" data-1p-ignore spellcheck="false" style="margin:0;width:100%;max-width:520px" /></td>
+                  </tr>
+                  <tr>
+                    <td><b>{{ t('admin.similar.labelClientSecret') }}</b></td>
+                    <td><input v-model="tidalSecret" type="password" :placeholder="t('admin.similar.placeholderClientSecret')" autocomplete="new-password" data-form-type="other" data-lpignore="true" data-1p-ignore spellcheck="false" style="margin:0;width:100%;max-width:520px" /></td>
+                  </tr>
+                  <tr v-if="hasTidalSecret">
+                    <td></td>
+                    <td style="font-size:0.82rem;">
+                      {{ t('admin.similar.secretSaved') }}
+                      <button type="button" class="btn-small btn-flat" v-on:click="removeSecret('tidalSecret')" :disabled="pending">{{ t('admin.similar.removeSecret') }}</button>
+                    </td>
+                  </tr>
+                  <tr>
+                    <td></td>
+                    <td style="font-size:0.82rem;color:#999;">{{ t('admin.similar.secretHint') }}</td>
+                  </tr>
+                  <tr>
+                    <td><b>{{ t('admin.similar.labelCountry') }}</b></td>
+                    <td><input v-model="tidalCountry" type="text" maxlength="2" autocomplete="off" data-form-type="other" data-lpignore="true" data-1p-ignore spellcheck="false" style="margin:0;width:80px;text-transform:uppercase;" /></td>
+                  </tr>
+                  <tr>
+                    <td></td>
+                    <td style="font-size:0.82rem;color:#999;">{{ t('admin.similar.countryHint') }}</td>
+                  </tr>
+                </tbody></table>
+              </div>
+
+              <div v-if="source === 'lastfm'" style="margin-top:1rem;font-size:.9rem;">
+                <p :style="{ color: hasLastfmKey ? 'var(--green)' : 'var(--red)', marginBottom:'.5rem' }">{{ hasLastfmKey ? t('admin.similar.lastfmKeySet') : t('admin.similar.lastfmKeyMissing') }}</p>
+                <button type="button" class="btn-small btn-flat" v-on:click="openLastfm()">{{ t('admin.similar.openLastfm') }}</button>
+              </div>
+            </div>
+            <div class="card-action">
+              <button class="btn" v-on:click="save()" :disabled="pending || !loaded">
+                {{ pending ? t('admin.common.saving') : t('admin.similar.btnSave') }}
+              </button>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-content">
+              <span class="card-title">{{ t('admin.similar.testTitle') }}</span>
+              <p style="margin-bottom:.75rem;font-size:.9rem;color:var(--t2);">{{ t('admin.similar.testDesc') }}</p>
+              <div style="display:flex;gap:.5rem;flex-wrap:wrap;align-items:center;">
+                <input v-model="testArtist" type="text" placeholder="Front 242" :aria-label="t('admin.similar.labelArtist')" v-on:keyup.enter="test()" autocomplete="off" data-form-type="other" data-lpignore="true" data-1p-ignore spellcheck="false" style="margin:0;flex:1;min-width:180px;max-width:360px;" />
+                <button class="btn" v-on:click="test()" :disabled="testing || source === 'off'">
+                  {{ testing ? t('admin.similar.testing') : t('admin.similar.btnTest') }}
+                </button>
+              </div>
+              <p v-if="source === 'off'" style="margin-top:.5rem;font-size:.82rem;color:#999;">{{ t('admin.similar.offNoTest') }}</p>
+              <div v-if="testResult" role="status" style="margin-top:1rem;font-size:.9rem;">
+                <div v-if="testError" style="color:var(--red);">{{ testError }}</div>
+                <template v-else>
+                  <div style="color:var(--green);margin-bottom:.5rem;">{{ t('admin.similar.testSummary', { count: testResult.total, ms: testResult.ms }) }}<span v-if="testResult.total > testResult.artists.length" style="color:var(--t2);"> · {{ t('admin.similar.testShowing', { count: testResult.artists.length }) }}</span></div>
+                  <div v-if="testResult.notFound" style="color:var(--red);margin-bottom:.5rem;">{{ t('admin.similar.testNotFound') }}</div>
+                  <table v-if="testResult.artists.length" style="font-size:.85rem;">
+                    <thead><tr>
+                      <th style="width:40px;">#</th>
+                      <th>{{ t('admin.similar.colArtist') }}</th>
+                      <th v-if="testResult.source !== 'tidal'" style="width:80px;text-align:right;">{{ t('admin.similar.colScore') }}</th>
+                      <th style="width:90px;text-align:center;">{{ t('admin.similar.colInLibrary') }}</th>
+                    </tr></thead>
+                    <tbody>
+                      <tr v-for="(a, i) in testResult.artists" :key="i">
+                        <td style="color:var(--t2);">{{ i + 1 }}</td>
+                        <td>{{ a.name }}</td>
+                        <td v-if="testResult.source !== 'tidal'" style="text-align:right;color:var(--t2);">{{ Math.round(a.score * 100) }}%</td>
+                        <td style="text-align:center;color:var(--green);"><span v-if="a.inLibrary" :title="t('admin.similar.colInLibrary')">✓</span></td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </template>
+              </div>
+
+              <div style="margin-top:1.5rem;padding-top:1rem;border-top:1px solid var(--border);">
+                <p style="margin-bottom:.5rem;font-size:.9rem;color:var(--t2);">{{ t('admin.similar.cacheDesc') }}</p>
+                <button class="btn btn-flat" v-on:click="clearCache()" :disabled="clearing">{{ t('admin.similar.btnClearCache') }}</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>`,
+  async mounted() {
+    await this.load();
+  },
+  methods: {
+    load: async function() {
+      try {
+        const res = await API.axios({ method: 'GET', url: `${API.url()}/api/v1/admin/similar-artists/config` });
+        const d = res.data;
+        this.source = d.source;
+        this.savedSource = d.source;
+        this.ready = d.ready;
+        this.listenbrainzAlgorithm = d.listenbrainzAlgorithm || '';
+        this.defaultAlgorithm = d.defaultAlgorithm || '';
+        this.hasListenbrainzToken = d.hasListenbrainzToken === true;
+        this.topTracksToken = d.topTracksToken;
+        this.tidalClientId = d.tidalClientId || '';
+        this.hasTidalSecret = d.hasTidalSecret === true;
+        this.tidalCountry = d.tidalCountry || 'US';
+        this.hasLastfmKey = d.hasLastfmKey === true;
+        this.lbToken = '';
+        this.tidalSecret = '';
+        this.loaded = true;
+      } catch (e) {
+        console.debug('[velvet]', e?.message ?? e);
+        iziToast.error({ title: this.t('admin.common.loadFailed'), position: 'topCenter', timeout: 3000 });
+      }
+    },
+    persist: async function(data) {
+      this.pending = true;
+      try {
+        await API.axios({ method: 'POST', url: `${API.url()}/api/v1/admin/similar-artists/config`, data });
+        iziToast.success({ title: this.t('admin.similar.toastSaved'), position: 'topCenter', timeout: 3000 });
+        await this.load();
+      } catch {
+        iziToast.error({ title: this.t('admin.similar.toastFailed'), position: 'topCenter', timeout: 3000 });
+      } finally { this.pending = false; }
+    },
+    save: function() {
+      const alg = this.listenbrainzAlgorithm.trim();
+      if (!/^[A-Za-z0-9_]*$/.test(alg)) {
+        iziToast.warning({ title: this.t('admin.similar.algorithmInvalid'), position: 'topCenter', timeout: 3000 });
+        return;
+      }
+      const country = this.tidalCountry.trim().toUpperCase();
+      if (country && !/^[A-Z]{2}$/.test(country)) {
+        iziToast.warning({ title: this.t('admin.similar.countryInvalid'), position: 'topCenter', timeout: 3000 });
+        return;
+      }
+      const data = { source: this.source, listenbrainzAlgorithm: alg, tidalClientId: this.tidalClientId.trim() };
+      if (country) data.tidalCountry = country;
+      if (this.lbToken.trim()) data.lbToken = this.lbToken.trim();
+      if (this.tidalSecret.trim()) data.tidalSecret = this.tidalSecret.trim();
+      return this.persist(data);
+    },
+    removeSecret: function(field) {
+      return this.persist({ source: this.savedSource, [field]: '' });
+    },
+    openLastfm: function() {
+      const el = document.querySelector('[data-admin-view="lastfm-view"]');
+      if (el) changeView('lastfm-view', el);
+    },
+    test: async function() {
+      const artist = this.testArtist.trim();
+      if (!artist) {
+        iziToast.warning({ title: this.t('admin.similar.artistRequired'), position: 'topCenter', timeout: 3000 });
+        return;
+      }
+      if (this.source === 'off') return;
+      this.testing = true;
+      this.testResult = null;
+      try {
+        const res = await API.axios({ method: 'POST', url: `${API.url()}/api/v1/admin/similar-artists/test`, data: { artist, source: this.source } });
+        this.testResult = res.data;
+      } catch {
+        this.testResult = { ok: false, artists: [] };
+      } finally { this.testing = false; }
+    },
+    clearCache: async function() {
+      this.clearing = true;
+      try {
+        const res = await API.axios({ method: 'POST', url: `${API.url()}/api/v1/admin/similar-artists/clear-cache` });
+        iziToast.success({ title: this.t('admin.similar.toastCleared', { count: res.data.removed ?? 0 }), position: 'topCenter', timeout: 3000 });
+      } catch {
+        iziToast.error({ title: this.t('admin.similar.toastClearFailed'), position: 'topCenter', timeout: 3000 });
+      } finally { this.clearing = false; }
+    }
+  }
+});
+
 const customWebhooksView = Vue.component('custom-webhooks-view', {
   data() {
     return {
@@ -12309,6 +12588,7 @@ const vm = new Vue({
     'lastfm-view': lastFMView,
     'listenbrainz-view': listenBrainzView,
     'multiscrobbler-view': multiScrobblerView,
+    'similar-artists-view': similarArtistsView,
     'custom-webhooks-view': customWebhooksView,
     'discogs-view': discogsView,
     'lyrics-view': lyricsView,

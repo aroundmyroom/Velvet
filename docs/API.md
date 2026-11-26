@@ -438,10 +438,10 @@ small local window for instant boot, then lazy-loads the rest from here.
 
 | Method | Endpoint | Body | Description |
 |---|---|---|---|
-| `GET` | `/api/v1/lastfm/status` | — | Returns `{ serverEnabled, hasApiKey, linkedUser }`. |
+| `GET` | `/api/v1/lastfm/status` | — | Returns `{ serverEnabled, hasApiKey, similarArtists, linkedUser }`. `similarArtists`: the similar-artists source chosen by the admin can answer (any user; drives Auto-DJ similar mode and the similar-artist lists, see [similar-artists.md](similar-artists.md)). |
 | `POST` | `/api/v1/lastfm/connect` | `{ lastfmUser, lastfmPassword }` | Link the current user's Last.fm account. |
 | `POST` | `/api/v1/lastfm/disconnect` | — | Unlink Last.fm. |
-| `GET` | `/api/v1/lastfm/similar-artists` | `?artist=` | Last.fm similar artists (top 50), resolved to artist names in the library. Returns `{ artists[], displayArtists[], displayVariantMap, variantRankMap }`: `artists` = every matching library artist variant; `displayArtists` = Last.fm names that have albums in the caller's folders; `displayVariantMap` = Last.fm name → library variants; `variantRankMap` = variant → Last.fm rank (1 = most similar). Empty lists without an API key. |
+| `GET` | `/api/v1/lastfm/similar-artists` | `?artist=` | Similar artists from the source chosen under Admin → Similar artists (ListenBrainz, TIDAL or Last.fm; up to 100), resolved to artist names in the library by name and by MusicBrainz ID. Returns `{ artists[], displayArtists[], displayVariantMap, variantRankMap }`: `artists` = every matching library artist variant; `displayArtists` = source names that have albums in the caller's folders; `displayVariantMap` = source name → library variants; `variantRankMap` = variant → source rank (1 = most similar). Empty lists when the source is off or not set up. The path keeps `lastfm` for compatibility. |
 | `GET` | `/api/v1/lastfm/artist-info` | `?artist=` | Artist bio summary (HTML stripped), up to 5 tags and Last.fm counts. Returns `{ bio, tags[], listeners, plays }`, or `{}` without an API key or when Last.fm has no data. |
 | `POST` | `/api/v1/lastfm/scrobble-by-filepath` | `{ filePath }` | Scrobble a completed track. Returns `{ scrobbled: true }` when Last.fm accepted it, `false` when the file is unknown to the caller or Last.fm refused it, and `null` when Last.fm is off, has no API key or the user is not linked. |
 | `POST` | `/api/v1/lastfm/scrobble-by-metadata` | `{ track, artist?, album? }` | Scrobble by metadata. (integration API, no web UI caller) |
@@ -820,6 +820,19 @@ The DLNA port also serves the audio itself under `/media/<vpath>/<path>` and cac
 | `GET` | `/api/v1/admin/multi-scrobbler/config` | — | Get config: `{ enabled, url, hasToken }`. The server token itself is never returned. |
 | `POST` | `/api/v1/admin/multi-scrobbler/config` | `{ enabled, url, msToken? }` | Save config. `url` must be `http` or `https` (or `""`) and is required when `enabled`; trailing slashes are stripped. `msToken` (named so because a body `token` is read as the login token): `""` removes it, leaving it out keeps it. Returns `{}`. |
 | `POST` | `/api/v1/admin/multi-scrobbler/test` | `{ url? }` | Probe a multi-scrobbler server (default: the saved URL). Returns `{ reachable, version, healthy, healthStatus, endpointSource }`: `healthy` = `/api/health` answered 200 (`healthStatus` holds its status, 500 = a source or client has issues, 503 = safe mode); `endpointSource` = a ListenBrainz endpoint source exists (the token is not checked). 6 s timeout per request. |
+
+---
+
+## Admin — Similar Artists *(Velvet)*
+
+> One source for similar artists and an artist's top tracks: ListenBrainz (default, no key), TIDAL (developer client credentials), Last.fm (API key, needs Last.fm Pro from 1 December 2026) or off. Answers are stored in the `similar_cache` table. See [similar-artists.md](similar-artists.md).
+
+| Method | Endpoint | Body | Description |
+|---|---|---|---|
+| `GET` | `/api/v1/admin/similar-artists/config` | — | Returns `{ source, ready, listenbrainzAlgorithm, defaultAlgorithm, hasListenbrainzToken, topTracksToken, tidalClientId, hasTidalSecret, tidalCountry, hasLastfmKey }`. `source`: `listenbrainz` \| `tidal` \| `lastfm` \| `off`. `ready`: `{ listenbrainz, tidal, lastfm }`, whether each source can answer. `listenbrainzAlgorithm`: `""` = `defaultAlgorithm`. `topTracksToken`: which ListenBrainz token top tracks use, `"own"` (set here), `"user"` (a user's scrobbling token) or `null`. Secrets are never returned. |
+| `POST` | `/api/v1/admin/similar-artists/config` | `{ source, listenbrainzAlgorithm?, lbToken?, tidalClientId?, tidalSecret?, tidalCountry? }` | Save config. `source` is required. `listenbrainzAlgorithm`: letters, digits and `_` only, `""` = default. `tidalCountry`: two letters. For `lbToken`, `tidalClientId` and `tidalSecret`: leaving it out keeps it, `""` removes it (`lbToken`, not `token`, because a body `token` is read as the login token). Returns `{}`. |
+| `POST` | `/api/v1/admin/similar-artists/test` | `{ artist, source? }` | Ask a source (default: the chosen one) directly, skipping the stored answer; the new answer is stored. Returns `{ source, ok, ms, artists, total }`: `artists` = the top 25 as `{ name, mbid, score, inLibrary }` (`score` 0–1; TIDAL's is derived from rank), `total` = how many the source returned. On failure `{ source, ok: false, ms, error, artists: [] }`; `error` is `"not-configured"` when the source is not set up. |
+| `POST` | `/api/v1/admin/similar-artists/clear-cache` | — | Empty the `similar_cache` table (lists and artist IDs of every source). Returns `{ removed }` (number of rows). |
 
 ---
 

@@ -72,28 +72,23 @@ The API key and secret are configured once in the admin panel under External Ser
 
 ---
 
-## Last.fm — Scrobbling & Auto-DJ
+## Last.fm and similar artists
 
-**What it does:** Two distinct features:
+**Last.fm** reports played tracks to the user's Last.fm profile after 30 seconds of playback (scrobbling) and supplies the artist bio. For scrobbling it is the de facto standard; most people who care about scrobbling already have an account. Velvet also sends listens to ListenBrainz and to multi-scrobbler.
 
-1. **Scrobbling** — Reports played tracks to the user's Last.fm profile after 30 seconds of playback. This updates your listening history and statistics on last.fm.
-2. **Similar Artists (Auto-DJ)** — When Auto-DJ is in Similar Artists mode, the server queries `artist.getSimilar` to build a pool of artists related to what is currently playing, then picks tracks from your local library by those artists. This gives the Auto-DJ a contextually aware "radio-style" feel without needing an external service to pick the actual tracks.
-
-**Why Last.fm and not alternatives?**
-
-For scrobbling there is no practical alternative — Last.fm is the de facto standard for music listening history. Most music enthusiasts who care about scrobbling already have a Last.fm account.
-
-For similar-artist data, the alternatives are:
+**Similar artists** (Auto-DJ similar mode, artist pages, Home shelves) used Last.fm `artist.getSimilar` until v0.10.5. From 1 December 2026 a Last.fm API key only works while its owner has Last.fm Pro, so the admin now picks one source under Admin → Similar artists ([similar-artists.md](similar-artists.md)):
 
 | Service | Notes |
 |---|---|
-| **Last.fm** `artist.getSimilar` | Free, no token scopes required, large historical dataset |
-| Spotify recommendations | Requires OAuth scopes tied to a Spotify account; terms restrict building competing products |
-| MusicBrainz | Does not provide similarity data |
-| AcousticBrainz | Shut down in 2022 |
-| ListenBrainz | Open source alternative to Last.fm, but its similarity API is early-stage |
-
-Last.fm's artist similarity data is mature, well-populated, and requires only a free API key with no user OAuth needed for the lookup step.
+| **ListenBrainz** (default) | No key for similar artists, up to 100 with a score; needs MusicBrainz artist IDs. Very strong on niche artists, can drift towards general pop for very popular ones |
+| **TIDAL** | Free developer app (client credentials); rank order only, no score |
+| **Last.fm** `artist.getSimilar` | Mature data, but needs Last.fm Pro from 1 December 2026 |
+| Deezer | Keyless, but its terms of 27 October 2026 require an approved application; at most 20 results, no score |
+| Spotify | Related artists closed to new apps |
+| Apple Music | Developer program costs $99 a year |
+| TasteDive, music-map | Weak results, or scraping only |
+| MusicBrainz, Wikidata, Discogs, TheAudioDB | No similarity data |
+| AcousticBrainz | Stopped collecting data in 2022 |
 
 ---
 
@@ -216,7 +211,8 @@ The Open Subsonic extension layer (`openSubsonic: true`) allows newer clients to
 | FFmpeg | Audio processing | Only tool covering all formats; transcoding + waveform + repair + tag writing in one binary |
 | LRCLIB | Lyrics | Free, no API key, synced LRC timestamps, open-source; duration-matched first |
 | Discogs | Album art | Best catalogue depth for physical/vinyl releases; free personal-use API; cacheable images |
-| Last.fm | Scrobbling + AutoDJ | De facto scrobbling standard; free similar-artist data; no OAuth for lookups |
+| Last.fm | Scrobbling + artist bio | De facto scrobbling standard; API key needs Last.fm Pro from 1 December 2026 |
+| ListenBrainz / TIDAL | Similar artists for Auto-DJ | ListenBrainz needs no key and gives a score; TIDAL is a free developer app; Last.fm stays available as a third source |
 | Butterchurn | Milkdrop visualizer | 20+ years of community presets; WebGL; open-source; no alternative has this library |
 | audioMotion-analyzer | Spectrum visualizer | Logarithmic scaling, octave bands, multiple modes; saves ~500 lines of custom canvas code |
 | VoltViz | Modern visualizer styles | 40+ WebGL/WebGPU styles, MIT; lazy-loaded so it costs nothing until used |

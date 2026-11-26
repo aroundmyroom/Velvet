@@ -990,3 +990,10 @@ tr:hover td { background: var(--raised); }
 .vr-sonos-add{width:auto;padding:2px 6px;font-size:.8rem;}
 .ge-genre-input{width:100%;font-size:.82rem;background:transparent;color:#bbb;border:1px solid transparent;padding:1px 4px;border-radius:3px;}
 .ge-genre-input:focus{border-color:var(--border);background:var(--raised2);}
+
+/* Similar artists settings: label above the field on phones */
+@media (max-width: 600px) {
+  .sim-form tr { display: flex; flex-direction: column; }
+  .sim-form td { width: auto !important; padding-top: .25rem; padding-bottom: .25rem; }
+  .sim-form td:empty { display: none; }
+}

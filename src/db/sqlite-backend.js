@@ -783,6 +783,16 @@ export function init(dbDirectory) {
     output_tokens INTEGER NOT NULL DEFAULT 0,
     usd           REAL NOT NULL DEFAULT 0
   )`);
+  // Similar-artist answers per source (api/similar-sources.js), so a restart or
+  // an outage at the source does not empty Auto-DJ.
+  db.exec(`CREATE TABLE IF NOT EXISTS similar_cache (
+    source     TEXT NOT NULL,
+    key        TEXT NOT NULL,
+    fetched_at INTEGER NOT NULL,
+    payload    TEXT NOT NULL,
+    PRIMARY KEY (source, key)
+  )`);
+  db.exec('CREATE INDEX IF NOT EXISTS idx_files_mb_artist_id ON files(mb_artist_id)');
   // What each folder is, written by the model after reading the library
   // (util/ai-library-notes.js); 'edited' rows are the admin's and never overwritten.
   db.exec(`CREATE TABLE IF NOT EXISTS ai_library_notes (
@@ -2288,6 +2298,44 @@ export function deriveArtistMbidFromFiles(canonicalName) {
     LIMIT 1
   `).get(canonicalName);
   return row?.mb_artist_id || null;
+}
+
+export function getSimilarCache(source, key) {
+  const row = db.prepare('SELECT fetched_at, payload FROM similar_cache WHERE source = ? AND key = ?').get(source, key);
+  return row ? { at: row.fetched_at, value: JSON.parse(row.payload) } : null;
+}
+
+export function putSimilarCache(source, key, value) {
+  db.prepare('INSERT OR REPLACE INTO similar_cache (source, key, fetched_at, payload) VALUES (?, ?, ?, ?)')
+    .run(source, key, Date.now(), JSON.stringify(value));
+}
+
+export function clearSimilarCache() {
+  return Number(db.prepare('DELETE FROM similar_cache').run().changes);
+}
+
+// File-level artist IDs come from AcoustID / MusicBrainz matching and are wrong on some files
+// (a megamix or cover matched to another artist), so an ID only names a library artist when it
+// is on most of that artist's files that carry an ID at all, and on a few of them, not one stray file.
+const MBID_ARTIST_SHARE = 0.5;
+const MBID_ARTIST_MIN_FILES = 3;
+
+/** Library artist names per MusicBrainz artist ID: the artists whose ID-tagged files mostly carry that ID. */
+export function artistNamesForMbids(mbids) {
+  const out = new Map();
+  if (!mbids?.length) return out;
+  const inc = inClause('mb_artist_id', mbids);
+  const rows = db.prepare(`SELECT mb_artist_id AS id, artist, COUNT(*) AS c FROM files WHERE ${inc.sql} AND artist IS NOT NULL GROUP BY mb_artist_id, artist`).all(...inc.params);
+  if (!rows.length) return out;
+  const artists = [...new Set(rows.map(r => r.artist))];
+  const inA = inClause('artist', artists);
+  const totals = new Map(db.prepare(`SELECT artist, COUNT(*) AS t FROM files WHERE ${inA.sql} AND mb_artist_id IS NOT NULL GROUP BY artist`).all(...inA.params).map(r => [r.artist, r.t]));
+  for (const r of rows) {
+    if (r.c < MBID_ARTIST_MIN_FILES || r.c / (totals.get(r.artist) || r.c) < MBID_ARTIST_SHARE) continue;
+    if (!out.has(r.id)) out.set(r.id, []);
+    out.get(r.id).push(r.artist);
+  }
+  return out;
 }
 
 // Admin: override the canonical display name for an artist.

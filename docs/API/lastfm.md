@@ -23,7 +23,7 @@ Admins can enable or disable Last.fm scrobbling entirely from the **Last.fm** se
 - The Last.fm nav button is hidden in the player sidebar for all users.
 - Scrobble timers never fire — no calls to Last.fm are made.
 
-Admins enter the Last.fm API key and shared secret here. There is no built-in key: without one, connecting, scrobbling and similar-artists do not work.
+Admins enter the Last.fm API key and shared secret here. There is no built-in key: without one, connecting, scrobbling and the artist bio do not work. From 1 December 2026 a key only works while its owner has Last.fm Pro. Similar artists come from the source chosen under Admin → Similar artists (ListenBrainz by default), which needs a Last.fm key only when Last.fm is that source; see [similar-artists.md](../similar-artists.md).
 
 - The shared secret is only returned to admins (via the admin config endpoint below); regular users never receive it.
 - All changes take effect immediately without restarting the server.
@@ -44,9 +44,10 @@ Returns whether Last.fm is enabled server-side and the Last.fm username currentl
 
 **Response**
 ```json
-{ "serverEnabled": true, "hasApiKey": true, "linkedUser": "yourusername" }
+{ "serverEnabled": true, "hasApiKey": true, "similarArtists": true, "linkedUser": "yourusername" }
 ```
 `hasApiKey` is `true` when an API key is configured.
+`similarArtists` is `true` when the similar-artists source chosen by the admin can answer; the player uses it for Auto-DJ similar mode and the similar-artist lists.
 Returns `null` for `linkedUser` when no account is linked.  
 `serverEnabled` is `false` when the admin has disabled Last.fm — the player uses this to hide the nav button and suppress scrobbling for all users.
 
@@ -127,7 +128,7 @@ Scrobbles a track by providing the metadata directly (no file lookup).
 
 ### GET `/api/v1/lastfm/similar-artists`
 
-Returns similar artists from Last.fm for the given artist name, resolved to library artist names.
+Returns similar artists for the given artist name from the source chosen under Admin → Similar artists (ListenBrainz, TIDAL or Last.fm), resolved to library artist names. The path keeps `lastfm` for compatibility.
 
 **Query param** — `?artist=David+Bowie`
 

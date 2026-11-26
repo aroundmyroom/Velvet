@@ -360,7 +360,7 @@ The user enters their Last.fm username and password once. Velvet authenticates a
 
 **Admin API key**  
 There are no built-in Last.fm credentials: `lastFM.apiKey` and `apiSecret` default to empty, and without a key
-scrobbling and similar artists do nothing. An admin sets them without restarting via Admin panel → Last.fm, or via `POST /api/v1/admin/lastfm/config`.
+scrobbling, the artist bio and Last.fm as [similar-artists source](#similar-artists-similarartists) do nothing (similar artists from ListenBrainz or TIDAL need no Last.fm key). An admin sets them without restarting via Admin panel → Last.fm, or via `POST /api/v1/admin/lastfm/config`.
 
 See [API/lastfm.md](API/lastfm.md) for the full API reference.
 
@@ -473,14 +473,14 @@ Velvet always uses SQLite (`velvet.sqlite` in `storage.dbDirectory`). The `db` o
 
 ## Last.fm (server-level)
 
-Controls the Last.fm integration for **all users**. This covers both scrobbling and the Similar Artists feature used by Auto-DJ.
+Controls the Last.fm integration for **all users**: scrobbling, the artist bio, the Genre Enricher's Last.fm source and, when Last.fm is chosen as the [similar-artists source](#similar-artists-similarartists), similar artists. From 1 December 2026 a Last.fm API key only works while its owner has Last.fm Pro.
 
 > **Opt-out behaviour:** `lastFM.enabled` defaults to `true`. Last.fm is active unless you explicitly set `"enabled": false`. This is different from `radio`, which is opt-in.
 
 | Key | Default | Description |
 |-----|---------|-------------|
-| `enabled` | `true` | Enable Last.fm for all users (scrobbling + similar artists in Auto-DJ). Set to `false` to disable globally |
-| `apiKey` | `""` | Your Last.fm API key. Needed for scrobbling and similar artists |
+| `enabled` | `true` | Enable Last.fm scrobbling for all users. Set to `false` to disable globally |
+| `apiKey` | `""` | Your Last.fm API key. Needed for scrobbling, the artist bio, and similar artists when `similarArtists.source` is `lastfm` |
 | `apiSecret` | `""` | Your Last.fm API secret |
 
 ```json
@@ -540,6 +540,32 @@ Sends plays to the ListenBrainz endpoint source of a self-hosted [multi-scrobble
 ```
 
 Per user: `ms-enabled`, `ms-token` and `subsonic-scrobble-ms` in the `users` object (see [LastFM Scrobbling](#lastfm-scrobbling)).
+
+## Similar artists (`similarArtists`)
+
+Where similar artists (Auto-DJ similar mode, artist pages, Home shelves, AI DJ) and an artist's top tracks (Subsonic `getTopSongs`) come from. Exactly one source. Set via Admin panel → Similar artists. See [similar-artists.md](similar-artists.md).
+
+> **Default:** ListenBrainz, which needs no account. Answers are stored in the database table `similar_cache`, not in this file.
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `source` | `"listenbrainz"` | `listenbrainz`, `tidal`, `lastfm` (uses `lastFM.apiKey`, needs Last.fm Pro from 1 December 2026) or `off`. |
+| `listenbrainzAlgorithm` | `""` | Name of the ListenBrainz Labs similar-artists algorithm. Empty = Velvet's default. |
+| `listenbrainzToken` | `""` | ListenBrainz user token for top tracks. Empty = the `listenbrainz-token` of a user (admins first). |
+| `tidalClientId` | `""` | Client ID of a TIDAL developer app. |
+| `tidalClientSecret` | `""` | Client Secret of that app. |
+| `tidalCountry` | `"US"` | Two-letter country code of the TIDAL catalogue to search. |
+
+```json
+{
+  "similarArtists": {
+    "source": "tidal",
+    "tidalClientId": "your-client-id",
+    "tidalClientSecret": "your-client-secret",
+    "tidalCountry": "NL"
+  }
+}
+```
 
 ## Lyrics
 

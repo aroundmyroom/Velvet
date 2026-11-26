@@ -61,6 +61,15 @@ const multiScrobblerOptions = Joi.object({
   token:   Joi.string().allow('').default(''),
 });
 
+const similarArtistsOptions = Joi.object({
+  source:                Joi.string().valid('listenbrainz', 'tidal', 'lastfm', 'off').default('listenbrainz'),
+  listenbrainzAlgorithm: Joi.string().allow('').default(''),
+  listenbrainzToken:     Joi.string().allow('').default(''),
+  tidalClientId:         Joi.string().allow('').default(''),
+  tidalClientSecret:     Joi.string().allow('').default(''),
+  tidalCountry:          Joi.string().pattern(/^[A-Z]{2}$/).default('US'),
+});
+
 const aiAssistOptions = Joi.object({
   enabled:          Joi.boolean().default(false),
   apiKey:           Joi.string().allow('').default(''),
@@ -182,6 +191,7 @@ const schema = Joi.object({
   lastFM: lastFMOptions.default(lastFMOptions.validate({}).value),
   listenBrainz: listenBrainzOptions.default(listenBrainzOptions.validate({}).value),
   multiScrobbler: multiScrobblerOptions.default(multiScrobblerOptions.validate({}).value),
+  similarArtists: similarArtistsOptions.default(similarArtistsOptions.validate({}).value),
   aiAssist: aiAssistOptions.default(aiAssistOptions.validate({}).value),
   discordWebhook: discordWebhookOptions.default(discordWebhookOptions.validate({}).value),
   discogs: discogsOptions.default(discogsOptions.validate({}).value),

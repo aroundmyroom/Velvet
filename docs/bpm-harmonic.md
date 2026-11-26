@@ -77,7 +77,7 @@ Scoring weights (`_djScoreSong` in `webapp/app.js`):
 
 | Signal | Weight | Notes |
 |--------|--------|-------|
-| Similar artist (Last.fm rank) | 0.35 | When there is no similar-artist data, this share is spread over BPM, genre and harmonic |
+| Similar artist (rank from the [similar-artists source](similar-artists.md)) | 0.35 | When there is no similar-artist data, this share is spread over BPM, genre and harmonic |
 | BPM proximity | 0.25 | Full score inside ±tolerance, falling to 0 at ±2× tolerance |
 | Genre | 0.13 | |
 | Harmonic (Camelot) | 0.07 | Same key 1.0, adjacent 0.7, two steps 0.3 |

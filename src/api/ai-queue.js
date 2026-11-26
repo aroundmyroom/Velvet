@@ -16,6 +16,7 @@ import * as config from '../state/config.js';
 import * as db from '../db/manager.js';
 import { onEveryScanEnd } from '../state/scan-lock.js';
 import { similarArtistsFor } from './scrobbler.js';
+import { similarActive } from './similar-sources.js';
 import { joiValidate } from '../util/validation.js';
 import { mergeGenreRows, toKey } from '../util/genre-merge.js';
 import { FAMILIES, keywordFamily } from '../util/genre-family.js';
@@ -421,7 +422,7 @@ async function resolveArtists(brief, scope, notes) {
   }
   const similarRank = new Map();
   let similarFound = 0;
-  if (brief.artistMode === 'feature' && seedNames.length && config.program.lastFM?.apiKey) {
+  if (brief.artistMode === 'feature' && seedNames.length && similarActive()) {
     const lists = await Promise.all(seedNames.slice(0, MAX_SEEDS).map(n => similarArtistsFor(n, scope.vpaths)));
     for (const { variantRankMap } of lists) {
       similarFound += new Set(Object.values(variantRankMap)).size;

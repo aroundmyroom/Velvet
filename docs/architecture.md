@@ -15,7 +15,7 @@ mounts the web apps and calls `setup(velvet)` on every API module.
 | `src/db/` | The database layer. `manager.js` is the only entry point: every other module imports `* as db from '../db/manager.js'`. `sqlite-backend.js` holds the SQL and is imported only by `src/db/`. Also here: `scanner.mjs` (the scan, run as a forked child process by `task-queue.js`), `sql-clauses.js` (shared WHERE helpers), `album-art-select.js`, `wrapped-stats.mjs`, and the image-compress child process. |
 | `src/state/` | Process-wide state: `config.js` (Joi schema + live config), `scan-lock.js` (pauses workers while a scan runs), `bg-task-broker.js` (serialises main-thread DB-writing background tasks), `scan-progress.js`, `lastfm.js`, `shutdown.js` (ordered shutdown hooks: services, then HTTP, then DB). |
 | `src/util/` | Shared helpers (path security, SSRF checks, vpath logic, auth, validation, ffmpeg/fpcalc/rsgain bootstrap) and the worker-thread scripts (`*-worker.mjs`). |
-| `src/autodj/` | Server-side Auto-DJ: `scoring.js` (server copy of the browser scoring, kept in step by `test/autodj-parity.test.mjs`), `pool.js` (candidate pool, shared with `POST /api/v1/db/random-songs`), `radio.js` (radio chain), `library.js` (wires the chain to the DB, Last.fm and user prefs). Used by Rooms, Subsonic similar songs and `POST /api/v1/autodj/next`. |
+| `src/autodj/` | Server-side Auto-DJ: `scoring.js` (server copy of the browser scoring, kept in step by `test/autodj-parity.test.mjs`), `pool.js` (candidate pool, shared with `POST /api/v1/db/random-songs`), `radio.js` (radio chain), `library.js` (wires the chain to the DB, the similar-artists source and user prefs). Used by Rooms, Subsonic similar songs and `POST /api/v1/autodj/next`. |
 | `src/sendspin/` | Velvet Rooms (Sendspin protocol): rooms, scheduler, audio pipeline, per-room EQ, pairing and trust store, mDNS discovery, Sonos followers. Routes in `src/api/sendspin.js`. See [rooms.md](rooms.md). |
 | `src/smartplaylist/` | ML smart playlists (feature extraction, generator, routes), behind `BETA_SMART_PLAYLIST` in `src/beta-flags.js`. |
 
@@ -185,8 +185,9 @@ flowchart LR
     end
 
     subgraph "External Services"
-        LASTFM["Last.fm\nScrobble + similar artists\n(scrobbler.js / lastfm.js)"]
+        LASTFM["Last.fm\nScrobble + bio\n(scrobbler.js / lastfm.js)"]
         LBZ["ListenBrainz\nScrobble + now-playing\n(scrobbler.js)"]
+        SIMSRC["Similar artists\nListenBrainz / TIDAL / Last.fm\n(similar-sources.js)"]
         MBID["MusicBrainz\nAcoustID fingerprint\nTag enrichment\n(acoustid.js / tagworkshop.js)"]
         DISCOGSEXT["Discogs\nAlbum art picker\n(discogs.js)"]
         SONOSEXT["Sonos UPnP\nSMAP discovery\n(sonos.js)"]
@@ -239,7 +240,7 @@ batch of up to 500 songs. `_djPickSong()` drops keyword-blocked songs, songs in
 the last 30 of the queue and (when possible) artists from the last 3 picks,
 then scores every candidate with `_djScoreSong()` and keeps the best.
 
-Weights: similar-artist (Last.fm rank) 35%, BPM proximity 25%, genre 13%,
+Weights: similar-artist (source rank) 35%, BPM proximity 25%, genre 13%,
 harmonic (Camelot) fit 7%, year/era proximity 10%, artist diversity 10%.
 Without similar-artist data the 35% is spread over BPM, genre and harmonic.
 BPM, key and genre are scored, never filtered. Full details:
@@ -272,7 +273,7 @@ flowchart TD
         DJAPI["POST /api/v1/db/random-songs\n{ _djScopeBody(), ignoreList,\n  artists, ignoreArtists,\n  returnAll: true }"]
 
         VPATHS["vpath scope\nS.djVpaths (user selection)\nor all vpaths; audiobooks excluded\nChild vpath → filepathPrefix /\nincludeFilepathPrefixes"]
-        SIMILAR["Similar artists mode\nGET /api/v1/lastfm/similar-artists\nCached per artist (1 call/song)\nNo result → keep the last list"]
+        SIMILAR["Similar artists mode\nGET /api/v1/lastfm/similar-artists\nListenBrainz / TIDAL / Last.fm\n(similar-sources.js, stored 30 days)\nNo result → keep the last list"]
         RATING["minRating, min/maxDuration"]
         COOL["ignoreArtists = last 15 artists\n(DJ_ARTIST_COOLDOWN)"]
     end
@@ -396,7 +397,7 @@ flowchart TD
     RETURN --> UI
 
     subgraph "viewArtistProfile2() renders"
-        UI["Fanart hero banner (1280×480)\nArtist thumbnail (400×400)\nBio chip\nSimilar artists list (Last.fm)\nAlbum grid (albums-browse.js)\nManual image override (admin)"]
+        UI["Fanart hero banner (1280×480)\nArtist thumbnail (400×400)\nBio chip\nSimilar artists list (similar-artists source)\nAlbum grid (albums-browse.js)\nManual image override (admin)"]
     end
 
     subgraph "Background hydration queue"

@@ -16,7 +16,7 @@ The Artist Library is a dedicated view for browsing your music collection by art
 | Artist name search | ✅ |
 | Artist profile — Songs and Albums tabs, category pills | ✅ |
 | Artist biography (Last.fm, else TheAudioDB), genre / country / formed-year chips and fanart hero (TheAudioDB) | ✅ |
-| Similar artists on the profile (Last.fm, only artists with albums in the library) | ✅ |
+| Similar artists on the profile (from the [similar-artists source](similar-artists.md): ListenBrainz, TIDAL or Last.fm; only artists with albums in the library) | ✅ |
 | Admin artist image repair (missing/wrong queues + Discogs/TheAudioDB picker) | ✅ |
 | Custom artist image URL apply (admin) | ✅ |
 | Background image hydration | ✅ |

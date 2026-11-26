@@ -45,7 +45,7 @@ and shows a round play button. Clicking a song card plays it.
 | `recent` | Recently Played | Songs most recently played |
 | `most` | Most Played | Songs with the highest play count (play count shown) |
 
-When a Last.fm API key is set, up to two **Because you listened to *artist***
+When a [similar-artists source](similar-artists.md) is set up (ListenBrainz by default), up to two **Because you listened to *artist***
 shelves are added at the end: two random artists from your most played songs,
 filled with library songs by similar artists.
 

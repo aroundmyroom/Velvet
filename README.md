@@ -260,8 +260,9 @@ Why one song at a time:
 
 What it listens to:
 
-1. **Similar artists** from Last.fm, related to what is playing now. Names
-   match with or without accents ("Tiësto" and "Tiesto").
+1. **Similar artists** from ListenBrainz (no account needed), TIDAL or
+   Last.fm, related to what is playing now. Names match with or without
+   accents ("Tiësto" and "Tiesto"). [Sources](docs/similar-artists.md)
 2. **BPM**, within a tolerance you set, where half and double tempo count as a
    match (72 BPM fits 145 BPM).
 3. **Key**, using the Camelot wheel: six compatible keys for each song.
@@ -363,7 +364,8 @@ Playlists built from filters, updated every time you open them:
 
 | Integration | What it does |
 |---|---|
-| **Last.fm** | Scrobbling, now playing, and similar artists for Auto-DJ. A session per user, and you can see in Playing Now whether a scrobble went through. |
+| **Last.fm** | Scrobbling, now playing and artist bios. A session per user, and you can see in Playing Now whether a scrobble went through. Can also be the similar-artists source. From 1 December 2026 the API key needs Last.fm Pro. |
+| **Similar artists** | One source for Auto-DJ's similar mode, similar artists on artist pages and in Playing Now, and top tracks for Subsonic apps: ListenBrainz (default, no account), TIDAL (free developer app) or Last.fm. Answers are stored, so an outage at the source does not stop Auto-DJ. [Docs](docs/similar-artists.md) |
 | **ListenBrainz** | Now playing and scrobbles. A token per user, works next to Last.fm. [Docs](docs/listenbrainz.md) |
 | **multi-scrobbler** | Sends your plays to a self-hosted multi-scrobbler, which forwards them to ListenBrainz, Maloja, Koito, Libre.fm, teal.fm and more. Each user opts in. [Docs](docs/multi-scrobbler.md) |
 | **Discogs** | Artist photos, genre suggestions and album art. Needs API credentials. |
@@ -488,6 +490,7 @@ publish 8927 and add speakers by IP address. [Details](docs/rooms.md#network-req
 | Samsung TV app | [docs/tizen-tv.md](docs/tizen-tv.md) |
 | ListenBrainz | [docs/listenbrainz.md](docs/listenbrainz.md) |
 | multi-scrobbler | [docs/multi-scrobbler.md](docs/multi-scrobbler.md) |
+| Similar artists | [docs/similar-artists.md](docs/similar-artists.md) |
 | Keyboard shortcuts and accessibility | [docs/accessibility.md](docs/accessibility.md) |
 | Security | [docs/frontend-security.md](docs/frontend-security.md) |
 | Pair a Device | [docs/login-pairing.md](docs/login-pairing.md) |

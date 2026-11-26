@@ -1,12 +1,15 @@
-**Last.fm — Similar Artists**
+**Similar Artists**
 ----
 
-Returns artists similar to a given artist via the Last.fm API, resolved to the
-artist names that exist in your library. Used by the Auto-DJ "Similar Artists"
-mode to bias song selection.
+Returns artists similar to a given artist from the source chosen under
+Admin → Similar artists (ListenBrainz, TIDAL or Last.fm, see
+[similar-artists.md](../similar-artists.md)), resolved to the artist names that
+exist in your library. Used by the Auto-DJ "Similar Artists" mode, the artist
+page, Playing Now and the Home shelves. The path keeps `lastfm` for
+compatibility.
 
-Needs a Last.fm API key (`lastFM.apiKey` in the config, set in Admin → Last.fm).
-Without a key the endpoint returns `{ "artists": [] }`.
+When the source is off or not set up (`similarArtists` is `false` in
+`GET /api/v1/lastfm/status`) the endpoint returns `{ "artists": [] }`.
 
 * **URL:** `/api/v1/lastfm/similar-artists`
 * **Method:** `GET`
@@ -30,15 +33,16 @@ Without a key the endpoint returns `{ "artists": [] }`.
 
   | Field | Description |
   |---|---|
-  | `artists` | Every library artist name that matches one of Last.fm's similar artists (up to 50 from Last.fm). |
-  | `displayArtists` | Last.fm names, in similarity order, that have at least one album in the user's vpaths. |
-  | `displayVariantMap` | Last.fm name → library variants, for the names in `displayArtists`. |
-  | `variantRankMap` | Library variant → 1-based Last.fm rank (lower = more similar). |
+  | `artists` | Every library artist name that matches one of the source's similar artists (up to 100), by name or by MusicBrainz artist ID. |
+  | `displayArtists` | Source names, in similarity order, that have at least one album in the user's vpaths. |
+  | `displayVariantMap` | Source name → library variants, for the names in `displayArtists`. |
+  | `variantRankMap` | Library variant → 1-based source rank (lower = more similar). |
 
-  When Last.fm knows nothing about the exact credit, the server retries with the
-  parts of a collaboration credit (e.g. "A feat. B"). Returns empty lists when
-  nothing matches. Results are cached (6 h for Last.fm data, 30 min for the
-  library resolution).
+  When the source knows nothing about the exact credit, the server retries with
+  the parts of a collaboration credit (e.g. "A feat. B"). Returns empty lists
+  when nothing matches. Source answers are stored in the database for 30 days
+  (empty answers 7 days) with 6 h in memory on top; the library resolution is
+  cached for 30 min.
 
 * **Notes**
   - Scrobbling (POST `/api/v1/lastfm/scrobble-by-filepath`) needs the user to link a

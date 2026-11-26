@@ -2,7 +2,7 @@
 
 > Admin tool that fills in or improves the `genre` tag for every artist in your library by querying three sources and letting you pick the best suggestion.
 
-Open it from **Admin → Genre Enricher** in the side-nav. A Last.fm API key is required (External Services → Last.fm); without it the worker does not start.
+Open it from **Admin → Genre Enricher** in the side-nav. A Last.fm API key is required (External Services → Last.fm); without it the worker does not start. From 1 December 2026 the key only works while its owner has Last.fm Pro.
 
 ## What it does
 

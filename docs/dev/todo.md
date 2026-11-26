@@ -9,9 +9,9 @@
 - [ ] Approve the genre and folder proposals on the production library; then
   compare a week of Auto-DJ sessions against the keyword-only families.
 - [ ] AI DJ ideas after a week of use: let the listener edit the brief chips
-  before rebuilding, "more like this set" from the current queue. (A server-side
-  similar-artist cache exists: in memory, 2,000 artists, `src/api/scrobbler.js`;
-  it is lost on restart.)
+  before rebuilding, "more like this set" from the current queue. (Similar-artist
+  answers are stored in the `similar_cache` table for 30 days, with 2,000
+  artists in memory on top, `src/api/similar-sources.js` and `src/api/scrobbler.js`.)
 - [ ] **AI DJ feedback loop** (decided 2026-10-28: the engine covers the
   reported cases; what is missing is turning a listener's complaint into a
   lasting fix without a developer in between). In this order:
@@ -33,8 +33,8 @@
   Beyond the loop: the 10% of songs without tempo or key (analysis queue), and
   pure music knowledge, which scales with the model (Sonnet ≈ 20× Haiku per
   request).
-- [ ] Step 2 of the plan: Claude as fallback for similar artists when Last.fm
-  has none (or ≤ 3 in the library), pre-selected from the library by family
+- [ ] Step 2 of the plan: Claude as fallback for similar artists when the
+  similar-artists source has none (or ≤ 3 in the library), pre-selected from the library by family
   and era, cached per artist.
 - [ ] Year from the folder: 25,988 files have no year tag and 12,108 of them
   sit in a folder or file name that carries one (`…/1979/…`, `(1997)`,
@@ -395,7 +395,7 @@ Built: `essentia-bpm-worker.mjs` (BPM/key into `files.bpm` / `files.musical_key`
 The Subsonic bridge works; Velvet carries AudioMuse-AI-specific fixes (playlist-name sanitising for the `Path: `
 prefix and `_instant` suffix in `src/api/subsonic.js`).
 - [ ] Use AudioMuse-AI as the sonic intelligence engine (clustering, text search, song paths, similar-song playlists) without building any native analysis — Velvet just becomes the player + library, AudioMuse-AI adds AI on top.
-- [ ] **Phase 2 option (deeper integration)**: add an Velvet admin toggle for an AudioMuse-AI REST URL; Auto-DJ calls AudioMuse-AI's similarity API for the next track in "Acoustic" mode instead of Last.fm. Real-time sonic similarity rather than batch playlist generation.
+- [ ] **Phase 2 option (deeper integration)**: add an Velvet admin toggle for an AudioMuse-AI REST URL; Auto-DJ calls AudioMuse-AI's similarity API for the next track in "Acoustic" mode instead of the similar-artists source. Real-time sonic similarity rather than batch playlist generation.
 
 **Admin UI:** the "Audio Analysis" card lives inside the BPM Workshop.
 - [ ] Throttle setting — delays are hardcoded in the workers

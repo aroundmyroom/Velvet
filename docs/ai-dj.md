@@ -112,7 +112,7 @@ The DJ behaves like a mix DJ, not like a shuffle. For a set in DJ order:
 1. **Pool.** A hard-filtered sample from your library: the collections you
    have switched on, the genres, era, tempo, named artists and folders of the
    brief, the history and format wishes. Named artists are expanded with
-   their Last.fm similar artists.
+   their similar artists (from the [similar-artists source](similar-artists.md)).
 2. **Corridor.** One song is the seed, and the set is picked only from songs
    a DJ could mix into it: within a few BPM (a steady set stays within ±6%,
    a build climbs up to +14%, a cooldown comes down), in a compatible key, of

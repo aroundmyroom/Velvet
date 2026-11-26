@@ -12,29 +12,24 @@ import { getVPathInfo, dbLocationCandidates } from '../util/vpath.js';
 import WebError from '../util/web-error.js';
 import { artistLookupCandidates } from '../util/artist-credit.js';
 import { msActive } from './multi-scrobbler.js';
+import { similarActive, similarArtistList, similarCacheTag, similarSourceLabel } from './similar-sources.js';
 
 const Scrobbler = new Scribble();
 
 const SIMILAR_TTL_MS = 6 * 60 * 60 * 1000;
 const SIMILAR_CACHE_MAX = 2000;
-const LASTFM_TIMEOUT_MS = 4000;
 const LASTFM_SCROBBLE_TIMEOUT_MS = 15_000;
 const _similarCache = new Map();
 // Resolved to library variants; shorter-lived so newly scanned artists show up.
 const RESOLVED_TTL_MS = 30 * 60 * 1000;
 const _resolvedCache = new Map();
 
-function _lastfmCall(start) {
-  return new Promise(resolve => {
-    const timer = setTimeout(() => resolve(null), LASTFM_TIMEOUT_MS);
-    start(data => { clearTimeout(timer); resolve(data); });
-  });
-}
-
-function _lastfmCached(key, load) {
+// In-memory layer over the source's stored answers; also merges concurrent requests.
+function _similarArtistItems(artistName) {
+  const key = `${similarCacheTag()}\0${artistName.toLowerCase()}`;
   const hit = _similarCache.get(key);
   if (hit && Date.now() - hit.at < SIMILAR_TTL_MS) return hit.value;
-  const value = load().then(v => {
+  const value = similarArtistList(artistName).then(v => {
     if (v == null) _similarCache.delete(key);
     return v;
   });
@@ -43,24 +38,19 @@ function _lastfmCached(key, load) {
   return value;
 }
 
-function _similarArtistNames(artistName) {
-  return _lastfmCached('sa\0' + artistName.toLowerCase(), () =>
-    _lastfmCall(cb => Scrobbler.GetSimilarArtists(artistName, cb, 50)).then(data => data == null ? null :
-      (data?.similarartists?.artist || []).slice(0, 50).map(a => a.name).filter(Boolean)));
-}
-
 /**
- * Last.fm similar artists for a credited artist, resolved to library artist
- * variants. Tries the exact credit, then collaboration halves, then duo parts
- * (util/artist-credit.js) and moves on while Last.fm knows nothing or fewer than
+ * Similar artists (from the source chosen in api/similar-sources.js) for a
+ * credited artist, resolved to library artist variants. Tries the exact credit,
+ * then collaboration halves, then duo parts (util/artist-credit.js) and moves on
+ * while the source knows nothing or fewer than
  * SIMILAR_MIN_IN_LIBRARY of the names are in the library (keeping the best
  * list found as the fallback). variantRankMap: library variant → 1-based
- * Last.fm rank (lower = more similar). Used by the browser Auto-DJ (route
+ * source rank (lower = more similar). Used by the browser Auto-DJ (route
  * below) and the server-side radio (src/autodj/radio.js).
  */
 export function similarArtistsFor(originalArtist, vpaths) {
-  if (!Scrobbler.apiKey || !originalArtist) return Promise.resolve(_emptySimilar());
-  const key = `res\0${(vpaths || []).join('\0')}\0${String(originalArtist).trim().toLowerCase()}`;
+  if (!similarActive() || !originalArtist) return Promise.resolve(_emptySimilar());
+  const key = `res\0${similarCacheTag()}\0${(vpaths || []).join('\0')}\0${String(originalArtist).trim().toLowerCase()}`;
   const hit = _resolvedCache.get(key);
   if (hit && Date.now() - hit.at < RESOLVED_TTL_MS) return hit.value;
   const value = _resolveSimilarArtists(originalArtist, vpaths).then(r => {
@@ -73,7 +63,7 @@ export function similarArtistsFor(originalArtist, vpaths) {
 }
 
 function _emptySimilar() {
-  return { artists: [], displayArtists: [], displayVariantMap: {}, variantRankMap: {}, via: null };
+  return { artists: [], displayArtists: [], displayVariantMap: {}, variantRankMap: {}, via: null, source: similarSourceLabel() || null };
 }
 
 // A collaboration credit ("Armin van Buuren & AVIRA feat. Sam Martin") can be a
@@ -87,15 +77,17 @@ async function _resolveSimilarArtists(originalArtist, vpaths) {
   let failed = false;
   let best = null;
   for (const artistName of parts) {
-    const rawNames = await _similarArtistNames(artistName);
-    if (rawNames == null) failed = true;
-    if (!rawNames?.length) continue;
+    const items = await _similarArtistItems(artistName);
+    if (items == null) failed = true;
+    if (!items?.length) continue;
+    const rawNames = items.map(a => a.name);
+    const byMbid = db.artistNamesForMbids([...new Set(items.map(a => a.mbid).filter(Boolean))]);
     const nameVariantsMap = new Map();
-    for (const name of rawNames) {
-      const variants = db.resolveArtistNamesForDJ([name]);
+    for (const { name, mbid } of items) {
+      const variants = [...new Set([...db.resolveArtistNamesForDJ([name]), ...(byMbid.get(mbid) ?? [])])];
       if (variants.length > 0) nameVariantsMap.set(name, variants);
     }
-    console.log(`[autodj] similar-artists "${originalArtist}" → ${rawNames.length} from Last.fm${artistName === originalArtist ? '' : ` via "${artistName}"`}, ${nameVariantsMap.size} in library`);
+    console.log(`[autodj] similar-artists "${originalArtist}" → ${rawNames.length} from ${similarSourceLabel()}${artistName === originalArtist ? '' : ` via "${artistName}"`}, ${nameVariantsMap.size} in library`);
     if (nameVariantsMap.size === 0) continue;
     if (!best || nameVariantsMap.size > best.nameVariantsMap.size) best = { artistName, rawNames, nameVariantsMap };
     if (nameVariantsMap.size >= SIMILAR_MIN_IN_LIBRARY) break;
@@ -122,18 +114,7 @@ function _similarResult({ artistName, rawNames, nameVariantsMap }, vpaths) {
       displayVariantMap[name] = variants;
     }
   }
-  return { artists: allVariants, displayArtists, displayVariantMap, variantRankMap, via: artistName };
-}
-
-/** Last.fm top tracks for an artist as [{ title, artist, rank }], [] when unknown. */
-export async function artistTopTracks(artistName, limit = 50) {
-  if (!Scrobbler.apiKey || !artistName) return [];
-  const list = await _lastfmCached(`tt\0${limit}\0${String(artistName).toLowerCase()}`, () =>
-    _lastfmCall(cb => Scrobbler.GetArtistTopTracks(String(artistName), cb, limit)).then(data => data == null ? null :
-      (data?.toptracks?.track || [])
-        .filter(t => t?.name && t.artist?.name)
-        .map((t, i) => ({ title: t.name, artist: t.artist.name, rank: i + 1 }))));
-  return list || [];
+  return { artists: allVariants, displayArtists, displayVariantMap, variantRankMap, via: artistName, source: similarSourceLabel() };
 }
 
 export function setup(velvet) {
@@ -181,15 +162,12 @@ export function setup(velvet) {
 
   velvet.get('/api/v1/lastfm/similar-artists', async (req, res) => {
     if (!req.query.artist) return res.json({ artists: [] });
-    if (!Scrobbler.apiKey) {
-      console.warn('[lastfm] similar-artists: no API key configured — set lastFM.apiKey in config');
-      return res.json({ artists: [] });
-    }
+    if (!similarActive()) return res.json({ artists: [] });
     try {
       const { via: _via, ...body } = await similarArtistsFor(String(req.query.artist), req.user.vpaths);
       res.json(body);
     } catch {
-      res.json({ artists: [], displayArtists: [], displayVariantMap: {}, variantRankMap: {} });
+      res.json({ artists: [], displayArtists: [], displayVariantMap: {}, variantRankMap: {}, source: similarSourceLabel() || null });
     }
   });
 
@@ -219,6 +197,7 @@ export function setup(velvet) {
     res.json({
       serverEnabled: config.program.lastFM?.enabled !== false,
       hasApiKey: !!(config.program.lastFM?.apiKey),
+      similarArtists: similarActive(),
       linkedUser: req.user['lastfm-user'] || null,
     });
   });

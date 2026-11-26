@@ -22,6 +22,7 @@ import * as db from '../db/manager.js';
 import * as scrobblerApi from './scrobbler.js';
 import * as multiScrobblerApi from './multi-scrobbler.js';
 import { Scrobbler } from './scrobbler.js';
+import { topTracksFor } from './similar-sources.js';
 import * as dbQueue from '../db/task-queue.js';
 import * as scanProgress from '../state/scan-progress.js';
 import { ffmpegBin, ensureFfmpeg } from '../util/ffmpeg-bootstrap.js';
@@ -2042,8 +2043,8 @@ export function setup(velvet) {
   router('getSimilarSongs2', (req, res) => handleSimilarSongs(req, res, 'similarSongs2'));
 
   // ── getTopSongs ───────────────────────────────────────────────────────────────
-  // Velvet's own play counts blended with Last.fm's top tracks (when an API key
-  // is configured), matched to the library — see util/top-songs.js.
+  // Velvet's own play counts blended with the artist's most played tracks from the
+  // similar-artists source (api/similar-sources.js), matched to the library — see util/top-songs.js.
   router('getTopSongs', async (req, res) => {
     const artistName = qparam(req, 'artist') ?? req.body?.artist;
     const count      = Math.max(1, Math.min(Number.parseInt(req.query.count || req.body?.count || '50', 10) || 50, 200));
@@ -2051,9 +2052,8 @@ export function setup(velvet) {
 
     const rows = db.getArtistSongsWithPlays(String(artistName), _rootVpaths(req), req.subsonicUser);
     if (!rows.length) return sendResponse(req, res, makeResponse('ok', { topSongs: { song: [] } }));
-    let lastfm = [];
-    try { lastfm = await scrobblerApi.artistTopTracks(String(artistName), 50); } catch { lastfm = []; }
-    const songs = rankTopSongs(rows, lastfm, count).map(r => buildSong(r));
+    const popular = await topTracksFor(String(artistName), 50);
+    const songs = rankTopSongs(rows, popular, count).map(r => buildSong(r));
     sendResponse(req, res, makeResponse('ok', { topSongs: { song: songs } }));
   });
 

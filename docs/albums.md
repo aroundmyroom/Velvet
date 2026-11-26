@@ -243,7 +243,7 @@ Click an album card to open the full detail (loaded from `/api/v1/albums/detail`
 Playing an album (or a single song) replaces the queue. If that was a mistake, the **Up Next** bar of the queue panel shows an accent-coloured **Restore previous queue** button (curved-arrow icon; hover to see how many songs it holds). It puts the old queue back and continues the song that was playing, from where it was; a song that was paused comes back paused. Then click the track again with the album click mode set to *single track* if you only wanted that one song.
 
 - Clicking another track in the same album keeps the original queue as the one to restore, so it is never overwritten by the album itself.
-- **Clear queue** can be undone the same way.
+- **Clear queue** (the bin) can be undone the same way. One click empties the whole queue and stops playback; in a room the playing song stays, because the room's queue is shared.
 - The previous queue is kept in memory only (a page reload drops it), and the button disappears once it has been used.
 
 ---

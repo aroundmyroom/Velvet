@@ -21,6 +21,7 @@ import * as remoteApi from './api/remote.js';
 import * as sharedApi from './api/shared.js';
 import * as scrobblerApi from './api/scrobbler.js';
 import * as multiScrobblerApi from './api/multi-scrobbler.js';
+import * as similarSourcesApi from './api/similar-sources.js';
 import * as discordWebhookApi from './api/discord-webhook.js';
 import * as customWebhooksApi from './api/custom-webhooks.js';
 import * as discogsApi from './api/discogs.js';
@@ -344,6 +345,7 @@ export async function serveIt(configFile) {
   scrobblerApi.setup(velvet);
   scrobblerApi.setupListenBrainz(velvet);
   multiScrobblerApi.setup(velvet);
+  similarSourcesApi.setup(velvet);
   discordWebhookApi.setup(velvet);
   customWebhooksApi.setup(velvet);
   discogsApi.setup(velvet);

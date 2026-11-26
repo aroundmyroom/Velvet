@@ -1,3 +1,66 @@
+## v0.10.5 (2026-11-26)
+
+Similar artists without Last.fm
+
+### Added
+
+- **Similar artists without Last.fm.** From 1 December 2026 a Last.fm API
+  key only works while its owner has Last.fm Pro, and Velvet used Last.fm
+  for every similar-artist list. Under **Admin panel → Similar artists** the
+  admin now picks one source: **ListenBrainz** (the default, no account
+  needed, up to 100 similar artists with a score), **TIDAL** (a free
+  developer app, rank order only), **Last.fm** (as before, needs Pro) or
+  **Off**. ListenBrainz works with MusicBrainz artist IDs: Velvet takes them
+  from files matched by AcoustID or the MusicBrainz text search, else does
+  one MusicBrainz name search per artist (one request per second, exact name
+  only, stored for 90 days). Because results carry MusicBrainz IDs, they now
+  match library artists by ID as well as by name. An ID only names a library
+  artist when it is on at least 3 of that artist's files and on at least half
+  of its files that carry an ID, because AcoustID gets some files wrong (two
+  Britney Spears files carrying The Beatles' ID put her after Chic). A **Test** box shows the
+  top 25 with score and whether each artist is in the library, and **Clear
+  stored answers** empties the store. `docs/similar-artists.md` compares the
+  sources, including the ones we looked at and rejected (Deezer, Spotify,
+  Apple Music, TasteDive, music-map), and explains setup, matching, caching
+  and troubleshooting.
+- **Stored similar-artist answers.** Answers are kept in the database (new
+  table `similar_cache`) for 30 days, empty answers for 7 days and artist
+  IDs for 90 days, with the 6-hour memory layer on top. When the source
+  fails, the older stored answer is used, so a restart or an outage does not
+  empty Auto-DJ.
+
+### Changed
+
+- **Similar-artist features follow the chosen source.** Auto-DJ's Similar
+  Artists switch, the similar-artist chips on artist pages and in Playing
+  Now, the Home shelves *Because you listened to* and the AI DJ's "artists
+  like" requests now work whenever the chosen source is ready, instead of
+  only with a Last.fm key. `GET /api/v1/lastfm/status` carries the new
+  `similarArtists` flag. The Last.fm artist bio still needs a Last.fm key.
+  Every similar-artists answer names its source, and the browser console
+  shows it (`[Auto-DJ] ListenBrainz similar to …`) instead of always saying
+  Last.fm.
+- **Subsonic top tracks.** `getTopSongs` blends Velvet's play counts with
+  ListenBrainz's most played recordings of the artist (with a ListenBrainz
+  token: the one on the Similar artists page, else a user's scrobbling
+  token), or with Last.fm's top tracks when Last.fm is the source.
+- Still on Last.fm, and so needing Pro from 1 December 2026: scrobbling to
+  Last.fm, the artist bio, the Genre Enricher's Last.fm source and the last
+  fallback of Subsonic `getSimilarSongs`.
+- **Upgrade note.** Existing installs start on ListenBrainz, because that is
+  the default source. Choose Last.fm under **Admin panel → Similar artists**
+  to keep the old behaviour while your key still works.
+- **The queue bin empties the queue in one click.** It used to keep the
+  playing song, which then took two more clicks to remove. Now it clears the
+  whole queue and stops playback. The undo button next to the bin brings the
+  queue back and continues where it was. In a room the current song still
+  stays, because the room's queue is shared.
+
+### Fixed
+
+- **Removing the last song from the queue took two clicks.** After the first
+  click the queue was empty, but the panel drew the removed song back.
+
 ## v0.10.4 (2026-11-23)
 
 multi-scrobbler support

@@ -1,5 +1,5 @@
 'use strict';
-const VELVET_VERSION = '0.10.4';
+const VELVET_VERSION = '0.10.5';
 // ── SERVER IDENTITY GUARD ────────────────────────────────────────────────────
 // Detects when this browser's localStorage belongs to a different Velvet
 // instance (fresh install, IP change, reverse-proxy swap, second server).
@@ -90,6 +90,7 @@ const S = {
   aiDjMax: 500,                 // songs per AI-built queue (server cap)
   lastfmEnabled: false,
   lastfmHasApiKey: false,
+  similarArtists: false,        // the admin's similar-artists source can answer (Admin → Similar artists)
   lastfmLinked: false,
   listenbrainzEnabled: false,
   listenbrainzLinked: false,
@@ -337,7 +338,7 @@ let _castMuteGain = null; // GainNode: 0 when casting to MPV, 1 otherwise — ke
 //    and was not enough: even with it in place, a fully backgrounded tab still froze
 //    mid-way through Auto-DJ's multi-step pick chain (seen live 2026-09-30 — the
 //    heartbeat's own light reconciliation kept working, but the heavier prefetch
-//    chain — two Last.fm calls, a DB query, growing and saving the queue — did not
+//    chain — two similar-artists calls, a DB query, growing and saving the queue — did not
 //    finish, leaving nothing for the server's own safety net to advance to).
 //
 // A quiet, genuinely oscillating tone is the closer match for what that exemption is
@@ -788,14 +789,14 @@ function toastError(msg, ms) {
 }
 
 let _similarStripT = null;
-let _djSimilarFor = '';            // artist we searched Last.fm for
+let _djSimilarFor = '';            // artist we asked the similar-artists source about
 let _djSimilarSource = '';         // artist the current list actually came from (differs when kept after a miss)
 const _pnowPanel = { kind: null, full: false, fsOwned: false, lyFp: null, lines: [], synced: false, idx: -2, raf: 0, vizHome: null, vizObs: null };
 let _playPulseFp = '';
 let _homeVibeKey = '';
 let _djSimilarArtists = [];        // raw DB variants (for SQL IN filter)
-let _djSimilarDisplayArtists = []; // clean Last.fm names (for display)
-let _djVariantRankMap = {};        // DB artist variant → 1-indexed Last.fm rank (lower = more similar)
+let _djSimilarDisplayArtists = []; // clean names from the source (for display)
+let _djVariantRankMap = {};        // DB artist variant → 1-indexed source rank (lower = more similar)
 
 // -- Camelot Wheel for harmonic mixing --
 const _CAMELOT = {
@@ -2492,10 +2493,10 @@ function _djGenreFilterScore(song) {
 // takes the single highest-scoring candidate from the whole batch).
 //
 // Priority order (highest → lowest weight when all signals have data):
-//   similar-artist (Last.fm) > BPM continuity > genre > harmonic mixing
+//   similar-artist (chosen source) > BPM continuity > genre > harmonic mixing
 // Year/diversity are fixed-weight secondary tie-breakers.
 //
-// When Last.fm has no similar artists for the current track (or similar-
+// When the source has no similar artists for the current track (or similar-
 // artist mode is off), the similar-artist weight share is redistributed
 // proportionally to BPM/genre/harmonic — they become the primary basis for
 // the pick instead ("if we don't get a result back, the other items ARE
@@ -2537,7 +2538,7 @@ function _djScoreSong(song) {
   const genreScore   = _filterScore != null ? (0.6 * _filterScore + 0.4 * _contScore) : _contScore;
   score += wGenre * genreScore;
 
-  // ── Similar-artist / Last.fm rank ───────────────────────────────────────
+  // ── Similar-artist rank ─────────────────────────────────────────────────
   // rank 1 → 1.0, rank 50 → ~0.18; not in list → 0 (no similarity signal,
   // but NOT excluded — bpm/genre/harmonic/year/diversity still decide).
   if (wArtist > 0) {
@@ -2545,7 +2546,7 @@ function _djScoreSong(song) {
       const rank = _djVariantRankMap[song.artist];
       score += wArtist * (rank != null ? Math.max(0.18, 1.0 - (rank - 1) / 60) : 0);
     } else {
-      score += wArtist * 0.3; // no Last.fm data → weak neutral
+      score += wArtist * 0.3; // no similar-artists data → weak neutral
     }
   }
 
@@ -2616,7 +2617,7 @@ function _djSongBlocked(song) {
   return false;
 }
 
-// Last.fm had nothing for this artist. Mid-session, keep steering by the last
+// The similar-artists source had nothing for this artist. Mid-session, keep steering by the last
 // artist that did have a list, so one obscure pick can't send Auto-DJ off into
 // an unrelated corner of the library. A manually started song starts fresh.
 // Returns the artist filter to use (undefined = no similar-artist scope).
@@ -2684,13 +2685,13 @@ async function _djFetchBatch(escapeOpts = {}) {
   if (S.djGenreEnabled && S.djGenres.some(g => g.startsWith('GROUP:'))) await _ensureDjGenreGroupsCache();
 
   // Similar-artists mode: bias towards artists similar to the current track.
-  // Cache the Last.fm result per artist so repeated picks for the same
-  // current song never make more than 1 Last.fm API call.
+  // Cache the similar-artists result per artist so repeated picks for the same
+  // current song never make more than 1 similar-artists call.
   let artistFilter;
   if (S.djSimilar && S.queue[S.idx]?.artist) {
     const currentArtist = S.queue[S.idx].artist;
     if (_djSimilarFor === currentArtist) {
-      // Cached result — reuse without a new Last.fm call
+      // Cached result — reuse without a new similar-artists call
       artistFilter = _djSimilarArtists.length > 0 ? _djSimilarArtists : undefined;
     } else {
       try {
@@ -2702,13 +2703,13 @@ async function _djFetchBatch(escapeOpts = {}) {
           _djSimilarArtists = artistFilter;
           _djSimilarDisplayArtists = d.displayArtists || d.artists;
           _djVariantRankMap = d.variantRankMap || {};
-          console.log(`[Auto-DJ] Last.fm similar to "${currentArtist}":`, d.displayArtists || artistFilter);
+          console.log(`[Auto-DJ] ${d.source} similar to "${currentArtist}":`, d.displayArtists || artistFilter);
         } else {
-          console.warn(`[Auto-DJ] Last.fm returned no similar artists for "${currentArtist}"`);
+          console.warn(`[Auto-DJ] ${d.source || 'similar-artists source'} returned no similar artists for "${currentArtist}"`);
           artistFilter = _djNoSimilarFor(currentArtist, false);
         }
       } catch (_e) {
-        console.error(`[Auto-DJ] Last.fm call failed for "${currentArtist}":`, _e);
+        console.error(`[Auto-DJ] similar-artists call failed for "${currentArtist}":`, _e);
         artistFilter = _djNoSimilarFor(currentArtist, true);
       }
     }
@@ -3391,6 +3392,8 @@ function refreshQueueUI() {
 
   // Queue items
   if (!S.queue.length) {
+    // The panel's ResizeObserver re-renders from _qvsRows; stale rows would draw the removed song back
+    _qvsRows = []; _qvsBuiltVersion = _qvsVersion;
     list.innerHTML = `
       <div class="q-empty-state">
         <svg width="38" height="38" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
@@ -3564,6 +3567,7 @@ function _initQueueListeners() {
       const i = Number.parseInt(removeBtn.dataset.qi);
       S.queue.splice(i, 1); _qvsVersion++;
       if (S.idx >= i && S.idx > 0) S.idx--;
+      if (!S.queue.length) S.idx = -1;
       persistQueue();
       _syncQueueToDb();
       refreshQueueUI();
@@ -9261,12 +9265,12 @@ async function viewArtistProfile2(artistKey, displayName, variants, backFn, init
     }
   }
 
-  // ── Last.fm: bio fallback + similar artists ────────────────────────────
-  if (!S.lastfmHasApiKey) return;
+  // ── Last.fm bio fallback + similar artists from the chosen source ──────
+  if (!S.lastfmHasApiKey && !S.similarArtists) return;
   try {
     const [bioData, simData] = await Promise.all([
-      api('GET', `api/v1/lastfm/artist-info?artist=${encodeURIComponent(displayName)}`, undefined, sig),
-      api('GET', `api/v1/lastfm/similar-artists?artist=${encodeURIComponent(displayName)}`, undefined, sig),
+      S.lastfmHasApiKey ? api('GET', `api/v1/lastfm/artist-info?artist=${encodeURIComponent(displayName)}`, undefined, sig) : null,
+      S.similarArtists ? api('GET', `api/v1/lastfm/similar-artists?artist=${encodeURIComponent(displayName)}`, undefined, sig) : null,
     ]);
     if (S.view !== 'artist-profile2') return;
     if (!profile?.bio && bioData?.bio) _applyBio(bioData.bio.trim());
@@ -9303,7 +9307,7 @@ function _addListenersNote(bioEl, listeners) {
   bioEl.after(note);
 }
 
-// Last.fm similar artists as chips; the server only returns artists that have
+// Similar artists (chosen source) as chips; the server only returns artists that have
 // albums in the library, so every chip is marked in-library.
 function _renderSimilarArtistChips(simEl, simTitle, simData, backFn) {
   const simArtists = _deduplicateSimArtists(simData?.displayArtists || simData?.artists || []);
@@ -11978,16 +11982,16 @@ async function _pnowLoadArtistData(artist, forFp, skipImg = false) {
     }
   }
 
-  // ── 2. Last.fm: bio + similar artists (only if API key configured) ───────
-  if (!libArtist || !S.lastfmHasApiKey) {
+  // ── 2. Last.fm bio + similar artists from the chosen source ──────────────
+  if (!libArtist || (!S.lastfmHasApiKey && !S.similarArtists)) {
     if (bioTitle) bioTitle.textContent = '';
     return;
   }
 
   try {
     const [bioData, simData] = await Promise.all([
-      api('GET', `api/v1/lastfm/artist-info?artist=${encodeURIComponent(libArtist)}`),
-      api('GET', `api/v1/lastfm/similar-artists?artist=${encodeURIComponent(libArtist)}`),
+      S.lastfmHasApiKey ? api('GET', `api/v1/lastfm/artist-info?artist=${encodeURIComponent(libArtist)}`) : null,
+      S.similarArtists ? api('GET', `api/v1/lastfm/similar-artists?artist=${encodeURIComponent(libArtist)}`) : null,
     ]);
     if (_pnowSongFp !== forFp) return;
 
@@ -12658,7 +12662,7 @@ async function viewShortcuts() {
     _fillSlot('most', mkShelf('most', t('player.shortcuts.shelfMost'), mostPlayed.map(s => _homeSongCard(s, true)).join('') || null));
 
     // "Because you listened to" — fires only after most-played renders; each shelf appends independently
-    if (!S.lastfmHasApiKey || !mostPlayed.length) return;
+    if (!S.similarArtists || !mostPlayed.length) return;
     const artistPool = [...new Set(mostPlayed.map(s => s.artist).filter(Boolean))].slice(0, 10);
     for (let i = artistPool.length - 1; i > 0; i--) {
       const j = Math.floor(Math.random() * (i + 1));
@@ -13511,10 +13515,10 @@ async function viewAutoDJ() {
         <div class="autodj-opt-row">
           <div>
             <div class="autodj-opt-label">${t('player.autodj.similarLabel')}</div>
-            <div class="autodj-opt-hint">${t('player.autodj.similarHint')}${S.lastfmHasApiKey ? '' : ' <em>' + t('player.autodj.similarHintNoKey') + '</em>'}</div>
+            <div class="autodj-opt-hint">${t('player.autodj.similarHint')}${S.similarArtists ? '' : ' <em>' + t('player.autodj.similarHintNoKey') + '</em>'}</div>
           </div>
-          <label class="toggle-sw" ${S.lastfmHasApiKey ? '' : `title="${t('player.autodj.similarNoKeyTitle')}"`} style="${S.lastfmHasApiKey ? '' : 'opacity:.4;pointer-events:none;'}">
-            <input type="checkbox" id="dj-similar" ${S.djSimilar && S.lastfmHasApiKey ? 'checked' : ''} ${S.lastfmHasApiKey ? '' : 'disabled'}>
+          <label class="toggle-sw" ${S.similarArtists ? '' : `title="${t('player.autodj.similarNoKeyTitle')}"`} style="${S.similarArtists ? '' : 'opacity:.4;pointer-events:none;'}">
+            <input type="checkbox" id="dj-similar" ${S.djSimilar && S.similarArtists ? 'checked' : ''} ${S.similarArtists ? '' : 'disabled'}>
             <span class="toggle-sw-track"><span class="toggle-sw-thumb"></span></span>
           </label>
         </div>
@@ -23218,6 +23222,7 @@ async function _loadFeatureFlags({ probeAdmin = true, keepOnError = false } = {}
   apply(ls, d => {
     S.lastfmEnabled   = d?.serverEnabled !== false;
     S.lastfmHasApiKey = d?.hasApiKey === true;
+    S.similarArtists  = d?.similarArtists === true;
     S.lastfmLinked    = !!d?.linkedUser;
   });
   apply(lb, d => {
@@ -23238,8 +23243,8 @@ async function _loadFeatureFlags({ probeAdmin = true, keepOnError = false } = {}
     S.msServerEnabled = d?.serverEnabled === true;
     S.msActive        = S.msServerEnabled && d?.enabled === true;
   });
-  // Similar-artists needs a Last.fm API key; drop a saved "on" so Auto-DJ does not try to use it
-  if (ls && !S.lastfmHasApiKey && S.djSimilar) { S.djSimilar = false; localStorage.removeItem(_uKey('dj_similar')); }
+  // Similar-artists needs a ready source; drop a saved "on" so Auto-DJ does not try to use it
+  if (ls && !S.similarArtists && S.djSimilar) { S.djSimilar = false; localStorage.removeItem(_uKey('dj_similar')); }
   S.feedsEnabled = true; // Podcasts always available — user needs the section to add their first feed
 }
 
@@ -24340,20 +24345,37 @@ async function _flowQueue() {
 }
 document.getElementById('qp-flow-btn').addEventListener('click', _flowQueue);
 document.getElementById('qp-undo-btn').addEventListener('click', _restorePrevQueue);
+const _PLAYER_ART_EMPTY = document.getElementById('player-art').innerHTML;
+function _stopPlayer() {
+  _resetXfade();
+  audioEl.pause();
+  audioEl.removeAttribute('src');
+  audioEl.load();
+  VU_NEEDLE.stop();
+  syncPlayIcons();
+  _TabFav.reset();
+  if ('mediaSession' in navigator) navigator.mediaSession.metadata = null;
+  document.getElementById('player-art').innerHTML = _PLAYER_ART_EMPTY;
+  document.getElementById('player-title').textContent = '—';
+  document.getElementById('player-artist').textContent = '';
+  for (const id of ['player-album', 'player-radio-np', 'player-radio-kbps']) document.getElementById(id).classList.add('hidden');
+  document.getElementById('player-stars').innerHTML = '';
+  document.getElementById('prog-fill').style.width = '0%';
+  document.getElementById('prog-thumb').style.left = '0%';
+  _waveformData = null;
+  _drawWaveform();
+  document.getElementById('time-cur').textContent = '0:00';
+  document.getElementById('time-total').textContent = '0:00';
+}
 document.getElementById('qp-clear-btn').addEventListener('click', () => {
   _snapshotQueueForUndo(null);
-  // If a song is currently loaded/playing, keep it as the only queue item so
-  // the player bar stays correct and audio continues uninterrupted.
   const current = S.idx >= 0 ? S.queue[S.idx] : null;
-  if (current && _room) {
-    // The room's current entry stays (a room that has stopped clears completely).
-    if (_room.state === 'stopped' || _room.state === 'idle') { S.queue = []; S.idx = -1; } else { S.queue = [current]; S.idx = 0; }
-  } else if (current && !audioEl.paused) {
-    S.queue = [current]; S.idx = 0;
-  } else if (current && audioEl.currentTime > 0) {
+  if (current && _room && _room.state !== 'stopped' && _room.state !== 'idle') {
+    // A room's queue is shared, so its current entry stays for the other listeners
     S.queue = [current]; S.idx = 0;
   } else {
     S.queue = []; S.idx = -1;
+    if (!_room) _stopPlayer();
   }
   _qvsVersion++;
   const qSearchInput = document.getElementById('q-search-input');

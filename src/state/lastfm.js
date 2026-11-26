@@ -74,23 +74,6 @@ Scribble.prototype.GetArtistInfo = function (artist, callback) {
   });
 }
 
-Scribble.prototype.GetSimilarArtists = function (artist, callback, limit = 50) {
-  const amt = limit;
-  const path = '/2.0/?method=artist.getSimilar&artist=' + encodeURIComponent(artist) + '&api_key=' + this.apiKey + '&format=json&limit=' + amt
-  sendGet(path, function (ret) {
-    if (typeof (callback) === 'function')
-      {callback(ret)}
-  })
-}
-
-Scribble.prototype.GetArtistTopTracks = function (artist, callback, limit = 50) {
-  const path = '/2.0/?method=artist.gettoptracks&artist=' + encodeURIComponent(artist) + '&api_key=' + this.apiKey + '&format=json&limit=' + limit
-  sendGet(path, function (ret) {
-    if (typeof (callback) === 'function')
-      {callback(ret)}
-  })
-}
-
 Scribble.prototype.GetSimilarSongs = function (song, callback, limit = 50) {
   const path = '/2.0/?method=track.getSimilar&artist=' + encodeURIComponent(song.artist) + '&track=' + encodeURIComponent(song.track) + '&api_key=' + this.apiKey + '&format=json&limit=' + limit
   sendGet(path, function (ret) {

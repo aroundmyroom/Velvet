@@ -56,7 +56,7 @@ harmonic (Camelot) mixing — is additive scoring only:
 
 | Signal | Weight (when similar-artist data exists) | Notes |
 |---|---|---|
-| Similar-artist (Last.fm) | 35% | Redistributed into BPM/genre/harmonic when Last.fm has no data for the current artist, or Similar Artists mode is off |
+| Similar-artist ([source](similar-artists.md): ListenBrainz, TIDAL or Last.fm) | 35% | Redistributed into BPM/genre/harmonic when the source has no data for the current artist, or Similar Artists mode is off |
 | BPM continuity | 25% (~44.4% when the artist weight is redistributed in proportion 25:13:7) | Blended reference: 60% current-song BPM + 40% session base/anchor |
 | Genre | 13% (~23.1% when redistributed) | Blends the user's explicit whitelist/blacklist (soft, not a hard gate) with a genre-compatibility matrix, scored against the current song and the session genre anchor |
 | Harmonic (Camelot) mixing | 7% (~12.4% when redistributed) | Uses the *currently playing* song's key directly — no separate locked "anchor" key to track |
@@ -114,7 +114,7 @@ different full credit string.
 
 ## Why similar-artist mode gets its own escape hatch
 
-If Last.fm returns no similar artists for the current track (or the artist
+If the [similar-artists source](similar-artists.md) returns no similar artists for the current track (or the artist
 lookup fails), the 35% similar-artist weight is redistributed proportionally
 into BPM/genre/harmonic instead of being wasted — those signals become the
 primary basis for the pick, matching the intent that when one "nice to have"
@@ -122,7 +122,7 @@ signal has nothing to offer, the others should matter more, not less.
 
 That redistribution only happens at the start of a session. Mid-session, a
 miss keeps the **last list that worked**: when Donna Summer gave a list and the
-next pick is an obscure act Last.fm doesn't know, Auto-DJ keeps choosing from
+next pick is an obscure act the source doesn't know, Auto-DJ keeps choosing from
 Donna Summer's similar artists until an artist with its own list comes along.
 The info strip says so ("staying close to Donna Summer"). Without this, one
 unknown artist dropped the similar-artist scope, the next pick came from
@@ -154,7 +154,7 @@ from becoming the new direction. (`_djGenreAnchor()` and
 
 ## Similar-artist name resolution (diacritic folding)
 
-Last.fm names are matched against the library by `resolveArtistNamesForDJ()`
+Names from the similar-artists source are matched against the library by `resolveArtistNamesForDJ()`
 in [src/db/sqlite-backend.js](../src/db/sqlite-backend.js) using three
 unioned tiers:
 
@@ -168,14 +168,15 @@ unioned tiers:
 
 Tier 3 is unioned rather than fallback-only, so "Tiësto" and "Tiesto" — or
 "Alizée" and "Alizee" held as two separate artist rows — merge into one
-variant pool.
+variant pool. When the source also gives a MusicBrainz artist ID (ListenBrainz always, Last.fm
+often), every library artist whose files carry that ID matches too.
 
 For similar-artist lookup, Velvet queries the full credited artist first. This
 matters for canonical duos/groups such as "Mel & Kim": splitting on `&` before
-calling Last.fm turns a real artist into two unrelated solo searches. If the
+asking the source turns a real artist into two unrelated solo searches. If the
 full credit is a collaboration, Velvet then tries the collaboration halves
 before splitting duo/group names: `Mel & Kim vs. Frantique` tries `Mel & Kim`
-before `Mel` or `Kim`. Fallback also continues when Last.fm returns names that
+before `Mel` or `Kim`. Fallback also continues when the source returns names that
 do not map to library artists.
 
 The collaboration separators are `;`, `feat.`, `ft.`, `fe.`, `featuring`, `vs.`,
@@ -241,10 +242,10 @@ What the radio adds, because it answers with a whole list at once:
   library is in the cooldown list, the pool widens instead of ending early;
 - the user's synced Auto-DJ minimum rating and keyword filter apply;
   audiobook and recording folders never do;
-- Last.fm time per request is capped (3 s for the seed, 0.6 s for the rest
+- the similar-artist lookup time is capped (3 s for the seed, 0.6 s for the rest
   of the chain); an artist not looked up in time counts as a miss and the
-  last list is kept, exactly as above. Lists are cached (6 h from Last.fm,
-  30 min resolved to library artists) and the radio's artists are looked up
+  last list is kept, exactly as above. Lists are cached (30 days in the database and 6 h in
+  memory from the source, 30 min resolved to library artists) and the radio's artists are looked up
   in the background, so the next request is fast.
 
 ## What the server log shows (`journalctl -fu music.service`)
@@ -261,9 +262,10 @@ Subsonic radio):
 [autodj] ▶ dennis: "Regard — Ride It (Franky Wah Sunset Mix)" score=0.812 cands=447 similar=34 | bpm 122→114.6 key E major→Bb major year 2020→2020 genre dance
 ```
 
-- **similar-artists** — what Last.fm returned and which part of the credit
+- **similar-artists** — what the source returned (the log names it: `from
+  ListenBrainz`, `from TIDAL`, `from Last.fm`) and which part of the credit
   finally matched. Logged when the list is fetched; the resolved list is then
-  reused for 30 minutes (the raw Last.fm answer for 6 hours), so a repeat
+  reused for 30 minutes (the raw answer for 6 hours in memory, 30 days in the database), so a repeat
   lookup is silent. `→ 0 (tried: …)` means the whole pick ran without the
   similar-artist signal.
 - **pool** — the candidate scope the client scored, and any fallback that

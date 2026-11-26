@@ -186,7 +186,7 @@ Automatically queues new songs so the music never stops. The remote asks the ser
 | Setting | Description |
 |---------|-------------|
 | **Random** | No seed song: the server picks a random song from your library |
-| **Similar Artists** | The last queued song is sent as the seed, so the server picks a related song. Whether Last.fm similar artists are used follows your own Auto-DJ settings in the player |
+| **Similar Artists** | The last queued song is sent as the seed, so the server picks a related song. Whether similar artists are used follows your own Auto-DJ settings in the player ([sources](similar-artists.md)) |
 
 Auto-DJ fires when there are fewer than 2 songs ahead of the current position, or when the current track is within 25 seconds of ending.
 

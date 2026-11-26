@@ -28,8 +28,8 @@ The split is simple: **MA does the playing, Velvet does the thinking.** Velvet a
 
 | What MA shows | What Velvet answers with |
 |---|---|
-| **Radio / "Don't stop the music"** (`getSimilarSongs`) | A chain picked by Velvet's **Auto-DJ**, server-side: every next track is chosen against the one before it — Last.fm similar artists of the *current* artist, BPM corridor, Camelot key, genre family, era, artist cooldown — exactly the scoring the web player's Auto-DJ uses ([autodj-scoring.md](autodj-scoring.md)). No seed, no repeats (not even another version of the same song), audiobooks and radio recordings never included. Works without a Last.fm key too (then BPM/key/genre/era decide). Honours the user's Auto-DJ minimum rating and keyword filter. |
-| **Top tracks** of an artist (`getTopSongs`) | Velvet's own play counts (all users of the server — a household's shared taste; one user's counts are too sparse to rank by) blended with Last.fm's top tracks for the artist when a Last.fm key is set, one version per song. |
+| **Radio / "Don't stop the music"** (`getSimilarSongs`) | A chain picked by Velvet's **Auto-DJ**, server-side: every next track is chosen against the one before it — similar artists of the *current* artist (from the [similar-artists source](similar-artists.md)), BPM corridor, Camelot key, genre family, era, artist cooldown — exactly the scoring the web player's Auto-DJ uses ([autodj-scoring.md](autodj-scoring.md)). No seed, no repeats (not even another version of the same song), audiobooks and radio recordings never included. Works with the similar-artists source off too (then BPM/key/genre/era decide). Honours the user's Auto-DJ minimum rating and keyword filter. |
+| **Top tracks** of an artist (`getTopSongs`) | Velvet's own play counts (all users of the server — a household's shared taste; one user's counts are too sparse to rank by) blended with the artist's most played tracks from ListenBrainz (needs a ListenBrainz token) or from Last.fm when Last.fm is the [similar-artists source](similar-artists.md), one version per song. |
 | **Loudness normalisation** (`replayGain`) | Velvet's rsgain / EBU R128 measurements as OpenSubsonic `replayGain` (`trackGain`, `albumGain`, `trackPeak`, `albumPeak`, gains against −18 LUFS, peaks linear). MA stores them as the track's integrated loudness (−18 − gain) and normalises from the first play on. |
 | **Playlists** | Your playlists, plus your **smart playlists** as read-only playlists (`smart:<id>`), evaluated fresh each time MA opens them. |
 | **Lyrics** (`getLyricsBySongId`) | Synced lyrics first: a sidecar `.lrc` next to the file, lyrics embedded in the file (SYLT / USLT / Vorbis `LYRICS`, LRC text counts as synced), then lyrics the Velvet web player already fetched from LRCLIB. No network lookups here — MA asks for lyrics of every track it syncs. |
@@ -46,11 +46,11 @@ The split is simple: **MA does the playing, Velvet does the thinking.** Velvet a
 3. Recommended settings:
    - **Enable Podcasts: off** — Velvet serves podcasts through its own player, not the Subsonic podcast endpoints
    - Leave **Enable Legacy Auth** off — Velvet supports modern token and API-key auth
-4. Optional: a Last.fm API key in Velvet's config (`lastFM.apiKey`) gives the radio its similar-artist signal and adds Last.fm to top tracks.
+4. Optional: check **Admin panel → Similar artists**. The default source, ListenBrainz, gives the radio its similar-artist signal without any account; a ListenBrainz token there (or a user who connected ListenBrainz) adds popular tracks to top tracks. See [similar-artists.md](similar-artists.md).
 
 ### Notes
 
-- **Radio speed.** A 25-track radio takes well under a second once Velvet has the Last.fm similar-artist lists it needs (they are cached for hours, and the artists of every radio are looked up in the background for the next one). The first radio for an artist Velvet has never looked up can take 1–3 s; Last.fm time per request is capped, after which the chain keeps the last similar-artist list, as the web Auto-DJ does.
+- **Radio speed.** A 25-track radio takes well under a second once Velvet has the similar-artist lists it needs (they are stored for 30 days, and the artists of every radio are looked up in the background for the next one). The first radio for an artist Velvet has never looked up can take 1–3 s; the time per lookup is capped, after which the chain keeps the last similar-artist list, as the web Auto-DJ does.
 - **Play counts.** MA's Open Subsonic provider never sends `scrobble` or `reportPlayback` for music (only podcast bookmarks), so tracks played through MA do not appear in Velvet's play history, statistics or Velvet's Last.fm/ListenBrainz forwarding. Use MA's own Last.fm / ListenBrainz scrobble plugins for those services.
 - **Sendspin speakers.** A Sendspin speaker plays for one server at a time. If both MA and Velvet Rooms ([rooms.md](rooms.md)) know the same speaker, whichever starts playing takes it over from the other.
 - MA cannot play some **opus/m4a/VBR** files over a Subsonic connection (a known MA limitation). Workaround: enable Velvet transcoding (`transcode.enabled: true`) so MA can request a compatible format.
@@ -269,9 +269,9 @@ Song results in `search2`/`search3` match the query against **title, artist, or 
 | `getArtistInfo2` | ✅ | Same |
 | `getAlbumInfo` | ⚠️ | Returns empty `notes` |
 | `getAlbumInfo2` | ⚠️ | Same |
-| `getSimilarSongs` | ✅ | Radio chain by Velvet's Auto-DJ (`src/autodj/`), `count` tracks (default 50, max 100), seed excluded; `id` may be a song, album or artist id. Last.fm `track.getSimilar` is only the fallback when the chain finds nothing |
+| `getSimilarSongs` | ✅ | Radio chain by Velvet's Auto-DJ (`src/autodj/`), `count` tracks (default 50, max 100), seed excluded; `id` may be a song, album or artist id. Last.fm `track.getSimilar` is only the fallback when the chain finds nothing (needs a Last.fm key, Pro from 1 December 2026) |
 | `getSimilarSongs2` | ✅ | Same |
-| `getTopSongs` | ✅ | `count` default 50, max 200. The artist's songs ranked by Velvet play counts (all users) blended with Last.fm `artist.getTopTracks` when a key is set; one version per song |
+| `getTopSongs` | ✅ | `count` default 50, max 200. The artist's songs ranked by Velvet play counts (all users) blended with ListenBrainz `top-recordings-for-artist` (with a ListenBrainz token), or Last.fm `artist.getTopTracks` when Last.fm is the [similar-artists source](similar-artists.md); one version per song |
 
 ### Users
 | Endpoint | Status | Notes |

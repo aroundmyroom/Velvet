@@ -139,6 +139,10 @@ export function setArtistImage(artistClean, imageFile, imageSource) { return bac
 export function setArtistImageWrongFlag(artistClean, isWrong) { return backend.setArtistImageWrongFlag(artistClean, isWrong); }
 export function markArtistFetchAttempt(artistClean) { return backend.markArtistFetchAttempt(artistClean); }
 export function deriveArtistMbidFromFiles(canonicalName) { return backend.deriveArtistMbidFromFiles(canonicalName); }
+export function getSimilarCache(source, key) { return backend.getSimilarCache(source, key); }
+export function putSimilarCache(source, key, value) { return backend.putSimilarCache(source, key, value); }
+export function clearSimilarCache() { return backend.clearSimilarCache(); }
+export function artistNamesForMbids(mbids) { return backend.artistNamesForMbids(mbids); }
 export function getArtistImageAudit(kind, limit) { return backend.getArtistImageAudit(kind, limit); }
 export function getArtistImageAuditCounts() { return backend.getArtistImageAuditCounts(); }
 export function getArtistsNeedingFetch(limit) { return backend.getArtistsNeedingFetch(limit); }
