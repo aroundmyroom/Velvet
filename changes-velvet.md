@@ -1,6 +1,6 @@
-## v0.10.6 (unreleased)
+## v0.10.6 (2026-11-27)
 
-Sendspin spec update
+Sendspin spec update and dependency updates
 
 ### Changed
 
@@ -20,6 +20,21 @@ Sendspin spec update
   adopted since 12 November: 64-byte names, 255-byte metadata, 43-character
   group IDs, streams only during `playback`, and `server/pair-init` only
   after `client/pair-init`.
+
+### Dependencies
+
+- music-metadata 12.3.5 → 12.8.5, @anthropic-ai/sdk 1.8.0 → 1.14.0,
+  ws 8.22.2 → 8.23.0, fast-xml-parser 5.12.0 → 5.12.1, eslint 10.14.0 →
+  10.15.0 (dev). In CI: actions/setup-python 6 → 7 and a newer
+  aquasecurity/trivy-action. Merges Dependabot PRs #126–#129 and #131–#133.
+  The newer patch releases of music-metadata and the SDK came in when the
+  lockfile was rebuilt; music-metadata 12.8.1 broke tag writing and
+  time-seek in CI, 12.8.5 passes.
+
+### Fixed
+
+- Lint failed on `main` since v0.10.5 (a regular expression in the similar
+  artists settings).
 
 ## v0.10.5 (2026-11-26)
 

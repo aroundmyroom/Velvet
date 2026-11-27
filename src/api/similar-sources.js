@@ -321,7 +321,7 @@ export function setup(velvet) {
     adminOnly(req);
     joiValidate(Joi.object({
       source: Joi.string().valid(...SOURCES).required(),
-      listenbrainzAlgorithm: Joi.string().trim().allow('').pattern(/^[A-Za-z0-9_]*$/).max(200).optional(),
+      listenbrainzAlgorithm: Joi.string().trim().allow('').pattern(/^\w*$/).max(200).optional(),
       lbToken: Joi.string().trim().allow('').max(256).optional(),
       tidalClientId: Joi.string().trim().allow('').max(256).optional(),
       tidalSecret: Joi.string().trim().allow('').max(256).optional(),
