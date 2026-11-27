@@ -3382,7 +3382,7 @@
   "admin.rooms.pairWaiting": "Waiting for the speaker…",
   "admin.rooms.pairPending": "The speaker is holding the pairing back. Follow its instructions.",
   "admin.rooms.deviceSays": "{{name}} says:",
-  "admin.rooms.pairEnterDynamic": "Enter the six-digit code the speaker shows or reads out.",
+  "admin.rooms.pairEnterDynamic": "Primero inicia el emparejamiento en el propio altavoz (botón o app) y luego introduce el código de seis dígitos que muestra o dice en voz alta. No confíes en un código que el altavoz muestre sin ese paso.",
   "admin.rooms.pairEnterStatic": "Enter the eight-digit code printed on the speaker or in its leaflet.",
   "admin.rooms.pairWrongCode": "That code did not match. Try again.",
   "admin.rooms.pairRetryIn": "Try again in {{s}} s",

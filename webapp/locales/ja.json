@@ -3382,7 +3382,7 @@
   "admin.rooms.pairWaiting": "Waiting for the speaker…",
   "admin.rooms.pairPending": "The speaker is holding the pairing back. Follow its instructions.",
   "admin.rooms.deviceSays": "{{name}} says:",
-  "admin.rooms.pairEnterDynamic": "Enter the six-digit code the speaker shows or reads out.",
+  "admin.rooms.pairEnterDynamic": "まずスピーカー本体（ボタンまたはアプリ）でペアリングを開始し、表示または読み上げられる6桁のコードを入力してください。この手順なしに表示されたコードは信頼しないでください。",
   "admin.rooms.pairEnterStatic": "Enter the eight-digit code printed on the speaker or in its leaflet.",
   "admin.rooms.pairWrongCode": "That code did not match. Try again.",
   "admin.rooms.pairRetryIn": "Try again in {{s}} s",

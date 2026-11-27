@@ -3388,7 +3388,7 @@
   "admin.rooms.pairWaiting": "Wachten op de speaker…",
   "admin.rooms.pairPending": "De speaker houdt het koppelen nog even tegen. Volg de aanwijzingen van de speaker.",
   "admin.rooms.deviceSays": "{{name}} meldt:",
-  "admin.rooms.pairEnterDynamic": "Voer de zescijferige code in die de speaker toont of uitspreekt.",
+  "admin.rooms.pairEnterDynamic": "Start eerst het koppelen op de speaker zelf (met de knop of app), en voer dan de zescijferige code in die hij toont of uitspreekt. Vertrouw geen code die de speaker zonder die stap laat zien.",
   "admin.rooms.pairEnterStatic": "Voer de achtcijferige code in die op de speaker of in de bijsluiter staat.",
   "admin.rooms.pairWrongCode": "Die code klopte niet. Probeer het opnieuw.",
   "admin.rooms.pairRetryIn": "Opnieuw over {{s}} s",

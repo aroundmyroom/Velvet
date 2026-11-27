@@ -1,3 +1,26 @@
+## v0.10.6 (unreleased)
+
+Sendspin spec update
+
+### Changed
+
+- **Pairing with a six-digit code now warns you first.** The Sendspin spec
+  (20 November 2026) requires a server to tell you to start pairing on the
+  speaker itself before reading the code, and not to trust a code the speaker
+  shows without that step: another server on the network could make the
+  speaker show its own code. The pairing box and `docs/rooms.md` now say so,
+  in all 12 languages.
+
+### Checked
+
+- Velvet Rooms against the latest Sendspin spec and reference clients
+  (27 November 2026): every conformance scenario the aiosendspin client can
+  run passes (14 of 15; it has no Opus), and against the sendspin-js client
+  Opus now passes too. Velvet already met the rules the reference server
+  adopted since 12 November: 64-byte names, 255-byte metadata, 43-character
+  group IDs, streams only during `playback`, and `server/pair-init` only
+  after `client/pair-init`.
+
 ## v0.10.5 (2026-11-26)
 
 Similar artists without Last.fm

@@ -167,7 +167,10 @@ Allowing is one click. Pairing needs a code or a token from the speaker.
 Click **Pair**. The speaker must be online. Velvet asks the speaker for a
 code; depending on the device you get:
 
-- a **six-digit code** the speaker shows or reads out (`123-456`), or
+- a **six-digit code** the speaker shows or reads out (`123-456`). Start
+  pairing on the speaker itself first (its button or app) and only then read
+  the code. Don't trust a code the speaker shows without that step: another
+  server on your network could make the speaker show its own code. Or
 - an **eight-digit code** printed on the speaker or in its leaflet
   (`1234-5678`), usually entered while a pairing button is held or a pairing
   window is open.
